@@ -122,4 +122,87 @@ async def ingest_spec_pdf(
     except Exception as e:
         # Non-fatal — sections still saved
         pass
+
+    # 5. Auto-generate submittals from any "1.4 SUBMITTALS" paragraph
+    try:
+        await _autogenerate_submittals(tenant_id, project_spec_id, sections)
+    except Exception:
+        pass
+
     return {"ok": True, "page_count": page_count, "section_count": len(sections), "pdf_url": storage_path}
+
+
+async def _autogenerate_submittals(tenant_id: str, project_spec_id: str, sections: list[dict]):
+    """Detect '1.4 SUBMITTALS' (or 'PART 1' '1.4' headings), parse bulleted/
+    numbered items underneath, and create one Submittal row per item.
+    """
+    from database import get_db, tenant_filter
+    from models import gen_id, utc_now
+    db = get_db()
+    # Find spec → project
+    spec = await db.project_specs.find_one(
+        tenant_filter(tenant_id, {"id": project_spec_id}), {"_id": 0},
+    )
+    if not spec:
+        return
+    project_id = spec["project_id"]
+
+    SUBMITTALS_RE = re.compile(r"^\s*1\.\s*4\s+SUBMITTALS\b", re.IGNORECASE | re.MULTILINE)
+    BULLET_RE = re.compile(r"^\s*(?:[A-Z]\.|[a-z]\.|\d+\.|[-•*])\s+(.+?)$", re.MULTILINE)
+
+    for sec in sections:
+        body = sec.get("text_content") or ""
+        m = SUBMITTALS_RE.search(body)
+        if not m:
+            continue
+        # Take text from match position to the end of section (or next "PART 2")
+        chunk = body[m.end():]
+        next_part = re.search(r"^\s*PART\s+2\b", chunk, re.IGNORECASE | re.MULTILINE)
+        if next_part:
+            chunk = chunk[:next_part.start()]
+        # Extract bullet items
+        items = []
+        for bm in BULLET_RE.finditer(chunk):
+            item = bm.group(1).strip()
+            if 5 < len(item) < 240 and item.upper() != "SUBMITTALS":
+                items.append(item)
+        if not items:
+            # fallback: split on lines that look like product/data nouns
+            for line in chunk.splitlines():
+                line = line.strip()
+                if 8 < len(line) < 180 and re.match(r"^[A-Za-z]", line):
+                    items.append(line)
+                if len(items) >= 12:
+                    break
+
+        # Idempotent check: skip if we already auto-generated for this section
+        existing = await db.submittals.count_documents(tenant_filter(tenant_id, {
+            "project_id": project_id,
+            "spec_section_id": sec["id"],
+            "auto_generated": True,
+        }))
+        if existing:
+            continue
+
+        n_existing = await db.submittals.count_documents(tenant_filter(tenant_id, {"project_id": project_id}))
+        for i, item in enumerate(items[:20]):
+            n_existing += 1
+            await db.submittals.insert_one({
+                "id": gen_id(),
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "submittal_number": f"SUB-{n_existing:04d}",
+                "spec_section_id": sec["id"],
+                "spec_section_code": sec["section_code"],
+                "title": item,
+                "type": "product_data",
+                "status": "not_yet_submitted",
+                "sub_responsible": None,
+                "schedule_activity_id": None,
+                "drawings_affected": [],
+                "submitted_at": None,
+                "approved_at": None,
+                "auto_generated": True,
+                "created_by": None,
+                "created_at": utc_now().isoformat(),
+            })

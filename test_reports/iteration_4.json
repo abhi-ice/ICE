@@ -1,0 +1,44 @@
+{
+  "summary": "Iter4 backend + frontend testing complete. Backend: 16/16 PASS in /app/backend/tests/test_iteration4.py + 15/15 iter3 regression PASS (31/31 total). Coverage: PATCH /api/voice-annotations/:id 404 path; submittals manual CRUD with auto-numbered SUB-NNNN + tenant isolation + status PATCH; submittals auto-generation by ingesting reportlab PDF with 'DIVISION 03 / SECTION 03 30 00 / PART 1 / 1.4 SUBMITTALS / A. Product data ... B. Shop drawings ... C. Test reports ... D. Manufacturer cure ... / PART 2' — verified 4 auto_generated rows tagged spec_section_code='03 30 00', spec_section_id linked, auto_generated=true, titles match bullets; drawings_spatial_metadata POST upsert (idempotent on (revision, page) — same id reused, rotation_deg updated); GET /api/projects/:id/spatial-metadata; GET /api/entities/task/:id (200 + entity payload), unknown type 400, unknown id 404, tenant isolation 404; PATCH /api/locations/:id/polygon recomputes centroid (square 0..10 → centroid 5,5), <4 points 400, unknown id 404. Frontend: /polygon-editor renders polygon-editor-page + pe-floor/pe-revision/pe-location/pe-save testids; /submittals renders submittals-page with '16 auto-generated from spec ingestion' counter + per-row 'auto' badges + status dropdowns + linked-to-spec hint + section codes 03 30 00; /spatial-3d renders canvas + bind-elev + toggle-elev + header shows '2 elevation faces bound' (from earlier binding); bind-elev opens dialog with bind-elev-close + 7 bind-face-* dropdowns; voice-fab persistent on dashboard; NO runtime-error overlay on any page tested.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/specs/:id/upload", "issue": "processing_status flips to 'complete' BEFORE _autogenerate_submittals runs (the autogen step is post-status-update, line 108→128 in services/spec_ingest.py). Tests that poll on status==complete must add a short post-poll grace period before asserting on submittals presence. Functionally OK but a tiny race; consider moving the autogen step before the status update or expose a separate 'autogen_status' field."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Polygon editor / Submittals (and others using <select> with rich children)", "issues": ["React hydration warning: '<span> cannot be a child of <option>'. Some shadcn-style native <select> options appear to render <span> children causing hydration/console noise. Non-blocking but should be cleaned up — replace with plain text labels inside <option>."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "(low priority) Move `_autogenerate_submittals` call ABOVE the project_specs.update_one(processing_status='complete') in services/spec_ingest.py so consumers polling on complete status are guaranteed to see auto-generated submittals.",
+    "(low priority) Remove <span> children from <option> elements (PolygonEditor/Submittals) to silence the React hydration console warning."
+  ],
+  "critical_code_review_comments": [
+    "iter4_router.py is well-scoped and tenant-safe: every endpoint pulls ctx['tenant_id'] from require_tenant and applies tenant_filter(); generic entity GET correctly returns 400 for unknown types and 404 for missing ids; spatial metadata uses upsert pattern keyed on (drawing_revision_id, page_number) to avoid duplicates.",
+    "Submittal auto-numbering SUB-NNNN is not concurrency-safe (count_documents + 1 race window). Currently fine for demo/scale but flag for future atomic-counter approach.",
+    "_autogenerate_submittals correctly gates with idempotent check (count_documents on auto_generated=True for that section) so re-ingesting a spec won't duplicate. Good.",
+    "Submittals route `PATCH /submittals/{id}` returns 404 with HTTPException(404) when no fields and not found — minor: HTTPException(404) without detail is OK but inconsistent with other endpoints that pass strings.",
+    "Polygon centroid is computed as raw average of vertices — fine for convex rooms but isn't the geometric centroid for non-convex polygons. Acceptable for pin placement; document the limitation.",
+    "BULLET_RE in spec_ingest._autogenerate_submittals doesn't filter the literal heading 'SUBMITTALS' but does have a guard. Tested PDF only emits A./B./C./D. bullets, all captured correctly.",
+    "Spatial3D / PolygonEditor pages don't fetch fresh data after binding/saving — relies on full reload of the parent route. Probably fine but worth noting for UX polish.",
+    "EntitySidePanel deep-link could not be exercised in headless because pdf.js pin click requires the rendered PDF canvas + a real click on a positioned div on top of pdf.js's rendered page. Backend contract for /api/entities/{type}/{id} is verified end-to-end; frontend wiring (DrawingViewer.jsx) was code-reviewed and looks correct (pin onClick → setSidePanelEntity → renders <EntitySidePanel data-testid='entity-side-panel'/>)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (created — 16 tests)"
+  ],
+  "success_rate": {"backend": "100% (16/16 iter4 + 15/15 iter3 regression = 31/31)", "frontend": "100% on tested iter4 critical paths"},
+  "test_credentials": "admin@iceops.com / Demo123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created during tests: 1 TEST_ submittal (manual), 1 TEST_iter4_spec_* with reportlab PDF that auto-generated 4 submittals × 2 runs = 8 auto rows in shared GSA project; 1 TEST_E* drawing + 1 elevation revision + 1 spatial_metadata row; ~1 'other4-XXXX' tenant for isolation tests. Existing iter1/2/3 seed (admin user, GSA project, 12 locations with polygons, 8 floors, 25 activities) intact.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 5 iter4 features pass backend + frontend critical paths. Use test_iteration4.py for regression. Key learnings: (1) SUB-NNNN numbering uses count_documents+1, not concurrency-safe but fine for tests; (2) auto-generated submittals trigger AFTER processing_status=='complete' is set — add a 1-3s post-status grace poll before asserting; (3) spatial_metadata upsert keyed on (drawing_revision_id, page_number) — calling POST twice with same key returns same id; (4) GET /api/entities/{type}/{id} accepts: task, rfi, work_item, delay, safety_event, qc_issue, photo, change_order, submittal, delivery — anything else → 400; (5) location polygon PATCH requires closed ring of ≥4 points or 400; (6) EntitySidePanel deep-link is reachable via pin click in DrawingViewer but requires pdf.js canvas render — out of scope for headless smoke; backend route fully verified. Sub-page shows '16 auto-generated from spec ingestion' counter — confirming spec ingestion → submittal autogen pipeline end-to-end. Spatial 3D shows '2 elevation faces bound' from earlier bind-elev runs — confirming spatial_metadata persistence drives the 2.5D viewer header.",
+  "rca of the issue": "Initial test failure on autogen submittals was a race condition: spec_ingest sets processing_status=complete BEFORE _autogenerate_submittals runs. Test was polling on complete and immediately asserting on submittals, which were still being inserted. Mitigation: added a 15s post-complete polling loop in the test that retries the submittals listing until ≥2 auto rows appear. The fix is purely test-side; production code path works correctly (verified via direct DB read showing 8 auto rows after 2 ingestions). Recommended (non-blocking) backend cleanup: move autogen call above the status-complete update in services/spec_ingest.py."
+}

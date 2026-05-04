@@ -33,6 +33,7 @@ export const SIDEBAR_SECTIONS = [
       { label: "Look ahead", path: "/lookahead", icon: CalendarRange, testid: "sidebar-lookahead" },
       { label: "Weekly reports", path: "/weekly-reports", icon: FileBarChart, testid: "sidebar-weekly-reports" },
       { label: "Locations", path: "/locations", icon: MapPin, testid: "sidebar-locations" },
+      { label: "Polygon editor", path: "/polygon-editor", icon: MapPin, testid: "sidebar-polygon-editor" },
       { label: "Spatial 3D", path: "/spatial-3d", icon: Box, testid: "sidebar-spatial-3d" },
     ],
   },

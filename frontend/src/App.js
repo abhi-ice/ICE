@@ -18,6 +18,8 @@ import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
 import Spatial3D from "./pages/Spatial3D";
+import PolygonEditor from "./pages/PolygonEditor";
+import Submittals from "./pages/Submittals";
 import { AuditLog, AiAgentsPage, Compliance, Marketplace, Settings, WeeklyReports } from "./pages/SystemPages";
 import "./App.css";
 
@@ -51,13 +53,14 @@ export default function App() {
             <Route path="weekly-reports" element={<WeeklyReports />} />
             <Route path="locations" element={<ProjectScopedList kind="locations" />} />
             <Route path="spatial-3d" element={<Spatial3D />} />
+            <Route path="polygon-editor" element={<PolygonEditor />} />
 
             {/* Procurement */}
             <Route path="rfis" element={<ProjectScopedList kind="rfis" />} />
             <Route path="deliveries" element={<ProjectScopedList kind="deliveries" />} />
             <Route path="drawings" element={<Drawings />} />
             <Route path="specs" element={<Specs />} />
-            <Route path="submittals" element={<ProjectScopedList kind="submittals" />} />
+            <Route path="submittals" element={<Submittals />} />
             <Route path="change-orders" element={<ProjectScopedList kind="change-orders" />} />
 
             {/* Review */}

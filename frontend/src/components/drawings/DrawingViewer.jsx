@@ -8,6 +8,7 @@ import { Pencil, Square, MapPin, Trash2, ChevronLeft, ChevronRight, ZoomIn, Zoom
 import api from "../../lib/api";
 import { useProjects } from "../../lib/projects";
 import { toast } from "../ui/sonner";
+import EntitySidePanel from "./EntitySidePanel";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
@@ -26,6 +27,7 @@ export default function DrawingViewer({ revisionId, onClose }) {
   const [tool, setTool] = useState("pen");
   const [markups, setMarkups] = useState([]); // persisted
   const [pinDialog, setPinDialog] = useState(null); // {x,y}
+  const [openEntity, setOpenEntity] = useState(null); // {entity_type, entity_id}
   const [tasks, setTasks] = useState([]);
   const [rfis, setRfis] = useState([]);
   const [workItems, setWorkItems] = useState([]);
@@ -194,7 +196,19 @@ export default function DrawingViewer({ revisionId, onClose }) {
                         if (t === "rect") return <Rect key={m.id || i} x={g.x} y={g.y} width={g.w} height={g.h} stroke={stroke} strokeWidth={2} dash={[8, 4]} />;
                         if (t === "pin") return (
                           <>
-                            <Circle key={`c-${m.id || i}`} x={g.x} y={g.y} radius={8} fill={m.style?.color || "#f59e0b"} stroke="#92400e" />
+                            <Circle
+                              key={`c-${m.id || i}`}
+                              x={g.x}
+                              y={g.y}
+                              radius={9}
+                              fill={m.style?.color || "#f59e0b"}
+                              stroke="#92400e"
+                              strokeWidth={1.5}
+                              onClick={() => m.linked_entity_type && m.linked_entity_id && setOpenEntity({ entity_type: m.linked_entity_type, entity_id: m.linked_entity_id })}
+                              onTap={() => m.linked_entity_type && m.linked_entity_id && setOpenEntity({ entity_type: m.linked_entity_type, entity_id: m.linked_entity_id })}
+                              onMouseEnter={(e) => { e.target.getStage().container().style.cursor = m.linked_entity_id ? "pointer" : "default"; }}
+                              onMouseLeave={(e) => { e.target.getStage().container().style.cursor = "default"; }}
+                            />
                             <Text key={`t-${m.id || i}`} x={g.x + 12} y={g.y - 6} text={m.text_content || ""} fontSize={12} fill="#1f2937" />
                           </>
                         );
@@ -218,9 +232,13 @@ export default function DrawingViewer({ revisionId, onClose }) {
                 <div className="flex items-center gap-1">
                   <span className="pill pill-slate capitalize">{m.markup_type}</span>
                   {m.linked_entity_type && (
-                    <span className="pill pill-blue inline-flex items-center gap-1">
+                    <button
+                      data-testid={`open-linked-${m.id}`}
+                      onClick={() => setOpenEntity({ entity_type: m.linked_entity_type, entity_id: m.linked_entity_id })}
+                      className="pill pill-blue inline-flex items-center gap-1 hover:underline"
+                    >
                       <Link2 className="h-3 w-3" /> {m.linked_entity_type}
-                    </span>
+                    </button>
                   )}
                   <button onClick={() => remove(m.id)} className="ml-auto text-red-600 hover:bg-red-50 px-1 rounded"><Trash2 className="h-3 w-3" /></button>
                 </div>
