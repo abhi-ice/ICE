@@ -1,0 +1,46 @@
+{
+  "summary": "Iter2 backend + frontend testing complete. New backend test file /app/backend/tests/test_iteration2.py — 12/12 PASS covering: Google OAuth invalid session_id 401-not-500, cookie-based /auth/me, /auth/logout cookie+session deletion, Activity CRUD (POST/PATCH/DELETE+audit DELETE entry verified), Daily-report available-tasks date-filter + grid add/remove, Voice annotate (no 500, response keys validated, list endpoint), Spec PDF ingestion (DIVISION 03 + SECTION 03 30 00 reportlab PDF -> processing_status='complete', total_sections>=1, sections endpoint), Drawing PDF upload (page_count>=1 + pdf_url + /pdf streams %PDF bytes), tenant isolation on all 3 new endpoints. Iter1 regression suite: 32/34 PASS — 2 stale-state failures (dashboard pending_approvals=0 because all approvals decided in prior runs; today's daily-report pre-population empty for current date), NOT iter2 regressions. Frontend: login page renders steel-crane bg + google-signin + prefilled creds; email Sign in -> dashboard with KPI tiles (Active projects=3, Open RFIs=2, Field issues=5, Schedule health=24%) + dark slate sidebar with all 32 sidebar testids + topbar + voice-fab persistent across pages; Tasks page new-activity btn works; Daily Reports -> 'Open today's report' creates report and shows dr-add-activity-bar + dr-add-activity-select; Drawings new-drawing btn present; Specs page renders. No React error overlay, no console errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/dashboard/summary", "issue": "iter1 test asserts pending_approvals>=1 but all seed approvals have been decided across prior test runs — flaky stale-state assertion, not a regression"},
+      {"endpoint": "/api/daily-reports (POST)", "issue": "iter1 test asserts grid pre-population produces >=1 row for date.today(), but seed activity dates may not overlap today depending on calendar — flaky"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Project switcher default", "issues": ["Defaults to most-recently-created project (TEST_audit_growth_8c3d created by iter1 audit-growth test) which has 0 tasks — dashboard 'Active project' table shows 'No tasks loaded.' until user manually switches to GSA Federal Building Renovation. Same callout from iter1; consider sorting projects by created_at ASC or remembering last-selected per user."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iter2_results.xml",
+    "/app/test_reports/pytest/iter1_regression.xml"
+  ],
+  "action_items": [
+    "(Optional) Update iter1 backend_test.py::test_dashboard_summary to assert pending_approvals>=0 instead of >=1 (or seed 1 fresh pending approval per run) to avoid stale-state flake.",
+    "(Optional) Update iter1 backend_test.py::test_create_report_prepopulated_grid to allow grid=[] when no seed activities overlap today's calendar date.",
+    "(Optional UX) Project switcher default — sort by created_at ASC or pin GSA Federal Building Renovation as default so a fresh login lands on a project with data."
+  ],
+  "critical_code_review_comments": [
+    "All iter2 endpoints correctly enforce tenant isolation (tenant_filter applied on specs, drawing-revisions, voice-annotations).",
+    "Voice pipeline gracefully degrades — returns status='completed' or 'failed' without 500 even on 1s silence WAV (pipeline error handling present).",
+    "Spec ingestion handles reportlab-generated PDFs with DIVISION/SECTION regex correctly; total_sections>=1 verified.",
+    "Drawing /pdf endpoint streams real %PDF magic-bytes with content-type pdf — good.",
+    "Cookie OR Bearer dual-auth pattern works as advertised — cookie-only auth via /auth/me returns 200 without Authorization header.",
+    "Logout endpoint correctly deletes user_sessions row + invalidates subsequent /auth/me calls."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration2.py (created)"
+  ],
+  "success_rate": {"backend": "100% (12/12 iter2) / 94% (32/34 iter1 regression — 2 stale-state, not code regressions)", "frontend": "100% on tested critical paths"},
+  "test_credentials": "admin@iceops.com / Demo123! (loaded from /app/memory/test_credentials.md). Cookie auth tested by inserting user_sessions row directly per /app/auth_testing.md.",
+  "seed_data_creation": "Created 1 cookie-auth test user (cleaned up in fixture teardown), 1 logout-test user (cleaned up inline), 1 TEST_ activity (soft-deleted), 1 TEST_spec (left), 1 TEST_drawing+revision (left), 1 voice annotation (left), 1 other-tenant 'other2-XXXX' (left).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 12 iter2 features pass backend + critical frontend paths verified. Use test_iteration2.py for regression. Be aware that the 2 iter1 failures are stale-state flakes (approvals already decided, today's date outside seed window) — not real regressions. Project switcher defaults to most-recently-created project; switch to GSA project manually for tasks/RFI/daily-report flows in UI testing. To test voice annotation result, build 1s silence WAV via wave module — Whisper returns empty transcript but route returns 200. To test spec ingest, use reportlab to write a PDF containing 'DIVISION 03 - CONCRETE' and 'SECTION 03 30 00' — wait ~5-15s for processing_status to flip from 'pending' to 'complete'. To test cookie auth, pre-insert user_sessions row via pymongo.",
+  "rca of the issue": "N/A — no blocking issues. The 2 iter1 regressions are test-data drift, not code regressions: (1) repeated runs of TestApprovals in iter1 decide all pending approvals so seed-based count drops to 0 (assertion >=1 was overly tight); (2) seed activities have hardcoded calendar dates (around 2026-01-12 etc.) so on dates outside that window the grid pre-population legitimately yields 0 rows."
+}

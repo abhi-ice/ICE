@@ -22,18 +22,23 @@ export default function Sidebar() {
   return (
     <aside
       data-testid="app-sidebar"
-      className="w-64 shrink-0 border-r border-border bg-card h-screen sticky top-0 overflow-y-auto"
+      className="w-64 shrink-0 app-sidebar h-screen sticky top-0 overflow-y-auto scrollbar-soft"
     >
-      <div className="px-4 py-4 border-b border-border flex items-center gap-2">
-        <Brand className="h-5 w-5 text-primary" />
-        <div className="font-semibold text-sm tracking-tight">{APP_BRAND.name}</div>
+      <div className="px-5 py-4 border-b border-slate-800 flex items-center gap-2.5">
+        <div className="h-8 w-8 grid place-items-center rounded bg-blue-600">
+          <Brand className="h-4 w-4 text-white" strokeWidth={1.6} />
+        </div>
+        <div>
+          <div className="font-semibold text-[13px] tracking-tight text-white leading-tight">{APP_BRAND.name}</div>
+          <div className="text-[10px] text-slate-500 leading-tight">Federal construction OS</div>
+        </div>
       </div>
 
       <nav className="pb-6">
         {SIDEBAR_SECTIONS.map((section) => (
           <div key={section.title}>
             <div className="sidebar-section-title">{section.title}</div>
-            <div className="px-2 space-y-0.5">
+            <div className="space-y-0.5">
               {section.items.map((item) => {
                 const Icon = item.icon;
                 const badge = item.badgeKey ? badges[item.badgeKey] : 0;
@@ -47,12 +52,12 @@ export default function Sidebar() {
                       `sidebar-link ${isActive ? "active" : ""}`
                     }
                   >
-                    <Icon className="h-4 w-4 shrink-0" />
+                    <Icon className="h-4 w-4 shrink-0" strokeWidth={1.6} />
                     <span className="flex-1 truncate">{item.label}</span>
                     {badge > 0 && (
                       <span
                         data-testid={`sidebar-badge-${item.badgeKey}`}
-                        className="ml-auto inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-white min-w-[18px]"
+                        className="ml-auto inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[18px]"
                       >
                         {badge}
                       </span>
@@ -64,6 +69,10 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
+
+      <div className="px-4 py-3 mt-auto border-t border-slate-800 text-[10px] text-slate-500">
+        v0.2 · Iter 2 · {new Date().getFullYear()}
+      </div>
     </aside>
   );
 }

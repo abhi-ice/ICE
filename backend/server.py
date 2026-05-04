@@ -26,6 +26,7 @@ from database import get_db, close_db  # noqa: E402
 from auth import require_tenant  # noqa: E402
 from seed import seed_demo  # noqa: E402
 from routers.auth_router import router as auth_router  # noqa: E402
+from routers.google_auth_router import router as google_auth_router  # noqa: E402
 from routers.projects_router import router as projects_router  # noqa: E402
 from routers.tasks_router import router as tasks_router  # noqa: E402
 from routers.daily_reports_router import router as daily_reports_router  # noqa: E402
@@ -33,6 +34,8 @@ from routers.resources_router import router as resources_router  # noqa: E402
 from routers.field_events_router import router as field_events_router  # noqa: E402
 from routers.docs_router import router as docs_router  # noqa: E402
 from routers.system_router import router as system_router  # noqa: E402
+from routers.voice_router import router as voice_router  # noqa: E402
+from routers.upload_router import router as upload_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ice_schedule_ops")
@@ -69,6 +72,13 @@ async def lifespan(app: FastAPI):
         logger.info("Demo seed ensured.")
     except Exception as e:
         logger.exception("Seed failed: %s", e)
+    # Init Emergent object storage (best-effort — voice/upload work even if it fails)
+    try:
+        from services.storage import init_storage
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.warning("Object storage init failed (uploads will retry): %s", e)
     yield
     await close_db()
 
@@ -97,6 +107,7 @@ async def current_tenant(ctx: dict = Depends(require_tenant)):
 
 
 api_router.include_router(auth_router)
+api_router.include_router(google_auth_router)
 api_router.include_router(projects_router)
 api_router.include_router(tasks_router)
 api_router.include_router(daily_reports_router)
@@ -104,6 +115,8 @@ api_router.include_router(resources_router)
 api_router.include_router(field_events_router)
 api_router.include_router(docs_router)
 api_router.include_router(system_router)
+api_router.include_router(voice_router)
+api_router.include_router(upload_router)
 
 app.include_router(api_router)
 
@@ -113,4 +126,5 @@ app.add_middleware(
     allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["set-cookie"],
 )

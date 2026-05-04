@@ -65,20 +65,41 @@ export default function DailyReports() {
 function DailyReportGrid({ id, onBack }) {
   const [rows, setRows] = useState([]);
   const [report, setReport] = useState(null);
+  const [available, setAvailable] = useState([]);
+  const [picking, setPicking] = useState("");
 
   const load = async () => {
-    const [r, g] = await Promise.all([
+    const [r, g, av] = await Promise.all([
       api.get(`/daily-reports/${id}`),
       api.get(`/daily-reports/${id}/grid`),
+      api.get(`/daily-reports/${id}/available-tasks`),
     ]);
     setReport(r.data);
     setRows(g.data);
+    setAvailable(av.data);
   };
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
 
   const updateRow = async (rowId, updates) => {
     await api.patch(`/daily-report-activities/${rowId}`, updates);
     load();
+  };
+
+  const removeRow = async (rowId) => {
+    if (!window.confirm("Remove this activity from the grid?")) return;
+    await api.delete(`/daily-report-activities/${rowId}`);
+    load();
+  };
+
+  const addActivity = async () => {
+    if (!picking) return;
+    try {
+      await api.post(`/daily-reports/${id}/grid`, { schedule_activity_id: picking });
+      setPicking("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Add failed");
+    }
   };
 
   const submit = async () => {
@@ -97,7 +118,7 @@ function DailyReportGrid({ id, onBack }) {
     URL.revokeObjectURL(url);
   };
 
-  if (!report) return <div>Loading…</div>;
+  if (!report) return <div className="text-sm text-slate-500">Loading…</div>;
 
   const totalHours = rows.reduce((s, r) => s + (r.hours_worked || 0), 0);
   const totalDelay = rows.reduce((s, r) => s + (r.delay_minutes || 0), 0);
@@ -107,44 +128,75 @@ function DailyReportGrid({ id, onBack }) {
 
   return (
     <div className="space-y-4 dr-grid" data-testid="dr-grid-view">
-      <div className="bg-card border border-border rounded-lg p-4 flex flex-wrap gap-4 items-start">
-        <button onClick={onBack} className="text-sm text-primary">← Back</button>
+      <div className="surface p-4 flex flex-wrap gap-4 items-start">
+        <button onClick={onBack} className="text-sm text-blue-600 hover:underline">← Back</button>
         <div>
-          <div className="text-xs text-muted-foreground">Date</div>
+          <div className="text-xs text-slate-500">Date</div>
           <div className="font-mono text-base">{report.report_date}</div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">Status</div>
+          <div className="text-xs text-slate-500">Status</div>
           <div><span className={`pill ${report.status === "submitted" ? "pill-green" : "pill-slate"}`}>{report.status}</span></div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">PPC</div>
+          <div className="text-xs text-slate-500">PPC</div>
           <div className="text-xl font-semibold tabular-nums">{ppc}%</div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">Total hours</div>
+          <div className="text-xs text-slate-500">Total hours</div>
           <div className="text-xl font-semibold tabular-nums">{totalHours}</div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">Delay (min)</div>
+          <div className="text-xs text-slate-500">Delay (min)</div>
           <div className="text-xl font-semibold tabular-nums">{totalDelay}</div>
         </div>
         <div className="ml-auto flex gap-2">
-          <button data-testid="dr-download-pdf" onClick={downloadPdf} className="h-9 px-3 rounded border border-border text-sm flex items-center gap-1">
+          <button data-testid="dr-download-pdf" onClick={downloadPdf} className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
             <Download className="h-4 w-4" /> Export
           </button>
           {report.status !== "submitted" && (
-            <button data-testid="dr-submit" onClick={submit} className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm">
+            <button data-testid="dr-submit" onClick={submit} className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">
               Submit
             </button>
           )}
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-lg overflow-x-auto">
-        <table className="w-full dense-table">
+      {/* Date-filtered Add-activity dropdown */}
+      {report.status !== "submitted" && (
+        <div data-testid="dr-add-activity-bar" className="surface p-3 flex items-center gap-2">
+          <div className="text-xs font-medium text-slate-500">Activities planned for {report.report_date} ({available.length} available)</div>
+          <select
+            data-testid="dr-add-activity-select"
+            value={picking}
+            onChange={(e) => setPicking(e.target.value)}
+            className="ml-2 h-8 px-2 rounded border border-slate-200 text-sm min-w-[300px]"
+          >
+            <option value="">— Pick an activity to add —</option>
+            {available.map((a) => (
+              <option key={a.id} value={a.id}>
+                [{a.activity_code}] {a.description}{a.trade_code ? ` · ${a.trade_code}` : ""}
+              </option>
+            ))}
+          </select>
+          <button
+            data-testid="dr-add-activity-button"
+            onClick={addActivity}
+            disabled={!picking}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700"
+          >
+            Add to grid
+          </button>
+          {!available.length && (
+            <div className="text-xs text-slate-400 ml-2">All planned activities for this date are already in the grid.</div>
+          )}
+        </div>
+      )}
+
+      <div className="surface overflow-x-auto">
+        <table className="dense-table">
           <thead>
-            <tr><th>Code</th><th>Description</th><th>Loc</th><th>Trade</th><th>Crew</th><th>%</th><th>Hours</th><th>Delay min</th><th>Notes</th></tr>
+            <tr><th>Code</th><th>Description</th><th>Loc</th><th>Trade</th><th>Crew</th><th>%</th><th>Hours</th><th>Delay min</th><th>Notes</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((r) => (
@@ -158,7 +210,7 @@ function DailyReportGrid({ id, onBack }) {
                 </td>
                 <td className="tabular-nums">
                   <input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100" defaultValue={r.pct_complete_end_of_day} onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })} className="w-16" disabled={report.status === "submitted"} />
-                  <span className="text-xs text-muted-foreground ml-1">/ {r.pct_complete_start_of_day}</span>
+                  <span className="text-xs text-slate-400 ml-1">/ {r.pct_complete_start_of_day}</span>
                 </td>
                 <td>
                   <input type="number" defaultValue={r.hours_worked} onBlur={(e) => updateRow(r.id, { hours_worked: Number(e.target.value) })} className="w-16" disabled={report.status === "submitted"} />
@@ -169,9 +221,14 @@ function DailyReportGrid({ id, onBack }) {
                 <td>
                   <input type="text" defaultValue={r.notes || ""} onBlur={(e) => updateRow(r.id, { notes: e.target.value })} placeholder="Notes…" className="w-44" disabled={report.status === "submitted"} />
                 </td>
+                <td className="text-right">
+                  {report.status !== "submitted" && (
+                    <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)} className="text-red-600 hover:bg-red-50 px-1 rounded text-xs">remove</button>
+                  )}
+                </td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan="9" className="text-center py-6 text-sm text-muted-foreground">No activities planned for today. The grid auto-populates from the 2WLA when activities have planned work today.</td></tr>}
+            {!rows.length && <tr><td colSpan="10" className="text-center py-6 text-sm text-slate-500">No activities yet. Use the "Activities planned for {report.report_date}" picker above to add tasks scheduled for this date.</td></tr>}
           </tbody>
         </table>
       </div>

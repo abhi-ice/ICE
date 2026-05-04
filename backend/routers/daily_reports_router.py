@@ -154,6 +154,111 @@ async def get_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     return [DailyReportActivity(**r) for r in rows]
 
 
+@router.get("/daily-reports/{daily_report_id}/available-tasks")
+async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require_tenant)):
+    """Return tasks PLANNED for the report's date that are NOT already in
+    the grid. This is the user-requested 'date-filtered task dropdown'."""
+    db = get_db()
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    report_date = dr["report_date"]
+    project_id = dr["project_id"]
+    # tasks planned on this date (planned_start <= date <= planned_finish)
+    candidates = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "status": {"$nin": ["deleted", "complete"]},
+            "planned_start": {"$lte": report_date},
+            "planned_finish": {"$gte": report_date},
+        }),
+        {"_id": 0},
+    ).limit(200).to_list(200)
+    # exclude ones already in grid
+    existing = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id}, {"_id": 0, "schedule_activity_id": 1},
+    ).to_list(500)
+    existing_ids = {r["schedule_activity_id"] for r in existing}
+    out = [
+        {
+            "id": t["id"],
+            "activity_code": t["activity_code"],
+            "description": t["description"],
+            "trade_code": t.get("trade_code"),
+            "location_id": t.get("location_id"),
+            "planned_start": t.get("planned_start"),
+            "planned_finish": t.get("planned_finish"),
+            "pct_complete": t.get("pct_complete"),
+        }
+        for t in candidates if t["id"] not in existing_ids
+    ]
+    return out
+
+
+class AddActivityRow(StrictModel):
+    schedule_activity_id: str
+
+
+@router.post("/daily-reports/{daily_report_id}/grid", response_model=DailyReportActivity)
+async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    if await db.daily_report_activities.find_one({"daily_report_id": daily_report_id, "schedule_activity_id": payload.schedule_activity_id}, {"_id": 0}):
+        raise HTTPException(409, "Activity already in grid")
+    t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.schedule_activity_id}), {"_id": 0})
+    if not t:
+        raise HTTPException(404, "Task not found")
+    pos_max = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"position": 1}).sort("position", -1).limit(1).to_list(1)
+    next_pos = (pos_max[0]["position"] + 1) if pos_max else 0
+    loc_name = None
+    if t.get("location_id"):
+        loc = await db.locations.find_one(tenant_filter(ctx["tenant_id"], {"id": t["location_id"]}), {"_id": 0, "name": 1})
+        if loc:
+            loc_name = loc["name"]
+    target_size = 0
+    if t.get("crew_id"):
+        crew = await db.crews.find_one(tenant_filter(ctx["tenant_id"], {"id": t["crew_id"]}), {"_id": 0, "target_size": 1})
+        if crew:
+            target_size = int(crew.get("target_size") or 0)
+    row = {
+        "id": gen_id(),
+        "daily_report_id": daily_report_id,
+        "schedule_activity_id": t["id"],
+        "position": next_pos,
+        "pct_complete_start_of_day": float(t.get("pct_complete") or 0),
+        "pct_complete_end_of_day": float(t.get("pct_complete") or 0),
+        "crew_count": target_size,
+        "crew_id": t.get("crew_id"),
+        "hours_worked": 0,
+        "delay_minutes": 0,
+        "delay_reason": None,
+        "weather_impact_minutes": 0,
+        "notes": None,
+        "status_at_end_of_day": t.get("status", "not_started"),
+        "activity_code": t["activity_code"],
+        "activity_description": t["description"],
+        "location_name": loc_name,
+        "trade_code": t.get("trade_code"),
+    }
+    await db.daily_report_activities.insert_one(row.copy())
+    return DailyReportActivity(**row)
+
+
+@router.delete("/daily-report-activities/{row_id}")
+async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    row = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "Row not found")
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": row["daily_report_id"]}), {"_id": 0, "id": 1})
+    if not dr:
+        raise HTTPException(404, "Row not found")
+    await db.daily_report_activities.delete_one({"id": row_id})
+    return {"ok": True}
+
+
 @router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity)
 async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()

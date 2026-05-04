@@ -107,6 +107,22 @@ async def bulk_delete(project_id: str, payload: BulkDeletePayload, ctx: dict = D
     return {"deleted": res.modified_count}
 
 
+@router.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    before = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Task not found")
+    await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"$set": {"status": "deleted"}})
+    from audit import write_audit
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="tasks", op="DELETE",
+        record_id=task_id, before=before, after={"status": "deleted"},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True}
+
+
 @router.post("/projects/{project_id}/critical-path/recompute")
 async def recompute_cpm(project_id: str, ctx: dict = Depends(require_tenant)):
     return await compute_cpm(ctx["tenant_id"], project_id)

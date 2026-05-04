@@ -3,6 +3,7 @@ import { Toaster } from "./components/ui/sonner";
 import { isAuthenticated } from "./lib/auth";
 import AppLayout from "./components/AppLayout";
 import Login from "./pages/Login";
+import AuthCallback from "./pages/AuthCallback";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import Tasks from "./pages/Tasks";
@@ -13,6 +14,8 @@ import ResourceList, { Availability } from "./pages/Resources";
 import Approvals from "./pages/Approvals";
 import Recovery from "./pages/Recovery";
 import Imports from "./pages/Imports";
+import Drawings from "./pages/Drawings";
+import Specs from "./pages/Specs";
 import { AuditLog, AiAgentsPage, Compliance, Marketplace, Settings, WeeklyReports } from "./pages/SystemPages";
 import "./App.css";
 
@@ -28,6 +31,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
             <Route path="projects" element={<Projects />} />
@@ -48,8 +52,8 @@ export default function App() {
             {/* Procurement */}
             <Route path="rfis" element={<ProjectScopedList kind="rfis" />} />
             <Route path="deliveries" element={<ProjectScopedList kind="deliveries" />} />
-            <Route path="drawings" element={<ProjectScopedList kind="drawings" />} />
-            <Route path="specs" element={<ProjectScopedList kind="specs" />} />
+            <Route path="drawings" element={<Drawings />} />
+            <Route path="specs" element={<Specs />} />
             <Route path="submittals" element={<ProjectScopedList kind="submittals" />} />
             <Route path="change-orders" element={<ProjectScopedList kind="change-orders" />} />
 
