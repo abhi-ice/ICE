@@ -38,6 +38,7 @@ from routers.voice_router import router as voice_router  # noqa: E402
 from routers.upload_router import router as upload_router  # noqa: E402
 from routers.iter3_router import router as iter3_router  # noqa: E402
 from routers.iter4_router import router as iter4_router  # noqa: E402
+from routers.iter5_router import router as iter5_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ice_schedule_ops")
@@ -81,6 +82,18 @@ async def lifespan(app: FastAPI):
         logger.info("Object storage initialized")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
+    # Seed CSI MasterFormat + cost rate library (idempotent)
+    try:
+        from seed_aux import seed_taxonomy_and_rates
+        from database import get_db
+        db = get_db()
+        # find seeded ICE tenant
+        tenant = await db.tenants.find_one({"slug": "ice"}, {"_id": 0, "id": 1})
+        if tenant:
+            await seed_taxonomy_and_rates(tenant["id"])
+            logger.info("Trade taxonomy + cost rates seeded")
+    except Exception as e:
+        logger.exception("Aux seed failed: %s", e)
     yield
     await close_db()
 
@@ -121,6 +134,7 @@ api_router.include_router(voice_router)
 api_router.include_router(upload_router)
 api_router.include_router(iter3_router)
 api_router.include_router(iter4_router)
+api_router.include_router(iter5_router)
 
 app.include_router(api_router)
 
