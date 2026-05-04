@@ -1,0 +1,53 @@
+{
+  "summary": "First testing run of ICE Schedule Ops MVP. Backend: 37/37 pytest tests pass (auth, tenant isolation, projects, tasks+CPM+lookahead, daily-reports grid pre-population+cascade+submit+PDF stream, RFIs, work-items+links cross-tenant guard, approvals approve/reject, audit log + hash chain growth, schedule import CSV + MPP substitution error + extra='forbid' regression guard via services.schedule_proposal.validate_payload, AI copilot+recovery+rfi-draft via Anthropic, resources, floors+locations, tenant isolation regression). Frontend: login + sidebar (all sections render incl. badge=1) + Audit log (chain valid, 21 entries verified, green badge) + Recovery + Tasks all load. CRITICAL BUG: Approvals and DailyReports pages crash with 'destroy is not a function' React runtime error overlay caused by useEffect(asyncFn) anti-pattern.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Approvals page (/app/frontend/src/pages/Approvals.jsx:10)",
+        "issue": "useEffect(load, [filter]) where load is an async function returns a Promise; React tries to use it as cleanup -> Uncaught TypeError: destroy is not a function. Pre-render error overlay covers entire page.",
+        "selector": "/approvals",
+        "priority": "HIGH"
+      },
+      {
+        "component": "Daily Reports page (/app/frontend/src/pages/DailyReports.jsx:13)",
+        "issue": "Same bug: useEffect(load, [activeId]) with async load. Page crashes with 'destroy is not a function'.",
+        "selector": "/daily-reports",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix useEffect anti-pattern in /app/frontend/src/pages/Approvals.jsx (line 10) — change useEffect(load, [filter]) to useEffect(() => { load(); }, [filter]).",
+    "Fix same useEffect anti-pattern in /app/frontend/src/pages/DailyReports.jsx (line 13) — change useEffect(load, [activeId]) to useEffect(() => { load(); }, [activeId]). DailyReports.jsx:77 already uses the correct pattern, so this is a clear inconsistency.",
+    "Optional: scan whole src/ for similar pattern (grep useEffect.*\\b[a-z_]+\\s*,\\s*\\[) to ensure no other pages have the same bug."
+  ],
+  "critical_code_review_comments": [
+    "useEffect anti-pattern in Approvals.jsx and DailyReports.jsx is a critical React bug — async fn passed directly to useEffect causes runtime crash. Must wrap.",
+    "Backend tenant isolation is correctly enforced everywhere (verified via cross-tenant work-item-link rejection test and X-Tenant-ID header swap test).",
+    "Audit log SHA-256 hash chain validates correctly after multiple mutations — production-grade.",
+    "Schedule import single-source-of-truth (services/schedule_proposal.py) is correctly enforced — extra='forbid' on TaskCreate raises on prev_pct as designed.",
+    "Project switcher defaults to most-recently-created project; if user creates a TEST_ project the dashboard/tasks views may appear empty until they switch back to GSA. Consider sorting by created_at ASC or last-accessed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (created)",
+    "/app/backend/tests/conftest.py (created)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "~70% (2 critical pages crash)"},
+  "test_credentials": "admin@iceops.com / Demo123! (tenant: ice). Loaded from /app/memory/test_credentials.md.",
+  "seed_data_creation": "Tests created TEST_-prefixed projects, RFIs, work-items, approvals, floors/locations, and one TEST_-prefixed other-tenant. No cleanup performed — these can be left for re-runs.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully validated (37/37). After main agent fixes the 2 useEffect bugs, only the Approvals+DailyReports UI flows need re-testing (open page without runtime overlay; for DailyReports verify 'Open today's report' creates+pre-populates grid, edit cascade, Submit). Use date.today() for daily-report dates because seed activities are anchored to today. The project_id fixture should prefer 'GSA' / 'Federal' projects since /api/projects sort puts newest first.",
+  "rca of the issue": "Approvals.jsx:10 and DailyReports.jsx:13 pass `load` (an async function) directly as the effect callback: `useEffect(load, [...])`. React invokes the callback and expects the return value to be either undefined or a cleanup function. Async functions implicitly return a Promise, so on next dependency change React tries to call promise.destroy() which throws 'destroy is not a function'. Fix: wrap in a synchronous IIFE: `useEffect(() => { load(); }, [...])` — exactly the pattern already used elsewhere in DailyReports.jsx:77 and on the React docs page the dev-tools warning links to. Reproduction: log in -> click Approvals or Daily reports in sidebar -> red 'Uncaught runtime errors' overlay appears."
+}
