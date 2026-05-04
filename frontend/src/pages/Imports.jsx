@@ -12,7 +12,7 @@ export default function Imports() {
   const [last, setLast] = useState(null);
 
   const load = () => api.get("/imports").then(({ data }) => setHistory(data));
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   const upload = async () => {
     if (!file || !activeId) return;

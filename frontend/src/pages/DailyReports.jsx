@@ -10,7 +10,7 @@ export default function DailyReports() {
   const [openId, setOpenId] = useState(null);
 
   const load = () => activeId && api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => setReports(data));
-  useEffect(load, [activeId]);
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
 
   const create = async () => {
     const today = new Date().toISOString().slice(0, 10);

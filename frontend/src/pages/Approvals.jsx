@@ -7,7 +7,7 @@ export default function Approvals() {
   const [filter, setFilter] = useState("pending");
 
   const load = () => api.get(`/approvals?status_filter=${filter}`).then(({ data }) => setItems(data));
-  useEffect(load, [filter]);
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
 
   const decide = async (id, decision) => {
     await api.post(`/approvals/${id}/decide`, { decision, notes: null });
