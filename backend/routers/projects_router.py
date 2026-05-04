@@ -43,7 +43,7 @@ async def list_projects(
     f = tenant_filter(ctx["tenant_id"])
     if status_filter:
         f["status"] = status_filter
-    docs = await db.projects.find(f, {"_id": 0}).sort("created_at", -1).to_list(500)
+    docs = await db.projects.find(f, {"_id": 0}).sort("created_at", 1).to_list(500)
     return [Project(**d) for d in docs]
 
 
