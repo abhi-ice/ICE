@@ -105,6 +105,22 @@ async def ingest_spec_pdf(
     if sections:
         await db.spec_sections.insert_many([s.copy() for s in sections])
 
+    # 4. fit TF-IDF embeddings (best-effort)
+    try:
+        from services.spec_search import fit_spec_index
+        await fit_spec_index(tenant_id, project_spec_id)
+    except Exception as e:
+        # Non-fatal — sections still saved
+        pass
+
+    # 5. Auto-generate submittals from any "1.4 SUBMITTALS" paragraph
+    # (Run BEFORE flipping processing_status='complete' so consumers polling
+    # on complete are guaranteed to see auto-generated submittals.)
+    try:
+        await _autogenerate_submittals(tenant_id, project_spec_id, sections)
+    except Exception:
+        pass
+
     await db.project_specs.update_one(
         tenant_filter(tenant_id, {"id": project_spec_id}),
         {"$set": {
@@ -115,19 +131,6 @@ async def ingest_spec_pdf(
             "processing_error": None,
         }},
     )
-    # 4. fit TF-IDF embeddings (best-effort)
-    try:
-        from services.spec_search import fit_spec_index
-        await fit_spec_index(tenant_id, project_spec_id)
-    except Exception as e:
-        # Non-fatal — sections still saved
-        pass
-
-    # 5. Auto-generate submittals from any "1.4 SUBMITTALS" paragraph
-    try:
-        await _autogenerate_submittals(tenant_id, project_spec_id, sections)
-    except Exception:
-        pass
 
     return {"ok": True, "page_count": page_count, "section_count": len(sections), "pdf_url": storage_path}
 
