@@ -40,7 +40,7 @@ export default function GlobalSearch() {
     <div ref={ref} className="relative w-72 hidden md:block">
       <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
       <input
-        data-testid="topbar-search"
+        data-testid="global-search-input"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onFocus={() => results.length && setOpen(true)}

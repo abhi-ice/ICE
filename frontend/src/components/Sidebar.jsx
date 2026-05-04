@@ -7,7 +7,7 @@ import api from "../lib/api";
 const COLLAPSE_KEY = "ice.sidebar.collapsed";
 
 export default function Sidebar() {
-  const [badges, setBadges] = useState({ approvals: 0, rfis: 0, submittals: 0, work_items: 0, aging_total: 0 });
+  const [badges, setBadges] = useState({ approvals: 0, rfis: 0, submittals: 0, work_items: 0, aging: 0 });
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
     catch { return {}; }
@@ -27,7 +27,7 @@ export default function Sidebar() {
           rfis: aging.rfis_over_5d || 0,
           submittals: aging.submittals_over_14d || 0,
           work_items: aging.work_items_over_7d || 0,
-          aging_total: total,
+          aging: total,
         });
       } catch {}
     };
@@ -84,7 +84,10 @@ export default function Sidebar() {
                         <Icon className="h-4 w-4 shrink-0" strokeWidth={1.6} />
                         <span className="flex-1 truncate">{item.label}</span>
                         {badge > 0 && (
-                          <span data-testid={`sidebar-badge-${item.badgeKey}`} className="ml-auto inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[18px]">
+                          <span
+                            data-testid={`sidebar-${item.badgeKey}-badge`}
+                            className="ml-auto inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[18px]"
+                          >
                             {badge}
                           </span>
                         )}

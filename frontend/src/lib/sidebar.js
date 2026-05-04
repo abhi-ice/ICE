@@ -47,7 +47,7 @@ export const SIDEBAR_SECTIONS = [
       { label: "Specifications", path: "/specs", icon: BookOpen, testid: "sidebar-specs" },
       { label: "Submittals", path: "/submittals", icon: FileSignature, badgeKey: "submittals", testid: "sidebar-submittals" },
       { label: "Change orders", path: "/change-orders", icon: GitPullRequest, testid: "sidebar-change-orders" },
-      { label: "Aging", path: "/aging", icon: Clock, badgeKey: "aging_total", testid: "sidebar-aging" },
+      { label: "Aging", path: "/aging", icon: Clock, badgeKey: "aging", testid: "sidebar-aging" },
     ],
   },
   {

@@ -59,7 +59,7 @@ export default function Aging() {
             const list = detail[s.key] || [];
             if (!list.length) return null;
             return (
-              <div key={s.key} className="surface overflow-hidden">
+              <div key={s.key} data-testid={`aging-detail-${s.key}`} className="surface overflow-hidden">
                 <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
                   <AlertTriangle className="h-4 w-4 text-amber-500" />
                   <div className="font-medium">{s.label}</div>
