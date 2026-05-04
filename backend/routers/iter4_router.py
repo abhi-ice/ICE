@@ -126,6 +126,8 @@ class SubmittalUpdate(StrictModel):
     sub_responsible: Optional[str] = None
     submitted_at: Optional[str] = None
     approved_at: Optional[str] = None
+    schedule_activity_id: Optional[str] = None
+    spec_section_id: Optional[str] = None
 
 
 @router.patch("/submittals/{submittal_id}", response_model=Submittal)

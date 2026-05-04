@@ -10,7 +10,8 @@ import { pdfjs } from "react-pdf";
 import api, { API } from "../lib/api";
 import { getToken } from "../lib/auth";
 import { useProjects } from "../lib/projects";
-import { Box, Eye, EyeOff, MoveHorizontal, Layers as LayersIcon, ImageIcon } from "lucide-react";
+import { Box, Eye, EyeOff, MoveHorizontal, Layers as LayersIcon, ImageIcon, Scissors } from "lucide-react";
+import SectionViewDialog from "../components/spatial/SectionViewDialog";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
@@ -42,6 +43,7 @@ export default function Spatial3D() {
   const [sliceZ, setSliceZ] = useState(120);
   const [hover, setHover] = useState(null);
   const [bindOpen, setBindOpen] = useState(false);
+  const [sectionOpen, setSectionOpen] = useState(false);
   const project = projects.find((p) => p.id === activeId);
   const mountRef = useRef(null);
   const sceneRef = useRef({});
@@ -318,6 +320,9 @@ export default function Spatial3D() {
           <button data-testid="bind-elev" onClick={() => setBindOpen(true)} className="h-8 px-3 rounded text-xs flex items-center gap-1 bg-white border border-slate-200">
             <ImageIcon className="h-3.5 w-3.5" /> Bind elevation drawings
           </button>
+          <button data-testid="open-section" onClick={() => setSectionOpen(true)} className="h-8 px-3 rounded text-xs flex items-center gap-1 bg-white border border-slate-200">
+            <Scissors className="h-3.5 w-3.5" /> Section view
+          </button>
           <button
             data-testid="toggle-elev"
             onClick={() => setShowElev(!showElev)}
@@ -368,6 +373,31 @@ export default function Spatial3D() {
           onClose={async () => { setBindOpen(false); await refresh(); }}
         />
       )}
+
+      {sectionOpen && (() => {
+        // Pick a plan revision: prefer one bound as drawing_type='plan', else first
+        const planMeta = meta.find((m) => m.drawing_type === "plan");
+        const planRev = planMeta?.drawing_revision_id
+          || drawings.find((d) => d.current_revision_id)?.current_revision_id;
+        if (!planRev) {
+          return (
+            <div className="fixed inset-0 z-50 bg-slate-900/60 grid place-items-center">
+              <div className="bg-white rounded p-5 w-[400px]">
+                <div className="font-medium mb-2">No plan revision available</div>
+                <p className="text-xs text-slate-500 mb-3">Upload a plan PDF in <a href="/drawings" className="text-blue-600 hover:underline">Drawings</a> first.</p>
+                <button onClick={() => setSectionOpen(false)} className="h-9 px-3 rounded bg-slate-200 text-sm">Close</button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <SectionViewDialog
+            projectId={activeId}
+            planRevisionId={planRev}
+            onClose={() => setSectionOpen(false)}
+          />
+        );
+      })()}
     </div>
   );
 }

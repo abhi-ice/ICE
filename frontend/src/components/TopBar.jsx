@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Search, Bell, ChevronDown, LogOut, User2 } from "lucide-react";
+import { ChevronDown, LogOut, User2 } from "lucide-react";
 import { getUser, getTenant, clearAuth } from "../lib/auth";
 import { useProjects } from "../lib/projects";
 import {
@@ -10,6 +10,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "./ui/select";
 import api from "../lib/api";
+import NotificationsBell from "./NotificationsBell";
+import GlobalSearch from "./GlobalSearch";
 
 export default function TopBar() {
   const [user] = useState(getUser());
@@ -57,18 +59,9 @@ export default function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-3">
-        <div className="relative w-72 hidden md:block">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            data-testid="topbar-search"
-            placeholder="Search projects, RFIs, activities..."
-            className="pl-7 pr-3 h-8 w-full rounded border border-input bg-background text-sm"
-          />
-        </div>
+        <GlobalSearch />
 
-        <button data-testid="topbar-notifications" className="relative h-8 w-8 grid place-items-center rounded hover:bg-muted">
-          <Bell className="h-4 w-4" />
-        </button>
+        <NotificationsBell />
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

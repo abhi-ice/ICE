@@ -648,6 +648,13 @@ class Photo(ReadModel):
     visual_fingerprint_match_id: Optional[str] = None
     visual_fingerprint_match_confidence: Optional[float] = None
     visual_fingerprint_overridden: bool = False
+    # EXIF + perceptual hash (master prompt §13)
+    phash: Optional[str] = None
+    captured_at_exif: Optional[str] = None
+    gps_lat: Optional[float] = None
+    gps_lng: Optional[float] = None
+    camera_make: Optional[str] = None
+    camera_model: Optional[str] = None
     created_at: datetime
 
 

@@ -7,7 +7,7 @@ import api from "../lib/api";
 const COLLAPSE_KEY = "ice.sidebar.collapsed";
 
 export default function Sidebar() {
-  const [badges, setBadges] = useState({ approvals: 0 });
+  const [badges, setBadges] = useState({ approvals: 0, rfis: 0, submittals: 0, work_items: 0, aging_total: 0 });
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
     catch { return {}; }
@@ -16,8 +16,19 @@ export default function Sidebar() {
   useEffect(() => {
     const load = async () => {
       try {
-        const { data } = await api.get("/approvals/pending-count");
-        setBadges((b) => ({ ...b, approvals: data.count || 0 }));
+        const [{ data: pa }, { data: aging }] = await Promise.all([
+          api.get("/approvals/pending-count"),
+          api.get("/aging-summary"),
+        ]);
+        const total = (aging.rfis_over_5d || 0) + (aging.submittals_over_14d || 0)
+                    + (aging.work_items_over_7d || 0) + (aging.approvals_over_3d || 0);
+        setBadges({
+          approvals: pa.count || 0,
+          rfis: aging.rfis_over_5d || 0,
+          submittals: aging.submittals_over_14d || 0,
+          work_items: aging.work_items_over_7d || 0,
+          aging_total: total,
+        });
       } catch {}
     };
     load();

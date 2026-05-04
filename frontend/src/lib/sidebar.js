@@ -5,7 +5,7 @@ import {
   MapPin, MessagesSquare, Truck, FileText, BookOpen, FileSignature,
   GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck,
   CalendarClock, FileUp, Bot, ShoppingBasket, ShieldCheck, History,
-  Settings, Layers, Box,
+  Settings, Layers, Box, Activity, Clock,
 } from "lucide-react";
 
 export const SIDEBAR_SECTIONS = [
@@ -35,24 +35,26 @@ export const SIDEBAR_SECTIONS = [
       { label: "Locations", path: "/locations", icon: MapPin, testid: "sidebar-locations" },
       { label: "Polygon editor", path: "/polygon-editor", icon: MapPin, testid: "sidebar-polygon-editor" },
       { label: "Spatial 3D", path: "/spatial-3d", icon: Box, testid: "sidebar-spatial-3d" },
+      { label: "Productivity", path: "/productivity", icon: Activity, testid: "sidebar-productivity" },
     ],
   },
   {
     title: "PROCUREMENT & DOCUMENTS",
     items: [
-      { label: "RFIs", path: "/rfis", icon: MessagesSquare, testid: "sidebar-rfis" },
+      { label: "RFIs", path: "/rfis", icon: MessagesSquare, badgeKey: "rfis", testid: "sidebar-rfis" },
       { label: "Deliveries", path: "/deliveries", icon: Truck, testid: "sidebar-deliveries" },
       { label: "Drawings", path: "/drawings", icon: FileText, testid: "sidebar-drawings" },
       { label: "Specifications", path: "/specs", icon: BookOpen, testid: "sidebar-specs" },
-      { label: "Submittals", path: "/submittals", icon: FileSignature, testid: "sidebar-submittals" },
+      { label: "Submittals", path: "/submittals", icon: FileSignature, badgeKey: "submittals", testid: "sidebar-submittals" },
       { label: "Change orders", path: "/change-orders", icon: GitPullRequest, testid: "sidebar-change-orders" },
+      { label: "Aging", path: "/aging", icon: Clock, badgeKey: "aging_total", testid: "sidebar-aging" },
     ],
   },
   {
     title: "REVIEW & ACTIONS",
     items: [
       { label: "Approvals", path: "/approvals", icon: BadgeCheck, badgeKey: "approvals", testid: "sidebar-approvals" },
-      { label: "Field issues", path: "/work-items", icon: Wrench, testid: "sidebar-work-items" },
+      { label: "Field issues", path: "/work-items", icon: Wrench, badgeKey: "work_items", testid: "sidebar-work-items" },
       { label: "Recovery", path: "/recovery", icon: Sparkles, testid: "sidebar-recovery" },
     ],
   },

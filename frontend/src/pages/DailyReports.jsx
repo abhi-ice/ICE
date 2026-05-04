@@ -109,11 +109,11 @@ function DailyReportGrid({ id, onBack }) {
   };
 
   const downloadPdf = async () => {
-    const res = await api.get(`/daily-reports/${id}/pdf`, { responseType: "blob" });
+    const res = await api.get(`/daily-reports/${id}/pdf-rich`, { responseType: "blob" });
     const url = URL.createObjectURL(res.data);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `daily_report_${report?.report_date}.txt`;
+    a.download = `daily_report_${report?.report_date}.pdf`;
     a.click();
     URL.revokeObjectURL(url);
   };

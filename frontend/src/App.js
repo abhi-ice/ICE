@@ -20,7 +20,10 @@ import Photos from "./pages/Photos";
 import Spatial3D from "./pages/Spatial3D";
 import PolygonEditor from "./pages/PolygonEditor";
 import Submittals from "./pages/Submittals";
-import { AuditLog, AiAgentsPage, Compliance, Marketplace, Settings, WeeklyReports } from "./pages/SystemPages";
+import Aging from "./pages/Aging";
+import Productivity from "./pages/Productivity";
+import MarketplaceFull from "./pages/MarketplaceFull";
+import { AuditLog, AiAgentsPage, Compliance, Settings, WeeklyReports } from "./pages/SystemPages";
 import "./App.css";
 
 function Guard({ children }) {
@@ -62,6 +65,7 @@ export default function App() {
             <Route path="specs" element={<Specs />} />
             <Route path="submittals" element={<Submittals />} />
             <Route path="change-orders" element={<ProjectScopedList kind="change-orders" />} />
+            <Route path="aging" element={<Aging />} />
 
             {/* Review */}
             <Route path="approvals" element={<Approvals />} />
@@ -74,11 +78,12 @@ export default function App() {
             <Route path="resources/people" element={<ResourceList kind="people" />} />
             <Route path="resources/certifications" element={<ResourceList kind="certifications" />} />
             <Route path="resources/availability" element={<Availability />} />
+            <Route path="productivity" element={<Productivity />} />
 
             {/* System */}
             <Route path="imports" element={<Imports />} />
             <Route path="agents" element={<AiAgentsPage />} />
-            <Route path="marketplace" element={<Marketplace />} />
+            <Route path="marketplace" element={<MarketplaceFull />} />
             <Route path="compliance" element={<Compliance />} />
             <Route path="audit-log" element={<AuditLog />} />
             <Route path="settings" element={<Settings />} />

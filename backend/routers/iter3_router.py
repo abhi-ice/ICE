@@ -9,6 +9,7 @@ Photos with upload to Emergent Object Storage.
 Spec semantic search via TF-IDF (services.spec_search).
 """
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Response, BackgroundTasks
+import io
 from typing import Optional, List, Literal
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel, Photo, PhotoCreate
@@ -149,6 +150,39 @@ async def upload_photo(
         "created_at": utc_now().isoformat(),
     }
     await db.photos.insert_one(doc.copy())
+    # Best-effort EXIF + perceptual hash (master prompt §13)
+    try:
+        from PIL import Image, ExifTags
+        import imagehash
+        img = Image.open(io.BytesIO(body))
+        exif_raw = img._getexif() or {}
+        exif: dict = {}
+        for k, v in exif_raw.items():
+            tag = ExifTags.TAGS.get(k, str(k))
+            exif[tag] = v
+        update: dict = {"phash": str(imagehash.phash(img))}
+        if "DateTimeOriginal" in exif:
+            update["captured_at_exif"] = str(exif["DateTimeOriginal"])
+        gps_raw = exif.get("GPSInfo")
+        if isinstance(gps_raw, dict):
+            gps: dict = {}
+            for k, v in gps_raw.items():
+                tag = ExifTags.GPSTAGS.get(k, str(k))
+                gps[tag] = v
+            if "GPSLatitude" in gps and "GPSLongitude" in gps:
+                from routers.iter6_router import _dms_to_dd
+                lat = _dms_to_dd(gps["GPSLatitude"], gps.get("GPSLatitudeRef") or "N")
+                lng = _dms_to_dd(gps["GPSLongitude"], gps.get("GPSLongitudeRef") or "E")
+                update["gps_lat"] = lat
+                update["gps_lng"] = lng
+        if "Make" in exif:
+            update["camera_make"] = str(exif["Make"]).strip()
+        if "Model" in exif:
+            update["camera_model"] = str(exif["Model"]).strip()
+        await db.photos.update_one({"id": doc["id"]}, {"$set": update})
+        doc.update(update)
+    except Exception:
+        pass
     return Photo(**doc)
 
 

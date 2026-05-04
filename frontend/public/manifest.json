@@ -1,0 +1,11 @@
+{
+  "short_name": "ICE Schedule Ops",
+  "name": "ICE Schedule Ops — Federal construction OS",
+  "icons": [],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#0f172a",
+  "background_color": "#f1f5f9",
+  "scope": "/",
+  "description": "Multi-tenant federal construction project management"
+}

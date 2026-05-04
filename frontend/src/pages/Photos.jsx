@@ -124,6 +124,16 @@ export default function Photos() {
               <div><span className="text-slate-400">Captured:</span> {new Date(open.captured_at).toLocaleString()}</div>
               <div><span className="text-slate-400">Location:</span> {locations.find((l) => l.id === open.location_id)?.name || "—"}</div>
               <div><span className="text-slate-400">Activity:</span> {tasks.find((t) => t.id === open.schedule_activity_id)?.activity_code || "—"}</div>
+              {open.gps_lat && (
+                <div data-testid="photo-gps"><span className="text-slate-400">GPS:</span> {open.gps_lat.toFixed(4)}, {open.gps_lng?.toFixed(4)}</div>
+              )}
+              {open.camera_make && <div><span className="text-slate-400">Camera:</span> {open.camera_make} {open.camera_model || ""}</div>}
+              {open.phash && <div className="font-mono"><span className="text-slate-400">pHash:</span> {open.phash.slice(0, 12)}</div>}
+              {open.visual_fingerprint_match_id && (
+                <div data-testid="photo-dup">
+                  <span className="text-amber-600 font-medium">Duplicate</span> conf {(open.visual_fingerprint_match_confidence * 100).toFixed(0)}%
+                </div>
+              )}
             </div>
           </div>
         </div>

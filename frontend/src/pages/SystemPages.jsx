@@ -61,13 +61,14 @@ export function AiAgentsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {[
           { id: "copilot", label: "Copilot", desc: "General-purpose Q&A over project context. Open via FAB.", status: "live" },
-          { id: "recovery", label: "Recovery engine", desc: "Schedule-slip recovery suggestions. Visit /recovery.", status: "live" },
+          { id: "recovery", label: "Recovery engine", desc: "Schedule-slip recovery suggestions + apply. Visit /recovery.", status: "live" },
           { id: "rfi_drafter", label: "RFI drafter", desc: "Draft formal RFI responses citing spec sections.", status: "live" },
           { id: "ingest_schedule", label: "Schedule ingest", desc: "Single source of truth shared with synchronous import.", status: "live" },
-          { id: "ingest_spec", label: "Spec ingestion", desc: "MasterFormat detection + section extraction.", status: "stub" },
+          { id: "ingest_spec", label: "Spec ingestion", desc: "MasterFormat detection + section extraction + auto-submittals.", status: "live" },
           { id: "ingest_drawing", label: "Drawing ingest", desc: "OCR sheet metadata, auto-create drawings.", status: "stub" },
-          { id: "voice_annotation", label: "Voice annotation", desc: "Transcribe + extract structured fields.", status: "stub" },
-          { id: "work_item_assistant", label: "Work item assistant", desc: "Analyze field events → propose work items.", status: "stub" },
+          { id: "voice_annotation", label: "Voice annotation", desc: "Whisper transcribe + Claude structured-field extractor.", status: "live" },
+          { id: "work_item_assistant", label: "Work item assistant", desc: "Analyze field events → propose work items.", status: "live" },
+          { id: "change_order_assistant", label: "Change order assistant", desc: "RFI + scope → CO breakdown via cost-rate library.", status: "live" },
           { id: "polygon_suggester", label: "Polygon suggester", desc: "Claude vision suggests room polygons.", status: "stub" },
         ].map((a) => (
           <div key={a.id} data-testid={`agent-card-${a.id}`} className="bg-card border border-border rounded-lg p-4">
@@ -159,6 +160,15 @@ export function WeeklyReports() {
     if (!activeId) return;
     api.get(`/projects/${activeId}/weekly-rollup?week_starting=${week}`).then(({ data }) => setData(data));
   }, [activeId, week]);
+
+  const downloadPdf = async () => {
+    const res = await api.get(`/projects/${activeId}/weekly-rollup/pdf?week_starting=${week}`, { responseType: "blob" });
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement("a");
+    a.href = url; a.download = `weekly_${week}.pdf`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div data-testid="weekly-reports-page" className="space-y-4">
       <div className="flex items-center gap-2"><FileBarChart className="h-5 w-5" /><h1 className="text-2xl font-semibold">Weekly rollup</h1></div>
@@ -166,6 +176,7 @@ export function WeeklyReports() {
       <div className="flex items-center gap-2">
         <label className="field-label mb-0">Week starting</label>
         <input type="date" value={week} onChange={(e) => setWeek(e.target.value)} className="h-8 px-2 rounded border border-input" />
+        <button data-testid="weekly-pdf" onClick={downloadPdf} className="ml-2 h-8 px-3 rounded bg-blue-600 text-white text-xs">Download PDF</button>
       </div>
       {data && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
