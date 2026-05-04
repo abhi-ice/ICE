@@ -36,6 +36,7 @@ from routers.docs_router import router as docs_router  # noqa: E402
 from routers.system_router import router as system_router  # noqa: E402
 from routers.voice_router import router as voice_router  # noqa: E402
 from routers.upload_router import router as upload_router  # noqa: E402
+from routers.iter3_router import router as iter3_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ice_schedule_ops")
@@ -117,6 +118,7 @@ api_router.include_router(docs_router)
 api_router.include_router(system_router)
 api_router.include_router(voice_router)
 api_router.include_router(upload_router)
+api_router.include_router(iter3_router)
 
 app.include_router(api_router)
 

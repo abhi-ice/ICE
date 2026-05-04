@@ -1,10 +1,8 @@
-// VoiceCaptureButton — global FAB. Records via MediaRecorder, uploads to
-// /api/voice/annotate with a chosen `kind`, then shows the transcript +
-// extracted structured fields in a sheet.
 import { useState, useRef } from "react";
-import { Mic, Square, Loader2, X } from "lucide-react";
+import { Mic, Square, Loader2, X, Wand2 } from "lucide-react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
+import EntityFromVoiceDialog from "./EntityFromVoiceDialog";
 
 const KINDS = [
   { value: "work_item", label: "Field issue" },
@@ -19,6 +17,7 @@ export default function VoiceCaptureButton() {
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const mediaRef = useRef(null);
   const chunksRef = useRef([]);
 
@@ -68,11 +67,22 @@ export default function VoiceCaptureButton() {
   return (
     <>
       <div className="fixed bottom-5 right-20 flex flex-col items-end gap-2 z-20">
+        {!recording && !busy && (
+          <select
+            data-testid="voice-kind-select"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+            className="h-7 px-2 rounded-full bg-white border border-slate-200 text-[11px] shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title="Voice kind"
+          >
+            {KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
+          </select>
+        )}
         <button
           data-testid="voice-fab"
           onClick={recording ? stop : start}
           disabled={busy}
-          title={recording ? "Stop recording" : "Voice annotation"}
+          title={recording ? "Stop recording" : `Voice annotation (${kind})`}
           className={`h-12 w-12 rounded-full grid place-items-center shadow-lg transition ${
             recording ? "bg-red-600 text-white animate-pulse" : "bg-white text-slate-800 border border-slate-200 hover:bg-slate-50"
           }`}
@@ -82,7 +92,7 @@ export default function VoiceCaptureButton() {
       </div>
 
       {result && (
-        <div data-testid="voice-result-sheet" className="fixed right-4 bottom-20 w-[380px] surface p-4 z-30 max-h-[70vh] overflow-auto scrollbar-soft">
+        <div data-testid="voice-result-sheet" className="fixed right-4 bottom-20 w-[400px] surface p-4 z-30 max-h-[70vh] overflow-auto scrollbar-soft">
           <div className="flex items-center gap-2 mb-3">
             <Mic className="h-4 w-4 text-blue-600" />
             <div className="font-medium text-sm">Voice annotation</div>
@@ -91,26 +101,41 @@ export default function VoiceCaptureButton() {
           <div className="space-y-3 text-sm">
             <div>
               <div className="field-label">Kind</div>
-              <select value={kind} onChange={(e) => setKind(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm">
-                {KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
-              </select>
+              <div className="px-2 py-1 inline-block rounded bg-blue-50 text-blue-700 text-xs">{result.kind}</div>
             </div>
             <div>
               <div className="field-label">Transcript</div>
-              <div className="text-xs bg-slate-50 border border-slate-200 rounded p-2 max-h-32 overflow-y-auto">
-                {result.transcript || "(no transcript)"}
+              <div className="text-xs bg-slate-50 border border-slate-200 rounded p-2 max-h-24 overflow-y-auto">
+                {result.transcript || <em className="text-slate-400">(no speech detected)</em>}
               </div>
             </div>
             <div>
-              <div className="field-label">Extracted fields</div>
-              <pre className="text-[11px] bg-slate-900 text-slate-200 p-2 rounded overflow-x-auto">{JSON.stringify(result.structured_fields, null, 2)}</pre>
+              <div className="field-label">Extracted fields (Claude)</div>
+              <pre className="text-[11px] bg-slate-900 text-slate-200 p-2 rounded overflow-x-auto max-h-44 scrollbar-soft">{JSON.stringify(result.structured_fields || {}, null, 2)}</pre>
             </div>
-            <div className="text-[11px] text-slate-400">
-              Annotation saved (id <code>{result.id?.slice(0, 8)}</code>). Use these fields to seed a new entity below.
+            <button
+              data-testid="voice-create-entity"
+              onClick={() => setCreateOpen(true)}
+              disabled={!result.structured_fields || result.structured_fields._error}
+              className="w-full h-9 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <Wand2 className="h-4 w-4" /> Create {result.kind?.replace(/_/g, " ")} from this
+            </button>
+            <div className="text-[10px] text-slate-400">
+              Annotation saved (id <code>{result.id?.slice(0, 8)}</code>). Audio in object storage. Pre-filled fields will open in the create dialog.
             </div>
           </div>
         </div>
       )}
+
+      <EntityFromVoiceDialog
+        open={createOpen}
+        voiceAnnotation={result}
+        onClose={(created) => {
+          setCreateOpen(false);
+          if (created) setResult(null);
+        }}
+      />
     </>
   );
 }

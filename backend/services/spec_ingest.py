@@ -115,4 +115,11 @@ async def ingest_spec_pdf(
             "processing_error": None,
         }},
     )
+    # 4. fit TF-IDF embeddings (best-effort)
+    try:
+        from services.spec_search import fit_spec_index
+        await fit_spec_index(tenant_id, project_spec_id)
+    except Exception as e:
+        # Non-fatal — sections still saved
+        pass
     return {"ok": True, "page_count": page_count, "section_count": len(sections), "pdf_url": storage_path}

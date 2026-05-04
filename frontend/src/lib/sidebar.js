@@ -1,10 +1,11 @@
+// Add Spatial 3D to sidebar PLANNING & TRACKING section.
 import {
   LayoutDashboard, FolderKanban, ClipboardList, Camera, AlertTriangle,
   ShieldAlert, ClipboardCheck, ListChecks, CalendarRange, FileBarChart,
   MapPin, MessagesSquare, Truck, FileText, BookOpen, FileSignature,
   GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck,
   CalendarClock, FileUp, Bot, ShoppingBasket, ShieldCheck, History,
-  Settings, Layers,
+  Settings, Layers, Box,
 } from "lucide-react";
 
 export const SIDEBAR_SECTIONS = [
@@ -32,6 +33,7 @@ export const SIDEBAR_SECTIONS = [
       { label: "Look ahead", path: "/lookahead", icon: CalendarRange, testid: "sidebar-lookahead" },
       { label: "Weekly reports", path: "/weekly-reports", icon: FileBarChart, testid: "sidebar-weekly-reports" },
       { label: "Locations", path: "/locations", icon: MapPin, testid: "sidebar-locations" },
+      { label: "Spatial 3D", path: "/spatial-3d", icon: Box, testid: "sidebar-spatial-3d" },
     ],
   },
   {

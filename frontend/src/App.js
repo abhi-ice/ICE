@@ -16,6 +16,8 @@ import Recovery from "./pages/Recovery";
 import Imports from "./pages/Imports";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
+import Photos from "./pages/Photos";
+import Spatial3D from "./pages/Spatial3D";
 import { AuditLog, AiAgentsPage, Compliance, Marketplace, Settings, WeeklyReports } from "./pages/SystemPages";
 import "./App.css";
 
@@ -38,7 +40,7 @@ export default function App() {
 
             {/* Daily ops */}
             <Route path="daily-reports" element={<DailyReports />} />
-            <Route path="photos" element={<ProjectScopedList kind="photos" />} />
+            <Route path="photos" element={<Photos />} />
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />
             <Route path="safety-events" element={<ProjectScopedList kind="safety-events" />} />
             <Route path="qc-issues" element={<ProjectScopedList kind="qc-issues" />} />
@@ -48,6 +50,7 @@ export default function App() {
             <Route path="lookahead" element={<Lookahead />} />
             <Route path="weekly-reports" element={<WeeklyReports />} />
             <Route path="locations" element={<ProjectScopedList kind="locations" />} />
+            <Route path="spatial-3d" element={<Spatial3D />} />
 
             {/* Procurement */}
             <Route path="rfis" element={<ProjectScopedList kind="rfis" />} />

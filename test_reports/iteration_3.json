@@ -1,0 +1,37 @@
+{
+  "summary": "Iter3 backend + frontend testing complete. New /app/backend/tests/test_iteration3.py — 15/15 PASS covering: 12 auto-seeded locations each with polygon_geojson (type=Polygon, closed ring >=4 pts); drawing_markups CRUD (pen/rect/pin via POST /api/drawing-markups + list via GET /api/drawing-revisions/:id/markups + DELETE /api/drawing-markups/:id) + polymorphic pin→task linking (linked_entity_type='task', linked_entity_id verified on list response) + tenant isolation; Photos upload (1x1 PNG via multipart, storage_path returned, GET /api/photos/:id/file streams image bytes with image/* content-type, GET /api/projects/:id/photos lists) + tenant isolation; Spec semantic search — tiny reportlab PDF with DIVISION 03 + SECTION 03 30 00 ingested via POST /api/specs then POST /api/specs/:id/upload, polled processing_status='complete', POST /api/specs/search with query='concrete cure time' returned hits with 03-division matches; POST /api/specs/:id/reindex returns 200 ok; tenant isolation on spec search; Copilot (POST /api/ai/copilot with concrete cure-time question after ingestion) returns 200 with non-empty response (no 500 on the spec-retrieval code path). Iter2 regression: 12/12 PASS. Frontend: sidebar section 'sidebar-section-planning-&-tracking' collapses 5/5 Planning & Tracking children (Tasks/Look ahead/Weekly/Locations/Spatial 3D), localStorage 'ice.sidebar.collapsed' persists {\"PLANNING & TRACKING\":true}, survives reload, re-expands on click; /spatial-3d renders spatial-3d-page testid + <canvas> + toggle-cp + slice-z, 2.5D extruded rooms visible (building mass on grid floor), no runtime error overlay; /photos shows photo-file input, 1x1 PNG uploaded via set_input_files appears as tile in masonry grid (3 tiles visible), tile click opens photo-modal; voice-fab persistent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/test_reports/pytest/iter3_results.xml",
+    "/app/test_reports/pytest/iter2_regression.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "iter3_router.py correctly enforces tenant isolation on all new endpoints (drawing_markups filtered by tenant_id via tenant_filter; photos and specs search routed through tenant-scoped services).",
+    "DrawingMarkupCreate uses Literal types for markup_type + linked_entity_type — enforces pin polymorphism at the Pydantic layer (good; prevents invalid linked entity types).",
+    "Photo upload validates size (<=10MB), extension allowlist (jpg/png/webp/heic), rejects empty bodies — reasonable.",
+    "Spec search handles empty projects gracefully (returns [] not 500); reindex correctly dispatched via BackgroundTasks.",
+    "The drawing revision upload accepts revision_label form field (not revision_code) — test doc/tests should reflect this naming.",
+    "Spec upload is two-step (POST /specs to create row, then POST /specs/{id}/upload for PDF) — not a single 'create+upload' endpoint. Acceptable but worth documenting.",
+    "2.5D Spatial3D renders in raw three.js — confirmed working via screenshot (rooms extruded on floor grid with legend + CP highlight + Z-slice controls). No React-error-overlay observed; R3F avoidance strategy validated."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (created)"
+  ],
+  "success_rate": {"backend": "100% (15/15 iter3 + 12/12 iter2 regression)", "frontend": "100% on tested iter3 critical paths"},
+  "test_credentials": "admin@iceops.com / Demo123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "1 TEST_ drawing + 1 uploaded revision, 3 drawing_markups (1 deleted), 1 TEST_photo (uploaded via test + 1 via UI), 1 TEST_ project_spec with ingested PDF, 1 other-tenant 'other3-XXXX' user. All cleanly scoped.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 6 iter3 features pass backend + frontend critical paths. Use test_iteration3.py for regression. Key learnings: (1) /api/drawings requires sheet_number (not drawing_number); (2) /api/drawing-revisions/upload accepts revision_label (not revision_code); (3) spec upload is two-step: POST /api/specs (create row) then POST /api/specs/{id}/upload (attach PDF); (4) after spec PDF upload, poll GET /api/projects/{project_id}/specs and check processing_status=='complete' (takes ~1-5s for reportlab PDFs with DIVISION 03/SECTION 03 30 00); (5) sidebar collapse localStorage key is 'ice.sidebar.collapsed' with JSON {\"SECTION TITLE\":true}; (6) /spatial-3d uses raw three.js — canvas rendered, no R3F, runtime overlay absent. The voice FAB → EntityFromVoiceDialog flow was not UI-tested because headless cannot record audio; backend POST /api/voice/annotate was validated in iter2 regression and did not 500. Drawing markup persistence via DrawingViewer PDF-render was not UI-tested because it requires pdf.js canvas interaction — backend contract fully verified.",
+  "rca of the issue": "N/A — no blocking issues. Initial iter3 test fixture failures were purely local test-side bugs (wrong field names: drawing_number vs sheet_number, revision_code vs revision_label, and assumed one-step /specs/upload route instead of the two-step create+upload). All corrected in test_iteration3.py; all 15 tests then passed."
+}

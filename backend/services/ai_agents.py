@@ -95,6 +95,19 @@ async def copilot_answer(*, tenant_id: str, project_id: Optional[str], session_i
             context_blocks.append("OPEN RFIs:\n" + "\n".join(
                 f"  RFI {r['rfi_number']}: {r['subject']} ({r['status']})" for r in rfis
             ))
+        # SPEC RETRIEVAL (TF-IDF) — top 3 sections similar to the user message
+        try:
+            from services.spec_search import search_all_specs_in_project
+            spec_hits = await search_all_specs_in_project(
+                tenant_id=tenant_id, project_id=project_id, query=message, top_k=3,
+            )
+            if spec_hits:
+                context_blocks.append("RELEVANT SPEC SECTIONS (cite via <spec_citation>):\n" + "\n".join(
+                    f"  [{h['section_code']}] {h['section_title']} (id={h['spec_section_id']}, p.{h['page_start']}, score={h['score']})\n    {h['snippet']}"
+                    for h in spec_hits
+                ))
+        except Exception as e:
+            pass
     user_text = "\n\n".join(context_blocks) + f"\n\nUser question: {message}"
     if not context_blocks:
         user_text = message

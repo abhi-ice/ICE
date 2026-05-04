@@ -104,31 +104,37 @@ async def seed_demo() -> dict:
     else:
         floor_records = await db.floors.find({"tenant_id": tenant["id"], "project_id": project_id}, {"_id": 0}).to_list(50)
 
-    # 5. Locations (rooms on floor 8 — focus area)
+    # 5. Locations (rooms on floor 8 — focus area) + auto polygons for 2.5D
     loc_count = await db.locations.count_documents({"tenant_id": tenant["id"], "project_id": project_id})
     location_records = []
     if loc_count == 0:
         floor8 = next((f for f in floor_records if f["floor_number"] == 8), floor_records[-1])
+        # Auto-generate rectangular polygons on a 6x4 grid for 8th floor
         rooms = [
-            ("801", "Director's Suite", 850),
-            ("802", "Conference Room A", 420),
-            ("803", "Open Office East", 2400),
-            ("804", "Open Office West", 2200),
-            ("805", "Break Room", 380),
-            ("806", "Mechanical Closet", 110),
-            ("807", "Electrical Room", 90),
-            ("808", "Server Room", 240),
-            ("809", "Restroom — North", 220),
-            ("810", "Restroom — South", 220),
-            ("811", "Corridor — Main", 1100),
-            ("812", "Stairwell A", 180),
+            ("801", "Director's Suite", 850, 0, 0, 30, 25),
+            ("802", "Conference Room A", 420, 30, 0, 18, 22),
+            ("803", "Open Office East", 2400, 48, 0, 50, 45),
+            ("804", "Open Office West", 2200, 0, 25, 28, 45),
+            ("805", "Break Room", 380, 28, 25, 16, 22),
+            ("806", "Mechanical Closet", 110, 44, 25, 8, 14),
+            ("807", "Electrical Room", 90, 52, 25, 8, 12),
+            ("808", "Server Room", 240, 60, 25, 14, 18),
+            ("809", "Restroom — North", 220, 74, 25, 12, 18),
+            ("810", "Restroom — South", 220, 86, 25, 12, 18),
+            ("811", "Corridor — Main", 1100, 0, 47, 98, 8),
+            ("812", "Stairwell A", 180, 88, 0, 10, 12),
         ]
-        for code, name, sqft in rooms:
+        for code, name, sqft, x, y, w, h in rooms:
+            poly = {
+                "type": "Polygon",
+                "coordinates": [[[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]]],
+            }
             loc = {
                 "id": gen_id(), "tenant_id": tenant["id"],
                 "project_id": project_id, "floor_id": floor8["id"],
                 "name": name, "code": code, "location_type": "room",
-                "polygon_geojson": None,
+                "polygon_geojson": poly,
+                "centroid_x": x + w / 2, "centroid_y": y + h / 2,
                 "area_sqft": sqft,
                 "created_at": utc_now().isoformat(),
             }
