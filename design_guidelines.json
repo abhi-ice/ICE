@@ -1,0 +1,100 @@
+{
+  "theme": "LIGHT",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Utilitarian, information-dense, and highly legible for iPad/field use. Serious federal construction cockpit. Avoids playfulness and glassmorphism. Leverages subtle depth and precise typography.",
+  "colors": {
+    "background": {
+      "page": "bg-slate-50",
+      "card": "bg-white",
+      "sidebar": "bg-slate-900"
+    },
+    "text": {
+      "primary": "text-slate-900",
+      "secondary": "text-slate-500",
+      "inverse": "text-white",
+      "sidebar_primary": "text-slate-200",
+      "sidebar_secondary": "text-slate-400"
+    },
+    "border": "border-slate-200",
+    "accent": {
+      "primary": "bg-blue-600",
+      "hover": "hover:bg-blue-700",
+      "text": "text-blue-600"
+    },
+    "status": {
+      "success": "bg-emerald-500",
+      "warning": "bg-amber-500",
+      "error": "bg-red-500",
+      "info": "bg-blue-500",
+      "success_light": "bg-emerald-50 text-emerald-700 border-emerald-200",
+      "warning_light": "bg-amber-50 text-amber-700 border-amber-200",
+      "error_light": "bg-red-50 text-red-700 border-red-200"
+    }
+  },
+  "typography": {
+    "headings": {
+      "family": "font-sans",
+      "class": "font-semibold tracking-tight text-slate-900",
+      "h1": "text-2xl sm:text-3xl",
+      "h2": "text-xl sm:text-2xl",
+      "h3": "text-lg sm:text-xl",
+      "h4": "text-base sm:text-lg"
+    },
+    "body": {
+      "family": "font-sans",
+      "class": "text-sm text-slate-700 leading-relaxed"
+    },
+    "monospace": {
+      "family": "font-mono",
+      "class": "text-xs tracking-tight text-slate-600"
+    }
+  },
+  "layout_and_spacing": {
+    "philosophy": "Dense and structured. Every pixel serves a purpose.",
+    "grid": "Control Room Grid (tight gaps: gap-4 or gap-6, dense data).",
+    "card": "rounded-md border border-slate-200 bg-white shadow-sm",
+    "table": "Dense padding (p-2 or p-3), text-sm, border-b border-slate-200, hover:bg-slate-50",
+    "sidebar": "Fixed width (w-64), flex-col, overflow-y-auto, bg-slate-900 text-white",
+    "topbar": "Sticky top-0, h-14, border-b border-slate-200 bg-white z-40"
+  },
+  "components": {
+    "buttons": {
+      "primary": "inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 bg-blue-600 text-white hover:bg-blue-700 h-9 px-4 py-2 shadow-sm",
+      "secondary": "inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 border border-slate-200 bg-white hover:bg-slate-100 hover:text-slate-900 h-9 px-4 py-2"
+    },
+    "kpi_tiles": {
+      "class": "rounded-md border border-slate-200 bg-white p-4 shadow-sm transition-transform hover:-translate-y-0.5"
+    },
+    "status_pills": {
+      "class": "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2"
+    },
+    "data_table": {
+      "header": "h-10 px-4 text-left align-middle font-medium text-slate-500",
+      "row": "border-b border-slate-200 transition-colors hover:bg-slate-50 data-[state=selected]:bg-slate-100",
+      "cell": "p-4 align-middle text-sm"
+    }
+  },
+  "media": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1674062333283-41a1b59f0408?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwxfHxzdGVlbCUyMHN0cnVjdHVyZSUyMGNvbnN0cnVjdGlvbiUyMHNpdGV8ZW58MHx8fHwxNzc3OTI2MDYxfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Steel construction structure for login background (apply bg-slate-900/80 overlay)"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use strokeWidth={1.5} for a cleaner, professional look."
+  },
+  "testing": {
+    "rule": "All interactive elements MUST include a data-testid attribute in kebab-case format."
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the provided colors, avoiding arbitrary additions of purple, teal, or neon unless functionally necessary.",
+    "Implement dense data tables without excessive padding to optimize for iPad screens.",
+    "Use standard Tailwind CSS configuration without custom utility classes unless absolutely required.",
+    "Do NOT use glassmorphism on data screens. The top bar should have a solid or near-solid background.",
+    "Ensure all text meets at least AA WCAG accessibility standards against its background.",
+    "Add 'data-testid' to all buttons, links, inputs, and functional UI elements.",
+    "Use sans-serif for main UI elements, but utilize mono typography for tags, IDs, or RFIs to maintain that technical, data-centric feel.",
+    "Keep the application white/slate colored with blue primary actions and traffic light status colors to project a serious federal construction cockpit vibe."
+  ]
+}
