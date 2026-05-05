@@ -75,6 +75,7 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Team", path: "/team", icon: Users, testid: "sidebar-team" },
       { label: "Imports", path: "/imports", icon: FileUp, testid: "sidebar-imports" },
+      { label: "Schedule changes", path: "/schedule-changes", icon: GitPullRequest, testid: "sidebar-schedule-changes", badge: "schedule_proposals" },
       { label: "AI agents", path: "/agents", icon: Bot, testid: "sidebar-agents" },
       { label: "Knowledge base", path: "/kb", icon: Brain, testid: "sidebar-kb" },
       { label: "Marketplace", path: "/marketplace", icon: ShoppingBasket, testid: "sidebar-marketplace" },

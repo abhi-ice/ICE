@@ -99,88 +99,9 @@ async def verify_audit_chain(ctx: dict = Depends(require_tenant)):
 
 
 # --- Imports ---
-@router.post("/imports/schedule")
-async def import_schedule(
-    project_id: str = Form(...),
-    file: UploadFile = File(...),
-    bg: BackgroundTasks = None,
-    ctx: dict = Depends(require_tenant),
-):
-    db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(400, "Uploaded file is empty.")
-    parsed_rows, errors = parse_schedule_file(file.filename, content)
-    if errors and not parsed_rows:
-        # Return a HUMAN-READABLE string so the frontend toast is helpful
-        # instead of dumping raw JSON.
-        raise HTTPException(400, "; ".join(errors)[:512])
-
-    # Convert each row through the SINGLE source of truth helper (master prompt §20.1)
-    created = 0
-    updated = 0
-    failed: list[dict] = []
-    for row in parsed_rows:
-        try:
-            payload = parsed_to_task_create_payload(row, project_id)
-            tc = validate_payload(payload)  # raises if 'prev_pct' or extras slip in
-        except Exception as e:
-            failed.append({"row": row.get("activity_code"), "error": str(e)})
-            continue
-
-        existing = await db.tasks.find_one(
-            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": tc.activity_code}),
-            {"_id": 0},
-        )
-        if existing:
-            updates = tc.model_dump(mode="json", exclude_unset=False)
-            updates.pop("project_id", None)
-            await db.tasks.update_one(
-                tenant_filter(ctx["tenant_id"], {"id": existing["id"]}),
-                {"$set": updates},
-            )
-            updated += 1
-        else:
-            doc = tc.model_dump(mode="json")
-            doc.update({
-                "id": gen_id(), "tenant_id": ctx["tenant_id"],
-                "status": "not_started",
-                "actual_start": None, "actual_finish": None,
-                "actual_hours": 0, "actual_quantity": 0,
-                "pct_complete": 0, "prev_pct_complete": 0,
-                "is_critical_path": False, "total_float_days": None,
-                "lookahead_status": "not_in_window",
-                "created_at": utc_now().isoformat(),
-            })
-            await db.tasks.insert_one(doc.copy())
-            created += 1
-
-    # Log the import
-    import_id = gen_id()
-    await db.imports.insert_one({
-        "id": import_id, "tenant_id": ctx["tenant_id"],
-        "project_id": project_id, "kind": "schedule",
-        "filename": file.filename, "row_count": len(parsed_rows),
-        "created": created, "updated": updated, "failed": failed,
-        "errors": errors, "imported_by": ctx["user"]["id"],
-        "created_at": utc_now().isoformat(),
-    })
-
-    if bg is not None:
-        bg.add_task(compute_cpm, ctx["tenant_id"], project_id)
-
-    return {
-        "import_id": import_id,
-        "row_count": len(parsed_rows),
-        "created": created,
-        "updated": updated,
-        "failed": failed,
-        "warnings": errors,
-    }
+# NOTE: POST /imports/schedule was moved to schedule_proposals_router.py.
+# Every schedule upload is now a *proposal* that must be reviewed + approved
+# by a PM/Admin before rows commit to the tasks collection.
 
 
 @router.get("/imports")

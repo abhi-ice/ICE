@@ -17,6 +17,7 @@ import ResourceList, { Availability } from "./pages/Resources";
 import Approvals from "./pages/Approvals";
 import Recovery from "./pages/Recovery";
 import Imports from "./pages/Imports";
+import ScheduleProposals from "./pages/ScheduleProposals";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
@@ -96,6 +97,7 @@ export default function App() {
 
             {/* System */}
             <Route path="imports" element={<Imports />} />
+            <Route path="schedule-changes" element={<ScheduleProposals />} />
             <Route path="agents" element={<AiAgentsPage />} />
             <Route path="marketplace" element={<MarketplaceFull />} />
             <Route path="kb" element={<KnowledgeBase />} />

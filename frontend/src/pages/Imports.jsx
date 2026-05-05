@@ -53,18 +53,12 @@ export default function Imports() {
       });
       setLast(data);
       setProgress(100);
-      const failed = (data.failed || []).length;
-      if (data.created || data.updated) {
-        toast.success(
-          `Imported · created ${data.created} · updated ${data.updated}` +
-          (failed ? ` · ${failed} row(s) skipped` : "")
-        );
-      } else if (data.row_count === 0) {
-        toast.warning("File parsed but no rows were found.");
-      } else {
-        toast.warning(`Parsed ${data.row_count} row(s) but none could be imported. See details below.`);
-      }
-      load();
+      toast.success(
+        `Proposal created — ${data.row_count} row(s) parsed. Pending PM/Admin review.`,
+        { duration: 4500 }
+      );
+      // Land the user on the proposal review page so they (or their PM) can act on it.
+      setTimeout(() => { window.location.assign(`/schedule-changes?id=${data.id}`); }, 600);
     } catch (e) {
       toast.error(formatImportErr(e));
     } finally {
@@ -161,25 +155,18 @@ export default function Imports() {
 
       {last && (
         <div data-testid="import-last" className="bg-card border border-border rounded-lg p-4 text-sm">
-          <div className="font-medium mb-2">Last import</div>
+          <div className="font-medium mb-2">Proposal created</div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
             <Stat label="Rows parsed" value={last.row_count} />
-            <Stat label="Created" value={last.created} />
-            <Stat label="Updated" value={last.updated} />
-            <Stat label="Skipped" value={(last.failed || []).length} tone={(last.failed || []).length ? "amber" : "slate"} />
+            <Stat label="Added" value={last.diff?.summary?.added_count || 0} tone="emerald" />
+            <Stat label="Dropped" value={last.diff?.summary?.dropped_count || 0} tone="amber" />
+            <Stat label="Date shifts >3d" value={last.diff?.summary?.shifted_count || 0} />
           </div>
-          {last.failed?.length ? (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-amber-700">{last.failed.length} skipped row(s)</summary>
-              <ul className="mt-2 space-y-1 list-disc pl-5">
-                {last.failed.slice(0, 20).map((f, i) => (
-                  <li key={i}><span className="font-mono">{f.row || "?"}</span>: {f.error}</li>
-                ))}
-                {last.failed.length > 20 && <li>…and {last.failed.length - 20} more</li>}
-              </ul>
-            </details>
-          ) : null}
-          {last.warnings?.length ? <div className="text-amber-700 text-xs mt-2">Warnings: {last.warnings.join(", ")}</div> : null}
+          <div className="text-xs text-slate-600">
+            Status: <strong>pending review</strong>. AI risk: <strong>{last.ai_review?.risk_level || "—"}</strong>.
+            Redirecting to the review page…
+          </div>
+          {last.parse_warnings?.length ? <div className="text-amber-700 text-xs mt-2">Warnings: {last.parse_warnings.join(", ")}</div> : null}
         </div>
       )}
 

@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 12: Schedule-diff proposal workflow validated end-to-end. Backend pytest 18/18 PASS in /app/backend/tests/test_iteration12.py covering: empty-file 400 ('Uploaded file is empty.'), bad-filetype 400 with string detail, full response shape (id/status/filename/row_count/diff/ai_review/parse_warnings/requires_approval_by), diff-math correctness on the spec scenario (T100 unchanged, T101 shifted +5d & duration 8->12, T103/T104 added, T102 dropped → added=2, dropped=1, shifted=1 max>=5d, duration_changed=1), tasks collection NOT modified at upload, AI summary contains no #/*/|/backtick characters, AI model is claude-sonnet-4-5-20250929 (real Claude responding), list excludes parsed_rows, status=pending_review filter, single-get excludes parsed_rows, refresh-ai-review re-runs Claude in place, RBAC: super-role invitee gets 403 on /approve, /reject then second /reject = 409 and approving a rejected proposal = 409, /approve (admin) commits with applied={created:2, updated>=1, deleted:1}, T103/T104 appear in tasks, T102 soft-deleted (status='deleted', deleted_by_proposal_id=<id>), is_critical_path/total_float_days fields exist confirming compute_cpm ran, /api/imports history row contains schedule_proposal_id=<id>, audit_log has both INSERT and UPDATE entries for the proposal, double-approve = 409. Frontend smoke (live URL): signup → getting-started, /schedule-changes route renders with [data-testid='schedule-proposals-page'], 'Schedule changes' sidebar entry present, /imports renders with [data-testid='imports-file']. DB wiped at end (0 collections).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration12.py",
+    "/app/test_reports/pytest/iter12_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "schedule_proposals_router._scrub recursively converts datetime.date -> ISO strings before BSON insert — the regression the task warned about (InvalidDocument: cannot encode object: datetime.date) is correctly guarded.",
+    "compute_schedule_diff is pure (no DB), and DATE_SHIFT_THRESHOLD_DAYS=3 with strict > comparison matches the spec ('date shifts > 3 days'). Diff math verified empirically with the spec scenario.",
+    "schedule_ai_review.review_schedule_diff: SYSTEM prompt explicitly forbids markdown and the response is post-processed via _strip_markdown. Verified end-to-end — Claude summary contains zero #/*/|/backtick characters.",
+    "approve_proposal correctly soft-deletes activities listed in diff.dropped (status='deleted', deleted_by_proposal_id=<id>) instead of removing them — preserves audit linkage on referenced tasks. Good.",
+    "approve_proposal wraps compute_cpm in try/except — won't fail the approval if CPM blows up on a degenerate graph. Sensible.",
+    "GET /projects/{pid}/schedule-proposals and GET /schedule-proposals/{id} both project out parsed_rows ({_id:0, parsed_rows:0}) — list payloads stay small. parsed_rows are only loaded server-side at approve time.",
+    "ScheduleProposals.jsx detail page validates empty notes on /reject client-side (toast + return) — backend accepts empty notes too, so this is purely UX. Aligns with spec.",
+    "Imports.jsx redirect to /schedule-changes?id=<id> uses 600ms setTimeout — matches spec exactly. Toast text 'Proposal created — N row(s) parsed' aligns with the contract.",
+    "Minor: Imports.jsx no longer surfaces the legacy 'created/updated/skipped' counts because /imports/schedule no longer applies rows; the History table still renders them and they will all show 0 until the proposal is approved (which then writes a separate /imports row with schedule_proposal_id linked). This is intentional but could confuse a returning user — consider a tooltip explaining 'history rows appear after PM approval'.",
+    "schedule_proposals_router uses list-comprehension for _norm_row but the inner function only handles top-level fields. parsed rows from MPP/XER may contain nested date objects (e.g., inside predecessors metadata) — the secondary _scrub recursive pass on diff catches those, but parsed_rows themselves still stored via _norm_row's flat pass. So far CSV parser keeps it flat — fine for now."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration12.py (new, 18 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100% (signup→getting-started, /schedule-changes renders, sidebar entry present, /imports renders)"},
+  "test_credentials": "DB intentionally wiped at end. During run: qa+sp<ts>@example.com (admin) and qa+spsuper<ts>@example.com (super invitee). User must register their real account (e.g. abhi@ice-aec.com) at /signup — DB is empty.",
+  "seed_data_creation": "All test seed (admin tenant 'QA Diff Org <ts>', super user, project, 3 baseline tasks T100/T101/T102, two schedule proposals incl. one approved + one rejected, audit log, imports history) was DROPPED at end of pytest run AND verified again post-UI smoke. Final state: 0 collections.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "DB is empty. /app/backend/tests/test_iteration12.py is reusable as regression for the schedule-proposal flow but its final test_zzz_cleanup_drop_all wipes the DB, so always run after a fresh register. EMERGENT_LLM_KEY in /app/backend/.env must remain set for the model assertion to pin to claude-sonnet-4-5-20250929 (test allows 'heuristic' as a fallback so it won't false-fail if Anthropic flaps). When testing UI signup form, note inputs have NO name/placeholder attributes — query by visible order (org → full_name → email → password).",
+  "rca of the issue": "No regressions. Two transient test wiring fixes during run: (1) ProjectCreate is StrictModel — the test initially used legacy fields code/client/address/zipcode/delivery_method which raised 422; switched to current schema (contract_number/client_name/postal_code). (2) POST /api/team/invites returns {invite:{...}, already_existed} not the bare invite, and accept lives under /auth/accept-invite not /team/accept-invite — adjusted accordingly. Both are TEST-side issues, not product bugs."
+}

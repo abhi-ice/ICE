@@ -924,6 +924,33 @@ class CopilotMessage(StrictModel):
     session_id: Optional[str] = None
 
 
+# ============================================================
+# Schedule proposal — incoming MPP/XER/CSV is a proposal until
+# a PM/Admin approves it. Federal-contract baseline-change trail.
+# ============================================================
+class ScheduleProposal(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    filename: str
+    kind: str  # "schedule"
+    status: str  # "pending_review" | "approved" | "rejected"
+    parsed_rows: list[dict] = Field(default_factory=list)
+    diff: dict = Field(default_factory=dict)
+    ai_review: Optional[dict] = None
+    uploaded_by: str
+    uploaded_at: datetime
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    review_notes: Optional[str] = None
+    applied_result: Optional[dict] = None
+    parse_warnings: list[str] = Field(default_factory=list)
+
+
+class ScheduleProposalDecision(StrictModel):
+    notes: Optional[str] = None
+
+
 class CopilotResponse(ReadModel):
     session_id: str
     response: str
