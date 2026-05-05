@@ -6,6 +6,7 @@ const TOKEN_KEY = "ice.token";
 const USER_KEY = "ice.user";
 const TENANT_KEY = "ice.tenant";
 const ACTIVE_TENANT_KEY = "ice.active_tenant_id";
+const ACTIVE_PROJECT_KEY = "ice.active_project_id";
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -30,6 +31,11 @@ export function setActiveTenantId(id) {
 }
 
 export function setAuth({ access_token, user, tenant }) {
+  // Tenant changed → drop any stale active project from a previous session.
+  const prevTenant = getTenant();
+  if (!prevTenant || prevTenant.id !== tenant.id) {
+    localStorage.removeItem(ACTIVE_PROJECT_KEY);
+  }
   localStorage.setItem(TOKEN_KEY, access_token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   localStorage.setItem(TENANT_KEY, JSON.stringify(tenant));
@@ -41,6 +47,7 @@ export function clearAuth() {
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(TENANT_KEY);
   localStorage.removeItem(ACTIVE_TENANT_KEY);
+  localStorage.removeItem(ACTIVE_PROJECT_KEY);
 }
 
 export function isAuthenticated() {

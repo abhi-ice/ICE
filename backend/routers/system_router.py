@@ -112,9 +112,13 @@ async def import_schedule(
         raise HTTPException(404, "Project not found")
 
     content = await file.read()
+    if not content:
+        raise HTTPException(400, "Uploaded file is empty.")
     parsed_rows, errors = parse_schedule_file(file.filename, content)
     if errors and not parsed_rows:
-        raise HTTPException(400, {"errors": errors})
+        # Return a HUMAN-READABLE string so the frontend toast is helpful
+        # instead of dumping raw JSON.
+        raise HTTPException(400, "; ".join(errors)[:512])
 
     # Convert each row through the SINGLE source of truth helper (master prompt §20.1)
     created = 0

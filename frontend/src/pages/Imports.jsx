@@ -2,33 +2,74 @@ import { useState, useEffect } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
-import { FileUp, Download } from "lucide-react";
+import { FileUp, Download, AlertTriangle } from "lucide-react";
+
+const ACCEPTED_EXTS = ["xlsx", "csv", "mpp", "xer", "xml"];
+// Proxy/ingress in front of FastAPI typically caps at 50–100MB; cap at 75MB
+// here so users see a clean error before hitting the network limit.
+const MAX_BYTES = 75 * 1024 * 1024;
 
 export default function Imports() {
-  const { activeId } = useProjects();
+  const { projects, activeId, setActiveId, loading } = useProjects();
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [history, setHistory] = useState([]);
   const [last, setLast] = useState(null);
 
-  const load = () => api.get("/imports").then(({ data }) => setHistory(data));
+  const load = () => api.get("/imports").then(({ data }) => setHistory(data)).catch(() => {});
   useEffect(() => { load(); }, []);
 
+  const activeProject = projects.find((p) => p.id === activeId);
+
+  const onPick = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) { setFile(null); return; }
+    const ext = (f.name.split(".").pop() || "").toLowerCase();
+    if (!ACCEPTED_EXTS.includes(ext)) {
+      toast.error(`Unsupported file type .${ext}. Accepted: ${ACCEPTED_EXTS.join(", ")}`);
+      e.target.value = ""; return;
+    }
+    if (f.size > MAX_BYTES) {
+      toast.error(`File is ${(f.size / 1024 / 1024).toFixed(1)}MB — over the 75MB upload limit. Compress or split it.`);
+      e.target.value = ""; return;
+    }
+    setFile(f);
+  };
+
   const upload = async () => {
-    if (!file || !activeId) return;
-    setBusy(true);
+    if (!file) return toast.error("Pick a file first.");
+    if (!activeId) return toast.error("Select a project at the top before importing a schedule.");
+    setBusy(true); setProgress(0);
     try {
       const fd = new FormData();
       fd.append("project_id", activeId);
       fd.append("file", file);
-      const { data } = await api.post("/imports/schedule", fd);
+      const { data } = await api.post("/imports/schedule", fd, {
+        timeout: 180_000,
+        onUploadProgress: (e) => {
+          if (e.total) setProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)));
+        },
+      });
       setLast(data);
-      toast.success(`Imported ${data.created} new, ${data.updated} updated`);
+      setProgress(100);
+      const failed = (data.failed || []).length;
+      if (data.created || data.updated) {
+        toast.success(
+          `Imported · created ${data.created} · updated ${data.updated}` +
+          (failed ? ` · ${failed} row(s) skipped` : "")
+        );
+      } else if (data.row_count === 0) {
+        toast.warning("File parsed but no rows were found.");
+      } else {
+        toast.warning(`Parsed ${data.row_count} row(s) but none could be imported. See details below.`);
+      }
       load();
     } catch (e) {
-      toast.error(JSON.stringify(e.response?.data?.detail || e.message));
+      toast.error(formatImportErr(e));
     } finally {
       setBusy(false);
+      setTimeout(() => setProgress(0), 1500);
     }
   };
 
@@ -44,30 +85,76 @@ export default function Imports() {
     URL.revokeObjectURL(url);
   };
 
+  const noProjects = !loading && projects.length === 0;
+
   return (
     <div data-testid="imports-page" className="space-y-4">
-      <h1 className="text-2xl font-semibold">Imports</h1>
-      <p className="text-sm text-muted-foreground">
-        Upload schedule files (.xlsx or .csv). MPP / XER files require the Railway parser
-        (see substitution note in <code>services/schedule_parser.py</code>).
-      </p>
+      <div>
+        <h1 className="text-2xl font-semibold">Imports</h1>
+        <p className="text-sm text-muted-foreground">
+          Upload a schedule file (.xlsx, .csv, .mpp, .xer, or .xml). Imports are scoped to the active project.
+        </p>
+      </div>
+
+      {/* Project context banner */}
+      {noProjects ? (
+        <Banner color="amber" testid="imports-no-projects">
+          You don&apos;t have any projects yet. Create one on the <a href="/projects" className="underline">Projects</a> page first.
+        </Banner>
+      ) : !activeId ? (
+        <Banner color="amber" testid="imports-pick-project">
+          <span>No project selected.</span>
+          <select data-testid="imports-pick-project-select"
+            value=""
+            onChange={(e) => setActiveId(e.target.value)}
+            className="ml-3 h-8 px-2 rounded border border-amber-300 bg-white text-sm">
+            <option value="" disabled>Choose project…</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </Banner>
+      ) : (
+        <Banner color="slate" testid="imports-active-project">
+          Importing into <strong>{activeProject?.name}</strong>. To switch, use the project picker in the top bar.
+        </Banner>
+      )}
 
       <div className="bg-card border border-border rounded-lg p-4 space-y-3">
         <div className="flex items-center gap-2">
           <FileUp className="h-4 w-4" />
           <div className="font-medium text-sm">Schedule file</div>
           <button onClick={downloadTemplate} className="ml-auto text-xs text-primary hover:underline flex items-center gap-1">
-            <Download className="h-3 w-3" /> Download template
+            <Download className="h-3 w-3" /> Download CSV template
           </button>
         </div>
+
         <input
           data-testid="imports-file"
           type="file"
           accept=".xlsx,.csv,.mpp,.xer,.xml"
-          onChange={(e) => setFile(e.target.files[0])}
+          onChange={onPick}
+          disabled={busy}
           className="block text-sm"
         />
-        <button data-testid="imports-upload" onClick={upload} disabled={!file || busy} className="h-9 px-4 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50">
+
+        {file && (
+          <div data-testid="imports-file-meta" className="text-xs text-slate-500">
+            Selected: <span className="font-mono">{file.name}</span> · {(file.size / 1024 / 1024).toFixed(2)}MB
+          </div>
+        )}
+
+        {busy && (
+          <div data-testid="imports-progress" className="text-xs">
+            <div className="h-1.5 bg-slate-200 rounded overflow-hidden">
+              <div className="h-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} />
+            </div>
+            <div className="text-slate-500 mt-1">
+              {progress < 100 ? `Uploading… ${progress}%` : "Parsing on server (large MPP/XER files take 10–60s)…"}
+            </div>
+          </div>
+        )}
+
+        <button data-testid="imports-upload" onClick={upload} disabled={!file || busy || !activeId}
+          className="h-9 px-4 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50 hover:opacity-90">
           {busy ? "Uploading…" : "Import schedule"}
         </button>
       </div>
@@ -75,10 +162,23 @@ export default function Imports() {
       {last && (
         <div data-testid="import-last" className="bg-card border border-border rounded-lg p-4 text-sm">
           <div className="font-medium mb-2">Last import</div>
-          <div>Rows parsed: <span className="font-mono">{last.row_count}</span></div>
-          <div>Created: <span className="font-mono">{last.created}</span></div>
-          <div>Updated: <span className="font-mono">{last.updated}</span></div>
-          {last.failed?.length ? <div className="text-red-700 text-xs mt-2">Failed: {JSON.stringify(last.failed)}</div> : null}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+            <Stat label="Rows parsed" value={last.row_count} />
+            <Stat label="Created" value={last.created} />
+            <Stat label="Updated" value={last.updated} />
+            <Stat label="Skipped" value={(last.failed || []).length} tone={(last.failed || []).length ? "amber" : "slate"} />
+          </div>
+          {last.failed?.length ? (
+            <details className="text-xs">
+              <summary className="cursor-pointer text-amber-700">{last.failed.length} skipped row(s)</summary>
+              <ul className="mt-2 space-y-1 list-disc pl-5">
+                {last.failed.slice(0, 20).map((f, i) => (
+                  <li key={i}><span className="font-mono">{f.row || "?"}</span>: {f.error}</li>
+                ))}
+                {last.failed.length > 20 && <li>…and {last.failed.length - 20} more</li>}
+              </ul>
+            </details>
+          ) : null}
           {last.warnings?.length ? <div className="text-amber-700 text-xs mt-2">Warnings: {last.warnings.join(", ")}</div> : null}
         </div>
       )}
@@ -104,4 +204,52 @@ export default function Imports() {
       </div>
     </div>
   );
+}
+
+function Banner({ color = "slate", testid, children }) {
+  const klass = color === "amber"
+    ? "bg-amber-50 border-amber-200 text-amber-800"
+    : "bg-slate-50 border-slate-200 text-slate-700";
+  return (
+    <div data-testid={testid} className={`border rounded-lg p-3 text-sm flex items-center gap-2 ${klass}`}>
+      {color === "amber" && <AlertTriangle className="h-4 w-4 shrink-0" />}
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function Stat({ label, value, tone = "slate" }) {
+  const klass = tone === "amber" ? "text-amber-700" : "text-slate-700";
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded p-2">
+      <div className="text-[10px] uppercase text-slate-500 tracking-wide">{label}</div>
+      <div className={`font-semibold tabular-nums ${klass}`}>{value ?? "—"}</div>
+    </div>
+  );
+}
+
+// Surface backend / network errors clearly. Never show URLs or raw HTML.
+function formatImportErr(e) {
+  const r = e.response;
+  // Network / CORS: axios sets e.message (often "Network Error") and e.code.
+  if (!r) {
+    if (e.code === "ECONNABORTED") return "Upload timed out. Big MPP files can take a while — try again or split the file.";
+    return `Could not reach the server (${e.code || "network error"}). Check your connection and retry.`;
+  }
+  // Pydantic 422 returns { detail: [{loc, msg, type}, ...] }
+  const detail = r.data?.detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.slice(0, 3).map((d) => `${(d.loc || []).slice(-1)[0] || "?"}: ${d.msg || d}`);
+    return `Import failed (${r.status}): ${parts.join("; ")}`;
+  }
+  if (typeof detail === "string") return `Import failed (${r.status}): ${detail}`;
+  if (detail && typeof detail === "object") {
+    if (detail.errors) return `Import failed (${r.status}): ${JSON.stringify(detail.errors).slice(0, 240)}`;
+    return `Import failed (${r.status}): ${JSON.stringify(detail).slice(0, 240)}`;
+  }
+  // Proxy returned HTML (e.g., 502/504). Show a clean message instead of dumping HTML.
+  if (typeof r.data === "string" && r.data.startsWith("<")) {
+    return `Server returned an error page (${r.status}). The file may be too large or the schedule parser timed out.`;
+  }
+  return `Import failed (${r.status})`;
 }

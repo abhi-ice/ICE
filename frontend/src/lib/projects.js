@@ -23,9 +23,20 @@ export function useProjects() {
     try {
       const { data } = await api.get("/projects");
       setProjects(data);
-      if (!active && data.length) {
+      // Reconcile localStorage against the live list. If the stored id no
+      // longer matches any project (e.g., switched tenant, or that project was
+      // deleted), auto-select the first available so dependent pages don't
+      // silently no-op (e.g., schedule import with no active project).
+      const stored = getActiveProjectId();
+      const match = data.find((p) => p.id === stored);
+      if (match) {
+        if (active !== match.id) setActive(match.id);
+      } else if (data.length) {
         setActiveProjectId(data[0].id);
         setActive(data[0].id);
+      } else {
+        setActiveProjectId("");
+        setActive(null);
       }
     } finally {
       setLoading(false);
