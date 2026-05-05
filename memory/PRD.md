@@ -1,158 +1,161 @@
 # ICE Schedule Ops — PRD
 
 ## Original problem statement
-Build a multi-tenant federal-construction project management platform replacing
-Procore / Touchplan / Bluebeam / Smartsheet for GSA, USACE, NAVFAC,
-and other federal agency builds. Original prompt requested PostgreSQL +
-LangGraph + Celery + pgvector. The user explicitly authorised a substitution as
-long as the stack remains Python and the functional intents are met. We
-implemented the application using:
+Multi-tenant federal-construction PM platform replacing Procore / Touchplan /
+Bluebeam / Smartsheet for GSA, USACE, NAVFAC, and other agencies. Original
+prompt requested PostgreSQL + LangGraph + Celery + pgvector. The user
+explicitly authorised substitution as long as the stack remains Python and
+the functional intents are met. Stack actually shipped:
 
-- **Backend**: FastAPI + Motor (async MongoDB driver) + Pydantic v2 + WeasyPrint
-  + Pillow + imagehash + scikit-learn TF-IDF + emergentintegrations.LlmChat
-  (universal Emergent LLM key) + Whisper (Emergent) + Open-Meteo
-  (free public weather)
+- **Backend**: FastAPI + Motor (async MongoDB) + Pydantic v2 + WeasyPrint +
+  Pillow + imagehash + scikit-learn TF-IDF + emergentintegrations.LlmChat
+  (universal Emergent LLM key) + Whisper + pdf2image + pytesseract + Stripe
+  (via emergentintegrations.payments)
 - **Frontend**: React 19 + TailwindCSS + shadcn/ui + Konva + raw three.js +
-  react-pdf + react-router 7
+  react-pdf + react-router 7 + WebSocket-based real-time channel
 - **Infra**: MongoDB collection-per-aggregate; supervisor-managed services;
   service-worker PWA; Emergent Object Storage for binary blobs
 
 ## Roles & personas
-1. **Project Executive** (firm/tenant scope) — pipeline KPIs, P50/P80 finish
-2. **Project Manager** (project scope) — daily ops, recovery, marketplace
+1. **Project Executive** — pipeline KPIs, P50/P80 finish (admin)
+2. **Project Manager** — daily ops, recovery, marketplace, master doc
 3. **Field Superintendent** — daily reports, field issues, deliveries
 4. **Foreman** — daily report row ownership, voice annotations, photos
-5. **Voice User** — capture-only with PIN auth (planned)
+5. **Voice User (PIN auth)** — capture-only mobile foreman view
 6. **External / Read-only** — owners, sub-rep, GC PMs
 
 ## What's implemented (chronological)
 
-### Iter 1 — MVP scaffold
-- Multi-tenant auth (JWT + Emergent Google Auth optional), role-based
-  permissions, audit-log hash chain
-- Tenants, projects, locations (4-level: building → floor → zone → room),
-  resources (crews, equipment, people, certifications)
-- Master format trade taxonomy + cost-rate library + prevailing-wage support
-- Activity-driven daily-report grid (date-filtered, polymorphic activity rows)
-- Tasks CRUD + dependencies + lookahead query
-- Approvals with rule engine + audit log
-- 50 demo seed records
-
-### Iter 2 — AI + Specs + Voice + Drawings
-- Voice annotation pipeline (Whisper → Claude structured-field extractor)
-- Spec PDF ingestion + section parsing + TF-IDF semantic search
-  (substitution for pgvector)
-- Drawing markup viewer (react-pdf + Konva overlay)
-- 5 AI agents (copilot, RFI drafter, recovery, work-item assistant, change-order)
-- 100% test pass
-
-### Iter 3 — Persistence + Spatial 2.5D
-- Drawing markups persisted (POST/PATCH/DELETE) with polymorphic
-  pin → entity links
-- Voice annotations CRUD + structured-field PATCH
-- Spec embeddings (TF-IDF) cached per tenant
-- Photo upload with Emergent Object Storage + thumbnail generation
-- 2.5D mass-model viewer (raw three.js — R3F deferred due to React 19
-  incompatibility)
-- Collapsible sidebar
-- 100% test pass
-
-### Iter 4 — Spatial Path 3 + Submittals
-- Spatial elevation projection (location.spatial_centroid + floor elevations
-  → 3D coordinates)
-- Drawing pin deep-link → entity side-panel (RFIs/work-items/tasks)
-- Submittals CRUD + auto-generation from spec "1.4 SUBMITTALS" parsing
-- Voice annotation PATCH (re-link / structured fields)
-- Polygon editor (per location, per floor) with drawing-revision underlay
-- 31/31 tests pass
+### Iter 1-4 — MVP through Spatial Path 3
+Auth + tenants + projects + tasks + locations + resources + cost rates +
+daily-report grid + voice annotations (Whisper + Claude) + spec PDF
+ingestion + TF-IDF spec search + drawing markup viewer (Konva) + photo
+uploads + 2.5D mass model + spatial elevation projection + drawing pin
+deep-link → entity side-panel + auto-generated submittals + polygon editor.
+**31/31 tests PASS in iter 4.**
 
 ### Iter 5 — Marketplace + Notifications + Productivity
-- Marketplace cross-tenant postings (sub invitations, equipment, labor, materials)
-- Notifications model + unread-count + mark-read + bell dropdown
-- Global search (projects + tasks + RFIs + drawings + photos + submittals)
-- Open-Meteo weather proxy (NOAA-equivalent)
-- Productivity-rates aggregation (trade × location → hours-per-pct-point)
-- Cost-rate library + cost-estimates with prevailing wage
-- Work-item history/audit trail
-- Approvals pending count → sidebar badge
+Cross-tenant marketplace postings + notifications + global search +
+weather (Open-Meteo) + productivity-rates + cost-estimates +
+work-item history + approvals badge.
 
-### Iter 6 — Completing the master prompt (this iteration)
-- **WeasyPrint PDF**: `/daily-reports/:id/pdf-rich` and
-  `/projects/:id/weekly-rollup/pdf` stream true PDF bytes (replaces
-  text-only stubs)
-- **Photo EXIF + perceptual hash**: extracted automatically on upload
-  (Pillow + imagehash) — substitution for DINOv2 visual fingerprinting.
-  Hamming-distance ≤ 8 marks duplicates with confidence.
-- **AI Recovery — apply suggestion**: `POST /ai/recovery/:id/apply` updates
-  target task `planned_finish` for split/resequence/change_method
-  categories; creates escalation work item for category="escalate"
-- **Eval harness**: `GET /ai/recovery/eval-harness` scores past applied
-  recoveries (predicted vs realized days, accuracy_score)
-- **Aging dashboard**: `/aging` page with 4 cards + per-category detail
-  tables; aging-summary feeds smart sidebar badges
-- **Submittal ↔ Activity linkage**: `PATCH /submittals/:id/links` +
-  `POST /projects/:id/submittals/auto-link-activities` (idempotent
-  spec-section → task spec_section_codes match)
-- **Spatial section view**: `POST /spatial/section` computes vertical
-  slice for a 2-point cut-line; rendered as SVG in
-  `SectionViewDialog`
-- **Lookahead Gantt**: drag-to-reschedule (PATCH /tasks) inline on the
-  Gantt timeline
-- **Drawing markup expansion**: 9 tools (pen, rect, ellipse, arrow, line,
-  cloud, text, pin, calibrate); calibration writes
-  `drawings_spatial_metadata.scale_ft_per_px`
-- **Marketplace UI**: full CRUD UI replaces stub
-- **Productivity dashboard UI**: trade × location rates with day-window
-  filter
-- **Global search UI**: TopBar dropdown
-- **NotificationsBell UI**: TopBar dropdown with mark-read
-- **Smart sidebar badges**: pulled from `/aging-summary` (RFIs, submittals,
-  work items, total aging count)
-- **PWA manifest + service worker**: offline-mode for static assets
+### Iter 6 — Master prompt completion (a-g)
+- WeasyPrint daily-report + weekly-rollup PDFs
+- Photo EXIF + perceptual hash (Pillow + imagehash) — substitution for DINOv2
+- AI Recovery apply + eval-harness
+- Aging dashboard (`/aging`) with smart sidebar badges
+- Submittal ↔ Activity linkage (manual + auto-link)
+- Spatial section view (cut-line → SVG vertical slice)
+- Lookahead Gantt + drag-to-reschedule
+- Drawing markup expansion (9 tools incl. ellipse, arrow, line, cloud, text, calibrate)
+- Marketplace UI (full)
+- Productivity dashboard UI
+- Global search dropdown
+- NotificationsBell on TopBar
+- PWA manifest + service worker
+**iter 5.json: 50/50 functional tests PASS.**
 
-### Test results
-- iter1.json: 100% (basics)
-- iter2.json: 100% (voice/specs/drawings)
-- iter3.json: 100% (persistence + spatial)
-- iter4.json: 31/31 PASS
-- iter5.json: **50/50 functional** (1 conditional skip — apply-flow has no
-  unapplied suggestion in seed) + 100% testid coverage after fixes
+### Iter 7 — Stripe + RAG + project gating + compliance + real-time
+- **Stripe Checkout escrow**: GC accepts a marketplace bid → funds escrow
+  via Stripe → escrow holds in `payment_transactions` ledger → activity
+  reaches `milestone_pct` → automatic release-to-sub via background task
+  triggered from `tasks PATCH pct_complete`. Tracked end-to-end with WS
+  broadcasts.
+- **Master doc with project-type gating**: `/projects/:id/master-doc` — 4
+  construction types (new / renovation / TI / infrastructure), delivery
+  method, sketch-review style, govt security level, site conditions
+  (occupied / historic / hazmat / shifts), site-constraint chips,
+  notes. AI agents (`copilot_answer` + `recovery_suggestions`) prepend
+  this as context, materially changing recommendations for renovation
+  vs new-construction.
+- **Knowledge Base / RAG**: `/kb` — TF-IDF over closed RFIs + resolved
+  work items + manual lessons. `_kb_block` injected into AI prompts so
+  every recovery / RFI-drafter / copilot response can cite past
+  resolutions. Idempotent `ingest-historical` endpoint.
+- **NIST 800-171 control mapping**: 16 controls across 8 families with
+  implementation+evidence_endpoint each (`/compliance`).
+- **Audit-log integrity verifier**: `GET /audit-log/verify-chain` walks
+  the SHA-256 hash chain forward; surfaces first divergence index.
+- **Polygon suggester (Claude vision)**: `POST /spatial/suggest-polygon`
+  crops PDF page → Claude Sonnet 4.5 vision returns polygon points;
+  PolygonEditor "AI suggest" button consumes it.
+- **Drawing OCR**: `POST /drawings/ocr` runs pytesseract on the
+  bottom-right title-block → heuristic extraction of sheet number, scale,
+  date, title. DrawingViewer toolbar "OCR" button.
+- **Real-time WebSockets**: `/api/ws?token=<jwt>` tenant-scoped fanout.
+  `emit_notification()` and tasks PATCH both push events. NotificationsBell
+  refreshes on incoming events.
+- **Voice-only PIN auth**: admin issues a 6-digit PIN scoped to a
+  project + foreman name; PIN exchange returns a `role='voice'` JWT
+  that opens `/m/foreman` (mobile-first capture-only view: voice
+  notes + photo upload + per-task percentage chips).
+- **Mobile foreman view**: `/m/foreman` — phone-friendly layout with
+  voice-record button, camera-capture photo input, and 7-day lookahead
+  with one-tap pct-complete chips.
+- **Re-seed unapplied recovery**: `POST /dev/seed/recovery` for
+  regression coverage of the apply flow.
+
+**iter 6.json: 21/22 functional tests PASS** (1 conditional skip on a
+gating path that requires specific seed state).
+
+## Test results by iteration
+| Iter | Backend | Frontend |
+|------|---------|----------|
+| 1    | 100%    | 100%     |
+| 2    | 100%    | 100%     |
+| 3    | 100%    | 100%     |
+| 4    | 31/31   | 100%     |
+| 5    | 50/50   | 100% (after testid fixes) |
+| 6    | 21/22   | 100%     |
 
 ## Known deferred / substituted
-- **DINOv2** → imagehash pHash (deterministic, free, sufficient for dup detection)
-- **MPP/XER parser** → CSV/XLSX schedule import works; .mpp/.xer returns
-  helpful error (deferred — needs JPype + MPXJ JVM)
-- **Bluebeam .bax** → deferred (proprietary format, no open spec)
-- **Real-time WebSockets** → 60s polling on notifications & badges
-  (sufficient for current scale)
-- **LangGraph** → multi-step LlmChat flows handle the same intent
-- **pgvector** → TF-IDF (lexical) + LlmChat for re-ranking when needed
-- **Celery** → FastAPI BackgroundTasks (sufficient for ingest jobs)
+- **DINOv2** → imagehash pHash (deterministic, free)
+- **MPP/XER parser** → CSV/XLSX import works; .mpp/.xer return helpful
+  error (deferred — needs JPype + MPXJ JVM)
+- **Bluebeam .bax** → deferred (proprietary)
+- **Stripe Connect Express** → Stripe Checkout (escrow held in our
+  ledger; payouts recorded as ledger rows + notifications, not actual
+  Stripe Transfers — would require platform onboarding)
+- **LangGraph** → multi-step LlmChat sequences cover the same intent
+- **pgvector** → TF-IDF (lexical) + LlmChat for re-ranking
+- **Celery** → FastAPI BackgroundTasks (sufficient for ingest + auto-release)
 
 ## Backlog (P2)
-- NIST 800-171 control mapping UI + audit-log hash-chain integrity check
-- Polygon-suggester AI agent (Claude vision)
-- OCR sheet-metadata extraction on drawing upload
-- True XER/MPP parsing via MPXJ + JPype
-- Voice-only PIN auth flow
-- Marketplace acceptance + cross-tenant notification routing
+- Stripe Connect Express full onboarding for actual payouts to subs
+- True XER/MPP parsing via MPXJ + JPype (requires JVM in container)
+- Active probe of NIST evidence_endpoints (currently flag is hard-coded
+  True from mapping)
+- Section-view 3D rendering in `Spatial3D` (currently SVG slice)
 
 ## Architecture notes
-- All MongoDB collections exclude `_id` in projections (Pydantic
-  serialisation strict)
-- All endpoints respect `tenant_filter()`; `Depends(require_tenant)`
-- LLM calls use `emergentintegrations.LlmChat` with universal Emergent key;
-  models pinned per agent (gpt-4o for ingest, claude-sonnet-4.5 for
-  recovery, whisper for voice)
-- 3 routers: `iter3_router` (persistence), `iter4_router` (submittals/
-  spatial), `iter5_router` (marketplace/notifs/etc.), `iter6_router`
-  (PDF/EXIF/section/aging-detail/recovery-apply/eval-harness)
+- All MongoDB queries exclude `_id` in projections; Pydantic serialisation
+  strict
+- All endpoints respect `tenant_filter()` + `Depends(require_tenant)`
+- LLM calls use `emergentintegrations.LlmChat` with universal Emergent key
+- Routers split by concern: `iter3` (persistence) → `iter4` (submittals) →
+  `iter5` (marketplace + notifications) → `iter6` (PDF + EXIF + section)
+  → `iter7` (Stripe + RAG + master doc + compliance + real-time + voice
+  PIN + OCR + polygon vision) + `ws_router` (WebSocket fanout)
 
 ## Test credentials
 See `/app/memory/test_credentials.md`
 - admin@iceops.com / Demo123!
-- Tenant: ICE Construction (auto-resolved on login)
-- Project: GSA Federal Building Renovation — 8th Floor (8 floors,
-  12 locations, 25 activities, 18 submittals, 11 drawings, 2 RFIs,
-  2 deliveries, 5 schedule activities, 3 RFIs, 2 work items,
-  1 pending approval)
+- Tenant slug: `ice` (for voice-PIN exchange)
+- Project: GSA Federal Building Renovation — 8th Floor
+- Stripe: STRIPE_API_KEY=sk_test_emergent (Emergent test sandbox)
+
+## File map
+**Backend routers**: `auth_router` · `google_auth_router` · `projects_router` ·
+`tasks_router` · `daily_reports_router` · `resources_router` ·
+`field_events_router` · `docs_router` · `upload_router` · `iter3_router` ·
+`iter4_router` · `iter5_router` · `iter6_router` · `iter7_router` · `ws_router`
+
+**Backend services**: `spec_search` · `kb_search` · `cpm` · `ai_agents` ·
+`spec_ingest` · `storage` · `voice_pipeline` · `schedule_parser`
+
+**Frontend pages**: Dashboard · Projects · MasterDoc · DailyReports · Photos ·
+Tasks · Lookahead (list+Gantt) · WeeklyReports · Locations · PolygonEditor ·
+Spatial3D · Productivity · RFIs · Drawings · Specs · Submittals · Aging ·
+Approvals · Recovery · Resources · Imports · AiAgentsPage · KnowledgeBase ·
+MarketplaceFull · VoicePinAdmin · ComplianceFull · AuditLog · Settings ·
+VoiceLogin · MobileForeman
