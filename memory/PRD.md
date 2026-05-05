@@ -100,6 +100,69 @@ productivity dashboard, global search dropdown, NotificationsBell, PWA.
 - **Markdown stripping verified** under load.
 **iter 8.json: 34 PASS / 1 SKIP / 2 FIXED post-report (person + equipment envelope shapes).**
 
+### Iter 10 — Daily Report Phase 2 full rebuild (current)
+The `/daily-reports` page is now the daily nerve-center for the field super,
+not a thin grid. Single page surfaces every signal:
+
+- **Header** — date, status (draft / submitted / approved + lock pill),
+  Prepared/Submitted/Approved by names, 5 KPIs (PPC, headcount, crew hours,
+  activity hours, delay min), pre-submit validation banner.
+- **Weather panel** — auto-fill from Open-Meteo (geocodes project city/state),
+  persists `weather_temp_high_f`/`_low_f`/`conditions`/`precip`/`wind_mph`/
+  `weather_fetched_at` into the DR doc; manual override per field.
+- **Crew presence panel** — per-trade rows (trade, company, headcount,
+  hours/person, sub-total, notes); inline add/edit/delete; running totals.
+- **Activity grid** — SOD%, EOD% (editable), Δ variance with red/green/grey
+  pill, status select (`not_started`/`in_progress`/`blocked`/`complete`),
+  hours, delay min, notes; "FIELD" badge on AF-prefixed unplanned rows.
+- **Unplanned activity creator** — amber inline form right under the grid;
+  creates a Task with `created_in_field=true`, `requires_pm_review=true`,
+  `created_from_daily_report_id=<id>` and pushes a row to the grid.
+- **Renovation panel** — only renders when `project.project_type` is in
+  (`renovation`, `tenant_improvement`); occupancy_active, occupied_areas,
+  dust_controls_in_place, after_hours_work, noise_complaints_count,
+  dust_violations_count.
+- **Inline event panels (5)** — Delays, Safety events, QC issues, RFIs,
+  Deliveries — each with inline list + inline create form. Each created
+  record carries `daily_report_id` so it surfaces in the bundle.
+- **Photos panel** — multipart upload bound to `daily_report_id`,
+  caption support, blob-fetched thumbnails (works under JWT auth).
+- **Voice panel** — lists voice annotations with `linked_entity_type=daily_report`
+  for this DR; the floating mic FAB still creates them and links via PATCH.
+- **Audit log panel** — surfaces audit_log rows scoped to the DR + presence ids.
+- **Footer** — Submit (blocks if any validation fails), Approve (admin/pm
+  only, requires status=submitted), Export PDF.
+
+Backend additions:
+- New collection `daily_presence` (per-trade, per-DR rows).
+- DailyReport: weather_wind_mph, weather_fetched_at, occupancy_active,
+  occupied_areas, dust_controls_in_place, noise_complaints_count,
+  dust_violations_count, after_hours_work.
+- Task: created_in_field, requires_pm_review, created_from_daily_report_id.
+- Delay / SafetyEvent / QcIssue / Rfi all gained `daily_report_id`.
+- Endpoints: `PATCH /daily-reports/{id}`, `POST /daily-reports/{id}/weather-autofill`,
+  `GET/POST /daily-reports/{id}/presence`, `PATCH/DELETE /daily-presence/{id}`,
+  `POST /daily-reports/{id}/unplanned-activity`,
+  `POST /daily-reports/{id}/approve`, `GET /daily-reports/{id}/context`
+  (single bundle: report+project+grid+presence+photos+voice+delays+safety+qc+rfis+deliveries+audit_log+user_labels).
+- Lock semantics: every DR-scoped endpoint refuses 409 once `status=submitted`.
+
+Copilot scoping:
+- `CopilotMessage` accepts `daily_report_id`. When present, `execute_copilot_turn`
+  injects DR snapshot (date, status, weather, full grid, presence rows) so
+  the LLM can reason about the day's plan vs actuals.
+- 3 new tools: `record_presence`, `mark_activity_status`,
+  `create_unplanned_activity` — all DR-scoped, all return the standardized
+  envelope (`{created|updated: {resource, id, ...}}`). Strict-no-markdown
+  rule still enforced (verified by tests).
+
+Frontend wiring:
+- `/lib/copilotContext.js` — pub/sub store. DailyReports publishes the open
+  DR id; CopilotPanel subscribes and ships `daily_report_id` on every
+  send + shows a green "Daily report scope" pill in its header.
+
+**iter 10.json: 18/18 PASS.**
+
 ## Cumulative test results
 | Iter | Backend | Frontend | Notes |
 |------|---------|----------|-------|
@@ -110,6 +173,9 @@ productivity dashboard, global search dropdown, NotificationsBell, PWA.
 | 5    | 50/50   | 100%     | Marketplace + notifs + prod      |
 | 6    | 21/22   | 100%     | Master-prompt scope a-g          |
 | 7    | 38/39   | 100%     | Stripe + RAG + gating + 3D cut   |
+| 8    | 34/35   | 100%     | Real MPP/XER + section view + audit |
+| 9    | 34/35   | 100%     | CRUD everywhere + onboarding     |
+| 10   | 18/18   | 100%     | Daily Report Phase 2 full rebuild |
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
