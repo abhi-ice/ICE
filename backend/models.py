@@ -237,6 +237,7 @@ class TaskCreate(StrictModel):
     # will be executed (e.g., 1.1, 1.2, ..., 1.21 instead of lexicographic
     # 1.1, 1.11, 1.12, ..., 1.2). Set when applying a schedule proposal.
     sequence: Optional[int] = None
+    resource_names: List[str] = Field(default_factory=list)
     # Field-created (Daily Report) flags — populated by superintendent
     # creating an unplanned activity. Master/PM still owns master schedule.
     created_in_field: bool = False
@@ -289,6 +290,7 @@ class Task(ReadModel):
     lookahead_status: LookaheadStatus = "not_in_window"
     predecessors: List[str] = Field(default_factory=list)
     sequence: Optional[int] = None
+    resource_names: List[str] = Field(default_factory=list)
     # Field-created (Daily Report) flags
     created_in_field: bool = False
     requires_pm_review: bool = False

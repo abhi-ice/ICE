@@ -179,17 +179,39 @@ export default function Tasks() {
         <table className="dense-table">
           <thead>
             <tr>
-              <th>Code</th><th>WBS</th><th>Description</th><th>Trade</th>
-              <th>Plan start</th><th>Plan finish</th><th>Dur</th>
-              <th>%</th><th>Status</th><th>CP</th><th>Float</th><th></th>
+              <th className="w-10">#</th>
+              <th>Description</th>
+              <th>Resource</th>
+              <th>Predecessors</th>
+              <th>Trade</th>
+              <th>Plan start</th>
+              <th>Plan finish</th>
+              <th>Dur (d)</th>
+              <th>%</th>
+              <th>Status</th>
+              <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
+              <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {tasks.map((t) => (
+            {tasks.map((t, idx) => (
               <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={t.is_critical_path ? "bg-red-50/40" : ""}>
-                <td className="font-mono text-xs">{t.activity_code}</td>
-                <td className="font-mono text-xs text-slate-500">{t.wbs}</td>
-                <td className="truncate max-w-[260px]">{t.description}</td>
+                <td className="tabular-nums text-xs text-slate-500">{idx + 1}</td>
+                <td className="truncate max-w-[280px]">
+                  <div className="font-medium text-sm">{t.description}</div>
+                  <div className="text-[10px] text-slate-400 font-mono">{t.activity_code}{t.is_milestone ? " · milestone" : ""}</div>
+                </td>
+                <td className="text-xs">
+                  {t.resource_names && t.resource_names.length
+                    ? t.resource_names.join(", ")
+                    : <span className="text-slate-400">—</span>}
+                </td>
+                <td className="text-xs font-mono">
+                  {t.predecessors && t.predecessors.length
+                    ? t.predecessors.join(", ")
+                    : <span className="text-slate-400">—</span>}
+                </td>
                 <td className="text-xs">{t.trade_code || "—"}</td>
                 <td className="font-mono text-xs">{t.planned_start || "—"}</td>
                 <td className="font-mono text-xs">{t.planned_finish || "—"}</td>
@@ -198,8 +220,10 @@ export default function Tasks() {
                 <td>
                   <span className={`pill ${t.status === "complete" ? "pill-green" : t.status === "in_progress" ? "pill-blue" : "pill-slate"}`}>{t.status}</span>
                 </td>
-                <td>{t.is_critical_path ? <span className="pill pill-red">CP</span> : null}</td>
-                <td className="tabular-nums text-xs">{t.total_float_days ?? "—"}</td>
+                <td>{t.is_critical_path ? <span className="pill pill-red" title="Critical Path">CP</span> : null}</td>
+                <td className="tabular-nums text-xs" title="Days of slack before this task delays the project finish">
+                  {t.total_float_days ?? "—"}
+                </td>
                 <td className="text-right">
                   <button data-testid={`edit-task-${t.activity_code}`} onClick={() => openEdit(t)} title="Edit" className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100">
                     <Pencil className="h-3.5 w-3.5" />
@@ -210,10 +234,18 @@ export default function Tasks() {
                 </td>
               </tr>
             ))}
-            {!tasks.length && <tr><td colSpan="12" className="text-center py-8 text-sm text-slate-500">No activities. Use the "New activity" button or import a schedule.</td></tr>}
+            {!tasks.length && <tr><td colSpan="13" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {/* CP / Float legend */}
+      {tasks.length > 0 && (
+        <div className="text-xs text-slate-500 mt-2 flex flex-wrap gap-4">
+          <span><span className="pill pill-red">CP</span> Critical Path — zero float, any slip delays the project finish.</span>
+          <span><strong>Float</strong> (slack) — calendar days an activity can slip without delaying the project. High floats (e.g. 40+) usually mean the source schedule has no predecessor links between activities.</span>
+        </div>
+      )}
     </div>
   );
 }

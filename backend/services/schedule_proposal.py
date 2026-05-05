@@ -36,6 +36,7 @@ def parsed_to_task_create_payload(parsed: dict, project_id: str) -> dict:
         "duration_days": parsed.get("duration_days"),
         "is_milestone": bool(parsed.get("is_milestone", False)),
         "predecessors": list(parsed.get("predecessors", [])),
+        "resource_names": list(parsed.get("resource_names", [])),
         "source": parsed.get("source", "master_schedule"),
     }
     # Drop None values so StrictModel validation doesn't trip on Optional fields

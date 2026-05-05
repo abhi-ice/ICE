@@ -251,9 +251,28 @@ def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]
             try:
                 for r in task.getPredecessors():
                     if r is not None and r.getTargetTask() is not None:
-                        tid = r.getTargetTask().getID()
-                        if tid is not None:
-                            preds.append(str(tid))
+                        tgt = r.getTargetTask()
+                        # Prefer activity_id / wbs (matches our activity_code) so the UI
+                        # can render predecessors as readable codes like "1.5", not raw IDs.
+                        try:
+                            ref = tgt.getActivityID() or tgt.getWBS()
+                        except Exception:
+                            ref = None
+                        if not ref:
+                            ref = tgt.getID()
+                        if ref is not None:
+                            preds.append(str(ref))
+            except Exception:
+                pass
+            # Resource names — MPP "Resource Names" column equivalent.
+            resource_names: list[str] = []
+            try:
+                for ra in task.getResourceAssignments():
+                    if ra is None: continue
+                    res = ra.getResource()
+                    if res is None: continue
+                    nm = res.getName()
+                    if nm: resource_names.append(str(nm))
             except Exception:
                 pass
             try:
@@ -279,6 +298,7 @@ def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]
                 "planned_finish": finish.toString()[:10] if finish else None,
                 "duration_days": duration_days,
                 "predecessors": preds,
+                "resource_names": resource_names,
                 "trade_code": None,
                 "is_milestone": bool(task.getMilestone()) if hasattr(task, "getMilestone") else False,
                 "is_summary": is_summary,
