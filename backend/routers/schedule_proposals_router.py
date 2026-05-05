@@ -200,9 +200,10 @@ async def approve_proposal(
     created = 0
     updated = 0
     failed: list[dict] = []
-    for row in rows_to_apply:
+    for idx, row in enumerate(rows_to_apply):
         try:
             payload_dict = parsed_to_task_create_payload(row, project_id)
+            payload_dict["sequence"] = idx  # preserve source-file ordering
             tc = validate_payload(payload_dict)
         except Exception as e:
             failed.append({"row": row.get("activity_code"), "error": str(e)})

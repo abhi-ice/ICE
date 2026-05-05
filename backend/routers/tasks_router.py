@@ -54,10 +54,14 @@ async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
 @router.get("/projects/{project_id}/tasks", response_model=list[Task])
 async def list_tasks(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # Sort by `sequence` (preserves source-file order from the schedule import)
+    # then by planned_start (CSV/legacy rows without a sequence). Tasks with
+    # no sequence (legacy or hand-created) sort AFTER imported ones because
+    # MongoDB sorts None ascending — we use a high default at write time.
     docs = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0},
-    ).sort("activity_code", 1).to_list(10000)
+    ).sort([("sequence", 1), ("planned_start", 1), ("activity_code", 1)]).to_list(10000)
     return [Task(**d) for d in docs]
 
 
