@@ -17,7 +17,7 @@ from typing import Optional
 from datetime import datetime, date
 from database import get_db, tenant_filter
 from models import (
-    ScheduleProposal, ScheduleProposalDecision, gen_id, utc_now,
+    ScheduleProposal, ScheduleProposalDecision, StrictModel, gen_id, utc_now,
 )
 from auth import require_tenant
 from audit import write_audit
@@ -25,6 +25,7 @@ from services.schedule_parser import parse_schedule_file
 from services.schedule_diff import compute_schedule_diff
 from services.schedule_ai_review import review_schedule_diff
 from services.schedule_proposal import parsed_to_task_create_payload, validate_payload
+from services.schedule_summary_filter import detect_summary_rows, visible_rows
 from services.cpm import compute_cpm
 
 router = APIRouter(tags=["schedule-proposals"])
@@ -73,6 +74,12 @@ async def upload_schedule_proposal(
         return out
     parsed_rows = [_norm_row(r) for r in parsed_rows]
 
+    # Heuristic filter — flag heading/summary rows BEFORE the diff. Free,
+    # no LLM. The user can toggle individual rows or chat with Claude on
+    # the proposal page to adjust.
+    parsed_rows = detect_summary_rows(parsed_rows)
+    visible = visible_rows(parsed_rows)
+
     # Snapshot current tasks for diff
     current_tasks = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
@@ -80,7 +87,7 @@ async def upload_schedule_proposal(
          "planned_finish": 1, "duration_days": 1, "predecessors": 1, "pct_complete": 1},
     ).to_list(5000)
 
-    diff = compute_schedule_diff(current_tasks, parsed_rows)
+    diff = compute_schedule_diff(current_tasks, visible)
 
     # Final BSON-safety pass on the diff (dates → ISO strings recursively)
     def _scrub(o):
@@ -157,7 +164,7 @@ async def get_proposal(proposal_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = await db.schedule_proposals.find_one(
         tenant_filter(ctx["tenant_id"], {"id": proposal_id}),
-        {"_id": 0, "parsed_rows": 0},  # parsed_rows withheld until apply
+        {"_id": 0},  # include parsed_rows so the UI can show heading checkboxes
     )
     if not doc:
         raise HTTPException(404, "Proposal not found")
@@ -187,12 +194,13 @@ async def approve_proposal(
 
     project_id = proposal["project_id"]
     parsed_rows = proposal.get("parsed_rows") or []
+    rows_to_apply = visible_rows(parsed_rows)
     diff = proposal.get("diff", {})
 
     created = 0
     updated = 0
     failed: list[dict] = []
-    for row in parsed_rows:
+    for row in rows_to_apply:
         try:
             payload_dict = parsed_to_task_create_payload(row, project_id)
             tc = validate_payload(payload_dict)
@@ -339,3 +347,181 @@ async def refresh_ai_review(proposal_id: str, ctx: dict = Depends(require_tenant
         {"$set": {"ai_review": review}},
     )
     return {"ai_review": review}
+
+
+# ============================================================
+# Toggle individual rows in/out of the proposal (free, no LLM)
+# ============================================================
+class TogglePayload(StrictModel):
+    activity_codes: list[str]
+    excluded: bool
+
+
+async def _recompute_diff_and_save(db, proposal: dict, ctx: dict):
+    """After any mutation of parsed_rows, recompute the diff against the
+    current tasks collection so the UI is always consistent. AI review is
+    NOT auto-rerun (saves credits) — user clicks 'Re-run review' if they want.
+    """
+    project_id = proposal["project_id"]
+    current_tasks = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "planned_start": 1,
+         "planned_finish": 1, "duration_days": 1, "predecessors": 1, "pct_complete": 1},
+    ).to_list(5000)
+    new_diff = compute_schedule_diff(current_tasks, visible_rows(proposal["parsed_rows"]))
+    # date scrub for BSON safety
+    from datetime import date as _date, datetime as _datetime
+    def _scrub(o):
+        if isinstance(o, dict): return {k: _scrub(v) for k, v in o.items()}
+        if isinstance(o, list): return [_scrub(v) for v in o]
+        if isinstance(o, _date) and not isinstance(o, _datetime):
+            return o.isoformat()
+        return o
+    new_diff = _scrub(new_diff)
+    await db.schedule_proposals.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal["id"]}),
+        {"$set": {"parsed_rows": proposal["parsed_rows"], "diff": new_diff}},
+    )
+    return new_diff
+
+
+@router.post("/schedule-proposals/{proposal_id}/toggle-rows")
+async def toggle_rows(
+    proposal_id: str,
+    payload: TogglePayload,
+    ctx: dict = Depends(require_tenant),
+):
+    """Mark/unmark one or more rows as summary headings. Recomputes diff."""
+    db = get_db()
+    proposal = await db.schedule_proposals.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal_id}), {"_id": 0},
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    if proposal["status"] != "pending_review":
+        raise HTTPException(409, f"Proposal already {proposal['status']}")
+
+    codes = set(str(c) for c in payload.activity_codes)
+    flagged = 0
+    for r in proposal["parsed_rows"]:
+        if str(r.get("activity_code")) in codes:
+            r["excluded_as_summary"] = bool(payload.excluded)
+            r["summary_reason"] = "user-marked" if payload.excluded else None
+            flagged += 1
+    new_diff = await _recompute_diff_and_save(db, proposal, ctx)
+    return {"updated": flagged, "diff": new_diff}
+
+
+# ============================================================
+# Chat — let the user converse with Claude about the parsed rows.
+# Each chat turn = ONE LLM call. No memory between turns (pass full context).
+# Claude returns a JSON action plan: which activity_codes to exclude/include.
+# ============================================================
+class ChatPayload(StrictModel):
+    message: str
+
+
+@router.post("/schedule-proposals/{proposal_id}/chat")
+async def chat_with_proposal(
+    proposal_id: str,
+    payload: ChatPayload,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    proposal = await db.schedule_proposals.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal_id}), {"_id": 0},
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    if proposal["status"] != "pending_review":
+        raise HTTPException(409, f"Proposal already {proposal['status']}")
+
+    # Build a compact view of the rows for the LLM
+    rows_view = [
+        {
+            "activity_code": r.get("activity_code"),
+            "description": r.get("description"),
+            "wbs": r.get("wbs"),
+            "duration_days": r.get("duration_days"),
+            "excluded": bool(r.get("excluded_as_summary")),
+            "exclude_reason": r.get("summary_reason"),
+        }
+        for r in proposal["parsed_rows"]
+    ]
+
+    import os
+    import json
+    import re
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+    SYS = (
+        "You are reviewing a parsed construction schedule. The user wants to mark "
+        "summary/heading rows so they don't get applied as tasks. You must reply "
+        "with a SINGLE JSON object — no markdown, no code fences, no surrounding text. "
+        "Schema:\n"
+        "{\n"
+        '  "exclude": ["activity_code", ...],\n'
+        '  "include": ["activity_code", ...],\n'
+        '  "reply": "1-2 sentence plain English reply to show the user."\n'
+        "}\n"
+        "Rules:\n"
+        "- Only refer to activity_codes that exist in the rows array.\n"
+        "- Use exclude to mark a row as a heading. Use include to UN-mark.\n"
+        "- If the user asked a question (no mutation), return both arrays empty and answer in reply.\n"
+        "- Reply must contain no #, *, |, or backtick characters."
+    )
+    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    if not api_key:
+        return {"reply": "AI is unavailable (no API key configured). Use the checkbox toggles instead.",
+                "exclude": [], "include": [], "diff": proposal.get("diff")}
+    chat = LlmChat(
+        api_key=api_key,
+        session_id=f"sched-chat-{proposal_id}-{int(__import__('time').time())}",
+        system_message=SYS,
+    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+    user_text = (
+        f"User message: {payload.message}\n\n"
+        f"Rows ({len(rows_view)}):\n" + json.dumps(rows_view, default=str)
+    )
+    try:
+        raw = await chat.send_message(UserMessage(text=user_text))
+    except Exception as e:
+        return {"reply": f"AI error: {str(e)[:200]}", "exclude": [], "include": [],
+                "diff": proposal.get("diff")}
+
+    raw = str(raw).strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.MULTILINE)
+    try:
+        plan = json.loads(cleaned)
+    except Exception:
+        m = re.search(r"\{[\s\S]+\}", cleaned)
+        plan = json.loads(m.group(0)) if m else {"reply": "Sorry, I could not parse my own answer.", "exclude": [], "include": []}
+
+    exclude = set(str(c) for c in (plan.get("exclude") or []))
+    include = set(str(c) for c in (plan.get("include") or []))
+    valid_codes = {str(r.get("activity_code")) for r in proposal["parsed_rows"]}
+    exclude &= valid_codes
+    include &= valid_codes
+
+    mutated = 0
+    for r in proposal["parsed_rows"]:
+        ac = str(r.get("activity_code"))
+        if ac in exclude:
+            r["excluded_as_summary"] = True
+            r["summary_reason"] = "AI-marked"
+            mutated += 1
+        elif ac in include:
+            r["excluded_as_summary"] = False
+            r["summary_reason"] = None
+            mutated += 1
+
+    new_diff = await _recompute_diff_and_save(db, proposal, ctx) if mutated else proposal.get("diff")
+    reply = re.sub(r"[`*#|]+", "", str(plan.get("reply") or ""))
+    return {
+        "reply": reply.strip() or "Done.",
+        "exclude": list(exclude),
+        "include": list(include),
+        "mutated": mutated,
+        "diff": new_diff,
+    }

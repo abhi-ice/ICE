@@ -274,6 +274,7 @@ must be reviewed and approved before its rows touch the `tasks` collection
 | 10   | 18/18   | 100%     | Daily Report Phase 2 full rebuild |
 | 11   | 27/27   | 100%     | Auth rebuild, Google removed, team invites, DR refresh, delay→days, demo wiped |
 | 12   | 18/18   | 100%     | Schedule diff + AI review + PM approval workflow |
+| 12.1 | smoke   | smoke    | Heading-row filter (FREE heuristic) + chat + manual toggles |
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash

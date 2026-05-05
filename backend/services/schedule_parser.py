@@ -260,6 +260,17 @@ def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]
                 act_code = task.getActivityID() or wbs or outline or str(unique_id)
             except Exception:
                 act_code = wbs or str(unique_id)
+            # Capture summary/heading info — MPXJ exposes Task.getSummary()
+            # which is True for parent rollup rows ("Kitchen Renovation",
+            # "Completion & Close-Outs") that should NOT become activities.
+            try:
+                is_summary = bool(task.getSummary()) if hasattr(task, "getSummary") else False
+            except Exception:
+                is_summary = False
+            try:
+                outline_level = int(task.getOutlineLevel()) if hasattr(task, "getOutlineLevel") and task.getOutlineLevel() is not None else None
+            except Exception:
+                outline_level = None
             rows.append({
                 "activity_code": str(act_code) if act_code else f"task_{unique_id}",
                 "description": str(name).strip(),
@@ -270,6 +281,8 @@ def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]
                 "predecessors": preds,
                 "trade_code": None,
                 "is_milestone": bool(task.getMilestone()) if hasattr(task, "getMilestone") else False,
+                "is_summary": is_summary,
+                "outline_level": outline_level,
             })
     except Exception as e:
         errors.append(f"MPXJ read failed: {e}")

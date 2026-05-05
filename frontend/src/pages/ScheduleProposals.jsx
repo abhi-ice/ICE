@@ -15,6 +15,7 @@ import { toast } from "../components/ui/sonner";
 import {
   GitCompare, ChevronLeft, ShieldCheck, ShieldAlert, ShieldQuestion,
   CheckCircle2, XCircle, Sparkles, Plus, Minus, ArrowRight, Clock, RefreshCw,
+  ListFilter, MessageCircle, Send,
 } from "lucide-react";
 
 const STATUS_PILL = {
@@ -212,6 +213,16 @@ function ProposalDetail({ id, onBack }) {
         <Stat label="Duration changes" value={s.duration_changed_count || 0} />
       </div>
 
+      {/* PARSED ROWS (with summary toggles) — ONLY while pending */}
+      {pending && doc.parsed_rows && doc.parsed_rows.length > 0 && (
+        <ParsedRowsPanel doc={doc} reload={load} />
+      )}
+
+      {/* CHAT — let the user ask Claude to fix mis-categorised rows */}
+      {pending && (
+        <ChatPanel proposalId={id} onMutated={load} />
+      )}
+
       {/* DIFF SECTIONS */}
       <DiffSection icon={Plus} tone="emerald" title="Added" rows={doc.diff?.added || []} testid="added"
         cols={[
@@ -366,5 +377,141 @@ function DiffSection({ icon: Icon, tone, title, rows, cols, testid, render = {} 
         </table>
       </div>
     </details>
+  );
+}
+
+
+// ------------------------------------------------------------
+// Parsed-rows panel — checkbox per row to mark/unmark heading.
+// ------------------------------------------------------------
+function ParsedRowsPanel({ doc, reload }) {
+  const rows = doc.parsed_rows || [];
+  const excludedCount = rows.filter((r) => r.excluded_as_summary).length;
+  const [busyCode, setBusyCode] = useState(null);
+
+  const toggle = async (code, excluded) => {
+    setBusyCode(code);
+    try {
+      await api.post(`/schedule-proposals/${doc.id}/toggle-rows`, {
+        activity_codes: [code],
+        excluded,
+      });
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Toggle failed");
+    } finally { setBusyCode(null); }
+  };
+
+  return (
+    <details data-testid="parsed-rows-panel" className="surface p-0 overflow-hidden" open>
+      <summary className="cursor-pointer p-3 flex items-center gap-2 hover:bg-slate-50">
+        <ListFilter className="h-4 w-4 text-slate-600" />
+        <div className="font-medium text-sm">Parsed activities</div>
+        <span className="text-xs text-slate-500">
+          ({rows.length - excludedCount} task(s) · {excludedCount} hidden as heading)
+        </span>
+      </summary>
+      <div className="px-2 pb-3 text-xs text-slate-500">
+        Uncheck rows that are summary headings — they will be removed from the diff above and won&apos;t be applied. The auto-detected headings are already unchecked. You can also use the chat below to ask Claude to fix mistakes.
+      </div>
+      <div className="overflow-x-auto max-h-96 overflow-y-auto border-t border-slate-100">
+        <table className="dense-table w-full">
+          <thead className="sticky top-0 bg-white">
+            <tr>
+              <th className="w-12">Task?</th>
+              <th>Code</th>
+              <th>Description</th>
+              <th>Start</th>
+              <th>Finish</th>
+              <th>Days</th>
+              <th>Reason if hidden</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.activity_code}
+                data-testid={`parsed-row-${r.activity_code}`}
+                className={r.excluded_as_summary ? "bg-amber-50/50 text-slate-500" : ""}>
+                <td className="text-center">
+                  <input data-testid={`row-checkbox-${r.activity_code}`}
+                    type="checkbox"
+                    checked={!r.excluded_as_summary}
+                    disabled={busyCode === r.activity_code}
+                    onChange={(e) => toggle(r.activity_code, !e.target.checked)} />
+                </td>
+                <td className="font-mono text-xs">{r.activity_code}</td>
+                <td className="text-xs truncate max-w-[280px]">{r.description}</td>
+                <td className="text-xs font-mono">{r.planned_start || "—"}</td>
+                <td className="text-xs font-mono">{r.planned_finish || "—"}</td>
+                <td className="tabular-nums text-xs">{r.duration_days ?? "—"}</td>
+                <td className="text-xs text-amber-700 italic">{r.summary_reason || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+// ------------------------------------------------------------
+// Chat panel — one Claude turn per message. Saves credits.
+// ------------------------------------------------------------
+function ChatPanel({ proposalId, onMutated }) {
+  const [thread, setThread] = useState([
+    { role: "ai", text: "Hi — I am here to help clean up the parsed schedule. Tell me which rows are headings (e.g., 'remove row 1.21 it is a heading') or ask any question about the diff. Each message uses one Claude credit." },
+  ]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const send = async () => {
+    if (!input.trim() || busy) return;
+    const msg = input.trim();
+    setThread((t) => [...t, { role: "user", text: msg }]);
+    setInput("");
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/schedule-proposals/${proposalId}/chat`, { message: msg });
+      const tool = (data.exclude?.length || data.include?.length)
+        ? `Action: ${data.exclude?.length ? `excluded ${data.exclude.length}` : ""}${data.include?.length ? ` · included ${data.include.length}` : ""}`
+        : null;
+      setThread((t) => [...t, { role: "ai", text: data.reply || "(no reply)", tool }]);
+      if (data.mutated) await onMutated();
+    } catch (e) {
+      setThread((t) => [...t, { role: "ai", text: "Chat error: " + (e.response?.data?.detail || e.message) }]);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div data-testid="chat-panel" className="surface p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <MessageCircle className="h-4 w-4 text-blue-600" />
+        <div className="font-medium text-sm">Chat with Claude about this proposal</div>
+        <span className="text-[10px] text-slate-400 ml-auto">1 message = 1 LLM call</span>
+      </div>
+      <div className="space-y-2 max-h-72 overflow-y-auto pr-1 mb-3">
+        {thread.map((m, i) => (
+          <div key={i} data-testid={`chat-msg-${i}`}
+            className={`text-sm ${m.role === "user" ? "ml-12 bg-blue-50 border-blue-100" : "mr-12 bg-slate-50 border-slate-100"} border rounded-lg px-3 py-2`}>
+            <div>{m.text}</div>
+            {m.tool && <div className="mt-1 text-[10px] text-emerald-700 font-mono">{m.tool}</div>}
+          </div>
+        ))}
+        {busy && <div className="text-xs text-slate-400 ml-2 animate-pulse">Claude is thinking…</div>}
+      </div>
+      <div className="flex gap-2">
+        <input data-testid="chat-input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") send(); }}
+          placeholder='e.g. "1.21 is a heading, hide it"'
+          disabled={busy}
+          className="flex-1 h-9 px-3 rounded border border-slate-200 text-sm" />
+        <button data-testid="chat-send" onClick={send} disabled={busy || !input.trim()}
+          className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
+          <Send className="h-3.5 w-3.5" /> Send
+        </button>
+      </div>
+    </div>
   );
 }
