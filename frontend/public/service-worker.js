@@ -1,42 +1,22 @@
-// Minimal service worker — runtime cache for /static/ + offline fallback.
-// Master prompt §27 — PWA + offline mode.
-const CACHE = "ice-ops-v1";
-const SHELL = ["/", "/manifest.json"];
-
-self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => null));
+// Self-destructing service worker.
+// Older builds shipped a cache-first SW that kept serving stale bundles after
+// auth + UI changes (users were still seeing the old Google sign-in button
+// even though it was deleted from the codebase). This version unregisters
+// itself and clears every cache it ever owned, so the next page load fetches
+// fresh HTML/JS/CSS from the network.
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
-self.addEventListener("activate", (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+    await self.registration.unregister();
+    const clientList = await self.clients.matchAll({ type: "window" });
+    clientList.forEach((c) => c.navigate(c.url));
+  })());
 });
 
-self.addEventListener("fetch", (e) => {
-  const req = e.request;
-  if (req.method !== "GET") return;
-  const url = new URL(req.url);
-  // Never intercept API calls
-  if (url.pathname.startsWith("/api/")) return;
-  // Static assets — cache first
-  if (url.pathname.startsWith("/static/") || /\.(woff2?|css|js|png|svg|ico)$/.test(url.pathname)) {
-    e.respondWith(
-      caches.open(CACHE).then(async (c) => {
-        const cached = await c.match(req);
-        if (cached) return cached;
-        try {
-          const resp = await fetch(req);
-          if (resp.ok) c.put(req, resp.clone());
-          return resp;
-        } catch {
-          return cached || Response.error();
-        }
-      })
-    );
-  }
-});
+// Never intercept any request — pass everything through to the network.
+self.addEventListener("fetch", () => {});

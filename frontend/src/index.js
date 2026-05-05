@@ -10,9 +10,18 @@ root.render(
   </React.StrictMode>,
 );
 
-// PWA service worker registration (offline mode for static assets)
+// PWA service worker — DISABLED.
+// We previously shipped a cache-first SW which kept serving stale bundles
+// after auth + UI changes (users still saw the old Google button after
+// upgrade). Now we forcibly unregister any existing SW and purge its
+// caches on every page load. App is online-only.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+    navigator.serviceWorker.getRegistrations()
+      .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+      .catch(() => {});
+    if (window.caches && caches.keys) {
+      caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
+    }
   });
 }
