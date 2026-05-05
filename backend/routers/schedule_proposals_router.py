@@ -216,9 +216,25 @@ async def approve_proposal(
         if existing:
             updates = tc.model_dump(mode="json", exclude_unset=False)
             updates.pop("project_id", None)
+            # If this activity_code was previously soft-deleted (e.g. user
+            # deleted it manually before re-importing), RESTORE it instead of
+            # silently re-applying fields onto a deleted record. Otherwise the
+            # Tasks list (which filters status='deleted') would show nothing
+            # even though the import reported success.
+            if existing.get("status") == "deleted":
+                updates["status"] = "not_started"
+                updates["pct_complete"] = 0
+                updates["prev_pct_complete"] = 0
+                updates["actual_start"] = None
+                updates["actual_finish"] = None
+                updates["actual_hours"] = 0
+                updates["actual_quantity"] = 0
+                updates.pop("deleted_at", None)
+                updates.pop("deleted_by_proposal_id", None)
             await db.tasks.update_one(
                 tenant_filter(ctx["tenant_id"], {"id": existing["id"]}),
-                {"$set": updates},
+                {"$set": updates,
+                 "$unset": {"deleted_at": "", "deleted_by_proposal_id": ""}},
             )
             updated += 1
         else:
