@@ -131,6 +131,12 @@ class ProjectUpdate(StrictModel):
     contract_value_usd: Optional[float] = None
     planned_completion_date: Optional[date] = None
     actual_completion_date: Optional[date] = None
+    contract_number: Optional[str] = None
+    client_name: Optional[str] = None
+    address_line1: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
 
 
 class Project(ReadModel):
