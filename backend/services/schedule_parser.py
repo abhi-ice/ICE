@@ -250,18 +250,27 @@ def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]
             preds: list[str] = []
             try:
                 for r in task.getPredecessors():
-                    if r is not None and r.getTargetTask() is not None:
+                    if r is None:
+                        continue
+                    # MPXJ 16+ renamed getTargetTask() → getPredecessorTask().
+                    # Older versions used getTargetTask(); support both.
+                    tgt = None
+                    if hasattr(r, "getPredecessorTask"):
+                        tgt = r.getPredecessorTask()
+                    elif hasattr(r, "getTargetTask"):
                         tgt = r.getTargetTask()
-                        # Prefer activity_id / wbs (matches our activity_code) so the UI
-                        # can render predecessors as readable codes like "1.5", not raw IDs.
-                        try:
-                            ref = tgt.getActivityID() or tgt.getWBS()
-                        except Exception:
-                            ref = None
-                        if not ref:
-                            ref = tgt.getID()
-                        if ref is not None:
-                            preds.append(str(ref))
+                    if tgt is None:
+                        continue
+                    # Prefer activity_id / wbs (matches our activity_code) so the UI
+                    # can render predecessors as readable codes like "1.5", not raw IDs.
+                    try:
+                        ref = tgt.getActivityID() or tgt.getWBS()
+                    except Exception:
+                        ref = None
+                    if not ref:
+                        ref = tgt.getID()
+                    if ref is not None:
+                        preds.append(str(ref))
             except Exception:
                 pass
             # Resource names — MPP "Resource Names" column equivalent.
