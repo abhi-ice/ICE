@@ -163,6 +163,56 @@ Frontend wiring:
 
 **iter 10.json: 18/18 PASS.**
 
+### Iter 11 — Auth rebuild + tenant/team flow + DR fixes (current)
+User asked for (a) bug fix on inline records ("load failed"), (b) full
+demo-data purge, (c) Google OAuth removed, (d) email+password signup with
+organization name, (e) team-invite flow, (f) DR grid must include any
+activity whose `[planned_start, planned_finish]` interval contains today,
+(g) Delay schema in DAYS not minutes.
+
+**Auth / tenancy**
+- `UserRegister` now requires `organization_name`; `POST /api/auth/register`
+  creates a fresh tenant on-the-fly + makes the registrant its admin +
+  best-effort seeds the CSI taxonomy/cost-rate library for that tenant.
+- Slug auto-generated and uniquified.
+- Google login completely removed from FastAPI (`google_auth_router`
+  unregistered) and from the React app (`AuthCallback` route + import dropped,
+  no Google button on Login page).
+- Demo seed (`seed_demo`, `/api/dev/seed`) removed from server startup.
+
+**Team management**
+- New `team_router` mounted at `/api/team`: `POST /invites` (admin),
+  `GET /invites`, `DELETE /invites/{id}` (revoke), `GET /members`,
+  `DELETE /members/{id}` (admin, can't remove self → 400).
+- Public `POST /api/auth/accept-invite` swaps {code, email, password,
+  full_name} for an account joined to the inviting tenant. Codes are
+  12-char `secrets.token_urlsafe`, 14-day expiry, single-use.
+- Frontend pages: `/signup`, `/accept-invite`, `/team` (admin invite +
+  pending-invite copy-link + member roster + remove). Sidebar gets a
+  "Team" entry.
+
+**Daily Report fixes**
+- `_prepopulate_grid` now uses strict interval containment
+  (`planned_start <= report_date <= planned_finish`); the ±1-day buffer
+  was wrong — only 2 activities surfacing was the bug.
+- New `POST /api/daily-reports/{id}/refresh-grid` — idempotent re-run of
+  prepopulate against the live schedule. Frontend exposes a
+  "Refresh from schedule" button on the activity-grid panel.
+- `Delay.delay_minutes` → `Delay.delay_days` (Optional[float]). Copilot
+  catalogue, copilot tool, frontend form, and rendered list all migrated.
+  StrictModel `extra='forbid'` cleanly rejects legacy `delay_minutes`
+  payloads with 422.
+- "Load failed" toasts replaced with a `formatErr` helper that surfaces
+  HTTP status + Pydantic detail + non-string detail arrays.
+
+**Database state**
+- Both at the start of this iteration AND at the end of testing-agent
+  validation, ALL Mongo collections were dropped. The platform is
+  intentionally empty — Abhi's first signup at `/signup` becomes the
+  first tenant ever.
+
+**iter 11.json: 27/27 PASS — pytest suite at `/app/backend/tests/test_iteration11.py`.**
+
 ## Cumulative test results
 | Iter | Backend | Frontend | Notes |
 |------|---------|----------|-------|
@@ -176,6 +226,7 @@ Frontend wiring:
 | 8    | 34/35   | 100%     | Real MPP/XER + section view + audit |
 | 9    | 34/35   | 100%     | CRUD everywhere + onboarding     |
 | 10   | 18/18   | 100%     | Daily Report Phase 2 full rebuild |
+| 11   | 27/27   | 100%     | Auth rebuild, Google removed, team invites, DR refresh, delay→days, demo wiped |
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
