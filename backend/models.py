@@ -220,6 +220,11 @@ class TaskCreate(StrictModel):
     is_milestone: bool = False
     predecessors: List[str] = Field(default_factory=list)
     source: str = "master_schedule"
+    # Field-created (Daily Report) flags — populated by superintendent
+    # creating an unplanned activity. Master/PM still owns master schedule.
+    created_in_field: bool = False
+    requires_pm_review: bool = False
+    created_from_daily_report_id: Optional[str] = None
 
 
 class TaskUpdate(StrictModel):
@@ -266,6 +271,10 @@ class Task(ReadModel):
     total_float_days: Optional[int] = None
     lookahead_status: LookaheadStatus = "not_in_window"
     predecessors: List[str] = Field(default_factory=list)
+    # Field-created (Daily Report) flags
+    created_in_field: bool = False
+    requires_pm_review: bool = False
+    created_from_daily_report_id: Optional[str] = None
     created_at: datetime
 
 
@@ -289,6 +298,8 @@ class DailyReport(ReadModel):
     weather_temp_low_f: Optional[float] = None
     weather_conditions: Optional[str] = None
     weather_precipitation_in: Optional[float] = None
+    weather_wind_mph: Optional[float] = None
+    weather_fetched_at: Optional[datetime] = None
     notes: Optional[str] = None
     status: str = "draft"
     prepared_by: Optional[str] = None
@@ -296,6 +307,13 @@ class DailyReport(ReadModel):
     submitted_at: Optional[datetime] = None
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
+    # Renovation-specific fields (rendered for project_type in renovation/tenant_improvement)
+    occupancy_active: Optional[bool] = None
+    occupied_areas: Optional[str] = None
+    dust_controls_in_place: Optional[bool] = None
+    noise_complaints_count: int = 0
+    dust_violations_count: int = 0
+    after_hours_work: Optional[bool] = None
     created_at: datetime
 
 
@@ -331,6 +349,66 @@ class DailyReportActivity(ReadModel):
     activity_description: Optional[str] = None
     location_name: Optional[str] = None
     trade_code: Optional[str] = None
+
+
+class DailyReportUpdate(StrictModel):
+    """Patchable fields on DailyReport doc (weather + renovation + notes)."""
+    weather_temp_high_f: Optional[float] = None
+    weather_temp_low_f: Optional[float] = None
+    weather_conditions: Optional[str] = None
+    weather_precipitation_in: Optional[float] = None
+    weather_wind_mph: Optional[float] = None
+    notes: Optional[str] = None
+    occupancy_active: Optional[bool] = None
+    occupied_areas: Optional[str] = None
+    dust_controls_in_place: Optional[bool] = None
+    noise_complaints_count: Optional[int] = None
+    dust_violations_count: Optional[int] = None
+    after_hours_work: Optional[bool] = None
+
+
+class DailyPresenceCreate(StrictModel):
+    daily_report_id: str
+    trade: str
+    sub_id: Optional[str] = None  # crew_id or external sub identifier
+    company_name: Optional[str] = None
+    headcount: int = 0
+    hours_per_person: float = 8.0
+    notes: Optional[str] = None
+
+
+class DailyPresenceUpdate(StrictModel):
+    trade: Optional[str] = None
+    sub_id: Optional[str] = None
+    company_name: Optional[str] = None
+    headcount: Optional[int] = None
+    hours_per_person: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class DailyPresence(ReadModel):
+    id: str
+    tenant_id: str
+    daily_report_id: str
+    trade: str
+    sub_id: Optional[str] = None
+    company_name: Optional[str] = None
+    headcount: int = 0
+    hours_per_person: float = 8.0
+    notes: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+
+
+class UnplannedActivityCreate(StrictModel):
+    """Superintendent-created activity from the field. Marks
+    requires_pm_review=true so the PM can promote/merge into master."""
+    description: str
+    trade_code: Optional[str] = None
+    location_id: Optional[str] = None
+    crew_id: Optional[str] = None
+    duration_days: Optional[float] = 1
+    notes: Optional[str] = None
 
 
 # ---------- Resources ----------
@@ -458,6 +536,7 @@ class RfiCreate(StrictModel):
     from_party: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     spec_section_refs: List[str] = Field(default_factory=list)
     drawing_refs: List[dict] = Field(default_factory=list)
     date_required: Optional[date] = None
@@ -485,6 +564,7 @@ class Rfi(ReadModel):
     from_party: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     spec_section_refs: List[str] = Field(default_factory=list)
     date_initiated: date
     date_required: Optional[date] = None
@@ -535,6 +615,7 @@ class DelayCreate(StrictModel):
     project_id: str
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity = "minor"
@@ -549,6 +630,7 @@ class Delay(ReadModel):
     project_id: str
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity
@@ -565,6 +647,7 @@ class SafetyEventCreate(StrictModel):
     project_id: str
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity = "minor"
@@ -579,6 +662,7 @@ class SafetyEvent(ReadModel):
     project_id: str
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity
@@ -595,6 +679,7 @@ class QcIssueCreate(StrictModel):
     project_id: str
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity = "minor"
@@ -608,6 +693,7 @@ class QcIssue(ReadModel):
     project_id: str
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity
@@ -821,6 +907,7 @@ class SpecSection(ReadModel):
 # ---------- AI ----------
 class CopilotMessage(StrictModel):
     project_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
     message: str
     session_id: Optional[str] = None
 

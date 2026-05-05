@@ -66,6 +66,9 @@ Tools:
   - create_delivery           args: {vendor: str, description: str, delivery_date?: 'YYYY-MM-DD', po_number?: str}
   - delete_entity             args: {entity_type: 'task'|'rfi'|'submittal'|'work_item'|'kb_entry'|'crew'|'person'|'equipment'|'floor'|'location'|'delay'|'safety_event'|'qc_issue'|'delivery'|'change_order'|'photo', id?: str, activity_code?: str, rfi_number?: str, submittal_number?: str}
   - update_entity             args: {entity_type: <same as delete_entity>, id: str, fields: {<any patchable fields>}}
+  - record_presence           args: {trade: str, headcount: int, hours_per_person?: number, sub_id?: str, company_name?: str, notes?: str}  (REQUIRES active daily_report context)
+  - mark_activity_status      args: {activity_code: str, pct_complete_end_of_day?: number, hours_worked?: number, delay_minutes?: int, delay_reason?: str, status_at_end_of_day?: 'not_started'|'in_progress'|'blocked'|'complete', crew_count?: int, notes?: str}  (REQUIRES active daily_report context)
+  - create_unplanned_activity args: {description: str, trade_code?: str, location_id?: str, crew_id?: str, duration_days?: number}  (REQUIRES active daily_report context — task gets requires_pm_review=true)
 
 Rules:
   - Only call tools the user explicitly authorises (e.g. user says "add task X" → create_task; user says "What's the status?" → get_status only, no writes).
@@ -82,6 +85,7 @@ WRITE_TOOLS = {
     "create_floor", "create_location", "create_delay",
     "create_safety_event", "create_qc_issue", "create_delivery",
     "delete_entity", "update_entity",
+    "record_presence", "mark_activity_status", "create_unplanned_activity",
 }
 
 
@@ -702,6 +706,170 @@ async def _tool_link_submittal_to_activity(ctx: dict, args: dict) -> dict:
     return {"updated": {"resource": "submittal", "submittal_number": sn, "id": sub["id"], "linked_activity_code": code, "schedule_activity_id": task["id"]}}
 
 
+# ---- DAILY-REPORT-SPECIFIC TOOLS ---------------------------------------
+async def _tool_record_presence(ctx: dict, args: dict) -> dict:
+    """Insert a daily_presence row for the active daily_report_id."""
+    if "trade" not in args:
+        return {"error": "trade required"}
+    dr_id = ctx.get("daily_report_id") or args.get("daily_report_id")
+    if not dr_id:
+        return {"error": "no active daily_report_id"}
+    db = get_db()
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0, "status": 1})
+    if not dr:
+        return {"error": f"daily report {dr_id} not found"}
+    if dr.get("status") == "submitted":
+        return {"error": "daily report locked"}
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "daily_report_id": dr_id,
+        "trade": args["trade"],
+        "sub_id": args.get("sub_id") or args.get("crew_id"),
+        "company_name": args.get("company_name"),
+        "headcount": int(args.get("headcount", 0)),
+        "hours_per_person": float(args.get("hours_per_person", 8)),
+        "notes": args.get("notes"),
+        "created_by": ctx["user"]["id"],
+        "created_at": utc_now().isoformat(),
+    }
+    await db.daily_presence.insert_one(doc.copy())
+    return {"created": {"resource": "presence", "id": doc["id"],
+                        "trade": doc["trade"], "headcount": doc["headcount"],
+                        "hours_per_person": doc["hours_per_person"]}}
+
+
+async def _tool_mark_activity_status(ctx: dict, args: dict) -> dict:
+    """Update a daily_report_activities row (pct, status, hours, delay)
+    by activity_code, scoped to the current daily_report_id."""
+    code = args.get("activity_code")
+    if not code:
+        return {"error": "activity_code required"}
+    dr_id = ctx.get("daily_report_id") or args.get("daily_report_id")
+    if not dr_id:
+        return {"error": "no active daily_report_id"}
+    db = get_db()
+    row = await db.daily_report_activities.find_one(
+        {"daily_report_id": dr_id, "activity_code": code}, {"_id": 0},
+    )
+    if not row:
+        return {"error": f"activity {code} not in this daily report grid"}
+    updates: dict = {}
+    if "pct_complete_end_of_day" in args:
+        updates["pct_complete_end_of_day"] = float(args["pct_complete_end_of_day"])
+    if "hours_worked" in args:
+        updates["hours_worked"] = float(args["hours_worked"])
+    if "delay_minutes" in args:
+        updates["delay_minutes"] = int(args["delay_minutes"])
+    if "delay_reason" in args:
+        updates["delay_reason"] = args["delay_reason"]
+    if "status_at_end_of_day" in args:
+        updates["status_at_end_of_day"] = args["status_at_end_of_day"]
+    if "notes" in args:
+        updates["notes"] = args["notes"]
+    if "crew_count" in args:
+        updates["crew_count"] = int(args["crew_count"])
+    if not updates:
+        return {"error": "no fields to update"}
+    await db.daily_report_activities.update_one({"id": row["id"]}, {"$set": updates})
+    # cascade pct back to task
+    if "pct_complete_end_of_day" in updates:
+        new_pct = float(updates["pct_complete_end_of_day"])
+        await db.tasks.update_one(
+            tenant_filter(ctx["tenant_id"], {"id": row["schedule_activity_id"]}),
+            {"$set": {
+                "prev_pct_complete": row.get("pct_complete_end_of_day", 0),
+                "pct_complete": new_pct,
+                "status": "complete" if new_pct >= 100 else "in_progress",
+            }},
+        )
+    return {"updated": {"resource": "activity_grid_row", "activity_code": code,
+                        "id": row["id"], "fields": updates}}
+
+
+async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
+    """Create a Task with created_in_field=true + push to current DR grid."""
+    if "description" not in args:
+        return {"error": "description required"}
+    dr_id = ctx.get("daily_report_id") or args.get("daily_report_id")
+    if not dr_id:
+        return {"error": "no active daily_report_id"}
+    db = get_db()
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0})
+    if not dr:
+        return {"error": f"daily report {dr_id} not found"}
+    if dr.get("status") == "submitted":
+        return {"error": "daily report locked"}
+    last = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": dr["project_id"]}),
+        {"_id": 0, "activity_code": 1},
+    ).sort("activity_code", -1).limit(50).to_list(50)
+    next_n = 1
+    for r in last:
+        m = re.search(r"(\d+)$", r.get("activity_code", "") or "")
+        if m:
+            next_n = max(next_n, int(m.group(1)) + 1)
+    activity_code = f"AF{next_n:04d}"
+    today_iso = dr["report_date"]
+    dur = float(args.get("duration_days") or 1)
+    finish = (date.fromisoformat(today_iso) + timedelta(days=int(dur))).isoformat()
+    task_doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": dr["project_id"],
+        "activity_code": activity_code,
+        "description": args["description"],
+        "trade_code": args.get("trade_code"),
+        "location_id": args.get("location_id"),
+        "crew_id": args.get("crew_id"),
+        "status": "in_progress",
+        "planned_start": today_iso,
+        "planned_finish": finish,
+        "duration_days": dur,
+        "actual_hours": 0,
+        "actual_quantity": 0,
+        "pct_complete": 0,
+        "prev_pct_complete": 0,
+        "is_milestone": False,
+        "is_critical_path": False,
+        "lookahead_status": "in_window",
+        "predecessors": [],
+        "created_in_field": True,
+        "requires_pm_review": True,
+        "created_from_daily_report_id": dr_id,
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.tasks.insert_one(task_doc.copy())
+    pos_max = await db.daily_report_activities.find({"daily_report_id": dr_id}, {"position": 1}).sort("position", -1).limit(1).to_list(1)
+    next_pos = (pos_max[0]["position"] + 1) if pos_max else 0
+    row = {
+        "id": gen_id(),
+        "daily_report_id": dr_id,
+        "schedule_activity_id": task_doc["id"],
+        "position": next_pos,
+        "pct_complete_start_of_day": 0,
+        "pct_complete_end_of_day": 0,
+        "crew_count": 0,
+        "crew_id": args.get("crew_id"),
+        "hours_worked": 0,
+        "delay_minutes": 0,
+        "delay_reason": None,
+        "weather_impact_minutes": 0,
+        "notes": None,
+        "status_at_end_of_day": "in_progress",
+        "activity_code": activity_code,
+        "activity_description": args["description"],
+        "location_name": None,
+        "trade_code": args.get("trade_code"),
+    }
+    await db.daily_report_activities.insert_one(row.copy())
+    return {"created": {"resource": "unplanned_activity", "id": task_doc["id"],
+                        "activity_code": activity_code,
+                        "description": args["description"],
+                        "requires_pm_review": True}}
+
+
 TOOL_REGISTRY = {
     "search": _tool_search,
     "get_status": _tool_get_status,
@@ -725,6 +893,9 @@ TOOL_REGISTRY = {
     "create_delivery": _tool_create_delivery,
     "delete_entity": _tool_delete_entity,
     "update_entity": _tool_update_entity,
+    "record_presence": _tool_record_presence,
+    "mark_activity_status": _tool_mark_activity_status,
+    "create_unplanned_activity": _tool_create_unplanned_activity,
 }
 
 
@@ -743,13 +914,15 @@ SYSTEM_PROMPT = (
 
 async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                                 user_id: str, user_role: str, session_id: str,
-                                message: str) -> dict:
+                                message: str,
+                                daily_report_id: Optional[str] = None) -> dict:
     """Single turn: parse → execute tools → format reply.
 
     1. Inject project context (master-doc + KB + lookahead + RFIs)
-    2. Ask Claude for a JSON action plan
-    3. Execute each action in order against the DB
-    4. Return {reply, actions_executed, tool_results}
+    2. Inject daily report context if daily_report_id is passed
+    3. Ask Claude for a JSON action plan
+    4. Execute each action in order against the DB
+    5. Return {reply, actions_executed, tool_results}
     """
     from services.ai_agents import _master_doc_block, _kb_block
     db = get_db()
@@ -772,6 +945,38 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                 f"  [{t['activity_code']}] {t['description']} — {t.get('pct_complete', 0)}% ({t.get('status')})"
                 for t in recent_tasks
             ))
+
+    # Daily-report scoping — drives the DR-only tools and gives the LLM
+    # the current grid + presence + open delays/safety/qc so it can act.
+    if daily_report_id:
+        dr = await db.daily_reports.find_one(
+            tenant_filter(tenant_id, {"id": daily_report_id}), {"_id": 0},
+        )
+        if dr:
+            grid = await db.daily_report_activities.find(
+                {"daily_report_id": daily_report_id}, {"_id": 0},
+            ).sort("position", 1).to_list(50)
+            presence = await db.daily_presence.find(
+                tenant_filter(tenant_id, {"daily_report_id": daily_report_id}), {"_id": 0},
+            ).to_list(40)
+            grid_lines = "\n".join(
+                f"    [{r.get('activity_code')}] {(r.get('activity_description') or '')[:60]} — "
+                f"SOD {r.get('pct_complete_start_of_day') or 0}% / EOD {r.get('pct_complete_end_of_day') or 0}% / "
+                f"crew {r.get('crew_count') or 0} / {r.get('hours_worked') or 0}h / status {r.get('status_at_end_of_day') or 'not_started'}"
+                for r in grid
+            ) or "    (grid empty)"
+            pres_lines = "\n".join(
+                f"    {p['trade']}: headcount {p.get('headcount', 0)}, {p.get('hours_per_person', 0)}h/person"
+                for p in presence
+            ) or "    (no presence rows)"
+            blocks.append(
+                f"DAILY REPORT IN FOCUS: {dr['report_date']} (status={dr['status']}, id={daily_report_id})\n"
+                f"WEATHER: {dr.get('weather_conditions') or 'n/a'} · "
+                f"high {dr.get('weather_temp_high_f') or '—'}°F / low {dr.get('weather_temp_low_f') or '—'}°F · "
+                f"precip {dr.get('weather_precipitation_in') or 0}in\n"
+                f"ACTIVITY GRID:\n{grid_lines}\n"
+                f"PRESENCE:\n{pres_lines}"
+            )
     user_text = "\n\n".join(blocks) + f"\n\nUser request: {message}"
     if not blocks:
         user_text = f"User request: {message}"
@@ -806,6 +1011,7 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
         actions = [a for a in actions if a.get("tool") not in WRITE_TOOLS]
 
     ctx = {"tenant_id": tenant_id, "project_id": project_id,
+           "daily_report_id": daily_report_id,
            "user": {"id": user_id, "role": user_role}}
 
     for a in actions:

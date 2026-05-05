@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Send, X, CheckCircle2 } from "lucide-react";
+import { Bot, Send, X, CheckCircle2, FileSpreadsheet } from "lucide-react";
 import { useProjects } from "../../lib/projects";
+import { subscribeDailyReportId } from "../../lib/copilotContext";
 import api from "../../lib/api";
 
 export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
   const [sessionId] = useState(`copilot-${Date.now()}`);
+  const [activeDrId, setActiveDrId] = useState(null);
   const [thread, setThread] = useState([
-    { role: "ai", text: "I am the ICE Copilot. I can read schedule + RFIs + KB and create tasks, RFIs, daily reports, work items, KB lessons, and submittals on your behalf. Try: add task install conference room AV, duration 4 days. Or: create RFI about ceiling height conflict in Room 205." },
+    { role: "ai", text: "I am the ICE Copilot. I can read schedule + RFIs + KB and create tasks, RFIs, daily reports, work items, KB lessons, and submittals on your behalf. When you have a Daily Report open I can also record crew presence, update activity progress, and create unplanned activities for PM review. Try: add task install conference room AV, duration 4 days. Or: record presence electrical 4 workers 8 hours each." },
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -16,6 +18,9 @@ export default function CopilotPanel({ open, onClose }) {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [thread]);
+
+  // Track which DR (if any) is open so we ship daily_report_id with each turn
+  useEffect(() => subscribeDailyReportId(setActiveDrId), []);
 
   const send = async () => {
     if (!input.trim() || busy) return;
@@ -26,6 +31,7 @@ export default function CopilotPanel({ open, onClose }) {
     try {
       const { data } = await api.post("/ai/copilot", {
         project_id: activeId,
+        daily_report_id: activeDrId || undefined,
         message: msg,
         session_id: sessionId,
       });
@@ -61,6 +67,11 @@ export default function CopilotPanel({ open, onClose }) {
       <div className="h-14 border-b border-border px-4 flex items-center gap-2">
         <Bot className="h-4 w-4 text-primary" />
         <div className="font-semibold text-sm">AI Copilot</div>
+        {activeDrId && (
+          <span data-testid="copilot-dr-scope" className="ml-2 inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <FileSpreadsheet className="h-3 w-3" /> Daily report scope
+          </span>
+        )}
         <button
           data-testid="copilot-close"
           onClick={onClose}

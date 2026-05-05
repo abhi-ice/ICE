@@ -198,6 +198,7 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     res = await execute_copilot_turn(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
+        daily_report_id=payload.daily_report_id,
         user_id=ctx["user"]["id"],
         user_role=(ctx["user"].get("role") or "viewer"),
         session_id=session_id,
