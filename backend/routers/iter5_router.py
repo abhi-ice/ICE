@@ -61,6 +61,12 @@ async def emit_notification(
         "read_at": None, "created_at": utc_now().isoformat(),
     }
     await db.notifications.insert_one(doc.copy())
+    # Real-time fan-out (master prompt §23)
+    try:
+        from routers.ws_router import broadcast
+        await broadcast(tenant_id, {"kind": "notification", "payload": {**doc}})
+    except Exception:
+        pass
     return doc
 
 

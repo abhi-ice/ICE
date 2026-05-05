@@ -67,12 +67,90 @@ When referencing schedule activities, mention the activity_code in brackets, e.g
 Be concise, factual, and cite the source whenever you make a claim about the project."""
 
 
+async def _master_doc_block(tenant_id: str, project_id: str) -> str:
+    """Master prompt §22 — project-type gating. Pulls master_docs row and
+    formats a context block that AI agents prepend to every reasoning
+    step. New construction vs renovation gets very different guidance."""
+    db = get_db()
+    md = await db.master_docs.find_one(
+        tenant_filter(tenant_id, {"project_id": project_id}), {"_id": 0},
+    )
+    if not md:
+        return ""
+    blocks = [f"CONSTRUCTION TYPE: {md.get('construction_type')}"]
+    if md.get("construction_type") == "renovation":
+        blocks.append("RENOVATION CONTEXT — building is occupied; minimize "
+                      "noise/dust during business hours (typ. 7am-6pm M-F). "
+                      "Phasing & barriers required. Existing-conditions "
+                      "RFIs likely. Asbestos/lead-paint surveys MUST be "
+                      "verified before any demo.")
+    elif md.get("construction_type") == "tenant_improvement":
+        blocks.append("TENANT-IMPROVEMENT CONTEXT — base building is "
+                      "operational; coordinate with landlord; lobby/elevator "
+                      "use restrictions apply; after-hours work likely "
+                      "required for noisy operations.")
+    elif md.get("construction_type") == "new_construction":
+        blocks.append("NEW-CONSTRUCTION CONTEXT — greenfield/groundbreak; "
+                      "weather windows are critical; sequencing is foundation "
+                      "→ shell → MEP rough-in → finishes. No existing-"
+                      "conditions surprises.")
+    elif md.get("construction_type") == "infrastructure":
+        blocks.append("INFRASTRUCTURE CONTEXT — civil/heavy work; permitting "
+                      "lead times dominate; weather impact is severe; "
+                      "ROW & utility-locate are the hard constraints.")
+    if md.get("delivery_method"):
+        blocks.append(f"DELIVERY METHOD: {md['delivery_method']}")
+    if md.get("occupancy_during_work"):
+        blocks.append("BUILDING OCCUPIED DURING WORK — life-safety paths "
+                      "must remain intact; dust/noise barriers required.")
+    if md.get("historic_designation"):
+        blocks.append("HISTORIC DESIGNATION — SHPO review on any visible "
+                      "alteration; replacement-in-kind preferred.")
+    if md.get("abatement_required") or md.get("asbestos_known") or md.get("lead_paint_known"):
+        haz = []
+        if md.get("asbestos_known"): haz.append("asbestos")
+        if md.get("lead_paint_known"): haz.append("lead paint")
+        blocks.append(f"HAZMAT KNOWN: {', '.join(haz)} — abatement WBS must "
+                      "precede any disturbance.")
+    if md.get("govt_security_level") and md["govt_security_level"] != "public":
+        blocks.append(f"SECURITY LEVEL: {md['govt_security_level'].upper()} "
+                      "— badging + escort required; cleared workforce only.")
+    if md.get("site_constraints"):
+        blocks.append("SITE CONSTRAINTS: " + "; ".join(md["site_constraints"]))
+    if md.get("notes"):
+        blocks.append(f"PROJECT NOTES: {md['notes']}")
+    return "PROJECT MASTER DOC:\n" + "\n".join(f"  - {b}" for b in blocks)
+
+
+async def _kb_block(tenant_id: str, project_id: Optional[str], query: str) -> str:
+    """RAG over closed RFIs + work items + lessons learned. Master prompt §6."""
+    try:
+        from services.kb_search import search_kb
+        hits = await search_kb(tenant_id, query, limit=3)
+        if not hits:
+            return ""
+        return "RELEVANT PAST RESOLUTIONS (cite by [KB:title]):\n" + "\n".join(
+            f"  - [KB:{h.get('title')}] (score={h.get('_score', 0)})\n    {(h.get('body') or '')[:400]}"
+            for h in hits
+        )
+    except Exception:
+        return ""
+
+
 async def copilot_answer(*, tenant_id: str, project_id: Optional[str], session_id: str, message: str) -> dict:
     """Multi-step (was: LangGraph) — node 1 retrieve, node 2 reason."""
     db = get_db()
     # Node 1: retrieval
     context_blocks: list[str] = []
     if project_id:
+        # Master-doc context (project-type gating)
+        md_block = await _master_doc_block(tenant_id, project_id)
+        if md_block:
+            context_blocks.append(md_block)
+        # Knowledge-base RAG over historical RFIs/work items
+        kb_block = await _kb_block(tenant_id, project_id, message)
+        if kb_block:
+            context_blocks.append(kb_block)
         proj = await db.projects.find_one(tenant_filter(tenant_id, {"id": project_id}), {"_id": 0})
         if proj:
             context_blocks.append(f"PROJECT: {proj['name']} (status={proj.get('status')})")
@@ -179,8 +257,13 @@ async def recovery_suggestions(*, tenant_id: str, project_id: str, target_activi
 
     crews = await db.crews.find(tenant_filter(tenant_id), {"_id": 0, "name": 1, "trade": 1, "target_size": 1}).limit(20).to_list(20)
 
+    md_block = await _master_doc_block(tenant_id, project_id)
+    kb_block = await _kb_block(tenant_id, project_id,
+                                f"{target.get('description', '')} recovery slip")
     user_text = (
-        f"TARGET ACTIVITY [{target['activity_code']}]: {target['description']}\n"
+        (md_block + "\n\n" if md_block else "")
+        + (kb_block + "\n\n" if kb_block else "")
+        + f"TARGET ACTIVITY [{target['activity_code']}]: {target['description']}\n"
         f"  planned: {target.get('planned_start')} → {target.get('planned_finish')}\n"
         f"  pct_complete: {target.get('pct_complete', 0)}\n"
         f"  duration_days: {target.get('duration_days')}\n"

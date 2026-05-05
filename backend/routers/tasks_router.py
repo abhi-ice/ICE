@@ -94,7 +94,45 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ct
     # Trigger CPM recompute (debounced via BackgroundTasks — substitution for Celery debounce)
     if any(k in updates for k in ("planned_start", "planned_finish", "duration_days")):
         bg.add_task(compute_cpm, ctx["tenant_id"], before["project_id"])
+
+    # Auto-release escrow if a marketplace bid was tied to this activity and
+    # pct_complete just crossed the milestone (master prompt §19).
+    if "pct_complete" in updates:
+        bg.add_task(_auto_release_for_task, ctx["tenant_id"], task_id, ctx["user"]["id"])
+        # Real-time fan-out for any open Gantt views
+        try:
+            from routers.ws_router import broadcast
+            await broadcast(ctx["tenant_id"], {
+                "kind": "task_progress",
+                "payload": {"task_id": task_id, "pct_complete": updates["pct_complete"]},
+            })
+        except Exception:
+            pass
     return Task(**after)
+
+
+async def _auto_release_for_task(tenant_id: str, task_id: str, actor_id: str):
+    """Background helper invoked when a task's pct_complete advances. Releases
+    any funded marketplace escrow whose milestone has just been reached."""
+    db = get_db()
+    task = await db.tasks.find_one(tenant_filter(tenant_id, {"id": task_id}), {"_id": 0})
+    if not task:
+        return
+    cur = float(task.get("pct_complete") or 0)
+    funded = await db.marketplace_responses.find(
+        {"escrow_status": "funded", "schedule_activity_id": task_id}, {"_id": 0},
+    ).to_list(50)
+    if not funded:
+        return
+    from routers.iter7_router import release_payment
+    for r in funded:
+        target = float(r.get("milestone_pct") or 50)
+        if cur >= target:
+            try:
+                fake_ctx = {"tenant_id": tenant_id, "user": {"id": actor_id, "role": "admin"}, "request_id": "auto_release"}
+                await release_payment(r["id"], fake_ctx)  # type: ignore
+            except Exception:
+                pass
 
 
 @router.post("/projects/{project_id}/tasks/bulk-delete")

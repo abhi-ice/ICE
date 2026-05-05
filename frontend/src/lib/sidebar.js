@@ -5,7 +5,7 @@ import {
   MapPin, MessagesSquare, Truck, FileText, BookOpen, FileSignature,
   GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck,
   CalendarClock, FileUp, Bot, ShoppingBasket, ShieldCheck, History,
-  Settings, Layers, Box, Activity, Clock,
+  Settings, Layers, Box, Activity, Clock, Building2, KeyRound, Brain,
 } from "lucide-react";
 
 export const SIDEBAR_SECTIONS = [
@@ -14,6 +14,7 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Dashboard", path: "/", icon: LayoutDashboard, testid: "sidebar-dashboard" },
       { label: "Projects", path: "/projects", icon: FolderKanban, testid: "sidebar-projects" },
+      { label: "Master doc", path: "/master-doc", icon: Building2, testid: "sidebar-master-doc" },
     ],
   },
   {
@@ -73,7 +74,9 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Imports", path: "/imports", icon: FileUp, testid: "sidebar-imports" },
       { label: "AI agents", path: "/agents", icon: Bot, testid: "sidebar-agents" },
+      { label: "Knowledge base", path: "/kb", icon: Brain, testid: "sidebar-kb" },
       { label: "Marketplace", path: "/marketplace", icon: ShoppingBasket, testid: "sidebar-marketplace" },
+      { label: "Voice PINs", path: "/voice-pins", icon: KeyRound, testid: "sidebar-voice-pins" },
       { label: "Compliance", path: "/compliance", icon: ShieldCheck, testid: "sidebar-compliance" },
       { label: "Audit log", path: "/audit-log", icon: History, testid: "sidebar-audit" },
       { label: "Settings", path: "/settings", icon: Settings, testid: "sidebar-settings" },

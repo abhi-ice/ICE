@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { Stage, Layer, Line, Circle } from "react-konva";
-import { Save, Trash2, Undo2, MapPin, ChevronLeft, ChevronRight } from "lucide-react";
+import { Save, Trash2, Undo2, MapPin, ChevronLeft, ChevronRight, Wand2 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { Button } from "../components/ui/button";
@@ -144,6 +144,26 @@ export default function PolygonEditor() {
         <div className="flex items-end gap-2">
           <Button data-testid="pe-undo" onClick={undo} variant="outline" disabled={!points.length} className="gap-1"><Undo2 className="h-4 w-4" /> Undo</Button>
           <Button data-testid="pe-clear" onClick={clear} variant="outline" disabled={!points.length} className="gap-1"><Trash2 className="h-4 w-4" /> Clear</Button>
+          <Button data-testid="pe-suggest" onClick={async () => {
+            if (!revisionId || !selectedLoc) { toast.error("Pick revision + location first"); return; }
+            toast.info("Asking Claude vision to identify the room polygon…");
+            try {
+              const { data } = await api.post("/spatial/suggest-polygon", {
+                drawing_revision_id: revisionId, page, location_id: selectedLoc,
+              });
+              if (data.points && data.points.length >= 3) {
+                // Drop closing duplicate if Claude returned one
+                const pts = data.points;
+                const last = pts[pts.length - 1];
+                const first = pts[0];
+                const cleaned = (last[0] === first[0] && last[1] === first[1]) ? pts.slice(0, -1) : pts;
+                setPoints(cleaned);
+                toast.success(`Got ${cleaned.length} points — review & save`);
+              } else { toast.error("Could not parse a polygon"); }
+            } catch (e) { toast.error(e.response?.data?.detail || "Suggestion failed"); }
+          }} variant="outline" disabled={!revisionId || !selectedLoc} className="gap-1">
+            <Wand2 className="h-4 w-4" /> AI suggest
+          </Button>
           <Button data-testid="pe-save" onClick={save} disabled={!isClosed || !selectedLoc} className="bg-blue-600 hover:bg-blue-700 gap-1"><Save className="h-4 w-4" /> Save</Button>
         </div>
       </div>

@@ -37,11 +37,24 @@ def verify_password(plain: str, hashed: str | None) -> bool:
 def create_token(user_id: str, tenant_id: str, email: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
-        "sub": user_id, "tenant_id": tenant_id, "email": email,
+        "sub": user_id, "tenant_id": tenant_id, "tid": tenant_id, "email": email,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(hours=JWT_EXPIRE_HOURS)).timestamp()),
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def create_access_token(user: dict) -> str:
+    """Compatibility shim used by voice-PIN flow + tests."""
+    return create_token(user["id"], user["tenant_id"], user.get("email", ""))
+
+
+def role_required(ctx: dict, roles: list[str]) -> None:
+    user_role = (ctx.get("user") or {}).get("role")
+    if user_role not in roles and "admin" not in roles:
+        # admin always has access
+        if user_role != "admin":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"Role {user_role} not in {roles}")
 
 
 def decode_token(token: str) -> dict:

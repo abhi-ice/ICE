@@ -23,7 +23,13 @@ import Submittals from "./pages/Submittals";
 import Aging from "./pages/Aging";
 import Productivity from "./pages/Productivity";
 import MarketplaceFull from "./pages/MarketplaceFull";
-import { AuditLog, AiAgentsPage, Compliance, Settings, WeeklyReports } from "./pages/SystemPages";
+import MasterDoc from "./pages/MasterDoc";
+import KnowledgeBase from "./pages/KnowledgeBase";
+import ComplianceFull from "./pages/ComplianceFull";
+import VoicePinAdmin from "./pages/VoicePinAdmin";
+import VoiceLogin from "./pages/VoiceLogin";
+import MobileForeman from "./pages/MobileForeman";
+import { AuditLog, AiAgentsPage, Settings, WeeklyReports } from "./pages/SystemPages";
 import "./App.css";
 
 function Guard({ children }) {
@@ -38,6 +44,8 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/voice-login" element={<VoiceLogin />} />
+          <Route path="/m/foreman" element={<Guard><MobileForeman /></Guard>} />
           <Route path="/auth/callback" element={<AuthCallback />} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
@@ -84,7 +92,10 @@ export default function App() {
             <Route path="imports" element={<Imports />} />
             <Route path="agents" element={<AiAgentsPage />} />
             <Route path="marketplace" element={<MarketplaceFull />} />
-            <Route path="compliance" element={<Compliance />} />
+            <Route path="kb" element={<KnowledgeBase />} />
+            <Route path="master-doc" element={<MasterDoc />} />
+            <Route path="voice-pins" element={<VoicePinAdmin />} />
+            <Route path="compliance" element={<ComplianceFull />} />
             <Route path="audit-log" element={<AuditLog />} />
             <Route path="settings" element={<Settings />} />
           </Route>

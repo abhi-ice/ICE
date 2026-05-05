@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { Stage, Layer, Line, Rect, Circle, Ellipse, Arrow, Text as KText, Path } from "react-konva";
-import { Pencil, Square, Circle as CircleIcon, ArrowUpRight, Minus, MapPin, Trash2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Link2, Type as TypeIcon, Cloud as CloudIcon, Ruler } from "lucide-react";
+import { Pencil, Square, Circle as CircleIcon, ArrowUpRight, Minus, MapPin, Trash2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Link2, Type as TypeIcon, Cloud as CloudIcon, Ruler, ScanText } from "lucide-react";
 import api from "../../lib/api";
 import { useProjects } from "../../lib/projects";
 import { toast } from "../ui/sonner";
@@ -193,6 +193,26 @@ export default function DrawingViewer({ revisionId, onClose }) {
             })}
           </div>
           <div className="ml-2 text-[11px] text-slate-500">{markups.length} markup{markups.length !== 1 ? "s" : ""}</div>
+          <button
+            data-testid="drawing-ocr-btn"
+            title="OCR title block"
+            onClick={async () => {
+              toast.info("OCR running on title block…");
+              try {
+                const { data } = await api.post("/drawings/ocr", { drawing_revision_id: revisionId, page });
+                const summary = [
+                  data.sheet_number && `sheet=${data.sheet_number}`,
+                  data.title && `title=${data.title}`,
+                  data.scale && `scale=${data.scale}`,
+                  data.date && `date=${data.date}`,
+                ].filter(Boolean).join(" · ");
+                toast.success(summary || "OCR complete (no fields recognised)");
+              } catch (e) { toast.error("OCR failed: " + (e.response?.data?.detail || e.message)); }
+            }}
+            className="ml-2 h-7 px-2 rounded text-xs border border-slate-200 inline-flex items-center gap-1 hover:bg-slate-100"
+          >
+            <ScanText className="h-3.5 w-3.5" /> OCR
+          </button>
           <div className="ml-auto flex items-center gap-1">
             <button onClick={() => setScale((s) => Math.max(0.5, s - 0.1))} className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100"><ZoomOut className="h-4 w-4" /></button>
             <div className="text-xs w-10 text-center">{Math.round(scale * 100)}%</div>

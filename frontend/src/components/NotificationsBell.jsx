@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Bell, Check } from "lucide-react";
 import api from "../lib/api";
+import { useWebSocket } from "../lib/ws";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
 } from "./ui/dropdown-menu";
@@ -32,6 +33,13 @@ export default function NotificationsBell() {
   }, []);
 
   useEffect(() => { if (open) refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [open]);
+
+  // Real-time push from backend WS — refresh count on incoming notifications
+  useWebSocket((msg) => {
+    if (msg && msg.kind === "notification") {
+      refresh();
+    }
+  });
 
   const markRead = async (id) => {
     await api.post(`/notifications/${id}/mark-read`);
