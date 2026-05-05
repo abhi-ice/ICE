@@ -73,10 +73,10 @@ export default function Tasks() {
     Object.keys(payload).forEach((k) => { if (payload[k] === null) delete payload[k]; });
     try {
       if (editing) {
-        // task update can't change activity_code; submit safe subset
-        const { activity_code, predecessors, ...patchable } = payload;
+        // task update can't change activity_code; predecessors are now patchable
+        const { activity_code, ...patchable } = payload;
         await api.patch(`/tasks/${editing.id}`, patchable);
-        toast.success("Activity updated");
+        toast.success("Activity updated — CPM recomputing in background.");
       } else {
         await api.post("/tasks", { project_id: activeId, ...payload });
         toast.success("Activity created");
@@ -159,8 +159,8 @@ export default function Tasks() {
                 </div>
                 <div className="col-span-2">
                   <label className="field-label">Predecessors (comma-separated activity_codes)</label>
-                  <input value={form.predecessors} disabled={!!editing} onChange={(e) => setForm({ ...form, predecessors: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200 font-mono text-sm disabled:bg-slate-50" />
-                  {editing && <div className="text-[11px] text-slate-400 mt-1">Predecessor edits not supported in this MVP.</div>}
+                  <input data-testid="task-predecessors" value={form.predecessors} onChange={(e) => setForm({ ...form, predecessors: e.target.value })} placeholder="e.g. 1.2, 1.5" className="w-full h-9 px-3 rounded border border-slate-200 font-mono text-sm" />
+                  <div className="text-[11px] text-slate-400 mt-1">Comma-separated activity codes from this project. CPM is recomputed automatically.</div>
                 </div>
                 <label className="col-span-2 flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={!!form.is_milestone} onChange={(e) => setForm({ ...form, is_milestone: e.target.checked })} />

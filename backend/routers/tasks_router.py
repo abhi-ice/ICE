@@ -96,7 +96,7 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ct
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     # Trigger CPM recompute (debounced via BackgroundTasks — substitution for Celery debounce)
-    if any(k in updates for k in ("planned_start", "planned_finish", "duration_days")):
+    if any(k in updates for k in ("planned_start", "planned_finish", "duration_days", "predecessors")):
         bg.add_task(compute_cpm, ctx["tenant_id"], before["project_id"])
 
     # Auto-release escrow if a marketplace bid was tied to this activity and

@@ -259,6 +259,9 @@ class TaskUpdate(StrictModel):
     crew_id: Optional[str] = None
     trade_code: Optional[str] = None
     lookahead_status: Optional[LookaheadStatus] = None
+    duration_days: Optional[float] = None
+    predecessors: Optional[List[str]] = None
+    is_milestone: Optional[bool] = None
 
 
 class Task(ReadModel):
