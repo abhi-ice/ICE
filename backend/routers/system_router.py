@@ -189,22 +189,27 @@ async def list_imports(ctx: dict = Depends(require_tenant)):
 # --- AI ---
 @router.post("/ai/copilot", response_model=CopilotResponse)
 async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant)):
+    """Tool-using copilot — can READ + WRITE to the project DB. Strips
+    markdown from the LLM reply (strict requirement). Each turn audited
+    in copilot_messages with the JSON action plan + executed tool results.
+    """
+    from services.copilot_tools import execute_copilot_turn
     session_id = payload.session_id or f"copilot-{ctx['user']['id']}"
-    res = await copilot_answer(
+    res = await execute_copilot_turn(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
+        user_id=ctx["user"]["id"],
+        user_role=(ctx["user"].get("role") or "viewer"),
         session_id=session_id,
         message=payload.message,
     )
-    db = get_db()
-    await db.copilot_messages.insert_one({
-        "id": gen_id(), "tenant_id": ctx["tenant_id"],
-        "session_id": session_id, "user_id": ctx["user"]["id"],
-        "user_message": payload.message, "ai_response": res["response"],
-        "project_id": payload.project_id,
-        "created_at": utc_now().isoformat(),
-    })
-    return CopilotResponse(session_id=session_id, response=res["response"], citations=res["citations"], usage=res["usage"])
+    return CopilotResponse(
+        session_id=session_id,
+        response=res["reply"],
+        citations=[],
+        usage={"actions": len(res.get("actions_executed", [])),
+                "tool_results": res.get("tool_results", [])},
+    )
 
 
 @router.get("/ai/copilot/sessions")

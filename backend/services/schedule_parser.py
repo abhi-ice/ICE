@@ -177,17 +177,116 @@ def parse_csv(content: bytes) -> Tuple[List[dict], List[str]]:
     return rows, errors
 
 
+def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]:
+    """Parse Microsoft Project (.mpp), Primavera (.xer / .xml), MPX, or
+    Project XML using JPype + MPXJ. Master prompt §1 — primary scheduling
+    formats.
+
+    The JVM starts once at module import time (cached). Each call writes
+    the bytes to a temp file because MPXJ readers consume java.io.File
+    handles, not byte streams.
+    """
+    import tempfile
+    import os as _os
+    try:
+        import mpxj  # type: ignore
+        import jpype  # type: ignore
+    except ImportError:
+        return [], ["MPXJ bridge not available on this runtime."]
+
+    if not jpype.isJVMStarted():
+        try:
+            mpxj.startJVM()
+        except Exception as e:
+            return [], [f"JVM start failed: {e}"]
+
+    suffix = "." + filename.rsplit(".", 1)[-1].lower()
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp.write(content)
+    tmp.flush()
+    tmp.close()
+
+    rows: List[dict] = []
+    errors: List[str] = []
+    try:
+        ext = filename.rsplit(".", 1)[-1].lower()
+        # Per-format reader map (UniversalProjectReader can be flaky on
+        # synthetic files; explicit readers are more reliable)
+        reader_map = {
+            "mpx": "org.mpxj.mpx.MPXReader",
+            "xer": "org.mpxj.primavera.PrimaveraXERFileReader",
+            "xml": "org.mpxj.primavera.PrimaveraPMFileReader",
+            "mpp": "org.mpxj.mpp.MPPReader",
+            "pp":  "org.mpxj.asta.AstaFileReader",
+            "pmxml": "org.mpxj.primavera.PrimaveraPMFileReader",
+        }
+        reader_cls = reader_map.get(ext)
+        if reader_cls is None:
+            UniversalProjectReader = jpype.JClass("org.mpxj.reader.UniversalProjectReader")
+            reader = UniversalProjectReader()
+        else:
+            reader = jpype.JClass(reader_cls)()
+        project = reader.read(tmp.name)
+        if project is None:
+            return [], [f"MPXJ could not read {filename} (corrupt or unsupported variant)"]
+        for task in project.getTasks():
+            if task is None or task.getNull():
+                continue
+            unique_id = task.getUniqueID()
+            wbs = task.getWBS()
+            name = task.getName() or (f"task_{unique_id}" if unique_id else None)
+            outline = task.getOutlineNumber()
+            if not name:
+                continue
+            start = task.getStart()
+            finish = task.getFinish()
+            duration = task.getDuration()
+            duration_days = None
+            if duration is not None:
+                try:
+                    duration_days = int(round(float(duration.getDuration()) / 8.0)) if str(duration.getUnits()).lower() == "h" else int(duration.getDuration())
+                except Exception:
+                    pass
+            preds: list[str] = []
+            try:
+                for r in task.getPredecessors():
+                    if r is not None and r.getTargetTask() is not None:
+                        tid = r.getTargetTask().getID()
+                        if tid is not None:
+                            preds.append(str(tid))
+            except Exception:
+                pass
+            try:
+                act_code = task.getActivityID() or wbs or outline or str(unique_id)
+            except Exception:
+                act_code = wbs or str(unique_id)
+            rows.append({
+                "activity_code": str(act_code) if act_code else f"task_{unique_id}",
+                "description": str(name).strip(),
+                "wbs": str(wbs) if wbs else None,
+                "planned_start": start.toString()[:10] if start else None,
+                "planned_finish": finish.toString()[:10] if finish else None,
+                "duration_days": duration_days,
+                "predecessors": preds,
+                "trade_code": None,
+                "is_milestone": bool(task.getMilestone()) if hasattr(task, "getMilestone") else False,
+            })
+    except Exception as e:
+        errors.append(f"MPXJ read failed: {e}")
+    finally:
+        try:
+            _os.unlink(tmp.name)
+        except Exception:
+            pass
+    return rows, errors
+
+
 def parse_schedule_file(filename: str, content: bytes) -> Tuple[List[dict], List[str]]:
     fn = filename.lower()
     if fn.endswith(".xlsx"):
         return parse_xlsx(content)
     if fn.endswith(".csv"):
         return parse_csv(content)
-    if fn.endswith(".mpp") or fn.endswith(".xer") or fn.endswith(".xml"):
-        # SUBSTITUTION: Java MPXJ bridge not available on Emergent.
-        return [], [
-            f"{fn.rsplit('.',1)[1].upper()} parsing requires the MPXJ/JPype bridge which is not "
-            "available on this Emergent runtime. Please re-export the schedule as XLSX or CSV, "
-            "or use the Railway deployment which has the full parser."
-        ]
+    if fn.endswith(".mpp") or fn.endswith(".xer") or fn.endswith(".xml") or fn.endswith(".mpx"):
+        return parse_mpp_xer(content, filename)
     return [], [f"Unsupported schedule file type: {filename}"]

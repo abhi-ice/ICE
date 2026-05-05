@@ -44,6 +44,9 @@ export default function Spatial3D() {
   const [hover, setHover] = useState(null);
   const [bindOpen, setBindOpen] = useState(false);
   const [sectionOpen, setSectionOpen] = useState(false);
+  const [sectionMode, setSectionMode] = useState(false);  // toggles 3D clip-plane
+  const [sectionAngle, setSectionAngle] = useState(0);    // degrees, around Y axis
+  const [sectionOffset, setSectionOffset] = useState(0);  // shift along normal
   const project = projects.find((p) => p.id === activeId);
   const mountRef = useRef(null);
   const sceneRef = useRef({});
@@ -112,8 +115,22 @@ export default function Spatial3D() {
     renderer.setSize(w, h);
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.shadowMap.enabled = true;
+    renderer.localClippingEnabled = true;  // section view
     mount.innerHTML = "";
     mount.appendChild(renderer.domElement);
+
+    // 3D section clip plane (master prompt §22 — true 3D section view)
+    const clipPlane = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0);
+    sceneRef.currentClipPlane = clipPlane;
+    // Visible cut plane indicator
+    const planeMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(800, 800),
+      new THREE.MeshBasicMaterial({ color: 0xdc2626, side: THREE.DoubleSide,
+                                    transparent: true, opacity: 0.18 }),
+    );
+    planeMesh.visible = false;
+    scene.add(planeMesh);
+    sceneRef.currentClipPlaneMesh = planeMesh;
 
     scene.add(new THREE.HemisphereLight(0xe2e8f0, 0x94a3b8, 0.7));
     const dir = new THREE.DirectionalLight(0xffffff, 0.9);
@@ -225,7 +242,11 @@ export default function Spatial3D() {
       shape.closePath();
       const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
 
-      const mat = new THREE.MeshStandardMaterial({ color, transparent: true, opacity: 0.78, roughness: 0.7 });
+      const mat = new THREE.MeshStandardMaterial({
+        color, transparent: true, opacity: 0.78, roughness: 0.7,
+        clippingPlanes: sceneRef.currentClipPlane && sectionMode ? [sceneRef.currentClipPlane] : [],
+        clipShadows: true,
+      });
       const mesh = new THREE.Mesh(geom, mat);
       mesh.rotation.x = -Math.PI / 2; mesh.position.y = z0;
       mesh.castShadow = true; mesh.receiveShadow = true;
@@ -233,12 +254,34 @@ export default function Spatial3D() {
       buildingGroup.add(mesh);
 
       const edgesGeom = new THREE.EdgesGeometry(geom);
-      const lineMat = new THREE.LineBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.4 });
+      const lineMat = new THREE.LineBasicMaterial({
+        color: 0x0f172a, transparent: true, opacity: 0.4,
+        clippingPlanes: sceneRef.currentClipPlane && sectionMode ? [sceneRef.currentClipPlane] : [],
+      });
       const lines = new THREE.LineSegments(edgesGeom, lineMat);
       lines.rotation.x = -Math.PI / 2; lines.position.y = z0;
       buildingGroup.add(lines);
     });
-  }, [floors, locations, taskByLocation, showCP, sliceZ]);
+  }, [floors, locations, taskByLocation, showCP, sliceZ, sectionMode]);
+
+  // ---- Update clip plane orientation when angle/offset changes ----
+  useEffect(() => {
+    const cp = sceneRef.currentClipPlane;
+    const cpMesh = sceneRef.currentClipPlaneMesh;
+    if (!cp || !cpMesh) return;
+    const rad = (sectionAngle * Math.PI) / 180;
+    const normal = new THREE.Vector3(Math.cos(rad), 0, Math.sin(rad));
+    cp.normal.copy(normal);
+    cp.constant = -sectionOffset;
+    cpMesh.visible = sectionMode;
+    if (sectionMode && bounds) {
+      const cx = (bounds.minX + bounds.maxX) / 2;
+      const cy = (bounds.maxY) / 2;
+      const cz = (bounds.minZ + bounds.maxZ) / 2;
+      cpMesh.position.set(cx + normal.x * sectionOffset, cy, cz + normal.z * sectionOffset);
+      cpMesh.lookAt(cpMesh.position.clone().add(normal));
+    }
+  }, [sectionAngle, sectionOffset, sectionMode, bounds]);
 
   // ---- Elevation projection (Spatial Path 3) ----
   useEffect(() => {
@@ -321,7 +364,14 @@ export default function Spatial3D() {
             <ImageIcon className="h-3.5 w-3.5" /> Bind elevation drawings
           </button>
           <button data-testid="open-section" onClick={() => setSectionOpen(true)} className="h-8 px-3 rounded text-xs flex items-center gap-1 bg-white border border-slate-200">
-            <Scissors className="h-3.5 w-3.5" /> Section view
+            <Scissors className="h-3.5 w-3.5" /> 2D section
+          </button>
+          <button
+            data-testid="toggle-section-3d"
+            onClick={() => setSectionMode((s) => !s)}
+            className={`h-8 px-3 rounded text-xs flex items-center gap-1 border ${sectionMode ? "bg-rose-600 text-white border-rose-600" : "bg-white border-slate-200"}`}
+          >
+            <Scissors className="h-3.5 w-3.5" /> 3D cut
           </button>
           <button
             data-testid="toggle-elev"
@@ -345,6 +395,17 @@ export default function Spatial3D() {
             <input data-testid="slice-z" type="range" min="0" max="120" step="2" value={sliceZ} onChange={(e) => setSliceZ(Number(e.target.value))} className="w-32" />
             <span className="font-mono w-10 text-right">{sliceZ}'</span>
           </div>
+          {sectionMode && (
+            <div data-testid="section-3d-controls" className="flex items-center gap-3 px-3 py-1 bg-rose-50 border border-rose-200 rounded text-xs">
+              <span className="text-rose-700 font-medium">3D cut</span>
+              <span className="text-slate-500">Angle:</span>
+              <input data-testid="section-angle" type="range" min="0" max="180" step="5" value={sectionAngle} onChange={(e) => setSectionAngle(Number(e.target.value))} className="w-24" />
+              <span className="font-mono w-10 text-right">{sectionAngle}°</span>
+              <span className="text-slate-500">Offset:</span>
+              <input data-testid="section-offset" type="range" min={-200} max={200} step="2" value={sectionOffset} onChange={(e) => setSectionOffset(Number(e.target.value))} className="w-24" />
+              <span className="font-mono w-12 text-right">{sectionOffset}'</span>
+            </div>
+          )}
         </div>
       </div>
 

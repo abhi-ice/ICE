@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Send, X } from "lucide-react";
+import { Bot, Send, X, CheckCircle2 } from "lucide-react";
 import { useProjects } from "../../lib/projects";
 import api from "../../lib/api";
 
@@ -7,7 +7,7 @@ export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
   const [sessionId] = useState(`copilot-${Date.now()}`);
   const [thread, setThread] = useState([
-    { role: "ai", text: "I'm the ICE Copilot. Ask me about lookahead, open RFIs, or schedule recovery." },
+    { role: "ai", text: "I am the ICE Copilot. I can read schedule + RFIs + KB and create tasks, RFIs, daily reports, work items, KB lessons, and submittals on your behalf. Try: add task install conference room AV, duration 4 days. Or: create RFI about ceiling height conflict in Room 205." },
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -29,7 +29,22 @@ export default function CopilotPanel({ open, onClose }) {
         message: msg,
         session_id: sessionId,
       });
-      setThread((t) => [...t, { role: "ai", text: data.response || "(no response)" }]);
+      // Tool results are surfaced as small "actions" badges below the AI reply
+      const tools = (data.usage?.tool_results || []).map((r) => {
+        if (r.error) return `error · ${r.tool}: ${r.error}`;
+        const result = r.result || {};
+        const key = Object.keys(result)[0];
+        if (!key) return `${r.tool}`;
+        const v = result[key];
+        if (typeof v === "object" && v !== null) {
+          const nice = Object.entries(v).slice(0, 3)
+            .map(([k, val]) => `${k}=${typeof val === "string" ? val.slice(0, 40) : val}`)
+            .join(" · ");
+          return `${r.tool} → ${nice}`;
+        }
+        return `${r.tool}`;
+      });
+      setThread((t) => [...t, { role: "ai", text: data.response || "(no response)", tools }]);
     } catch (e) {
       setThread((t) => [...t, { role: "ai", text: "Copilot error: " + (e.response?.data?.detail || e.message) }]);
     } finally {
@@ -66,6 +81,15 @@ export default function CopilotPanel({ open, onClose }) {
             >
               {m.text}
             </div>
+            {m.tools && m.tools.length > 0 && (
+              <div data-testid={`copilot-tools-${i}`} className="mt-1 flex flex-wrap gap-1">
+                {m.tools.map((tt, j) => (
+                  <span key={j} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                    <CheckCircle2 className="h-2.5 w-2.5" /> {tt}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         ))}
         {busy && <div className="text-xs text-muted-foreground">Thinking…</div>}
