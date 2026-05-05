@@ -262,6 +262,10 @@ class TaskUpdate(StrictModel):
     duration_days: Optional[float] = None
     predecessors: Optional[List[str]] = None
     is_milestone: Optional[bool] = None
+    wbs: Optional[str] = None
+    trade_code: Optional[str] = None
+    crew_id: Optional[str] = None
+    location_id: Optional[str] = None
 
 
 class Task(ReadModel):
