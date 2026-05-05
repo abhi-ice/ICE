@@ -3,7 +3,9 @@ import { Toaster } from "./components/ui/sonner";
 import { isAuthenticated } from "./lib/auth";
 import AppLayout from "./components/AppLayout";
 import Login from "./pages/Login";
-import AuthCallback from "./pages/AuthCallback";
+import Signup from "./pages/Signup";
+import AcceptInvite from "./pages/AcceptInvite";
+import Team from "./pages/Team";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import Tasks from "./pages/Tasks";
@@ -45,13 +47,15 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/accept-invite" element={<AcceptInvite />} />
           <Route path="/voice-login" element={<VoiceLogin />} />
           <Route path="/m/foreman" element={<Guard><MobileForeman /></Guard>} />
-          <Route path="/auth/callback" element={<AuthCallback />} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
             <Route path="getting-started" element={<GettingStarted />} />
             <Route path="projects" element={<Projects />} />
+            <Route path="team" element={<Team />} />
 
             {/* Daily ops */}
             <Route path="daily-reports" element={<DailyReports />} />

@@ -60,7 +60,7 @@ Tools:
   - create_equipment          args: {asset_tag: str, type: str, manufacturer?: str, model?: str, year?: number, ownership?: 'owned'|'rental'|'leased', hourly_rate?: number, daily_rate?: number}
   - create_floor              args: {floor_number: int, floor_name: str, elevation_z_ft?: number, floor_height_ft?: number}
   - create_location           args: {name: str, floor_id: str, code?: str, location_type?: 'room'|'zone'|'corridor'|'stair'|'mech_room', area_sqft?: number}
-  - create_delay              args: {description: str, severity?: 'low'|'moderate'|'high', delay_minutes?: int, reason_category?: 'weather'|'rfi_pending'|'submittal_pending'|'design_change'|'site_condition'|'manpower'|'other', date?: 'YYYY-MM-DD'}
+  - create_delay              args: {description: str, severity?: 'low'|'moderate'|'high', delay_days?: number, reason_category?: 'weather'|'rfi_pending'|'submittal_pending'|'design_change'|'site_condition'|'manpower'|'other', date?: 'YYYY-MM-DD'}
   - create_safety_event       args: {description: str, event_type?: 'near_miss'|'first_aid'|'recordable'|'lost_time', severity?: 'low'|'moderate'|'high', osha_recordable?: bool}
   - create_qc_issue           args: {description: str, severity?: 'minor'|'major'|'critical', spec_section_ref?: str}
   - create_delivery           args: {vendor: str, description: str, delivery_date?: 'YYYY-MM-DD', po_number?: str}
@@ -532,14 +532,16 @@ async def _tool_create_delay(ctx: dict, args: dict) -> dict:
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
+        "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
         "date": args.get("date") or date.today().isoformat(),
         "description": args["description"],
         "severity": args.get("severity", "moderate"),
-        "delay_minutes": int(args.get("delay_minutes", 60)),
+        "delay_days": float(args.get("delay_days", args.get("delay_minutes", 0)) or 0) if args.get("delay_days") is not None or args.get("delay_minutes") is not None else None,
         "reason_category": args.get("reason_category", "weather"),
         "status": "open",
+        "reported_by": ctx["user"]["id"],
+        "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
-        "created_by": ctx["user"]["id"],
     }
     await db.delays.insert_one(doc.copy())
     return {"created": {"resource": "delay", "id": doc["id"], "description": doc["description"]}}
@@ -553,14 +555,17 @@ async def _tool_create_safety_event(ctx: dict, args: dict) -> dict:
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
+        "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
         "date": args.get("date") or date.today().isoformat(),
         "description": args["description"],
         "event_type": args.get("event_type", "near_miss"),
-        "severity": args.get("severity", "moderate"),
+        "severity": args.get("severity", "minor"),
         "osha_recordable": bool(args.get("osha_recordable", False)),
-        "status": "investigating",
+        "photo_urls": [],
+        "status": "open",
+        "reported_by": ctx["user"]["id"],
+        "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
-        "created_by": ctx["user"]["id"],
     }
     await db.safety_events.insert_one(doc.copy())
     return {"created": {"resource": "safety_event", "id": doc["id"], "description": doc["description"]}}
@@ -574,13 +579,18 @@ async def _tool_create_qc_issue(ctx: dict, args: dict) -> dict:
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
+        "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
         "date": args.get("date") or date.today().isoformat(),
         "description": args["description"],
         "severity": args.get("severity", "minor"),
         "spec_section_ref": args.get("spec_section_ref"),
+        "photo_urls": [],
         "status": "open",
+        "reported_by": ctx["user"]["id"],
+        "reported_at": utc_now().isoformat(),
+        "resolved_at": None,
+        "resolution_notes": None,
         "created_at": utc_now().isoformat(),
-        "created_by": ctx["user"]["id"],
     }
     await db.qc_issues.insert_one(doc.copy())
     return {"created": {"resource": "qc_issue", "id": doc["id"], "description": doc["description"]}}

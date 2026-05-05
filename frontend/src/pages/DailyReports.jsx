@@ -435,21 +435,33 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
 function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate }) {
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refreshFromSchedule = async () => {
+    setRefreshing(true);
+    try {
+      const { data } = await api.post(`/daily-reports/${dailyReportId}/refresh-grid`);
+      toast.success(data.inserted ? `${data.inserted} activity row(s) added from schedule.` : "Already up to date.");
+      reload();
+    } catch (e) { toast.error(formatErr(e, "Refresh grid")); }
+    finally { setRefreshing(false); }
+  };
 
   const updateRow = async (rowId, fields) => {
     try { await api.patch(`/daily-report-activities/${rowId}`, fields); reload(); }
-    catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
+    catch (e) { toast.error(formatErr(e, "Update row")); }
   };
   const removeRow = async (rowId) => {
     if (!window.confirm("Remove from grid?")) return;
-    await api.delete(`/daily-report-activities/${rowId}`); reload();
+    try { await api.delete(`/daily-report-activities/${rowId}`); reload(); }
+    catch (e) { toast.error(formatErr(e, "Remove row")); }
   };
   const addActivity = async () => {
     if (!picking) return;
     try {
       await api.post(`/daily-reports/${dailyReportId}/grid`, { schedule_activity_id: picking });
       setPicking(""); reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
+    } catch (e) { toast.error(formatErr(e, "Add planned activity")); }
   };
   const createUnplanned = async () => {
     if (!unplanned.description) return toast.error("Describe the unplanned activity first");
@@ -458,13 +470,23 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
       setUnplanned({ description: "", trade_code: "", duration_days: 1 });
       toast.success("Unplanned activity created — flagged for PM review.");
       reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Create failed"); }
+    } catch (e) { toast.error(formatErr(e, "Create unplanned")); }
   };
 
   const STATUS_OPTS = ["not_started", "in_progress", "blocked", "complete"];
   return (
     <PanelShell icon={ClipboardList} title="Activity grid" testid="dr-activity-grid" count={grid.length}
-      badge={<span className="ml-2 text-[10px] text-slate-500">date: {reportDate}</span>}>
+      badge={
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-[10px] text-slate-500">date: {reportDate}</span>
+          {!locked && (
+            <button data-testid="dr-refresh-grid" onClick={refreshFromSchedule} disabled={refreshing}
+              className="h-7 px-2 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
+              <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} /> Refresh from schedule
+            </button>
+          )}
+        </div>
+      }>
       <div className="overflow-x-auto">
         <table className="dense-table">
           <thead>
@@ -562,14 +584,14 @@ function RenovationPanel({ report, dailyReportId, locked, reload }) {
 
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ description: "", severity: "moderate", delay_minutes: 30, reason_category: "weather" });
+  const [draft, setDraft] = useState({ description: "", severity: "moderate", delay_days: 1, reason_category: "weather" });
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
       await api.post(`/delays`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "moderate", delay_minutes: 30, reason_category: "weather" });
+      setDraft({ description: "", severity: "moderate", delay_days: 1, reason_category: "weather" });
       reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Create failed"); }
+    } catch (e) { toast.error(formatErr(e, "Create delay")); }
   };
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
@@ -577,7 +599,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <div key={r.id} data-testid={`delay-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
           <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
           <span className="text-slate-700">{r.description}</span>
-          {r.delay_minutes ? <span className="text-slate-500 ml-2">{r.delay_minutes}min</span> : null}
+          {r.delay_days != null ? <span className="text-slate-500 ml-2">{r.delay_days}d</span> : null}
           {r.reason_category ? <span className="text-slate-400 ml-2">· {r.reason_category}</span> : null}
         </div>
       ))}
@@ -591,7 +613,12 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           <select data-testid="delay-new-category" value={draft.reason_category} onChange={(e) => setDraft({ ...draft, reason_category: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
             {["weather", "rfi_pending", "submittal_pending", "design_change", "site_condition", "manpower", "other"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <input data-testid="delay-new-minutes" type="number" placeholder="minutes" value={draft.delay_minutes} onChange={(e) => setDraft({ ...draft, delay_minutes: Number(e.target.value) })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+          <label className="text-xs flex items-center gap-2">
+            <span className="text-slate-500">Days</span>
+            <input data-testid="delay-new-days" type="number" step="0.5" min="0" placeholder="days"
+              value={draft.delay_days} onChange={(e) => setDraft({ ...draft, delay_days: e.target.value === "" ? "" : Number(e.target.value) })}
+              className="h-8 w-24 px-2 rounded border border-slate-200 text-sm" />
+          </label>
           <button data-testid="delay-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Add delay</button>
         </div>
       )}
@@ -607,7 +634,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
       await api.post(`/safety-events`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
       setDraft({ description: "", severity: "minor", event_type: "near_miss", osha_recordable: false });
       reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Create failed"); }
+    } catch (e) { toast.error(formatErr(e, "Create safety event")); }
   };
   return (
     <PanelShell icon={ShieldAlert} title="Safety events" testid="dr-safety-panel" count={rows.length}>
@@ -645,7 +672,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload })
       await api.post(`/qc-issues`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
       setDraft({ description: "", severity: "minor", spec_section_ref: "" });
       reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Create failed"); }
+    } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
   };
   return (
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
@@ -679,7 +706,7 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload }) {
       await api.post(`/rfis`, { ...draft, project_id: projectId, daily_report_id: dailyReportId });
       setDraft({ subject: "", description: "", priority: "normal" });
       reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Create failed"); }
+    } catch (e) { toast.error(formatErr(e, "Open RFI")); }
   };
   return (
     <PanelShell icon={MessageSquare} title="RFIs" testid="dr-rfis-panel" count={rows.length}>
@@ -713,7 +740,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
       await api.post(`/deliveries`, { ...draft, project_id: projectId, delivery_date: reportDate });
       setDraft({ vendor: "", description: "", po_number: "" });
       reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Create failed"); }
+    } catch (e) { toast.error(formatErr(e, "Log delivery")); }
   };
   return (
     <PanelShell icon={Truck} title="Deliveries today" testid="dr-deliveries-panel" count={rows.length}>
@@ -881,4 +908,17 @@ function CheckField({ label, value, onChange, disabled, testid }) {
       <span>{label}</span>
     </label>
   );
+}
+
+// Surface backend errors as helpfully as possible — never "Load failed".
+function formatErr(e, action = "Action") {
+  const r = e.response;
+  if (!r) return `${action} failed: ${e.message || "network error"}`;
+  const detail = r.data?.detail;
+  if (Array.isArray(detail)) {
+    const lines = detail.map((d) => `${(d.loc || []).slice(-1)[0] || "?"}: ${d.msg || d}`);
+    return `${action} failed (${r.status}): ${lines.join("; ").slice(0, 240)}`;
+  }
+  if (typeof detail === "string") return `${action} failed (${r.status}): ${detail}`;
+  return `${action} failed (${r.status})`;
 }

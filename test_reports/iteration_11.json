@@ -1,0 +1,33 @@
+{
+  "summary": "Iter 11 review: Auth/Tenant/Team/DR-grid/Delays(days)/Google-removed validation. Backend: 27/27 pytest PASS in /app/backend/tests/test_iteration11.py — covers register-creates-tenant+admin, dup-email 409, login, /me, invites (admin-only, 12-char code, list/accept/mismatch-403/unknown-404, multi-tenant join), members list & cannot-remove-self 400, fresh project + 5 tasks (mixed date intervals) → DR grid pre-populated with EXACTLY the 3 activities whose [planned_start,planned_finish] contains today (A001/A002/A005), refresh-grid idempotent (inserted=0 on 2nd call), refresh-grid picks up newly-added A006 (inserted=1), delays uses delay_days (sending delay_minutes is rejected 422 by extra='forbid'), safety/qc/rfi inline POST surface in /context, presence create, unplanned-activity AF-prefix + created_in_field=true + requires_pm_review=true, weather-autofill geocodes Kansas City+MO via Open-Meteo, submit locks DR (refresh-grid then 409), approve sets status=approved. Frontend smoke (live URL): /signup renders, fills org+name+email+password, navigates to /getting-started post-success; /team renders with member row + invite form; /daily-reports loads; Login page screenshot shows NO Google button (raw HTML contains the substring 'google' from bundle filenames only). DB wiped twice (after pytest + after UI smoke) — final state: 0 collections, so abhi@ice-aec.com / ICE will be the first-ever tenant.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration11.py",
+    "/app/test_reports/pytest/iter11_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_prepopulate_grid correctly uses planned_start <= report_date <= planned_finish (no ±1 buffer) — verified with 5 mixed-date tasks, only the 3 spanning today are pre-populated.",
+    "Delay model now requires delay_days (Optional[float]); StrictModel extra='forbid' correctly rejects legacy delay_minutes payloads with 422.",
+    "register endpoint creates tenant + user + tenant_users membership atomically and seeds CSI taxonomy/cost rates via best-effort try/except — clean.",
+    "team_invites use 12-char code via secrets.token_urlsafe(9)[:12], 14-day expiry, single-use (status flips to 'accepted' on accept). Admin-only on POST/DELETE enforced.",
+    "accept-invite enforces email match (403), unknown code (404), expiry (410), and dup user (409) — all 4 paths verified.",
+    "DailyReports.jsx is 884 lines — still on the larger side; refactor into sub-components (header/weather/presence/grid/events/renovation/audit) is a future maintainability item, not blocking.",
+    "Login page bundle contains substring 'google' from third-party JS chunk filenames (e.g., googleapis Open Sans font import in tailwind/index). No visible Google login button in the rendered DOM — confirmed via screenshot. Cosmetic only; consider removing the unused google-fonts import in index.html for full hygiene if the user is sensitive."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration11.py (new, 27 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (27/27)", "frontend": "100% (signup → getting-started; /team renders; /daily-reports loads; no visible Google UI)"},
+  "test_credentials": "DB intentionally wiped at end. Tester registered qa+<ts>@gtest.example / Secret123! / 'QA Org <ts>' during run; both deleted. User must register abhi@ice-aec.com / Ice@24608733 / 'ICE' fresh at /signup.",
+  "seed_data_creation": "All test seed (tenant 'QA Org <ts>', QA UI Tester admin, invitee, project, 6 tasks, daily report, delays/safety/qc/rfi/presence/unplanned/weather) was DROPPED at the end of the pytest run AND again after the UI smoke. Verified 0 collections remain.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "DB is intentionally empty — first signup at /signup is the user's real tenant (abhi@ice-aec.com / Ice@24608733 / org 'ICE'). Do NOT pre-create that account. /app/backend/tests/test_iteration11.py is reusable as a regression suite but its final test (test_zzz_cleanup_drop_all) wipes the DB, so run only on a throwaway register-first-then-wipe basis.",
+  "rca of the issue": "User-reported 'load failed' on inline records was caused by (a) terse toasts not surfacing backend HTTPException detail (now fixed via formatErr in DailyReports.jsx) and (b) attempting inserts on a submitted/locked DR — backend correctly returns 409 with detail. Both verified: fresh DR accepts delay/safety/qc/rfi inserts, submitted DR's refresh-grid returns 409. Delay schema migrated from delay_minutes to delay_days end-to-end (backend Strict model rejects minutes; frontend DelaysPanel uses delay-new-days input + 'd' suffix on rendered list)."
+}

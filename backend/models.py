@@ -62,7 +62,19 @@ class UserRegister(StrictModel):
     email: EmailStr
     password: str = Field(min_length=8)
     full_name: str
-    tenant_slug: str = "ice"
+    organization_name: str = Field(min_length=2, max_length=80)
+
+
+class InviteCreate(StrictModel):
+    email: EmailStr
+    role: Literal["admin", "pm", "super", "foreman", "viewer"] = "pm"
+
+
+class InviteAccept(StrictModel):
+    code: str = Field(min_length=8, max_length=24)
+    email: EmailStr
+    password: str = Field(min_length=8)
+    full_name: str
 
 
 class UserLogin(StrictModel):
@@ -620,7 +632,7 @@ class DelayCreate(StrictModel):
     description: str
     severity: Severity = "minor"
     photo_urls: List[str] = Field(default_factory=list)
-    delay_minutes: Optional[int] = None
+    delay_days: Optional[float] = None
     reason_category: Optional[str] = None
 
 
@@ -635,7 +647,7 @@ class Delay(ReadModel):
     description: str
     severity: Severity
     photo_urls: List[str] = Field(default_factory=list)
-    delay_minutes: Optional[int] = None
+    delay_days: Optional[float] = None
     reason_category: Optional[str] = None
     status: str = "open"
     reported_by: Optional[str] = None

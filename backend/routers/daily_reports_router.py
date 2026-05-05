@@ -19,27 +19,36 @@ router = APIRouter(tags=["daily-reports"])
 
 
 async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: str, report_date: date):
-    """Find activities planned for the day → create grid rows. Pre-fill
-    pct_complete_start_of_day from yesterday's end_of_day or task.pct_complete.
+    """Find activities planned for the day → create grid rows. A task is
+    'planned for this day' iff `planned_start <= report_date <= planned_finish`.
+    Pre-fill pct_complete_start_of_day from yesterday's end_of_day or
+    task.pct_complete.
     """
     db = get_db()
-    start_window = (report_date - timedelta(days=1)).isoformat()
-    end_window = (report_date + timedelta(days=1)).isoformat()
-
+    rd_iso = report_date.isoformat()
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
-            "$or": [
-                {"planned_start": {"$lte": end_window}, "planned_finish": {"$gte": start_window}},
-            ],
+            "planned_start": {"$lte": rd_iso},
+            "planned_finish": {"$gte": rd_iso},
         }),
         {"_id": 0},
-    ).limit(40).to_list(40)
+    ).limit(200).to_list(200)
 
     yesterday = (report_date - timedelta(days=1)).isoformat()
-    for pos, t in enumerate(tasks):
-        # yesterday's row?
+    # Existing rows we already have so we don't double-insert on refresh
+    existing = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id},
+        {"_id": 0, "schedule_activity_id": 1, "position": 1},
+    ).to_list(500)
+    existing_ids = {r["schedule_activity_id"] for r in existing}
+    next_pos = max((r["position"] for r in existing), default=-1) + 1
+
+    inserted = 0
+    for t in tasks:
+        if t["id"] in existing_ids:
+            continue
         prev_dr = await db.daily_reports.find_one(
             tenant_filter(tenant_id, {"project_id": project_id, "report_date": yesterday}),
             {"_id": 0, "id": 1},
@@ -53,7 +62,6 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
             if prev_row and prev_row.get("pct_complete_end_of_day") is not None:
                 prev_pct = float(prev_row["pct_complete_end_of_day"])
 
-        # location name
         loc_name = None
         if t.get("location_id"):
             loc = await db.locations.find_one(tenant_filter(tenant_id, {"id": t["location_id"]}), {"_id": 0, "name": 1})
@@ -71,7 +79,7 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
             "id": gen_id(),
             "daily_report_id": daily_report_id,
             "schedule_activity_id": t["id"],
-            "position": pos,
+            "position": next_pos,
             "pct_complete_start_of_day": prev_pct,
             "pct_complete_end_of_day": prev_pct,
             "crew_count": target_size,
@@ -88,6 +96,9 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
             "trade_code": t.get("trade_code"),
         }
         await db.daily_report_activities.insert_one(row.copy())
+        next_pos += 1
+        inserted += 1
+    return inserted
 
 
 @router.post("/daily-reports", response_model=DailyReport)
@@ -126,6 +137,24 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     return DailyReport(**doc)
+
+
+@router.post("/daily-reports/{daily_report_id}/refresh-grid")
+async def refresh_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
+    """Re-run pre-populate against the current schedule. Picks up any
+    activity whose [planned_start, planned_finish] now contains the report
+    date but isn't yet in the grid. Idempotent — never duplicates rows."""
+    db = get_db()
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    if dr.get("status") == "submitted":
+        raise HTTPException(409, "Daily report locked")
+    inserted = await _prepopulate_grid(
+        tenant_id=ctx["tenant_id"], project_id=dr["project_id"],
+        daily_report_id=daily_report_id, report_date=date.fromisoformat(dr["report_date"]),
+    )
+    return {"inserted": inserted}
 
 
 @router.get("/projects/{project_id}/daily-reports", response_model=list[DailyReport])

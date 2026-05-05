@@ -24,9 +24,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 from database import get_db, close_db  # noqa: E402
 from auth import require_tenant  # noqa: E402
-from seed import seed_demo  # noqa: E402
-from routers.auth_router import router as auth_router  # noqa: E402
-from routers.google_auth_router import router as google_auth_router  # noqa: E402
+from routers.auth_router import router as auth_router, team_router  # noqa: E402
 from routers.projects_router import router as projects_router  # noqa: E402
 from routers.tasks_router import router as tasks_router  # noqa: E402
 from routers.daily_reports_router import router as daily_reports_router  # noqa: E402
@@ -68,17 +66,14 @@ async def _ensure_indexes():
     await db.work_items.create_index([("tenant_id", 1), ("project_id", 1), ("status", 1)])
     await db.work_item_links.create_index([("entity_type", 1), ("entity_id", 1)])
     await db.copilot_messages.create_index([("tenant_id", 1), ("user_id", 1), ("session_id", 1), ("created_at", 1)])
+    await db.team_invites.create_index([("code", 1)], unique=True)
+    await db.team_invites.create_index([("tenant_id", 1), ("status", 1)])
+    await db.daily_presence.create_index([("tenant_id", 1), ("daily_report_id", 1)])
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _ensure_indexes()
-    # Seed on startup so the demo is always available
-    try:
-        await seed_demo()
-        logger.info("Demo seed ensured.")
-    except Exception as e:
-        logger.exception("Seed failed: %s", e)
     # Init Emergent object storage (best-effort — voice/upload work even if it fails)
     try:
         from services.storage import init_storage
@@ -86,18 +81,6 @@ async def lifespan(app: FastAPI):
         logger.info("Object storage initialized")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
-    # Seed CSI MasterFormat + cost rate library (idempotent)
-    try:
-        from seed_aux import seed_taxonomy_and_rates
-        from database import get_db
-        db = get_db()
-        # find seeded ICE tenant
-        tenant = await db.tenants.find_one({"slug": "ice"}, {"_id": 0, "id": 1})
-        if tenant:
-            await seed_taxonomy_and_rates(tenant["id"])
-            logger.info("Trade taxonomy + cost rates seeded")
-    except Exception as e:
-        logger.exception("Aux seed failed: %s", e)
     yield
     await close_db()
 
@@ -112,11 +95,6 @@ async def health():
     return {"status": "ok", "service": "ice-schedule-ops"}
 
 
-@api_router.post("/dev/seed")
-async def dev_seed():
-    return await seed_demo()
-
-
 # Tenant info endpoint
 @api_router.get("/tenants/current")
 async def current_tenant(ctx: dict = Depends(require_tenant)):
@@ -126,7 +104,7 @@ async def current_tenant(ctx: dict = Depends(require_tenant)):
 
 
 api_router.include_router(auth_router)
-api_router.include_router(google_auth_router)
+api_router.include_router(team_router)
 api_router.include_router(projects_router)
 api_router.include_router(tasks_router)
 api_router.include_router(daily_reports_router)

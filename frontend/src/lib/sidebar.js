@@ -73,6 +73,7 @@ export const SIDEBAR_SECTIONS = [
   {
     title: "SYSTEM",
     items: [
+      { label: "Team", path: "/team", icon: Users, testid: "sidebar-team" },
       { label: "Imports", path: "/imports", icon: FileUp, testid: "sidebar-imports" },
       { label: "AI agents", path: "/agents", icon: Bot, testid: "sidebar-agents" },
       { label: "Knowledge base", path: "/kb", icon: Brain, testid: "sidebar-kb" },
