@@ -221,7 +221,7 @@ async def list_copilot_sessions(ctx: dict = Depends(require_tenant)):
         {"$group": {
             "_id": "$session_id",
             "last_message_at": {"$first": "$created_at"},
-            "preview": {"$first": "$user_message"},
+            "preview": {"$first": "$request_text"},
             "count": {"$sum": 1},
         }},
         {"$sort": {"last_message_at": -1}},

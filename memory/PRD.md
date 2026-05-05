@@ -2,160 +2,130 @@
 
 ## Original problem statement
 Multi-tenant federal-construction PM platform replacing Procore / Touchplan /
-Bluebeam / Smartsheet for GSA, USACE, NAVFAC, and other agencies. Original
-prompt requested PostgreSQL + LangGraph + Celery + pgvector. The user
-explicitly authorised substitution as long as the stack remains Python and
-the functional intents are met. Stack actually shipped:
+Bluebeam / Smartsheet. Original prompt: PostgreSQL + LangGraph + Celery +
+pgvector. User authorised substitution; final stack:
 
-- **Backend**: FastAPI + Motor (async MongoDB) + Pydantic v2 + WeasyPrint +
-  Pillow + imagehash + scikit-learn TF-IDF + emergentintegrations.LlmChat
-  (universal Emergent LLM key) + Whisper + pdf2image + pytesseract + Stripe
-  (via emergentintegrations.payments)
-- **Frontend**: React 19 + TailwindCSS + shadcn/ui + Konva + raw three.js +
-  react-pdf + react-router 7 + WebSocket-based real-time channel
-- **Infra**: MongoDB collection-per-aggregate; supervisor-managed services;
-  service-worker PWA; Emergent Object Storage for binary blobs
+- **Backend**: FastAPI + Motor (async MongoDB) + Pydantic v2 + WeasyPrint
+  + Pillow + imagehash + scikit-learn TF-IDF + emergentintegrations.LlmChat
+  + emergentintegrations.payments.stripe + Whisper + pdf2image + pytesseract
+  + **JPype + MPXJ (Java JVM)** for true MPP/XER/Primavera parsing
+- **Frontend**: React 19 + TailwindCSS + shadcn/ui + Konva + raw three.js
+  (incl. THREE clip planes for 3D section view) + react-pdf + react-router 7
+  + WebSocket real-time channel
+- **Infra**: MongoDB collection-per-aggregate; supervisor; service-worker
+  PWA; Emergent Object Storage
 
 ## Roles & personas
-1. **Project Executive** — pipeline KPIs, P50/P80 finish (admin)
+1. **Project Executive** — pipeline KPIs (admin)
 2. **Project Manager** — daily ops, recovery, marketplace, master doc
 3. **Field Superintendent** — daily reports, field issues, deliveries
-4. **Foreman** — daily report row ownership, voice annotations, photos
-5. **Voice User (PIN auth)** — capture-only mobile foreman view
-6. **External / Read-only** — owners, sub-rep, GC PMs
+4. **Foreman** — daily report rows, voice annotations, photos
+5. **Voice User (PIN auth)** — capture-only mobile foreman view (READ-only AI)
+6. **External / Read-only** — owners, sub-rep
 
 ## What's implemented (chronological)
 
-### Iter 1-4 — MVP through Spatial Path 3
-Auth + tenants + projects + tasks + locations + resources + cost rates +
-daily-report grid + voice annotations (Whisper + Claude) + spec PDF
-ingestion + TF-IDF spec search + drawing markup viewer (Konva) + photo
-uploads + 2.5D mass model + spatial elevation projection + drawing pin
-deep-link → entity side-panel + auto-generated submittals + polygon editor.
-**31/31 tests PASS in iter 4.**
+### Iter 1-4 — MVP + Spatial Path 3
+Auth, tenants, projects, tasks, locations, resources, daily reports, voice
+annotations (Whisper + Claude), spec PDF ingestion, TF-IDF spec search,
+drawing markup viewer, photo uploads, 2.5D mass model, spatial elevation
+projection, drawing pin deep-link, auto-generated submittals, polygon
+editor. **31/31 tests PASS in iter 4.**
 
 ### Iter 5 — Marketplace + Notifications + Productivity
-Cross-tenant marketplace postings + notifications + global search +
-weather (Open-Meteo) + productivity-rates + cost-estimates +
-work-item history + approvals badge.
+Cross-tenant marketplace, notifications, global search, weather
+(Open-Meteo), productivity rates, cost estimates, work-item history,
+approvals badge.
 
 ### Iter 6 — Master prompt completion (a-g)
-- WeasyPrint daily-report + weekly-rollup PDFs
-- Photo EXIF + perceptual hash (Pillow + imagehash) — substitution for DINOv2
-- AI Recovery apply + eval-harness
-- Aging dashboard (`/aging`) with smart sidebar badges
-- Submittal ↔ Activity linkage (manual + auto-link)
-- Spatial section view (cut-line → SVG vertical slice)
-- Lookahead Gantt + drag-to-reschedule
-- Drawing markup expansion (9 tools incl. ellipse, arrow, line, cloud, text, calibrate)
-- Marketplace UI (full)
-- Productivity dashboard UI
-- Global search dropdown
-- NotificationsBell on TopBar
-- PWA manifest + service worker
-**iter 5.json: 50/50 functional tests PASS.**
+WeasyPrint PDFs, photo EXIF + perceptual hash, AI Recovery apply +
+eval-harness, aging dashboard with smart sidebar badges, submittal ↔
+activity linkage (manual + auto-link), spatial section view, lookahead
+Gantt + drag, drawing markup expansion (9 tools), marketplace UI,
+productivity dashboard, global search dropdown, NotificationsBell, PWA.
+**iter 5.json: 50/50 PASS.**
 
 ### Iter 7 — Stripe + RAG + project gating + compliance + real-time
-- **Stripe Checkout escrow**: GC accepts a marketplace bid → funds escrow
-  via Stripe → escrow holds in `payment_transactions` ledger → activity
-  reaches `milestone_pct` → automatic release-to-sub via background task
-  triggered from `tasks PATCH pct_complete`. Tracked end-to-end with WS
-  broadcasts.
-- **Master doc with project-type gating**: `/projects/:id/master-doc` — 4
-  construction types (new / renovation / TI / infrastructure), delivery
-  method, sketch-review style, govt security level, site conditions
-  (occupied / historic / hazmat / shifts), site-constraint chips,
-  notes. AI agents (`copilot_answer` + `recovery_suggestions`) prepend
-  this as context, materially changing recommendations for renovation
-  vs new-construction.
-- **Knowledge Base / RAG**: `/kb` — TF-IDF over closed RFIs + resolved
-  work items + manual lessons. `_kb_block` injected into AI prompts so
-  every recovery / RFI-drafter / copilot response can cite past
-  resolutions. Idempotent `ingest-historical` endpoint.
-- **NIST 800-171 control mapping**: 16 controls across 8 families with
-  implementation+evidence_endpoint each (`/compliance`).
-- **Audit-log integrity verifier**: `GET /audit-log/verify-chain` walks
-  the SHA-256 hash chain forward; surfaces first divergence index.
-- **Polygon suggester (Claude vision)**: `POST /spatial/suggest-polygon`
-  crops PDF page → Claude Sonnet 4.5 vision returns polygon points;
-  PolygonEditor "AI suggest" button consumes it.
-- **Drawing OCR**: `POST /drawings/ocr` runs pytesseract on the
-  bottom-right title-block → heuristic extraction of sheet number, scale,
-  date, title. DrawingViewer toolbar "OCR" button.
-- **Real-time WebSockets**: `/api/ws?token=<jwt>` tenant-scoped fanout.
-  `emit_notification()` and tasks PATCH both push events. NotificationsBell
-  refreshes on incoming events.
-- **Voice-only PIN auth**: admin issues a 6-digit PIN scoped to a
-  project + foreman name; PIN exchange returns a `role='voice'` JWT
-  that opens `/m/foreman` (mobile-first capture-only view: voice
-  notes + photo upload + per-task percentage chips).
-- **Mobile foreman view**: `/m/foreman` — phone-friendly layout with
-  voice-record button, camera-capture photo input, and 7-day lookahead
-  with one-tap pct-complete chips.
-- **Re-seed unapplied recovery**: `POST /dev/seed/recovery` for
-  regression coverage of the apply flow.
+- Stripe Checkout escrow + milestone-bound auto-release
+- Master doc with project-type gating (new / renovation / TI / infrastructure)
+  injected into AI prompts
+- Knowledge Base / RAG (TF-IDF over closed RFIs + work items)
+- NIST 800-171 control mapping (16 controls × 8 families)
+- Audit-log integrity verifier (SHA-256 hash chain)
+- Polygon suggester (Claude vision via emergentintegrations)
+- Real-time WebSockets
+- Drawing OCR (pytesseract)
+- Voice-only PIN auth + mobile foreman view
+- Re-seed dev endpoint
+**iter 6.json: 21/22 PASS.**
 
-**iter 6.json: 21/22 functional tests PASS** (1 conditional skip on a
-gating path that requires specific seed state).
+### Iter 8 — Final wave (current)
+- **True MPP/XER parser** via JPype + MPXJ — Java JRE installed
+  (`default-jre-headless`), `mpxj` package provides bundled jars, JVM
+  starts lazily on first call (~2s warm-up). Per-extension reader map
+  (MPXReader / PrimaveraXERFileReader / MPPReader / etc.) ensures
+  reliability vs UniversalProjectReader.
+- **AI Copilot READ + WRITE tool-use** — 11 curated tools (search,
+  get_status, create_task, update_task, mark_task_complete, create_rfi,
+  create_daily_report, create_work_item, create_kb_entry,
+  create_submittal, link_submittal_to_activity). Claude returns a JSON
+  action plan; orchestrator executes against the DB respecting tenant
+  isolation + role gates. Voice users have WRITE tools filtered before
+  invocation.
+- **Strict no-markdown reply rule** — both system-prompt instruction and
+  belt-and-suspenders `_strip_markdown` regex post-processor. All output
+  is plain prose (no asterisks, headers, fenced code, bullets, tables,
+  links).
+- **3D section view inside Three.js scene** — `renderer.localClippingEnabled = true`,
+  a `THREE.Plane` whose normal/constant are driven by the angle/offset
+  sliders, with a translucent red `PlaneGeometry` indicator. Building
+  meshes get `clippingPlanes: [plane]` when sectionMode is on; you can
+  rotate (0-180°) and offset (-200..200ft) the cut.
+- **Audit trail** for every copilot turn → `copilot_messages` collection
+  with request_text, reply_text, actions, tool_results, latency_ms.
+**iter 7.json: 17 new + 21 regression = 38 PASS / 1 conditional skip.**
 
-## Test results by iteration
-| Iter | Backend | Frontend |
-|------|---------|----------|
-| 1    | 100%    | 100%     |
-| 2    | 100%    | 100%     |
-| 3    | 100%    | 100%     |
-| 4    | 31/31   | 100%     |
-| 5    | 50/50   | 100% (after testid fixes) |
-| 6    | 21/22   | 100%     |
+## Cumulative test results
+| Iter | Backend | Frontend | Notes |
+|------|---------|----------|-------|
+| 1    | 100%    | 100%     | MVP                              |
+| 2    | 100%    | 100%     | Voice / specs / drawings         |
+| 3    | 100%    | 100%     | Persistence + spatial 2.5D       |
+| 4    | 31/31   | 100%     | Spatial Path 3 + submittals      |
+| 5    | 50/50   | 100%     | Marketplace + notifs + prod      |
+| 6    | 21/22   | 100%     | Master-prompt scope a-g          |
+| 7    | 38/39   | 100%     | Stripe + RAG + gating + 3D cut   |
 
 ## Known deferred / substituted
-- **DINOv2** → imagehash pHash (deterministic, free)
-- **MPP/XER parser** → CSV/XLSX import works; .mpp/.xer return helpful
-  error (deferred — needs JPype + MPXJ JVM)
+- **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)
-- **Stripe Connect Express** → Stripe Checkout (escrow held in our
-  ledger; payouts recorded as ledger rows + notifications, not actual
-  Stripe Transfers — would require platform onboarding)
-- **LangGraph** → multi-step LlmChat sequences cover the same intent
-- **pgvector** → TF-IDF (lexical) + LlmChat for re-ranking
-- **Celery** → FastAPI BackgroundTasks (sufficient for ingest + auto-release)
+- **Stripe Connect Express** → Stripe Checkout (escrow ledgered, payouts
+  recorded as ledger rows + notifications, not actual Stripe Transfers)
+- **LangGraph** → multi-step LlmChat sequences
+- **pgvector** → TF-IDF + LlmChat for re-ranking
+- **Celery** → FastAPI BackgroundTasks
+- **Sheet-classifier ML for atypical title-blocks** → multi-region
+  pytesseract heuristic suffices for standard architectural sheets
 
 ## Backlog (P2)
-- Stripe Connect Express full onboarding for actual payouts to subs
-- True XER/MPP parsing via MPXJ + JPype (requires JVM in container)
-- Active probe of NIST evidence_endpoints (currently flag is hard-coded
-  True from mapping)
-- Section-view 3D rendering in `Spatial3D` (currently SVG slice)
+- Stripe Connect Express full onboarding for actual sub payouts
+- Active probe of NIST evidence_endpoints (currently mapping-only)
+- Bluebeam .bax import (no public spec)
+- Sheet-classifier ML for atypical title-blocks
+- Standardise copilot tool-result envelope shape (cosmetic)
 
 ## Architecture notes
-- All MongoDB queries exclude `_id` in projections; Pydantic serialisation
-  strict
-- All endpoints respect `tenant_filter()` + `Depends(require_tenant)`
-- LLM calls use `emergentintegrations.LlmChat` with universal Emergent key
-- Routers split by concern: `iter3` (persistence) → `iter4` (submittals) →
-  `iter5` (marketplace + notifications) → `iter6` (PDF + EXIF + section)
-  → `iter7` (Stripe + RAG + master doc + compliance + real-time + voice
-  PIN + OCR + polygon vision) + `ws_router` (WebSocket fanout)
+- Routers split: `auth/google_auth/projects/tasks/daily_reports/resources/
+  field_events/docs/upload/iter3/iter4/iter5/iter6/iter7/ws/system`
+- Services: `spec_search/kb_search/cpm/ai_agents/copilot_tools/spec_ingest/
+  storage/voice_pipeline/schedule_parser`
+- All MongoDB queries exclude `_id` in projections
+- All endpoints use `Depends(require_tenant)` for tenant isolation
+- LLM calls via `emergentintegrations.LlmChat` with universal Emergent key
+- JVM starts lazily on first MPXJ call; one process per pod, persistent
 
 ## Test credentials
-See `/app/memory/test_credentials.md`
-- admin@iceops.com / Demo123!
-- Tenant slug: `ice` (for voice-PIN exchange)
-- Project: GSA Federal Building Renovation — 8th Floor
-- Stripe: STRIPE_API_KEY=sk_test_emergent (Emergent test sandbox)
-
-## File map
-**Backend routers**: `auth_router` · `google_auth_router` · `projects_router` ·
-`tasks_router` · `daily_reports_router` · `resources_router` ·
-`field_events_router` · `docs_router` · `upload_router` · `iter3_router` ·
-`iter4_router` · `iter5_router` · `iter6_router` · `iter7_router` · `ws_router`
-
-**Backend services**: `spec_search` · `kb_search` · `cpm` · `ai_agents` ·
-`spec_ingest` · `storage` · `voice_pipeline` · `schedule_parser`
-
-**Frontend pages**: Dashboard · Projects · MasterDoc · DailyReports · Photos ·
-Tasks · Lookahead (list+Gantt) · WeeklyReports · Locations · PolygonEditor ·
-Spatial3D · Productivity · RFIs · Drawings · Specs · Submittals · Aging ·
-Approvals · Recovery · Resources · Imports · AiAgentsPage · KnowledgeBase ·
-MarketplaceFull · VoicePinAdmin · ComplianceFull · AuditLog · Settings ·
-VoiceLogin · MobileForeman
+See `/app/memory/test_credentials.md`.
+- `admin@iceops.com / Demo123!`
+- Tenant slug `ice` (for voice-PIN exchange)
+- Stripe sandbox: `STRIPE_API_KEY=sk_test_emergent`
