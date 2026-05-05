@@ -65,25 +65,40 @@ productivity dashboard, global search dropdown, NotificationsBell, PWA.
   starts lazily on first call (~2s warm-up). Per-extension reader map
   (MPXReader / PrimaveraXERFileReader / MPPReader / etc.) ensures
   reliability vs UniversalProjectReader.
-- **AI Copilot READ + WRITE tool-use** — 11 curated tools (search,
-  get_status, create_task, update_task, mark_task_complete, create_rfi,
-  create_daily_report, create_work_item, create_kb_entry,
-  create_submittal, link_submittal_to_activity). Claude returns a JSON
-  action plan; orchestrator executes against the DB respecting tenant
-  isolation + role gates. Voice users have WRITE tools filtered before
-  invocation.
-- **Strict no-markdown reply rule** — both system-prompt instruction and
-  belt-and-suspenders `_strip_markdown` regex post-processor. All output
-  is plain prose (no asterisks, headers, fenced code, bullets, tables,
-  links).
-- **3D section view inside Three.js scene** — `renderer.localClippingEnabled = true`,
-  a `THREE.Plane` whose normal/constant are driven by the angle/offset
-  sliders, with a translucent red `PlaneGeometry` indicator. Building
-  meshes get `clippingPlanes: [plane]` when sectionMode is on; you can
-  rotate (0-180°) and offset (-200..200ft) the cut.
-- **Audit trail** for every copilot turn → `copilot_messages` collection
-  with request_text, reply_text, actions, tool_results, latency_ms.
-**iter 7.json: 17 new + 21 regression = 38 PASS / 1 conditional skip.**
+- **AI Copilot READ + WRITE tool-use** — initial 11 tools.
+- **Strict no-markdown reply rule** — system-prompt + `_strip_markdown` regex.
+- **3D section view inside Three.js scene** — `localClippingEnabled=true`,
+  THREE.Plane with angle/offset sliders.
+- **Audit trail** for every copilot turn → `copilot_messages` collection.
+**iter 7.json: 38 PASS / 1 SKIP.**
+
+### Iter 9 — CRUD everywhere + onboarding (current)
+- **Generic CRUD** for 11 entities via `/api/crud/{entity}/{id}` PATCH +
+  DELETE (soft-delete with status='deleted'). Tenant-isolated. Allow-list
+  in `iter8_router.ENTITY_CONFIG`.
+- **Frontend `CrudList` framework** — single configurable component
+  drives Crews / People / Equipment / Certifications / RFIs / Deliveries
+  / Work-items / Change-orders / Locations / Delays / Safety-events /
+  QC-issues. Dialog forms with field-level validation, inline edit/delete.
+- **Copilot tool registry expanded to 21 tools** — added create_crew,
+  create_person, create_equipment, create_floor, create_location,
+  create_delay, create_safety_event, create_qc_issue, create_delivery,
+  delete_entity, update_entity. Models match canonical Pydantic schemas
+  (first_name + last_name, asset_tag + type + manufacturer, etc).
+- **Standardised tool-result envelope** — every write tool returns
+  `{created|updated|deleted: {resource: <type>, id, ...}}`. Frontend
+  badges parse the envelope uniformly.
+- **AI auto-detect rooms** — `POST /api/spatial/auto-detect-rooms`
+  renders the plan PDF, asks Claude vision to identify every enclosed
+  room, returns polygon coordinates, and (optionally) creates a
+  Location record per room.
+- **Onboarding workflow** — `GET /api/onboarding/getting-started`
+  returns 12-step guide for AI engineers new to construction. Each step
+  reports complete=true based on actual DB state. Frontend
+  `/getting-started` page renders the checklist with deep-links and a
+  prominent "AI auto-detect rooms" CTA.
+- **Markdown stripping verified** under load.
+**iter 8.json: 34 PASS / 1 SKIP / 2 FIXED post-report (person + equipment envelope shapes).**
 
 ## Cumulative test results
 | Iter | Backend | Frontend | Notes |

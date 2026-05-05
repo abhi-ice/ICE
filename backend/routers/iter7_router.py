@@ -596,11 +596,11 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
     rev = await db.drawing_revisions.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.drawing_revision_id}), {"_id": 0},
     )
-    if not rev or not rev.get("storage_path"):
+    if not rev or not (rev.get("storage_path") or rev.get("pdf_url")):
         raise HTTPException(404, "Revision PDF not found")
 
     from services.storage import get_object
-    pdf_bytes, _ = get_object(rev["storage_path"])
+    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
     try:
         images = pdf2image.convert_from_bytes(pdf_bytes, first_page=payload.page,
                                               last_page=payload.page, dpi=150)
@@ -686,7 +686,7 @@ async def drawing_ocr(payload: DrawingOcrRequest, ctx: dict = Depends(require_te
     if not rev:
         raise HTTPException(404, "Revision not found")
     from services.storage import get_object
-    pdf_bytes, _ = get_object(rev["storage_path"])
+    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
     try:
         images = pdf2image.convert_from_bytes(pdf_bytes, first_page=payload.page,
                                               last_page=payload.page, dpi=200)

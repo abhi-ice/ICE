@@ -162,7 +162,20 @@ export default function PolygonEditor() {
               } else { toast.error("Could not parse a polygon"); }
             } catch (e) { toast.error(e.response?.data?.detail || "Suggestion failed"); }
           }} variant="outline" disabled={!revisionId || !selectedLoc} className="gap-1">
-            <Wand2 className="h-4 w-4" /> AI suggest
+            <Wand2 className="h-4 w-4" /> AI suggest 1
+          </Button>
+          <Button data-testid="pe-detect-all" onClick={async () => {
+            if (!revisionId || !floorId) { toast.error("Pick floor + drawing first"); return; }
+            toast.info("Claude is reading the plan to identify every room…");
+            try {
+              const { data } = await api.post("/spatial/auto-detect-rooms", {
+                drawing_revision_id: revisionId, floor_id: floorId, page, create_locations: true,
+              });
+              toast.success(`Detected ${data.detected_count} rooms — created ${data.created_count} new locations`);
+              api.get(`/projects/${activeId}/locations?floor_id=${floorId}`).then(({ data }) => setLocations(data));
+            } catch (e) { toast.error(e.response?.data?.detail || "Auto-detect failed"); }
+          }} disabled={!revisionId || !floorId} className="bg-violet-600 hover:bg-violet-700 gap-1">
+            <Wand2 className="h-4 w-4" /> AI detect all rooms
           </Button>
           <Button data-testid="pe-save" onClick={save} disabled={!isClosed || !selectedLoc} className="bg-blue-600 hover:bg-blue-700 gap-1"><Save className="h-4 w-4" /> Save</Button>
         </div>

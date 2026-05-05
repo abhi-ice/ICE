@@ -55,6 +55,17 @@ Tools:
   - create_kb_entry           args: {title: str, body: str, tags?: [str]}
   - create_submittal          args: {title: str, spec_section_code?: str, type?: 'product_data'|'shop_drawing'|'sample'|'calculation'|'test_report'|'warranty'|'om_manual'|'mock_up'}
   - link_submittal_to_activity args: {submittal_number: str, activity_code: str}
+  - create_crew               args: {name: str, trade: str, target_size?: int, is_self_perform?: bool, external_company?: str}
+  - create_person             args: {first_name: str, last_name: str, email?: str, phone?: str, trade?: str, role?: str, hourly_rate?: number, employment_type?: 'ft'|'pt'|'contractor', union_local?: str}
+  - create_equipment          args: {asset_tag: str, type: str, manufacturer?: str, model?: str, year?: number, ownership?: 'owned'|'rental'|'leased', hourly_rate?: number, daily_rate?: number}
+  - create_floor              args: {floor_number: int, floor_name: str, elevation_z_ft?: number, floor_height_ft?: number}
+  - create_location           args: {name: str, floor_id: str, code?: str, location_type?: 'room'|'zone'|'corridor'|'stair'|'mech_room', area_sqft?: number}
+  - create_delay              args: {description: str, severity?: 'low'|'moderate'|'high', delay_minutes?: int, reason_category?: 'weather'|'rfi_pending'|'submittal_pending'|'design_change'|'site_condition'|'manpower'|'other', date?: 'YYYY-MM-DD'}
+  - create_safety_event       args: {description: str, event_type?: 'near_miss'|'first_aid'|'recordable'|'lost_time', severity?: 'low'|'moderate'|'high', osha_recordable?: bool}
+  - create_qc_issue           args: {description: str, severity?: 'minor'|'major'|'critical', spec_section_ref?: str}
+  - create_delivery           args: {vendor: str, description: str, delivery_date?: 'YYYY-MM-DD', po_number?: str}
+  - delete_entity             args: {entity_type: 'task'|'rfi'|'submittal'|'work_item'|'kb_entry'|'crew'|'person'|'equipment'|'floor'|'location'|'delay'|'safety_event'|'qc_issue'|'delivery'|'change_order'|'photo', id?: str, activity_code?: str, rfi_number?: str, submittal_number?: str}
+  - update_entity             args: {entity_type: <same as delete_entity>, id: str, fields: {<any patchable fields>}}
 
 Rules:
   - Only call tools the user explicitly authorises (e.g. user says "add task X" → create_task; user says "What's the status?" → get_status only, no writes).
@@ -67,6 +78,10 @@ WRITE_TOOLS = {
     "create_task", "update_task", "mark_task_complete", "create_rfi",
     "create_daily_report", "create_work_item", "create_kb_entry",
     "create_submittal", "link_submittal_to_activity",
+    "create_crew", "create_person", "create_equipment",
+    "create_floor", "create_location", "create_delay",
+    "create_safety_event", "create_qc_issue", "create_delivery",
+    "delete_entity", "update_entity",
 }
 
 
@@ -176,9 +191,9 @@ async def _tool_create_task(ctx: dict, args: dict) -> dict:
         "created_by": ctx["user"]["id"],
     }
     await db.tasks.insert_one(doc.copy())
-    return {"created_task": {"id": doc["id"], "activity_code": activity_code,
-                              "description": args["description"], "planned_start": ps,
-                              "planned_finish": pf}}
+    return {"created": {"resource": "task", "id": doc["id"], "activity_code": activity_code,
+                        "description": args["description"], "planned_start": ps,
+                        "planned_finish": pf}}
 
 
 async def _tool_update_task(ctx: dict, args: dict) -> dict:
@@ -201,7 +216,7 @@ async def _tool_update_task(ctx: dict, args: dict) -> dict:
     if not updates:
         return {"error": "no fields to update"}
     await db.tasks.update_one(f, {"$set": updates})
-    return {"updated_task": {"activity_code": code, **updates}}
+    return {"updated": {"resource": "task", "activity_code": code, "id": task["id"], "fields": updates}}
 
 
 async def _tool_mark_task_complete(ctx: dict, args: dict) -> dict:
@@ -226,19 +241,25 @@ async def _tool_create_rfi(ctx: dict, args: dict) -> dict:
         "project_id": project_id,
         "rfi_number": f"RFI-{n:03d}",
         "subject": args["subject"],
-        "question": args["question"],
+        "description": args["question"],  # canonical field name on Rfi model
         "trade_code": args.get("trade_code"),
-        "spec_section_codes": [],
-        "drawing_revision_ids": [],
+        "spec_section_refs": [],
+        "schedule_activity_id": None,
+        "location_id": None,
         "status": "draft",
+        "priority": "normal",
         "date_initiated": date.today().isoformat(),
-        "answer": None,
-        "answered_at": None,
-        "initiated_by": ctx["user"]["id"],
+        "date_required": None,
+        "date_responded": None,
+        "response_text": None,
+        "cost_impact_estimated_usd": None,
+        "time_impact_estimated_days": None,
+        "to_party": None, "from_party": None,
+        "created_by": ctx["user"]["id"],
         "created_at": utc_now().isoformat(),
     }
     await db.rfis.insert_one(rfi.copy())
-    return {"created_rfi": {"rfi_number": rfi["rfi_number"], "subject": args["subject"]}}
+    return {"created": {"resource": "rfi", "id": rfi["id"], "rfi_number": rfi["rfi_number"], "subject": args["subject"]}}
 
 
 async def _tool_create_daily_report(ctx: dict, args: dict) -> dict:
@@ -250,7 +271,7 @@ async def _tool_create_daily_report(ctx: dict, args: dict) -> dict:
         {"_id": 0},
     )
     if existing:
-        return {"daily_report": {"id": existing["id"], "report_date": rd, "status": existing["status"], "already_existed": True}}
+        return {"created": {"resource": "daily_report", "id": existing["id"], "report_date": rd, "status": existing["status"], "already_existed": True}}
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -266,7 +287,7 @@ async def _tool_create_daily_report(ctx: dict, args: dict) -> dict:
         "created_by": ctx["user"]["id"],
     }
     await db.daily_reports.insert_one(doc.copy())
-    return {"created_daily_report": {"id": doc["id"], "report_date": rd}}
+    return {"created": {"resource": "daily_report", "id": doc["id"], "report_date": rd}}
 
 
 async def _tool_create_work_item(ctx: dict, args: dict) -> dict:
@@ -290,7 +311,7 @@ async def _tool_create_work_item(ctx: dict, args: dict) -> dict:
         "created_at": utc_now().isoformat(),
     }
     await db.work_items.insert_one(doc.copy())
-    return {"created_work_item": {"id": doc["id"], "title": args["title"], "priority": args.get("priority", "normal")}}
+    return {"created": {"resource": "work_item", "id": doc["id"], "title": args["title"], "priority": args.get("priority", "normal")}}
 
 
 async def _tool_create_kb_entry(ctx: dict, args: dict) -> dict:
@@ -316,7 +337,7 @@ async def _tool_create_kb_entry(ctx: dict, args: dict) -> dict:
         invalidate_index(ctx["tenant_id"])
     except Exception:
         pass
-    return {"created_kb_entry": {"id": doc["id"], "title": args["title"]}}
+    return {"created": {"resource": "kb_entry", "id": doc["id"], "title": args["title"]}}
 
 
 async def _tool_create_submittal(ctx: dict, args: dict) -> dict:
@@ -348,7 +369,312 @@ async def _tool_create_submittal(ctx: dict, args: dict) -> dict:
         "created_by": ctx["user"]["id"],
     }
     await db.submittals.insert_one(doc.copy())
-    return {"created_submittal": {"submittal_number": doc["submittal_number"], "title": args["title"]}}
+    return {"created": {"resource": "submittal", "submittal_number": doc["submittal_number"], "title": args["title"], "id": doc["id"]}}
+
+
+# ---- Resource CRUD tools ------------------------------------------------
+async def _tool_create_crew(ctx: dict, args: dict) -> dict:
+    if "name" not in args or "trade" not in args:
+        return {"error": "name + trade required"}
+    db = get_db()
+    # Auto-generate crew_code if missing
+    crew_code = args.get("crew_code")
+    if not crew_code:
+        last = await db.crews.find(tenant_filter(ctx["tenant_id"]),
+                                    {"_id": 0, "crew_code": 1}).sort("crew_code", -1).limit(1).to_list(1)
+        n = 1
+        if last:
+            m = re.search(r"(\d+)$", last[0].get("crew_code", "") or "")
+            if m: n = int(m.group(1)) + 1
+        crew_code = f"CR-{n:03d}"
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "crew_code": crew_code,
+        "name": args["name"],
+        "trade": args["trade"],
+        "foreman_person_id": args.get("foreman_id"),
+        "home_yard_address": None,
+        "hourly_burdened_cost": args.get("hourly_burdened_cost"),
+        "target_size": int(args.get("target_size", 4)),
+        "notes": args.get("notes"),
+        "status": "active",
+        "created_at": utc_now().isoformat(),
+    }
+    await db.crews.insert_one(doc.copy())
+    return {"created": {"resource": "crew", "id": doc["id"], "crew_code": crew_code, "name": doc["name"], "trade": doc["trade"]}}
+
+
+async def _tool_create_person(ctx: dict, args: dict) -> dict:
+    if "full_name" not in args and "first_name" not in args:
+        return {"error": "first_name + last_name OR full_name required"}
+    if "full_name" in args:
+        parts = args["full_name"].split(maxsplit=1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+    else:
+        first_name = args["first_name"]
+        last_name = args.get("last_name", "")
+    db = get_db()
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "employee_number": args.get("employee_number"),
+        "first_name": first_name,
+        "last_name": last_name,
+        "email": args.get("email"),
+        "phone": args.get("phone"),
+        "role": args.get("role"),
+        "trade": args.get("trade"),
+        "employment_type": args.get("employment_type", "ft"),
+        "union_local": args.get("union_local"),
+        "prevailing_wage_classification": args.get("prevailing_wage_classification"),
+        "hourly_rate": args.get("hourly_rate") or args.get("hourly_rate_usd"),
+        "e_verify_status": "pending",
+        "i9_on_file": False,
+        "cleared_for_federal": False,
+        "status": "active",
+        "created_at": utc_now().isoformat(),
+    }
+    await db.people.insert_one(doc.copy())
+    return {"created": {"resource": "person", "id": doc["id"],
+                        "first_name": first_name, "last_name": last_name,
+                        "role": doc.get("role"), "trade": doc.get("trade"),
+                        "hourly_rate": doc.get("hourly_rate")}}
+
+
+async def _tool_create_equipment(ctx: dict, args: dict) -> dict:
+    if "name" not in args and "asset_tag" not in args:
+        return {"error": "asset_tag or name required"}
+    db = get_db()
+    asset_tag = args.get("asset_tag") or f"E-{gen_id()[:6].upper()}"
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "asset_tag": asset_tag,
+        "type": args.get("equipment_type") or args.get("type") or "general",
+        "manufacturer": args.get("manufacturer"),
+        "model": args.get("model") or args.get("name"),
+        "year": args.get("year"),
+        "ownership": args.get("ownership") or args.get("owner") or "owned",
+        "hourly_rate": args.get("hourly_rate") or args.get("hourly_rate_usd"),
+        "daily_rate": args.get("daily_rate"),
+        "monthly_rate": args.get("monthly_rate"),
+        "status": "available",
+        "created_at": utc_now().isoformat(),
+    }
+    await db.equipment.insert_one(doc.copy())
+    return {"created": {"resource": "equipment", "id": doc["id"],
+                        "asset_tag": asset_tag, "type": doc["type"],
+                        "manufacturer": doc.get("manufacturer"),
+                        "model": doc.get("model"), "year": doc.get("year"),
+                        "ownership": doc.get("ownership"),
+                        "hourly_rate": doc.get("hourly_rate")}}
+
+
+async def _tool_create_floor(ctx: dict, args: dict) -> dict:
+    if "floor_number" not in args or "floor_name" not in args:
+        return {"error": "floor_number + floor_name required"}
+    db = get_db()
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return {"error": "no active project"}
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": project_id,
+        "floor_number": int(args["floor_number"]),
+        "floor_name": args["floor_name"],
+        "elevation_z_ft": float(args.get("elevation_z_ft", 0)),
+        "floor_height_ft": float(args.get("floor_height_ft", 12)),
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.floors.insert_one(doc.copy())
+    return {"created": {"resource": "floor", "id": doc["id"], "floor_number": doc["floor_number"], "floor_name": doc["floor_name"]}}
+
+
+async def _tool_create_location(ctx: dict, args: dict) -> dict:
+    if "name" not in args or "floor_id" not in args:
+        return {"error": "name + floor_id required (call get_status entity_type=floors first to find the floor_id)"}
+    db = get_db()
+    floor = await db.floors.find_one(tenant_filter(ctx["tenant_id"], {"id": args["floor_id"]}), {"_id": 0})
+    if not floor:
+        return {"error": f"floor {args['floor_id']} not found"}
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": floor["project_id"],
+        "floor_id": args["floor_id"],
+        "zone_id": None,
+        "code": args.get("code") or args["name"][:24],
+        "name": args["name"],
+        "location_type": args.get("location_type", "room"),
+        "area_sqft": args.get("area_sqft"),
+        "spatial_centroid": None,
+        "polygon_geojson": None,
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.locations.insert_one(doc.copy())
+    return {"created": {"resource": "location", "id": doc["id"], "name": doc["name"], "code": doc["code"]}}
+
+
+async def _tool_create_delay(ctx: dict, args: dict) -> dict:
+    if "description" not in args:
+        return {"error": "description required"}
+    db = get_db()
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": ctx.get("project_id"),
+        "date": args.get("date") or date.today().isoformat(),
+        "description": args["description"],
+        "severity": args.get("severity", "moderate"),
+        "delay_minutes": int(args.get("delay_minutes", 60)),
+        "reason_category": args.get("reason_category", "weather"),
+        "status": "open",
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.delays.insert_one(doc.copy())
+    return {"created": {"resource": "delay", "id": doc["id"], "description": doc["description"]}}
+
+
+async def _tool_create_safety_event(ctx: dict, args: dict) -> dict:
+    if "description" not in args:
+        return {"error": "description required"}
+    db = get_db()
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": ctx.get("project_id"),
+        "date": args.get("date") or date.today().isoformat(),
+        "description": args["description"],
+        "event_type": args.get("event_type", "near_miss"),
+        "severity": args.get("severity", "moderate"),
+        "osha_recordable": bool(args.get("osha_recordable", False)),
+        "status": "investigating",
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.safety_events.insert_one(doc.copy())
+    return {"created": {"resource": "safety_event", "id": doc["id"], "description": doc["description"]}}
+
+
+async def _tool_create_qc_issue(ctx: dict, args: dict) -> dict:
+    if "description" not in args:
+        return {"error": "description required"}
+    db = get_db()
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": ctx.get("project_id"),
+        "date": args.get("date") or date.today().isoformat(),
+        "description": args["description"],
+        "severity": args.get("severity", "minor"),
+        "spec_section_ref": args.get("spec_section_ref"),
+        "status": "open",
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.qc_issues.insert_one(doc.copy())
+    return {"created": {"resource": "qc_issue", "id": doc["id"], "description": doc["description"]}}
+
+
+async def _tool_create_delivery(ctx: dict, args: dict) -> dict:
+    if "vendor" not in args or "description" not in args:
+        return {"error": "vendor + description required"}
+    db = get_db()
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": ctx.get("project_id"),
+        "delivery_date": args.get("delivery_date") or (date.today() + timedelta(days=7)).isoformat(),
+        "vendor": args["vendor"],
+        "description": args["description"],
+        "po_number": args.get("po_number"),
+        "status": "scheduled",
+        "created_at": utc_now().isoformat(),
+        "created_by": ctx["user"]["id"],
+    }
+    await db.deliveries.insert_one(doc.copy())
+    return {"created": {"resource": "delivery", "id": doc["id"], "vendor": doc["vendor"], "description": doc["description"]}}
+
+
+# ---- Generic delete (works for any allow-listed entity) -----------------
+DELETABLE_ENTITIES = {
+    "task": "tasks", "rfi": "rfis", "submittal": "submittals",
+    "work_item": "work_items", "kb_entry": "kb_entries",
+    "crew": "crews", "person": "people", "equipment": "equipment",
+    "floor": "floors", "location": "locations", "delay": "delays",
+    "safety_event": "safety_events", "qc_issue": "qc_issues",
+    "delivery": "deliveries", "change_order": "change_orders",
+    "photo": "photos",
+}
+
+
+async def _tool_delete_entity(ctx: dict, args: dict) -> dict:
+    """Soft-delete (status='deleted') any record by id or by code lookup."""
+    et = args.get("entity_type")
+    coll_name = DELETABLE_ENTITIES.get(et)
+    if not coll_name:
+        return {"error": f"unknown entity_type '{et}'. Allowed: {sorted(DELETABLE_ENTITIES)}"}
+    db = get_db()
+    coll = db[coll_name]
+    # Lookup
+    target_id = args.get("id")
+    if not target_id:
+        # try lookup by code
+        if et == "task" and args.get("activity_code"):
+            d = await coll.find_one(tenant_filter(ctx["tenant_id"],
+                                                  {"activity_code": args["activity_code"]}), {"_id": 0})
+            if d: target_id = d["id"]
+        elif et == "rfi" and args.get("rfi_number"):
+            d = await coll.find_one(tenant_filter(ctx["tenant_id"],
+                                                  {"rfi_number": args["rfi_number"]}), {"_id": 0})
+            if d: target_id = d["id"]
+        elif et == "submittal" and args.get("submittal_number"):
+            d = await coll.find_one(tenant_filter(ctx["tenant_id"],
+                                                  {"submittal_number": args["submittal_number"]}), {"_id": 0})
+            if d: target_id = d["id"]
+    if not target_id:
+        return {"error": "id (or activity_code/rfi_number/submittal_number) required"}
+    res = await coll.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": target_id}),
+        {"$set": {"status": "deleted",
+                  "deleted_at": utc_now().isoformat(),
+                  "deleted_by": ctx["user"]["id"]}},
+    )
+    if not res.matched_count:
+        return {"error": f"{et} {target_id} not found"}
+    return {"deleted": {"resource": et, "id": target_id}}
+
+
+async def _tool_update_entity(ctx: dict, args: dict) -> dict:
+    """Patch any allow-listed entity by id with arbitrary fields."""
+    et = args.get("entity_type")
+    coll_name = DELETABLE_ENTITIES.get(et)
+    if not coll_name:
+        return {"error": f"unknown entity_type '{et}'"}
+    db = get_db()
+    coll = db[coll_name]
+    target_id = args.get("id")
+    if not target_id:
+        return {"error": "id required"}
+    fields = args.get("fields") or {}
+    for k in ("id", "tenant_id", "created_at", "created_by", "_id"):
+        fields.pop(k, None)
+    if not fields:
+        return {"error": "fields required"}
+    fields["updated_at"] = utc_now().isoformat()
+    fields["updated_by"] = ctx["user"]["id"]
+    res = await coll.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": target_id}), {"$set": fields},
+    )
+    if not res.matched_count:
+        return {"error": f"{et} {target_id} not found"}
+    return {"updated": {"resource": et, "id": target_id, "fields": fields}}
 
 
 async def _tool_link_submittal_to_activity(ctx: dict, args: dict) -> dict:
@@ -373,7 +699,7 @@ async def _tool_link_submittal_to_activity(ctx: dict, args: dict) -> dict:
         return {"error": f"task {code} not found"}
     await db.submittals.update_one({"id": sub["id"]},
                                    {"$set": {"schedule_activity_id": task["id"]}})
-    return {"linked": {"submittal_number": sn, "activity_code": code}}
+    return {"updated": {"resource": "submittal", "submittal_number": sn, "id": sub["id"], "linked_activity_code": code, "schedule_activity_id": task["id"]}}
 
 
 TOOL_REGISTRY = {
@@ -388,6 +714,17 @@ TOOL_REGISTRY = {
     "create_kb_entry": _tool_create_kb_entry,
     "create_submittal": _tool_create_submittal,
     "link_submittal_to_activity": _tool_link_submittal_to_activity,
+    "create_crew": _tool_create_crew,
+    "create_person": _tool_create_person,
+    "create_equipment": _tool_create_equipment,
+    "create_floor": _tool_create_floor,
+    "create_location": _tool_create_location,
+    "create_delay": _tool_create_delay,
+    "create_safety_event": _tool_create_safety_event,
+    "create_qc_issue": _tool_create_qc_issue,
+    "create_delivery": _tool_create_delivery,
+    "delete_entity": _tool_delete_entity,
+    "update_entity": _tool_update_entity,
 }
 
 

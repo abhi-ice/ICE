@@ -1,108 +1,167 @@
-import { useEffect, useState } from "react";
-import api from "../lib/api";
-import { toast } from "../components/ui/sonner";
+// Resources — generic CRUD pages for crews/equipment/people/certifications.
+// Each one uses the CrudList component with a config below.
+import CrudList from "../components/CrudList";
+import { useProjects } from "../lib/projects";
 
-const RESOURCES = {
-  crews: { title: "Crews", testid: "crews-page", path: "crews", cols: [
-    { key: "crew_code", label: "Code", className: "font-mono text-xs" },
-    { key: "name", label: "Name" },
-    { key: "trade", label: "Trade" },
-    { key: "target_size", label: "Size" },
-    { key: "hourly_burdened_cost", label: "$/hr", render: (v) => v ? `$${v}` : "—" },
-    { key: "status", label: "Status" },
-  ]},
-  equipment: { title: "Equipment", testid: "equipment-page", path: "equipment", cols: [
-    { key: "asset_tag", label: "Tag", className: "font-mono text-xs" },
-    { key: "type", label: "Type" },
-    { key: "manufacturer", label: "Mfr" },
-    { key: "model", label: "Model" },
-    { key: "year", label: "Year" },
-    { key: "daily_rate", label: "Daily $", render: (v) => v ? `$${v}` : "—" },
-    { key: "status", label: "Status" },
-  ]},
-  people: { title: "People", testid: "people-page", path: "people", cols: [
-    { key: "first_name", label: "First" },
-    { key: "last_name", label: "Last" },
-    { key: "role", label: "Role" },
-    { key: "trade", label: "Trade" },
-    { key: "union_local", label: "Union" },
-    { key: "hourly_rate", label: "$/hr", render: (v) => v ? `$${v}` : "—" },
-    { key: "i9_on_file", label: "I-9", render: (v) => v ? "✓" : "—" },
-    { key: "cleared_for_federal", label: "Fed", render: (v) => v ? "✓" : "—" },
-  ]},
-  certifications: { title: "Certifications", testid: "certifications-page", path: "certifications", cols: [
-    { key: "person_id", label: "Person", className: "font-mono text-xs truncate max-w-[140px]" },
-    { key: "certification_type", label: "Type" },
-    { key: "issued_date", label: "Issued", className: "font-mono text-xs" },
-    { key: "expires_date", label: "Expires", className: "font-mono text-xs" },
-    { key: "issuing_authority", label: "Issuer" },
-    { key: "verified", label: "Verified", render: (v) => v ? "✓" : "—" },
-  ]},
-};
+const TRADE_OPTIONS = [
+  "general", "concrete", "masonry", "steel", "framing", "drywall",
+  "electrical", "plumbing", "hvac", "fire_protection", "roofing",
+  "flooring", "painting", "ceilings", "landscaping", "civil",
+].map((t) => ({ value: t, label: t.replace(/_/g, " ") }));
 
-export default function ResourceList({ kind }) {
-  const cfg = RESOURCES[kind];
-  const [rows, setRows] = useState([]);
-  const load = () => api.get(`/${cfg.path}`).then(({ data }) => setRows(data));
-  useEffect(() => { load(); }, [kind]);
+const PEOPLE_ROLE_OPTIONS = ["worker", "foreman", "superintendent", "pm", "engineer", "qc", "safety"].map((r) => ({ value: r, label: r.toUpperCase() }));
 
+const EQUIPMENT_TYPES = [
+  "excavator", "loader", "crane", "scaffold", "lift", "compressor",
+  "pump", "generator", "welder", "saw", "drill", "general",
+].map((t) => ({ value: t, label: t }));
+
+
+export function CrewsPage() {
   return (
-    <div data-testid={cfg.testid} className="space-y-4">
-      <h1 className="text-2xl font-semibold">{cfg.title}</h1>
-      <div className="bg-card border border-border rounded-lg overflow-hidden">
-        <table className="w-full dense-table">
-          <thead><tr>{cfg.cols.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={r.id || i} data-testid={`${cfg.testid}-row-${i}`}>
-                {cfg.cols.map((c) => (
-                  <td key={c.key} className={c.className}>
-                    {c.render ? c.render(r[c.key]) : (r[c.key] ?? "—")}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {!rows.length && <tr><td colSpan={cfg.cols.length} className="text-center py-6 text-sm text-muted-foreground">No records.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <CrudList
+      title="Crews"
+      subtitle="Self-perform and external crews. Each crew rolls up to a trade and has a target size."
+      help="A crew is a group of workers organised by trade (e.g. 'Concrete Crew A — General contractor'). Tasks consume crews for cost forecasting and conflict detection. Use the AI copilot to add quickly: 'Create a new crew named Concrete Crew A, trade concrete, target size 6.'"
+      listEndpoint="/crews"
+      createEndpoint="/crews"
+      patchEndpoint={(r) => `/crud/crews/${r.id}`}
+      deleteEndpoint={(r) => `/crud/crews/${r.id}`}
+      testidPrefix="crews"
+      columns={[
+        { key: "name", label: "Name" },
+        { key: "trade", label: "Trade" },
+        { key: "target_size", label: "Target size" },
+        { key: "current_size", label: "Current" },
+        { key: "external_company", label: "External" },
+        { key: "status", label: "Status", render: (r) => <span className="pill pill-green capitalize">{r.status}</span> },
+      ]}
+      formFields={[
+        { key: "crew_code", label: "Crew code", required: true, default: "" },
+        { key: "name", label: "Crew name", required: true },
+        { key: "trade", label: "Trade", type: "select", options: TRADE_OPTIONS, required: true },
+        { key: "target_size", label: "Target size (workers)", type: "number", default: 4 },
+        { key: "hourly_burdened_cost", label: "Hourly burdened cost (USD)", type: "number" },
+        { key: "notes", label: "Notes", type: "textarea" },
+      ]}
+    />
   );
 }
 
-export function Availability() {
-  const [data, setData] = useState(null);
-  useEffect(() => {
-    const start = new Date().toISOString().slice(0, 10);
-    const end = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
-    api.get(`/availability?start=${start}&end=${end}`).then(({ data }) => setData(data));
-  }, []);
-
-  if (!data) return <div>Loading…</div>;
+export function PeoplePage() {
   return (
-    <div data-testid="availability-page" className="space-y-4">
-      <h1 className="text-2xl font-semibold">Cross-project availability</h1>
-      <p className="text-sm text-muted-foreground">Window: {data.window.start} → {data.window.end}</p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-border font-medium text-sm">Crews ({data.crews.length})</div>
-          <table className="w-full dense-table">
-            <thead><tr><th>Name</th><th>Trade</th><th>Status</th></tr></thead>
-            <tbody>{data.crews.map((c) => (
-              <tr key={c.id}><td>{c.name}</td><td>{c.trade}</td><td><span className="pill pill-green">{c.status}</span></td></tr>
-            ))}</tbody>
-          </table>
-        </div>
-        <div className="bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-border font-medium text-sm">Equipment ({data.equipment.length})</div>
-          <table className="w-full dense-table">
-            <thead><tr><th>Tag</th><th>Type</th><th>Status</th></tr></thead>
-            <tbody>{data.equipment.map((e) => (
-              <tr key={e.id}><td className="font-mono text-xs">{e.asset_tag}</td><td>{e.type}</td><td><span className="pill pill-green">{e.status}</span></td></tr>
-            ))}</tbody>
-          </table>
-        </div>
-      </div>
+    <CrudList
+      title="People"
+      subtitle="Individuals tracked for attendance, prevailing-wage rates, and certifications."
+      help="People are individuals on the project (workers, foremen, supers, PMs, QC, safety). Each can be linked to a crew, has a trade, and an hourly rate that drives cost forecasting. Quick add via copilot: 'Add person John Doe, foreman, trade electrical, hourly rate 68 dollars.'"
+      listEndpoint="/people"
+      createEndpoint="/people"
+      patchEndpoint={(r) => `/crud/people/${r.id}`}
+      deleteEndpoint={(r) => `/crud/people/${r.id}`}
+      testidPrefix="people"
+      columns={[
+        { key: "first_name", label: "First", render: (r) => `${r.first_name} ${r.last_name || ""}` },
+        { key: "role", label: "Role" },
+        { key: "trade", label: "Trade" },
+        { key: "email", label: "Email" },
+        { key: "phone", label: "Phone" },
+        { key: "hourly_rate", label: "$/hr", render: (r) => r.hourly_rate ? `$${r.hourly_rate}` : "—" },
+        { key: "employment_type", label: "Type" },
+      ]}
+      formFields={[
+        { key: "first_name", label: "First name", required: true },
+        { key: "last_name", label: "Last name", required: true },
+        { key: "role", label: "Role", type: "select", options: PEOPLE_ROLE_OPTIONS },
+        { key: "trade", label: "Trade", type: "select", options: TRADE_OPTIONS },
+        { key: "email", label: "Email" },
+        { key: "phone", label: "Phone" },
+        { key: "hourly_rate", label: "Hourly rate (USD)", type: "number" },
+        { key: "employment_type", label: "Employment type", type: "select", options: [{ value: "ft", label: "Full-time" }, { value: "pt", label: "Part-time" }, { value: "contractor", label: "Contractor" }], default: "ft" },
+        { key: "union_local", label: "Union local" },
+      ]}
+    />
+  );
+}
+
+export function EquipmentPage() {
+  return (
+    <CrudList
+      title="Equipment"
+      subtitle="Owned and rented equipment with hourly rates."
+      help="Equipment is heavy machinery (excavator, crane, lift) or specialised tools (welder, saw). Each piece has an asset tag, type, and hourly rate. Self-perform vs rental flag drives cost forecasting and the marketplace 'equipment_rental' postings."
+      listEndpoint="/equipment"
+      createEndpoint="/equipment"
+      patchEndpoint={(r) => `/crud/equipment/${r.id}`}
+      deleteEndpoint={(r) => `/crud/equipment/${r.id}`}
+      testidPrefix="equipment"
+      columns={[
+        { key: "asset_tag", label: "Asset tag" },
+        { key: "type", label: "Type" },
+        { key: "manufacturer", label: "Mfr" },
+        { key: "model", label: "Model" },
+        { key: "year", label: "Year" },
+        { key: "ownership", label: "Owner" },
+        { key: "hourly_rate", label: "$/hr", render: (r) => r.hourly_rate ? `$${r.hourly_rate}` : "—" },
+        { key: "status", label: "Status" },
+      ]}
+      formFields={[
+        { key: "asset_tag", label: "Asset tag", required: true },
+        { key: "type", label: "Type", type: "select", options: EQUIPMENT_TYPES, required: true },
+        { key: "manufacturer", label: "Manufacturer" },
+        { key: "model", label: "Model" },
+        { key: "year", label: "Year", type: "number" },
+        { key: "ownership", label: "Ownership", type: "select", options: [{ value: "owned", label: "Owned" }, { value: "rental", label: "Rental" }, { value: "leased", label: "Leased" }], default: "owned" },
+        { key: "hourly_rate", label: "Hourly rate (USD)", type: "number" },
+        { key: "daily_rate", label: "Daily rate (USD)", type: "number" },
+      ]}
+    />
+  );
+}
+
+export function CertificationsPage() {
+  return (
+    <CrudList
+      title="Certifications"
+      subtitle="Trade certifications, OSHA cards, MEP licences. Linked to people."
+      help="Certifications track regulatory requirements per worker (e.g. OSHA 30, journeyman electrician licence, asbestos abatement). The platform warns when a person without a required cert is assigned to a task that needs it."
+      listEndpoint="/certifications"
+      createEndpoint="/certifications"
+      patchEndpoint={(r) => `/crud/certifications/${r.id}`}
+      deleteEndpoint={(r) => `/crud/certifications/${r.id}`}
+      testidPrefix="certs"
+      columns={[
+        { key: "name", label: "Certification" },
+        { key: "issuing_body", label: "Issuer" },
+        { key: "validity_period_months", label: "Valid (mo)" },
+        { key: "is_required_for_trades", label: "Required for", render: (r) => (r.is_required_for_trades || []).join(", ") || "—" },
+      ]}
+      formFields={[
+        { key: "name", label: "Certification name", required: true },
+        { key: "issuing_body", label: "Issuing body" },
+        { key: "validity_period_months", label: "Validity period (months)", type: "number" },
+      ]}
+    />
+  );
+}
+
+// Legacy compat — App.js routes pass kind="crews|equipment|people|certifications"
+const PAGE_BY_KIND = {
+  crews: CrewsPage,
+  equipment: EquipmentPage,
+  people: PeoplePage,
+  certifications: CertificationsPage,
+};
+export default function ResourceList({ kind }) {
+  const Component = PAGE_BY_KIND[kind] || CrewsPage;
+  return <Component />;
+}
+
+// Availability stub — placeholder until calendar UI is built. Imported by App.js.
+export function Availability() {
+  return (
+    <div data-testid="availability-page" className="space-y-3">
+      <h1 className="text-2xl font-semibold tracking-tight">Resource availability</h1>
+      <p className="text-sm text-slate-500">Calendar view of crews and equipment availability — coming next iteration. For now use Crews / People pages to manage records and the AI copilot to query availability conflicts.</p>
     </div>
   );
 }

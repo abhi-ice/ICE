@@ -10,6 +10,7 @@ import Tasks from "./pages/Tasks";
 import Lookahead from "./pages/Lookahead";
 import DailyReports from "./pages/DailyReports";
 import ProjectScopedList from "./pages/ProjectScopedList";
+import GettingStarted from "./pages/GettingStarted";
 import ResourceList, { Availability } from "./pages/Resources";
 import Approvals from "./pages/Approvals";
 import Recovery from "./pages/Recovery";
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/auth/callback" element={<AuthCallback />} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
+            <Route path="getting-started" element={<GettingStarted />} />
             <Route path="projects" element={<Projects />} />
 
             {/* Daily ops */}

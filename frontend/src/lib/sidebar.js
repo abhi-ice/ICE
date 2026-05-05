@@ -13,6 +13,7 @@ export const SIDEBAR_SECTIONS = [
     title: "OVERVIEW",
     items: [
       { label: "Dashboard", path: "/", icon: LayoutDashboard, testid: "sidebar-dashboard" },
+      { label: "Getting started", path: "/getting-started", icon: BookOpen, testid: "sidebar-getting-started" },
       { label: "Projects", path: "/projects", icon: FolderKanban, testid: "sidebar-projects" },
       { label: "Master doc", path: "/master-doc", icon: Building2, testid: "sidebar-master-doc" },
     ],
