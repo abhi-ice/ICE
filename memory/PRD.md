@@ -213,6 +213,52 @@ activity whose `[planned_start, planned_finish]` interval contains today,
 
 **iter 11.json: 27/27 PASS — pytest suite at `/app/backend/tests/test_iteration11.py`.**
 
+### Iter 12 — Schedule diff + AI review + PM approval (current)
+Every schedule upload (MPP / XER / CSV / XLSX) is now a **proposal** that
+must be reviewed and approved before its rows touch the `tasks` collection
+— federal-contract baseline-change audit trail.
+
+**Backend**
+- `services/schedule_diff.py` — pure `compute_schedule_diff` returning
+  `{added, dropped, date_shifts, duration_changes, predecessor_changes, summary}`.
+  Threshold for date shifts is configurable; spec says > 3 days.
+- `services/schedule_ai_review.py` — Claude (Sonnet 4.5) reviews the diff
+  and returns `{risk_level, summary, flags, recommendation, justification_required, model}`.
+  Falls back to a deterministic heuristic if EMERGENT_LLM_KEY is missing
+  or the LLM call fails. Strict no-markdown.
+- `routers/schedule_proposals_router.py` — moved `POST /api/imports/schedule`
+  here. Now creates a proposal at `status=pending_review` and never touches
+  tasks. New endpoints:
+  - `GET /api/projects/{pid}/schedule-proposals` (optional `?status=`)
+  - `GET /api/schedule-proposals/{id}`
+  - `POST /api/schedule-proposals/{id}/approve` (admin/pm) — applies
+    parsed_rows; soft-deletes dropped activities (`status='deleted',
+    deleted_by_proposal_id=<id>` so audit linkage is preserved); recomputes
+    CPM; writes audit log; logs an /imports history row linked back.
+  - `POST /api/schedule-proposals/{id}/reject` (admin/pm)
+  - `POST /api/schedule-proposals/{id}/refresh-ai-review`
+- `models.py` — `ScheduleProposal` + `ScheduleProposalDecision`.
+- BSON-safety: `_norm_row` + recursive `_scrub` convert `datetime.date`
+  to ISO strings before `insert_one` (regression-tested).
+
+**Frontend**
+- `/app/frontend/src/pages/ScheduleProposals.jsx` — list + detail page.
+  - Risk pill (high/medium/low) with Shield icons.
+  - Claude summary + flags + recommendation + Re-run review button.
+  - 6 KPI tiles (current, incoming, +, −, date shifts, duration changes).
+  - Collapsible diff sections: Added, Dropped, Date shifts > 3 days,
+    Duration changes, Predecessor changes.
+  - Decision card with notes textarea + Reject / Approve & Apply buttons
+    (PM/Admin only); awaiting-PM banner for non-reviewers.
+  - Recap card after approval/rejection with applied counts +
+    skipped-row reasons.
+- `Imports.jsx` — toast says "Proposal created — N row(s) parsed",
+  auto-redirects to `/schedule-changes?id=<id>` after 600 ms.
+- Sidebar gets a "Schedule changes" entry under SYSTEM with
+  GitPullRequest icon.
+
+**iter 12.json: 18/18 PASS — pytest suite at `/app/backend/tests/test_iteration12.py`.**
+
 ## Cumulative test results
 | Iter | Backend | Frontend | Notes |
 |------|---------|----------|-------|
@@ -227,6 +273,7 @@ activity whose `[planned_start, planned_finish]` interval contains today,
 | 9    | 34/35   | 100%     | CRUD everywhere + onboarding     |
 | 10   | 18/18   | 100%     | Daily Report Phase 2 full rebuild |
 | 11   | 27/27   | 100%     | Auth rebuild, Google removed, team invites, DR refresh, delay→days, demo wiped |
+| 12   | 18/18   | 100%     | Schedule diff + AI review + PM approval workflow |
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
