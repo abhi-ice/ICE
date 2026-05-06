@@ -2,7 +2,7 @@
 
 Phase 1: generate (3 scenarios per call) + read (active + history).
 Phase 2: /choose and /unchoose with proportional schedule reflow.
-Phase 3 will add /record-outcome and the on-resolve cascade.
+Phase 3: /record-outcome and the on-resolve cascade.
 
 All endpoints are tenant-scoped. The Delay detail page is the only
 surface that consumes them — daily report and Tasks page stay clean.
