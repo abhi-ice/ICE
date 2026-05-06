@@ -355,6 +355,247 @@ async def rfi_draft(*, tenant_id: str, project_id: str, subject: str, context: s
     return {"draft": resp, "citations": _extract_spec_citations(resp), "usage": {"latency_ms": latency_ms}}
 
 
+# ============================================================
+# Bucket C2 — AI mitigation scenarios
+# ============================================================
+SCENARIO_SYSTEM = """You are the AI mitigation engine for ICE Schedule Ops, a federal-
+construction project-management platform. Given a logged delay with its linked
+activities and project context, you propose EXACTLY 3 mitigation scenarios that
+the project team can choose between.
+
+Coverage menu — select the 3 most relevant for the specific delay:
+  - Wait/Monitor (do nothing, let the delay run its course)
+  - Re-sequence with field engineering (swap downstream order, work around)
+  - Acceleration (add crew / authorise overtime / weekend work)
+  - Owner direction (request OAR direction or change order)
+  - Premium freight (expedite material delivery)
+  - Alternative routing/method (substitute means and methods)
+  - Scope reduction (defer or value-engineer affected scope)
+
+Return ONLY a JSON array of EXACTLY 3 objects in the order A, B, C. Each object
+MUST have these fields:
+  - "scenario_label":               "A" | "B" | "C"
+  - "strategy_name":                short label, e.g. "Re-sequence with field engineering"
+  - "assumption":                   the factual assumption underlying this scenario, 1-2 sentences
+  - "proposed_action_description":  what the team would actually do, 2-4 sentences
+  - "prerequisites":                array of strings (e.g. ["OAR approval", "Carpenter sub buy-in"])
+  - "estimated_schedule_impact_days": float (days added or saved vs. doing nothing — negative recovers)
+  - "estimated_cost_impact_usd":    float (positive cost, 0 if no cost)
+  - "estimated_risk_level":         "low" | "medium" | "high"
+  - "estimated_confidence":         float 0..1
+  - "ai_reasoning":                 your chain-of-thought reasoning for this scenario, 2-5 sentences
+
+Calibration: when prior mitigation outcomes are provided for similar delays in the same
+tenant, use them to anchor your confidence and impact numbers. Cite specific prior
+mitigations in the ai_reasoning field where they informed your proposal (e.g. "based on
+prior mitigation M-abcd1234 which absorbed only 1 of 3 projected days").
+
+Respond ONLY with the raw JSON array. No prose, no markdown, no code fences."""
+
+
+async def _calibration_rag_for_delay(tenant_id: str, project_id: Optional[str]) -> str:
+    """Pull up to 20 prior mitigations from this tenant where outcome was
+    recorded. Tenant-scoped on purpose — we don't leak across customers.
+    Sorted by recency. Returns a prompt block (or '' if no history)."""
+    db = get_db()
+    docs = await db.mitigations.find(
+        {"tenant_id": tenant_id, "outcome_recorded_at": {"$ne": None}},
+        {"_id": 0, "id": 1, "strategy_name": 1, "assumption": 1,
+         "estimated_schedule_impact_days": 1, "estimated_cost_impact_usd": 1,
+         "estimated_confidence": 1, "actual_cost_usd": 1,
+         "actual_time_recovered_days": 1, "outcome_notes": 1,
+         "linked_delay_id": 1, "outcome_recorded_at": 1, "project_id": 1},
+    ).sort("outcome_recorded_at", -1).limit(20).to_list(20)
+    if not docs:
+        return ""
+    lines = []
+    for m in docs:
+        same_project = " (same project)" if m.get("project_id") == project_id else ""
+        lines.append(
+            f"  - M-{m.get('id', '')[:8]}{same_project}: {m.get('strategy_name')}\n"
+            f"    estimated: {m.get('estimated_schedule_impact_days')}d / ${m.get('estimated_cost_impact_usd')} "
+            f"(confidence {m.get('estimated_confidence')})\n"
+            f"    actual:    {m.get('actual_time_recovered_days')}d / ${m.get('actual_cost_usd')}\n"
+            f"    notes:     {(m.get('outcome_notes') or '')[:200]}"
+        )
+    return ("PRIOR MITIGATIONS WITH RECORDED OUTCOMES (this tenant, most recent first; use to "
+            "calibrate confidence and impact numbers):\n" + "\n".join(lines))
+
+
+async def generate_mitigation_scenarios(
+    *, tenant_id: str, delay_id: str, proposed_by_user_id: Optional[str] = None,
+) -> list[dict]:
+    """Generate 3 AI mitigation scenarios for a delay and persist them as
+    Mitigation records. Updates the delay record (active_scenarios,
+    scenario_history, scenarios_last_generated_at). Returns the 3 newly
+    created mitigation dicts. Caller wraps in HTTP layer."""
+    db = get_db()
+    delay = await db.delays.find_one({"tenant_id": tenant_id, "id": delay_id}, {"_id": 0})
+    if not delay:
+        raise ValueError(f"Delay {delay_id} not found")
+    project_id = delay.get("project_id")
+
+    # Project + master doc context
+    proj = await db.projects.find_one(
+        {"tenant_id": tenant_id, "id": project_id}, {"_id": 0},
+    ) if project_id else None
+    md_block = await _master_doc_block(tenant_id, project_id) if project_id else ""
+
+    # Linked tasks with float / CP context
+    linked_ids = delay.get("linked_task_ids") or []
+    impacts_by_id = {i.get("task_id"): i for i in (delay.get("per_task_impacts") or [])}
+    tasks: list[dict] = []
+    if linked_ids:
+        tasks = await db.tasks.find(
+            {"tenant_id": tenant_id, "id": {"$in": linked_ids}},
+            {"_id": 0, "id": 1, "activity_code": 1, "wbs": 1, "description": 1,
+             "pct_complete": 1, "is_critical_path": 1, "total_float_days": 1,
+             "planned_start": 1, "planned_finish": 1, "trade_code": 1},
+        ).to_list(len(linked_ids))
+
+    task_lines = []
+    for t in tasks:
+        imp = impacts_by_id.get(t["id"]) or {}
+        task_lines.append(
+            f"  - [{t.get('wbs') or t.get('activity_code')}] {t.get('description')} "
+            f"(pct={t.get('pct_complete', 0)}%, float={t.get('total_float_days')}d, "
+            f"CP={bool(t.get('is_critical_path'))}, projected_impact={imp.get('projected_impact_days', 0)}d)"
+        )
+
+    # Calibration RAG — prior mitigations with recorded outcomes
+    calibration_block = await _calibration_rag_for_delay(tenant_id, project_id)
+
+    user_text = (
+        (md_block + "\n\n" if md_block else "")
+        + (f"PROJECT: {proj['name']} (status={proj.get('status')})\n\n" if proj else "")
+        + f"DELAY TO MITIGATE\n"
+        f"  description: {delay.get('description')}\n"
+        f"  severity: {delay.get('severity')}\n"
+        f"  reason_category: {delay.get('reason_category')}\n"
+        f"  logged_date: {delay.get('logged_date') or delay.get('date')}\n"
+        f"  status: {delay.get('status')}\n\n"
+        f"AFFECTED ACTIVITIES ({len(tasks)}):\n" + ("\n".join(task_lines) or "  (none linked)")
+        + (f"\n\n{calibration_block}" if calibration_block else "")
+        + "\n\nProduce EXACTLY 3 mitigation scenarios as a JSON array. No prose, no markdown."
+    )
+
+    started = datetime.now(timezone.utc)
+    request_id = gen_id()
+    raw = ""
+    ok = False
+    try:
+        chat = _new_chat(f"mitigation-{delay_id}-{request_id}", SCENARIO_SYSTEM)
+        raw = await chat.send_message(UserMessage(text=user_text))
+        ok = True
+    except Exception as e:
+        raw = "[]"
+        ok = False
+        # Track and surface to caller via empty parse
+    latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    await _track_usage(tenant_id, request_id, latency_ms, ok)
+
+    scenarios = _parse_json_array(str(raw))
+
+    # Defensive: if AI returned anything other than 3, retry once with a
+    # stricter follow-up. If still wrong, raise — caller returns 500.
+    if len(scenarios) != 3 and ok:
+        try:
+            chat = _new_chat(f"mitigation-retry-{delay_id}", SCENARIO_SYSTEM)
+            raw = await chat.send_message(UserMessage(text=user_text +
+                "\n\nIMPORTANT: your previous response did not contain exactly 3 scenarios. "
+                "Return ONLY a JSON array with exactly 3 objects, no prose."))
+            scenarios = _parse_json_array(str(raw))
+        except Exception:
+            pass
+    if len(scenarios) != 3:
+        raise ValueError(
+            f"AI returned {len(scenarios)} scenarios (expected 3). Try regenerating, or check the LLM provider status."
+        )
+
+    # Force-set the labels in case the AI permuted them.
+    labels = ["A", "B", "C"]
+    now_iso = utc_now().isoformat()
+
+    # Move any prior active scenarios into history with 'superseded' status.
+    prior_active = list(delay.get("active_scenarios") or [])
+    if prior_active:
+        await db.mitigations.update_many(
+            {"tenant_id": tenant_id, "id": {"$in": prior_active},
+             "decision_status": "proposed"},
+            {"$set": {"decision_status": "superseded", "updated_at": now_iso}},
+        )
+
+    persisted: list[dict] = []
+    for i, s in enumerate(scenarios):
+        # Hard-clamp risk_level / confidence to the schema enums.
+        risk = (s.get("estimated_risk_level") or "medium").lower()
+        if risk not in ("low", "medium", "high"):
+            risk = "medium"
+        try:
+            conf = float(s.get("estimated_confidence") or 0.5)
+        except Exception:
+            conf = 0.5
+        conf = max(0.0, min(1.0, conf))
+
+        prereq = s.get("prerequisites") or []
+        if isinstance(prereq, str):
+            prereq = [prereq]
+
+        doc = {
+            "id": gen_id(),
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "linked_delay_id": delay_id,
+            "linked_task_ids": list(linked_ids),
+            "source": "ai_recovery_engine",
+            "scenario_label": labels[i],
+            "strategy_name": (s.get("strategy_name") or "Untitled scenario")[:160],
+            "assumption": (s.get("assumption") or "")[:1000],
+            "proposed_action_description": (s.get("proposed_action_description") or "")[:2000],
+            "prerequisites": [str(p)[:200] for p in prereq][:10],
+            "estimated_schedule_impact_days": float(s.get("estimated_schedule_impact_days") or 0),
+            "estimated_cost_impact_usd": float(s.get("estimated_cost_impact_usd") or 0),
+            "estimated_risk_level": risk,
+            "estimated_confidence": conf,
+            "ai_reasoning": (s.get("ai_reasoning") or "")[:4000],
+            "decision_status": "proposed",
+            "proposed_at": now_iso,
+            "proposed_by_user_id": proposed_by_user_id,
+            "decision_made_at": None,
+            "decision_made_by_user_id": None,
+            "decision_rationale": None,
+            "executed_action_payload": None,
+            "actual_cost_usd": None,
+            "actual_time_recovered_days": None,
+            "outcome_recorded_at": None,
+            "outcome_notes": None,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        await db.mitigations.insert_one(doc.copy())
+        persisted.append(doc)
+
+    new_active_ids = [m["id"] for m in persisted]
+    history_entry = None
+    if prior_active:
+        history_entry = {"generated_at": now_iso, "scenario_ids": prior_active}
+
+    update = {
+        "$set": {
+            "active_scenarios": new_active_ids,
+            "scenarios_last_generated_at": now_iso,
+        },
+    }
+    if history_entry:
+        update["$push"] = {"scenario_history": {
+            "generated_at": now_iso,  # when the OLD set was superseded
+            "scenario_ids": prior_active,
+        }}
+    await db.delays.update_one({"tenant_id": tenant_id, "id": delay_id}, update)
+
+    return persisted
+
+
 # ---------- DELAY REPORT (Phase B) ----------
 DELAY_REPORT_SYSTEM = """You are a federal-construction project controls analyst writing
 a formal delay analysis report for the project's records. The report MUST follow this

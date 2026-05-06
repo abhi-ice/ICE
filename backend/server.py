@@ -41,6 +41,7 @@ from routers.iter6_router import router as iter6_router  # noqa: E402
 from routers.iter7_router import router as iter7_router  # noqa: E402
 from routers.iter8_router import router as iter8_router  # noqa: E402
 from routers.schedule_proposals_router import router as schedule_proposals_router  # noqa: E402
+from routers.mitigations_router import router as mitigations_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -70,6 +71,10 @@ async def _ensure_indexes():
     await db.team_invites.create_index([("code", 1)], unique=True)
     await db.team_invites.create_index([("tenant_id", 1), ("status", 1)])
     await db.daily_presence.create_index([("tenant_id", 1), ("daily_report_id", 1)])
+    # Bucket C2 — mitigation calibration RAG queries by (tenant_id,
+    # outcome_recorded_at desc); detail page queries by linked_delay_id.
+    await db.mitigations.create_index([("tenant_id", 1), ("outcome_recorded_at", -1)])
+    await db.mitigations.create_index([("tenant_id", 1), ("linked_delay_id", 1)])
 
 
 @asynccontextmanager
@@ -122,6 +127,7 @@ api_router.include_router(iter6_router)
 api_router.include_router(iter7_router)
 api_router.include_router(iter8_router)
 api_router.include_router(schedule_proposals_router)
+api_router.include_router(mitigations_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

@@ -791,6 +791,15 @@ class Delay(ReadModel):
     # projected_finish_shift_days}.
     cpm_impact_summary: List[dict] = Field(default_factory=list)
     released_float_on_resolution: List[str] = Field(default_factory=list)
+    # Bucket C2 Phase 1 — AI mitigation scenarios. active_scenarios holds
+    # the current 3 mitigations.id values (A/B/C). scenario_history is a
+    # log of past generations (each entry: {generated_at, scenario_ids: [3 ids]})
+    # so the user can compare how AI thinking evolved across regenerations.
+    # chosen_mitigation_id stays null until Phase 2's /choose endpoint runs.
+    active_scenarios: List[str] = Field(default_factory=list)
+    scenario_history: List[dict] = Field(default_factory=list)
+    chosen_mitigation_id: Optional[str] = None
+    scenarios_last_generated_at: Optional[datetime] = None
     created_at: datetime
 
 
@@ -1089,6 +1098,54 @@ class CopilotResponse(ReadModel):
     response: str
     citations: List[dict] = Field(default_factory=list)
     usage: dict = Field(default_factory=dict)
+
+
+# ============================================================
+# Bucket C2 — AI mitigation scenarios for delays
+# ============================================================
+MitigationSource = Literal["ai_recovery_engine", "human_proposal", "sub_proposal", "owner_request"]
+MitigationDecisionStatus = Literal["proposed", "chosen", "not_chosen", "superseded", "executed", "outcome_recorded"]
+MitigationRiskLevel = Literal["low", "medium", "high"]
+
+
+class Mitigation(ReadModel):
+    """One AI-generated (or human-proposed) mitigation scenario for a delay.
+
+    Lives only on the sidebar Delay detail page; never surfaced on the
+    daily report. AI normally generates 3 at a time labelled A/B/C; the
+    user picks one (Phase 2) and records actuals on resolution (Phase 3).
+    Old generations stay in this collection with status='superseded' so
+    the calibration loop can RAG against historical scenario+outcome
+    pairs."""
+    id: str
+    tenant_id: str
+    project_id: str
+    linked_delay_id: str
+    linked_task_ids: List[str] = Field(default_factory=list)
+    source: MitigationSource = "ai_recovery_engine"
+    scenario_label: Optional[str] = None  # "A" | "B" | "C" | None for human
+    strategy_name: str
+    assumption: str
+    proposed_action_description: str
+    prerequisites: List[str] = Field(default_factory=list)
+    estimated_schedule_impact_days: float = 0
+    estimated_cost_impact_usd: float = 0
+    estimated_risk_level: MitigationRiskLevel = "medium"
+    estimated_confidence: float = 0.5
+    ai_reasoning: str = ""
+    decision_status: MitigationDecisionStatus = "proposed"
+    proposed_at: datetime
+    proposed_by_user_id: Optional[str] = None
+    decision_made_at: Optional[datetime] = None
+    decision_made_by_user_id: Optional[str] = None
+    decision_rationale: Optional[str] = None
+    executed_action_payload: Optional[dict] = None
+    actual_cost_usd: Optional[float] = None
+    actual_time_recovered_days: Optional[float] = None
+    outcome_recorded_at: Optional[datetime] = None
+    outcome_notes: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class RecoveryRequest(StrictModel):
