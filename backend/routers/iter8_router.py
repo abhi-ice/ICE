@@ -127,6 +127,69 @@ async def crud_patch(entity: str, id: str, payload: dict, ctx: dict = Depends(re
     return doc
 
 
+async def _cascade_gating_entity_on_delete(db, tenant_id: str, entity: str,
+                                            entity_id: str, actor_id: str,
+                                            request_id: str) -> None:
+    """Bucket C3a Phase 5 — when an underlying entity (rfi / submittal /
+    work_item) is soft-deleted via /crud/{entity}/{id} DELETE, cascade
+    its gating_entities row away and clear any daily-report row that
+    references it. We hard-delete the gating row (audit log captures
+    it) rather than marking 'withdrawn' so the dropdown filter doesn't
+    have to special-case soft state on top of soft state."""
+    ge_type = _GATING_ENTITY_TYPE.get(entity)
+    if not ge_type:
+        return
+    ge = await db.gating_entities.find_one(
+        tenant_filter(tenant_id, {"entity_type": ge_type, "entity_id": entity_id}),
+        {"_id": 0},
+    )
+    if not ge:
+        return
+
+    # 1. Find every DR row pointing at this gate. Tenant-guarded via the
+    #    parent daily_report — we don't have a tenant_id directly on
+    #    daily_report_activities (legacy). Use a $in over DRs we own.
+    dr_ids = [d["id"] for d in await db.daily_reports.find(
+        tenant_filter(tenant_id, {}), {"_id": 0, "id": 1},
+    ).to_list(5000)]
+    affected = await db.daily_report_activities.find(
+        {"constraint_reference_entity_id": ge["id"], "daily_report_id": {"$in": dr_ids}},
+        {"_id": 0},
+    ).to_list(2000)
+
+    # 2. Reset constraint fields on each affected row + per-row audit.
+    for r in affected:
+        new_state = {
+            "constraint_type": None,
+            "constraint_reference_entity_type": None,
+            "constraint_reference_entity_id": None,
+            "constraint_other_description": None,
+            "constraint_auto_filled": False,
+        }
+        await db.daily_report_activities.update_one(
+            {"id": r["id"]}, {"$set": new_state},
+        )
+        await write_audit(
+            tenant_id=tenant_id, table_name="daily_report_activities", op="UPDATE",
+            record_id=r["id"],
+            before={k: r.get(k) for k in new_state},
+            after={**new_state, "_cascade_reason": f"gating_entity {ge['id']} deleted"},
+            actor_id=actor_id, request_id=request_id,
+        )
+
+    # 3. Hard-delete the gating entity + audit.
+    await db.gating_entities.delete_one(
+        tenant_filter(tenant_id, {"id": ge["id"]}),
+    )
+    await write_audit(
+        tenant_id=tenant_id, table_name="gating_entities", op="GATING_ENTITY_DELETE",
+        record_id=ge["id"],
+        before=ge, after={"_cascade_reason": f"underlying {entity} {entity_id} deleted",
+                            "rows_reset": len(affected)},
+        actor_id=actor_id, request_id=request_id,
+    )
+
+
 @router.delete("/crud/{entity}/{id}")
 async def crud_delete(entity: str, id: str, ctx: dict = Depends(require_tenant)):
     cfg = _cfg(entity)
@@ -151,6 +214,17 @@ async def crud_delete(entity: str, id: str, ctx: dict = Depends(require_tenant))
             record_id=id, before=before, after=after,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
         )
+        # Bucket C3a Phase 5 — cascade gating_entity + DR-row constraint
+        # reset. Best-effort: failure here doesn't roll back the soft-
+        # delete (the underlying row is already marked status=deleted
+        # and a partial cascade is better than a 500).
+        try:
+            await _cascade_gating_entity_on_delete(
+                db, ctx["tenant_id"], entity, id,
+                ctx["user"]["id"], ctx["request_id"],
+            )
+        except Exception:
+            pass
         return {"ok": True, "soft_deleted": True}
     else:
         await coll.delete_one(tenant_filter(ctx["tenant_id"], {"id": id}))
@@ -159,6 +233,15 @@ async def crud_delete(entity: str, id: str, ctx: dict = Depends(require_tenant))
             record_id=id, before=before, after=None,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
         )
+        # Same cascade for hard-delete entities (none in current config
+        # are mapped to gating but kept for forward compat).
+        try:
+            await _cascade_gating_entity_on_delete(
+                db, ctx["tenant_id"], entity, id,
+                ctx["user"]["id"], ctx["request_id"],
+            )
+        except Exception:
+            pass
         return {"ok": True, "hard_deleted": True}
 
 
