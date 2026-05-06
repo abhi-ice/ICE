@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -20,6 +21,8 @@ export default function Tasks() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
+  // Bucket C1 Phase 3 — only one blocker popover open at a time.
+  const [openBlockerId, setOpenBlockerId] = useState(null);
   const project = projects.find((p) => p.id === activeId);
 
   const load = () => activeId && api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data));
@@ -189,6 +192,7 @@ export default function Tasks() {
               <th>Dur (d)</th>
               <th>%</th>
               <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
+              <th title="Open blockers (delays / RFIs / field-issues linked to this task). Click to see them.">Blockers</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
               <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
               <th></th>
@@ -218,6 +222,13 @@ export default function Tasks() {
                 <td className="tabular-nums text-xs">{t.duration_days}</td>
                 <td className="tabular-nums">{t.pct_complete}%</td>
                 <td><ComputedStatusPill task={t} /></td>
+                <td>
+                  <BlockerCell
+                    task={t}
+                    open={openBlockerId === t.id}
+                    onToggle={() => setOpenBlockerId(openBlockerId === t.id ? null : t.id)}
+                  />
+                </td>
                 <td>{t.is_critical_path ? <span className="pill pill-red" title="Critical Path">CP</span> : null}</td>
                 <td className="tabular-nums text-xs" title="Days of slack before this task delays the project finish">
                   {t.total_float_days ?? "—"}
@@ -232,7 +243,7 @@ export default function Tasks() {
                 </td>
               </tr>
             ))}
-            {!tasks.length && <tr><td colSpan="13" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
+            {!tasks.length && <tr><td colSpan="14" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -268,3 +279,69 @@ function ComputedStatusPill({ task }) {
   );
 }
 
+// Bucket C1 Phase 3 — Blocker count with click popover listing the open
+// delays / RFIs / field-issues linked to this task. open_blocker_summary
+// is denormalized server-side (services/task_status.count_open_blockers).
+function BlockerCell({ task, open, onToggle }) {
+  const summary = task.open_blocker_summary || [];
+  const count = task.open_blocker_count || 0;
+  if (!count) return <span className="text-slate-300 text-xs">—</span>;
+  const counts = summary.reduce((acc, s) => {
+    acc[s.entity_type] = (acc[s.entity_type] || 0) + 1;
+    return acc;
+  }, {});
+  return (
+    <div className="relative inline-block">
+      <button
+        data-testid={`task-blockers-${task.activity_code}`}
+        onClick={onToggle}
+        className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+      >
+        <AlertTriangle className="h-3 w-3" /> {count}
+        <span className="text-[10px] text-red-500/70">
+          {[
+            counts.delay && `${counts.delay}d`,
+            counts.rfi && `${counts.rfi}r`,
+            counts.work_item && `${counts.work_item}w`,
+          ].filter(Boolean).join(" ")}
+        </span>
+      </button>
+      {open && (
+        <div
+          data-testid={`task-blockers-popover-${task.activity_code}`}
+          className="absolute z-20 right-0 mt-1 w-72 bg-white border border-slate-200 rounded shadow-lg p-2 text-xs"
+        >
+          <div className="font-medium mb-1 text-slate-700">Open blockers ({count})</div>
+          <div className="space-y-1 max-h-56 overflow-y-auto">
+            {summary.map((s, i) => {
+              const Icon = s.entity_type === "delay" ? AlertTriangle
+                : s.entity_type === "rfi" ? MessageSquare
+                : s.entity_type === "work_item" ? AlertCircle
+                : AlertCircle;
+              const sevColor = s.severity === "critical" || s.severity === "major" || s.severity === "high"
+                ? "text-red-600" : "text-slate-500";
+              const link = s.entity_type === "delay" ? `/delays/${s.entity_id}`
+                : s.entity_type === "rfi" ? `/rfis`
+                : s.entity_type === "work_item" ? `/work-items`
+                : null;
+              const inner = (
+                <div className="flex items-start gap-1.5 py-1 border-b border-slate-100 last:border-0">
+                  <Icon className={`h-3 w-3 mt-0.5 ${sevColor} shrink-0`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-500">{s.entity_type.replace(/_/g, " ")} · {s.severity || "—"}</div>
+                    <div className="truncate text-slate-800">{s.label || s.entity_id?.slice(0, 8)}</div>
+                  </div>
+                </div>
+              );
+              return link ? (
+                <Link key={i} to={link} className="block hover:bg-slate-50 -mx-1 px-1 rounded">{inner}</Link>
+              ) : (
+                <div key={i}>{inner}</div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
