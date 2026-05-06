@@ -61,8 +61,8 @@ Tools:
   - create_floor              args: {floor_number: int, floor_name: str, elevation_z_ft?: number, floor_height_ft?: number}
   - create_location           args: {name: str, floor_id: str, code?: str, location_type?: 'room'|'zone'|'corridor'|'stair'|'mech_room', area_sqft?: number}
   - create_delay              args: {description: str, severity?: 'low'|'moderate'|'high', delay_days?: number, reason_category?: 'weather'|'rfi_pending'|'submittal_pending'|'design_change'|'site_condition'|'manpower'|'other', date?: 'YYYY-MM-DD'}
-  - create_safety_event       args: {description: str, event_type?: 'near_miss'|'first_aid'|'recordable'|'lost_time', severity?: 'low'|'moderate'|'high', osha_recordable?: bool}
-  - create_qc_issue           args: {description: str, severity?: 'minor'|'major'|'critical', spec_section_ref?: str}
+  - create_safety_event       args: {description: str, event_type?: 'near_miss'|'first_aid'|'recordable'|'lost_time'|'fatality'|'other', severity?: 'minor'|'moderate'|'major'|'critical'}
+  - create_qc_issue           args: {description: str, severity?: 'minor'|'moderate'|'major'|'critical'}
   - create_delivery           args: {vendor: str, description: str, delivery_date?: 'YYYY-MM-DD', po_number?: str}
   - delete_entity             args: {entity_type: 'task'|'rfi'|'submittal'|'work_item'|'kb_entry'|'crew'|'person'|'equipment'|'floor'|'location'|'delay'|'safety_event'|'qc_issue'|'delivery'|'change_order'|'photo', id?: str, activity_code?: str, rfi_number?: str, submittal_number?: str}
   - update_entity             args: {entity_type: <same as delete_entity>, id: str, fields: {<any patchable fields>}}
@@ -560,8 +560,6 @@ async def _tool_create_safety_event(ctx: dict, args: dict) -> dict:
         "description": args["description"],
         "event_type": args.get("event_type", "near_miss"),
         "severity": args.get("severity", "minor"),
-        "osha_recordable": bool(args.get("osha_recordable", False)),
-        "photo_urls": [],
         "status": "open",
         "reported_by": ctx["user"]["id"],
         "reported_at": utc_now().isoformat(),
@@ -583,8 +581,6 @@ async def _tool_create_qc_issue(ctx: dict, args: dict) -> dict:
         "date": args.get("date") or date.today().isoformat(),
         "description": args["description"],
         "severity": args.get("severity", "minor"),
-        "spec_section_ref": args.get("spec_section_ref"),
-        "photo_urls": [],
         "status": "open",
         "reported_by": ctx["user"]["id"],
         "reported_at": utc_now().isoformat(),

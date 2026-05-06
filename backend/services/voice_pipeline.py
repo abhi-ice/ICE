@@ -66,13 +66,13 @@ EXTRACT_SYSTEMS = {
     "safety_event": (
         "You extract safety-event fields from a construction safety officer's voice memo. "
         "Return ONLY a JSON object with keys: description, severity (minor|moderate|major|critical), "
-        "event_type (near_miss|first_aid|recordable|lost_time|fatality|other), osha_recordable (bool), "
+        "event_type (near_miss|first_aid|recordable|lost_time|fatality|other), "
         "location_hint (string|null), activity_hint (string|null). No prose, no code fences."
     ),
     "qc_issue": (
         "You extract QC-issue fields from a construction inspector's voice memo. "
         "Return ONLY a JSON object with keys: description, severity (minor|moderate|major|critical), "
-        "spec_section_ref (string|null), location_hint (string|null), activity_hint (string|null). "
+        "location_hint (string|null), activity_hint (string|null). "
         "No prose, no code fences."
     ),
     "work_item": (
