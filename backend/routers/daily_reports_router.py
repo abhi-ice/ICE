@@ -307,6 +307,17 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     await db.daily_report_activities.update_one({"id": row_id}, {"$set": updates})
     after = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
 
+    # Item 7 (2026-05-06) — write the audit entry consistent with how
+    # the rest of this file's mutation handlers do it. linked_crew_id
+    # picks (Phase E crew dropdown) used to land here without an audit
+    # row; this closes that gap so when GovCloud audit hardening lands
+    # the wiring is already in place.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_report_activities", op="UPDATE",
+        record_id=row_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+
     # Cascade pct_complete back to the underlying task
     if "pct_complete_end_of_day" in updates:
         new_pct = float(updates["pct_complete_end_of_day"])
