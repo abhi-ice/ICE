@@ -1,9 +1,10 @@
 """Field events: delays, safety events, QC issues, photos. Master prompt §4.7."""
+from datetime import date as _date, datetime as _datetime
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
 from models import (
-    Delay, DelayCreate, SafetyEvent, SafetyEventCreate,
+    Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate,
     QcIssue, QcIssueCreate, Photo, PhotoCreate,
     gen_id, utc_now,
 )
@@ -14,12 +15,98 @@ router = APIRouter(tags=["field-events"])
 
 
 # --- Delays ---
+
+async def _resolve_task_impacts(db, tenant_id: str, payload_dict: dict) -> tuple[list[str], list[dict]]:
+    """Build the linked_task_ids + per_task_impacts arrays for a delay
+    create/update. Snapshots each task's float at logging time and
+    derives consumes_float_only / pushes_critical_path. Returns
+    (linked_task_ids, per_task_impacts)."""
+    impacts_in: list[dict] = list(payload_dict.get("per_task_impacts") or [])
+    explicit_ids: list[str] = list(payload_dict.get("linked_task_ids") or [])
+
+    # Backward-compat: if the caller sent the legacy single schedule_activity_id
+    # + scalar delay_days but no per_task_impacts, synthesize one.
+    if not impacts_in and not explicit_ids and payload_dict.get("schedule_activity_id"):
+        explicit_ids = [payload_dict["schedule_activity_id"]]
+        impacts_in = [{
+            "task_id": payload_dict["schedule_activity_id"],
+            "projected_impact_days": float(payload_dict.get("delay_days") or 0),
+        }]
+
+    # Union of ids referenced in either array
+    seen: set[str] = set()
+    ordered_ids: list[str] = []
+    for tid in explicit_ids + [i.get("task_id") for i in impacts_in if i.get("task_id")]:
+        if tid and tid not in seen:
+            seen.add(tid)
+            ordered_ids.append(tid)
+
+    if not ordered_ids:
+        return [], []
+
+    # Pull current float / critical-path snapshot for the referenced tasks
+    tasks = await db.tasks.find(
+        tenant_filter(tenant_id, {"id": {"$in": ordered_ids}}),
+        {"_id": 0, "id": 1, "total_float_days": 1, "is_critical_path": 1},
+    ).to_list(len(ordered_ids))
+    by_id = {t["id"]: t for t in tasks}
+
+    impacts_by_id = {i["task_id"]: i for i in impacts_in if i.get("task_id")}
+    out: list[dict] = []
+    for tid in ordered_ids:
+        t = by_id.get(tid) or {}
+        proj = float((impacts_by_id.get(tid) or {}).get("projected_impact_days") or 0)
+        f = t.get("total_float_days")
+        f_val = float(f) if f is not None else None
+        consumes = f_val is not None and proj <= f_val
+        pushes_cp = (not consumes) and bool(t.get("is_critical_path"))
+        out.append({
+            "task_id": tid,
+            "projected_impact_days": proj,
+            "float_at_logging_days": f_val,
+            "consumes_float_only": consumes,
+            "pushes_critical_path": pushes_cp,
+        })
+    return ordered_ids, out
+
+
+def _enrich_delay_for_read(d: dict) -> dict:
+    """Compute duration_days from logged/resolved dates. Mongo dicts arrive
+    with ISO date strings, so parse and produce an int day count."""
+    logged = d.get("logged_date") or d.get("date")
+    resolved = d.get("resolved_date")
+    if logged and resolved:
+        try:
+            ld = _date.fromisoformat(str(logged)[:10])
+            rd = _date.fromisoformat(str(resolved)[:10])
+            d["duration_days"] = max(0, (rd - ld).days)
+        except Exception:
+            d["duration_days"] = None
+    elif logged and d.get("status") in ("open", "in_progress"):
+        try:
+            ld = _date.fromisoformat(str(logged)[:10])
+            d["duration_days"] = max(0, (_date.today() - ld).days)
+        except Exception:
+            d["duration_days"] = None
+    return d
+
+
 @router.post("/delays", response_model=Delay)
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    linked_ids, impacts = await _resolve_task_impacts(db, ctx["tenant_id"], doc)
     doc.update({
-        "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
+        "id": gen_id(), "tenant_id": ctx["tenant_id"],
+        "status": doc.get("status") or "open",
+        "linked_task_ids": linked_ids,
+        "per_task_impacts": impacts,
+        "logged_date": doc.get("date"),
+        "resolved_date": None,
+        "resolved_note": None,
+        "resolved_by_user_id": None,
+        "ai_report": None,
+        "ai_report_generated_at": None,
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
@@ -27,7 +114,7 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
-    return Delay(**doc)
+    return Delay(**_enrich_delay_for_read(doc))
 
 
 @router.get("/projects/{project_id}/delays", response_model=list[Delay])
@@ -36,7 +123,100 @@ async def list_delays(project_id: str, ctx: dict = Depends(require_tenant)):
     docs = await db.delays.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
     ).sort("date", -1).to_list(500)
-    return [Delay(**d) for d in docs]
+    return [Delay(**_enrich_delay_for_read(d)) for d in docs]
+
+
+@router.get("/delays/{delay_id}", response_model=Delay)
+async def get_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    d = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    if not d:
+        raise HTTPException(404, "Delay not found")
+    return Delay(**_enrich_delay_for_read(d))
+
+
+@router.patch("/delays/{delay_id}", response_model=Delay)
+async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    before = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Delay not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    updates: dict = {k: v for k, v in raw.items() if v is not None}
+
+    # If linked_task_ids OR per_task_impacts is in the patch, recompute the
+    # snapshot — keep logic in one place rather than two slightly-different
+    # branches.
+    if "linked_task_ids" in updates or "per_task_impacts" in updates:
+        merged = {
+            "linked_task_ids": updates.get("linked_task_ids", before.get("linked_task_ids", [])),
+            "per_task_impacts": updates.get("per_task_impacts", before.get("per_task_impacts", [])),
+        }
+        new_ids, new_impacts = await _resolve_task_impacts(db, ctx["tenant_id"], merged)
+        updates["linked_task_ids"] = new_ids
+        updates["per_task_impacts"] = new_impacts
+
+    # Status transition → resolved: stamp resolver fields if not provided
+    if updates.get("status") == "resolved":
+        if "resolved_date" not in updates:
+            updates["resolved_date"] = utc_now().date().isoformat()
+        if "resolved_by_user_id" not in updates:
+            updates["resolved_by_user_id"] = ctx["user"]["id"]
+    # Any AI-report write also stamps generated_at
+    if "ai_report" in updates:
+        updates["ai_report_generated_at"] = utc_now().isoformat()
+
+    await db.delays.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"$set": updates},
+    )
+    after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
+                      record_id=delay_id, before=before, after=after,
+                      actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    return Delay(**_enrich_delay_for_read(after))
+
+
+@router.delete("/delays/{delay_id}")
+async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    before = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Delay not found")
+    await db.delays.delete_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}))
+    await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="DELETE",
+                      record_id=delay_id, before=before, after=None,
+                      actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    return {"ok": True}
+
+
+@router.get("/daily-reports/{daily_report_id}/delay-reminders", response_model=list[Delay])
+async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require_tenant)):
+    """Open/in-progress delays whose linked_task_ids intersect with the
+    grid for this daily report. Returns the delay records themselves so
+    the frontend can render a banner card list. Empty list = no banner."""
+    db = get_db()
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+        {"_id": 0, "id": 1, "project_id": 1},
+    )
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    grid = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id},
+        {"_id": 0, "schedule_activity_id": 1},
+    ).to_list(500)
+    grid_task_ids = {r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")}
+    if not grid_task_ids:
+        return []
+    open_delays = await db.delays.find(
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": dr["project_id"],
+            "status": {"$in": ["open", "in_progress"]},
+            "linked_task_ids": {"$in": list(grid_task_ids)},
+        }),
+        {"_id": 0},
+    ).sort("date", -1).to_list(200)
+    return [Delay(**_enrich_delay_for_read(d)) for d in open_delays]
 
 
 # --- Safety ---

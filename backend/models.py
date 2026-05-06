@@ -644,8 +644,30 @@ class ChangeOrder(ReadModel):
 Severity = Literal["minor", "moderate", "major", "critical"]
 
 
+DelayStatus = Literal["open", "in_progress", "resolved"]
+
+
+class TaskImpactInput(StrictModel):
+    """Per-linked-task impact entered on the delay form."""
+    task_id: str
+    projected_impact_days: float = 0
+
+
+class TaskImpact(ReadModel):
+    """Per-linked-task impact stored on the delay record. Float snapshot
+    is captured at the moment the impact is logged so the analysis is
+    reproducible even after CPM recomputes change task float."""
+    task_id: str
+    projected_impact_days: float = 0
+    float_at_logging_days: Optional[float] = None
+    consumes_float_only: bool = False
+    pushes_critical_path: bool = False
+
+
 class DelayCreate(StrictModel):
     project_id: str
+    # Legacy single-task linkage — kept for API back-compat (tests, voice
+    # pipeline). New form sends linked_task_ids/per_task_impacts instead.
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
@@ -655,24 +677,54 @@ class DelayCreate(StrictModel):
     photo_urls: List[str] = Field(default_factory=list)
     delay_days: Optional[float] = None
     reason_category: Optional[str] = None
+    # New (Phase A): multi-task linkage with per-task impact entries.
+    linked_task_ids: List[str] = Field(default_factory=list)
+    per_task_impacts: List[TaskImpactInput] = Field(default_factory=list)
+    status: DelayStatus = "open"
+
+
+class DelayUpdate(StrictModel):
+    description: Optional[str] = None
+    severity: Optional[Severity] = None
+    reason_category: Optional[str] = None
+    photo_urls: Optional[List[str]] = None
+    linked_task_ids: Optional[List[str]] = None
+    per_task_impacts: Optional[List[TaskImpactInput]] = None
+    status: Optional[DelayStatus] = None
+    resolved_date: Optional[date] = None
+    resolved_note: Optional[str] = None
+    # AI report (set by /generate-ai-report endpoint, not the form)
+    ai_report: Optional[str] = None
 
 
 class Delay(ReadModel):
     id: str
     tenant_id: str
     project_id: str
-    schedule_activity_id: Optional[str] = None
+    schedule_activity_id: Optional[str] = None  # legacy
     location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity
     photo_urls: List[str] = Field(default_factory=list)
-    delay_days: Optional[float] = None
+    delay_days: Optional[float] = None  # legacy
     reason_category: Optional[str] = None
-    status: str = "open"
+    status: DelayStatus = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
+    # New (Phase A) fields. Default to empty/none so old records continue
+    # to deserialize until the migration runs.
+    linked_task_ids: List[str] = Field(default_factory=list)
+    per_task_impacts: List[TaskImpact] = Field(default_factory=list)
+    logged_date: Optional[date] = None
+    resolved_date: Optional[date] = None
+    resolved_note: Optional[str] = None
+    resolved_by_user_id: Optional[str] = None
+    duration_days: Optional[int] = None  # computed at read time
+    # AI report (Phase B) — saved between views so regen is opt-in.
+    ai_report: Optional[str] = None
+    ai_report_generated_at: Optional[datetime] = None
     created_at: datetime
 
 

@@ -1,6 +1,8 @@
 // ProjectScopedList — generic list page for entities scoped to the active
-// project. Now full CRUD via CrudList component.
+// project. Now full CRUD via CrudList component. Delays use a custom page
+// (DelayList) because the Phase A multi-task picker doesn't fit CrudList.
 import CrudList from "../components/CrudList";
+import DelayList from "./DelayList";
 import { useProjects } from "../lib/projects";
 
 const TRADE_OPTIONS = [
@@ -219,6 +221,7 @@ const KIND_CONFIG = {
 
 export default function ProjectScopedList({ kind }) {
   const { activeId } = useProjects();
+  if (kind === "delays") return <DelayList />;
   const cfg = KIND_CONFIG[kind];
   if (!cfg) {
     return <div className="text-sm text-slate-500">Unknown list: {kind}</div>;
