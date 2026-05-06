@@ -239,12 +239,33 @@ async def export_delay_ai_report_pdf(delay_id: str, ctx: dict = Depends(require_
         return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     delay = _enrich_delay_for_read(delay)
+
+    # Item 3 (2026-05-06) — render WBS code + description for linked tasks
+    # rather than a truncated UUID. Falls back to activity_code if wbs is
+    # missing, and to the truncated id if neither is set (impossible in
+    # practice but cheap to guard).
+    impacts = delay.get("per_task_impacts") or []
+    task_ids = [i["task_id"] for i in impacts if i.get("task_id")]
+    task_lookup: dict[str, dict] = {}
+    if task_ids:
+        task_docs = await db.tasks.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": task_ids}}),
+            {"_id": 0, "id": 1, "wbs": 1, "activity_code": 1, "description": 1},
+        ).to_list(len(task_ids))
+        task_lookup = {t["id"]: t for t in task_docs}
+
+    def _task_label(task_id: str) -> str:
+        t = task_lookup.get(task_id) or {}
+        code = t.get("wbs") or t.get("activity_code") or (task_id[:8] if task_id else "?")
+        desc = t.get("description") or ""
+        return f"{code} — {desc}" if desc else code
+
     impact_rows = "".join(
-        f"<tr><td class='code'>{esc(i.get('task_id', '')[:8])}</td>"
+        f"<tr><td>{esc(_task_label(i.get('task_id') or ''))}</td>"
         f"<td class='num'>{esc(i.get('projected_impact_days'))}</td>"
         f"<td class='num'>{esc(i.get('float_at_logging_days'))}</td>"
         f"<td>{('within float' if i.get('consumes_float_only') else 'pushes CP' if i.get('pushes_critical_path') else 'exceeds non-CP float')}</td></tr>"
-        for i in (delay.get("per_task_impacts") or [])
+        for i in impacts
     ) or "<tr><td colspan='4' class='muted'>No linked tasks.</td></tr>"
 
     body_html = esc(delay.get("ai_report") or "").replace("\n", "<br/>")

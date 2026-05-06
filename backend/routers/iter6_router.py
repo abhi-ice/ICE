@@ -118,6 +118,24 @@ async def export_daily_report_pdf(
 
     is_internal = mode == "internal"
 
+    # Item 3 (2026-05-06) — pre-fetch tasks referenced by any delay's
+    # linked_task_ids so the Delays section can render "wbs — desc"
+    # rather than UUIDs.
+    delay_task_ids = {tid for d in delays for tid in (d.get("linked_task_ids") or []) if tid}
+    task_lookup: dict[str, dict] = {}
+    if delay_task_ids:
+        task_docs = await db.tasks.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": list(delay_task_ids)}}),
+            {"_id": 0, "id": 1, "wbs": 1, "activity_code": 1, "description": 1},
+        ).to_list(len(delay_task_ids))
+        task_lookup = {t["id"]: t for t in task_docs}
+
+    def _task_label(task_id: str) -> str:
+        t = task_lookup.get(task_id) or {}
+        code = t.get("wbs") or t.get("activity_code") or (task_id[:8] if task_id else "?")
+        desc = t.get("description") or ""
+        return f"{code} — {desc}" if desc else code
+
     grid_rows_html = "".join(
         f"<tr><td class='code'>{_html_escape(r.get('activity_code'))}</td>"
         f"<td>{_html_escape((r.get('activity_description') or '')[:80])}</td>"
@@ -151,7 +169,8 @@ async def export_daily_report_pdf(
     delays_html = event_rows(
         delays,
         fields=["severity", "status", lambda d: d.get("reason_category") or "—",
-                lambda d: ", ".join(d.get("linked_task_ids") or []) or "—",
+                # Render WBS code + description rather than raw UUIDs.
+                lambda d: "; ".join(_task_label(tid) for tid in (d.get("linked_task_ids") or [])) or "—",
                 "description"],
     )
     qc_html = event_rows(qc, fields=["severity", "status", "description"])
