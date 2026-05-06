@@ -166,6 +166,55 @@ async def list_daily_reports(project_id: str, ctx: dict = Depends(require_tenant
     return [DailyReport(**d) for d in docs]
 
 
+@router.delete("/daily-reports/{daily_report_id}")
+async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_tenant)):
+    """Item 8 (2026-05-06) — hard-delete a draft daily report and cascade.
+
+    Forbidden once status != 'draft' (submitted/approved reports are part
+    of the federal-contract record and must stay).
+
+    Cascade:
+      - hard delete daily_report_activities + daily_presence for this DR
+      - null out daily_report_id on linked field-event records (delays,
+        qc_issues, safety_events, rfis, photos, voice_annotations) so
+        those independent records survive but stop pointing at a ghost.
+    """
+    db = get_db()
+    before = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Daily report not found")
+    if before.get("status") != "draft":
+        raise HTTPException(
+            403, f"Cannot delete a {before.get('status')} daily report — only drafts can be deleted",
+        )
+
+    await db.daily_report_activities.delete_many({"daily_report_id": daily_report_id})
+    await db.daily_presence.delete_many(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+    )
+    # Null out daily_report_id on independent linked records — they live
+    # in their own collections and shouldn't disappear with the DR.
+    cascade_collections = ["delays", "qc_issues", "safety_events", "rfis",
+                            "photos", "voice_annotations"]
+    for coll in cascade_collections:
+        await db[coll].update_many(
+            tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+            {"$set": {"daily_report_id": None}},
+        )
+
+    await db.daily_reports.delete_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_reports", op="DELETE",
+        record_id=daily_report_id, before=before, after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True, "cascade_unlinked": cascade_collections}
+
+
 @router.get("/daily-reports/{daily_report_id}", response_model=DailyReport)
 async def get_daily_report(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()

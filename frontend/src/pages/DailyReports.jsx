@@ -25,12 +25,14 @@ import {
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
 // ------------------------------------------------------------
-//  Top-level list / open-today
+//  Top-level list — pick a date (any past/future), open or create
 // ------------------------------------------------------------
 export default function DailyReports() {
   const { activeId } = useProjects();
   const [reports, setReports] = useState([]);
   const [openId, setOpenId] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerDate, setPickerDate] = useState(localTodayISO());
 
   const load = useCallback(() => {
     if (!activeId) return;
@@ -44,15 +46,35 @@ export default function DailyReports() {
     return () => setActiveDailyReportId(null);
   }, [openId]);
 
-  const create = async () => {
-    const today = localTodayISO();
+  // Item 8 — date-picker driven create. Backend POST is idempotent on
+  // (project_id, report_date) so picking a date that already exists
+  // just returns that DR; no duplicates.
+  const createForDate = async () => {
+    if (!pickerDate) return toast.error("Pick a date first");
     try {
-      const { data } = await api.post("/daily-reports", { project_id: activeId, report_date: today });
-      toast.success(`Daily report opened for ${data.report_date}`);
+      const { data } = await api.post("/daily-reports", {
+        project_id: activeId, report_date: pickerDate,
+      });
+      const existed = reports.some((r) => r.report_date === pickerDate);
+      toast.success(existed ? `Opened existing report for ${data.report_date}`
+                            : `Daily report opened for ${data.report_date}`);
+      setPickerOpen(false);
       setOpenId(data.id);
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const removeReport = async (r) => {
+    if (r.status !== "draft") return;
+    if (!window.confirm(`Delete the draft daily report for ${r.report_date}? Linked delays/QC/safety/RFIs/photos will keep their records but their daily_report_id will be cleared.`)) return;
+    try {
+      await api.delete(`/daily-reports/${r.id}`);
+      toast.success(`Deleted daily report for ${r.report_date}`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
     }
   };
 
@@ -69,29 +91,68 @@ export default function DailyReports() {
             One page per day — weather, crew presence, activities, events, photos, voice. Copilot is scoped to the open report.
           </p>
         </div>
-        <button data-testid="open-today-report" onClick={create}
+        <button data-testid="dr-new-button"
+          onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
           className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm flex items-center gap-2">
-          <FilePlus2 className="h-4 w-4" /> Open today&apos;s report
+          <FilePlus2 className="h-4 w-4" /> + New daily report
         </button>
       </div>
 
+      {pickerOpen && (
+        <div data-testid="dr-new-dialog"
+          className="surface p-4 border-l-4 border-blue-500 bg-blue-50/30">
+          <div className="font-medium text-sm mb-2">Open or create a daily report</div>
+          <div className="text-xs text-slate-600 mb-3">
+            If a daily report already exists for the selected date, it will be opened. Otherwise a new draft will be created.
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs">
+              <div className="text-slate-500 uppercase tracking-wide">Date</div>
+              <input data-testid="dr-new-date" type="date" value={pickerDate}
+                onChange={(e) => setPickerDate(e.target.value)}
+                className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm" />
+            </label>
+            <button data-testid="dr-new-confirm" onClick={createForDate}
+              className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">
+              Open / create
+            </button>
+            <button data-testid="dr-new-cancel" onClick={() => setPickerOpen(false)}
+              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         <table className="w-full dense-table">
-          <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th className="w-32"></th></tr></thead>
           <tbody>
-            {reports.map((r) => (
-              <tr key={r.id} data-testid={`dr-row-${r.id}`}>
-                <td className="font-mono">{r.report_date}</td>
-                <td><StatusPill status={r.status} /></td>
-                <td className="text-xs">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
-                <td>
-                  <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline">
-                    Open
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {!reports.length && <tr><td colSpan="4" className="text-center py-6 text-sm text-muted-foreground">No reports yet.</td></tr>}
+            {reports.map((r) => {
+              const canDelete = r.status === "draft";
+              return (
+                <tr key={r.id} data-testid={`dr-row-${r.id}`}>
+                  <td className="font-mono">{r.report_date}</td>
+                  <td><StatusPill status={r.status} /></td>
+                  <td className="text-xs">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
+                  <td className="text-right">
+                    <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline mr-3">
+                      Open
+                    </button>
+                    <button
+                      data-testid={`delete-dr-${r.id}`}
+                      onClick={() => removeReport(r)}
+                      disabled={!canDelete}
+                      title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
+                      className={`h-7 w-7 grid place-items-center rounded inline-flex align-middle ${canDelete ? "text-red-500 hover:bg-red-50" : "text-slate-300 cursor-not-allowed"}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!reports.length && <tr><td colSpan="4" className="text-center py-6 text-sm text-muted-foreground">No reports yet — click "+ New daily report" to start one for any date.</td></tr>}
           </tbody>
         </table>
       </div>
