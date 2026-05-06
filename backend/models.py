@@ -354,6 +354,10 @@ class DailyReportActivityUpdate(StrictModel):
     pct_complete_end_of_day: Optional[float] = Field(default=None, ge=0, le=100)
     crew_count: Optional[int] = None
     crew_id: Optional[str] = None
+    # Phase E — FK to a daily_presence row picked from the activity grid
+    # dropdown. Distinct from `crew_id` (which is the task's pre-assigned
+    # crew). A super can pick any trade present on site for any activity.
+    linked_crew_id: Optional[str] = None
     hours_worked: Optional[float] = None
     delay_minutes: Optional[int] = None
     delay_reason: Optional[str] = None
@@ -371,6 +375,8 @@ class DailyReportActivity(ReadModel):
     pct_complete_end_of_day: float = 0
     crew_count: int = 0
     crew_id: Optional[str] = None
+    # Phase E — FK to daily_presence row picked from the grid dropdown.
+    linked_crew_id: Optional[str] = None
     hours_worked: float = 0
     delay_minutes: int = 0
     delay_reason: Optional[str] = None

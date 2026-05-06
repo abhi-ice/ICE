@@ -194,7 +194,8 @@ function DailyReportDetail({ id, onBack }) {
 
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
-        dailyReportId={id} locked={locked} reportDate={report.report_date} />
+        dailyReportId={id} locked={locked} reportDate={report.report_date}
+        presence={presence} />
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
@@ -437,7 +438,57 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate }) {
+// Phase E — Crew column on the activity grid: trade dropdown sourced from
+// the Crew presence panel + an auto-filled-but-editable headcount input.
+// Picking a trade sets linked_crew_id AND crew_count (server PATCH does both).
+function CrewSelector({ row, presence, locked, updateRow }) {
+  const onPickTrade = (e) => {
+    const presenceId = e.target.value || null;
+    const picked = presence.find((p) => p.id === presenceId);
+    const fields = { linked_crew_id: presenceId };
+    // Auto-fill headcount from picked presence row (super can override after)
+    if (picked && typeof picked.headcount === "number") {
+      fields.crew_count = picked.headcount;
+    } else if (!presenceId) {
+      // Cleared selection — leave crew_count as-is so the user doesn't lose
+      // a manual override they typed earlier.
+    }
+    updateRow(row.id, fields);
+  };
+  const onChangeHeadcount = (e) => {
+    updateRow(row.id, { crew_count: Number(e.target.value) });
+  };
+  return (
+    <div className="flex flex-col gap-1 min-w-[140px]">
+      <select
+        data-testid={`dr-crew-trade-${row.activity_code}`}
+        value={row.linked_crew_id || ""}
+        onChange={onPickTrade}
+        disabled={locked}
+        className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+      >
+        <option value="">— no crew assigned —</option>
+        {presence.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.trade}{p.company_name ? ` — ${p.company_name}` : ""}
+          </option>
+        ))}
+      </select>
+      <input
+        data-testid={`dr-crew-${row.activity_code}`}
+        type="number"
+        defaultValue={row.crew_count}
+        key={`hc-${row.linked_crew_id || "none"}-${row.crew_count}`}
+        onBlur={onChangeHeadcount}
+        disabled={locked}
+        title="Headcount on this activity (auto-filled from picked crew, but editable)"
+        className="w-full h-6 text-xs px-1 border border-slate-200 rounded tabular-nums"
+      />
+    </div>
+  );
+}
+
+function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [] }) {
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
@@ -515,7 +566,9 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                   <td className="truncate max-w-[260px]">{r.activity_description}</td>
                   <td className="text-xs">{r.location_name || "—"}</td>
                   <td className="text-xs">{r.trade_code || "—"}</td>
-                  <td><input data-testid={`dr-crew-${r.activity_code}`} type="number" defaultValue={r.crew_count} onBlur={(e) => updateRow(r.id, { crew_count: Number(e.target.value) })} disabled={locked} className="w-14" /></td>
+                  <td>
+                    <CrewSelector row={r} presence={presence} locked={locked} updateRow={updateRow} />
+                  </td>
                   <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
                   <td><input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100" defaultValue={r.pct_complete_end_of_day} onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })} disabled={locked} className="w-14 tabular-nums" /></td>
                   <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
