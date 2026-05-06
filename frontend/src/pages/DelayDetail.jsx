@@ -191,7 +191,7 @@ export default function DelayDetail() {
         )}
       </div>
 
-      <ScenariosSection delayId={id} />
+      <ScenariosSection delayId={id} delayStatus={delay.status} />
 
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="max-w-2xl">
@@ -212,7 +212,7 @@ export default function DelayDetail() {
 // fetch/regenerate cycle so the parent doesn't need to wire scenario
 // state through props. Phase 2 wires Choose / Change choice; Phase 3
 // will add Record actuals.
-function ScenariosSection({ delayId }) {
+function ScenariosSection({ delayId, delayStatus }) {
   const [data, setData] = useState(null);          // {scenarios_last_generated_at, active, history, chosen_mitigation_id}
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -222,6 +222,13 @@ function ScenariosSection({ delayId }) {
   const [chooseTarget, setChooseTarget] = useState(null);
   const [rationale, setRationale] = useState("");
   const [busy, setBusy] = useState(false);
+  // Phase 3 — outcome capture state. outcomeTarget = the chosen mitigation
+  // we're recording against. autoOpened tracks whether we've already
+  // pop'd the modal once for this transition (prevents re-popping every
+  // refresh while the user has it open).
+  const [outcomeTarget, setOutcomeTarget] = useState(null);
+  const [outcome, setOutcome] = useState({ actual_cost_usd: "", actual_time_recovered_days: "", outcome_notes: "" });
+  const [autoOpenedFor, setAutoOpenedFor] = useState(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -282,6 +289,51 @@ function ScenariosSection({ delayId }) {
   const chosenId = data?.chosen_mitigation_id;
   const chosen = active.find((s) => s.id === chosenId);
 
+  // Phase 3 — auto-open outcome modal when the chosen mitigation flips
+  // to 'executed' (i.e. the parent delay was just resolved) and we
+  // haven't already prompted for this id. User can also click "Record
+  // actuals" later if they Skip.
+  useEffect(() => {
+    if (!chosen) return;
+    const needs = chosen.decision_status === "executed" && !chosen.outcome_recorded_at;
+    if (needs && autoOpenedFor !== chosen.id) {
+      setOutcomeTarget(chosen);
+      setOutcome({ actual_cost_usd: "", actual_time_recovered_days: "", outcome_notes: "" });
+      setAutoOpenedFor(chosen.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosen?.id, chosen?.decision_status, chosen?.outcome_recorded_at]);
+
+  const openOutcomeManually = (m) => {
+    setOutcomeTarget(m);
+    setOutcome({
+      actual_cost_usd: m.actual_cost_usd != null ? String(m.actual_cost_usd) : "",
+      actual_time_recovered_days: m.actual_time_recovered_days != null ? String(m.actual_time_recovered_days) : "",
+      outcome_notes: m.outcome_notes || "",
+    });
+  };
+
+  const submitOutcome = async () => {
+    if (!outcomeTarget) return;
+    const payload = {};
+    if (outcome.actual_cost_usd !== "") payload.actual_cost_usd = Number(outcome.actual_cost_usd);
+    if (outcome.actual_time_recovered_days !== "") payload.actual_time_recovered_days = Number(outcome.actual_time_recovered_days);
+    if (outcome.outcome_notes) payload.outcome_notes = outcome.outcome_notes;
+    if (!Object.keys(payload).length) {
+      toast.error("Enter at least one of cost, days, or notes");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.patch(`/mitigations/${outcomeTarget.id}/record-outcome`, payload);
+      toast.success("Outcome recorded — feeds into AI calibration on next generation");
+      setOutcomeTarget(null);
+      await refresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save failed");
+    } finally { setBusy(false); }
+  };
+
   return (
     <div className="surface p-4" data-testid="delay-scenarios">
       <div className="flex items-center gap-2 mb-3">
@@ -336,7 +388,8 @@ function ScenariosSection({ delayId }) {
           {active.map((s) => (
             <ScenarioCard key={s.id} scenario={s}
               chosenId={chosenId}
-              onChoose={() => { setChooseTarget(s); setRationale(""); }} />
+              onChoose={() => { setChooseTarget(s); setRationale(""); }}
+              onRecordActuals={() => openOutcomeManually(s)} />
           ))}
         </div>
       )}
@@ -400,14 +453,70 @@ function ScenariosSection({ delayId }) {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Phase 3 — outcome capture dialog. Auto-opens once when the chosen
+          mitigation flips to 'executed' (delay just resolved) and re-opens
+          on demand via the "Record actuals" button on the chosen card. */}
+      <Dialog open={!!outcomeTarget} onOpenChange={(v) => !v && setOutcomeTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record actual outcome — Scenario {outcomeTarget?.scenario_label}</DialogTitle>
+          </DialogHeader>
+          {outcomeTarget && (
+            <div className="space-y-3 text-sm">
+              <div className="text-slate-700">{outcomeTarget.strategy_name}</div>
+              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded p-2">
+                Estimated at choose time: <b>{outcomeTarget.estimated_schedule_impact_days}d</b> · ${(outcomeTarget.estimated_cost_impact_usd || 0).toLocaleString()} · confidence {Math.round((outcomeTarget.estimated_confidence ?? 0) * 100)}%.
+                Record what actually happened — these numbers feed the AI's calibration on future scenario generations.
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-500 uppercase tracking-wide">Actual cost (USD)</label>
+                  <input data-testid="outcome-cost" type="number" step="0.01"
+                    value={outcome.actual_cost_usd}
+                    onChange={(e) => setOutcome({ ...outcome, actual_cost_usd: e.target.value })}
+                    className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm tabular-nums" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 uppercase tracking-wide">Time recovered (days)</label>
+                  <input data-testid="outcome-days" type="number" step="0.5"
+                    value={outcome.actual_time_recovered_days}
+                    onChange={(e) => setOutcome({ ...outcome, actual_time_recovered_days: e.target.value })}
+                    className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm tabular-nums" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Notes</label>
+                <textarea data-testid="outcome-notes"
+                  value={outcome.outcome_notes}
+                  onChange={(e) => setOutcome({ ...outcome, outcome_notes: e.target.value })}
+                  placeholder="What was actually done; any side effects; lessons for future similar delays."
+                  className="mt-1 w-full p-2 rounded border border-slate-200 text-sm h-20" />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setOutcomeTarget(null)} disabled={busy}
+                  className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+                  Skip for now
+                </button>
+                <button data-testid="outcome-save" onClick={submitOutcome} disabled={busy}
+                  className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                  {busy ? "Saving…" : "Save outcome"}
+                </button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ScenarioCard({ scenario: s, chosenId, onChoose }) {
+function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
   const [showReasoning, setShowReasoning] = useState(false);
   const isChosen = chosenId === s.id;
   const isOtherChosen = chosenId && chosenId !== s.id;
+  const isExecuted = s.decision_status === "executed";
+  const hasOutcome = !!s.outcome_recorded_at;
   const labelColor = s.scenario_label === "A" ? "bg-blue-600"
     : s.scenario_label === "B" ? "bg-emerald-600"
     : s.scenario_label === "C" ? "bg-purple-600"
@@ -469,14 +578,38 @@ function ScenarioCard({ scenario: s, chosenId, onChoose }) {
           </div>
         )}
       </div>
-      <div className="px-3 py-2 border-t border-slate-100">
-        {isChosen ? (
+      <div className="px-3 py-2 border-t border-slate-100 space-y-1">
+        {isChosen && hasOutcome && (
+          <div className="text-[11px] text-emerald-700 space-y-1">
+            <div className="inline-flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3" /> Outcome recorded
+            </div>
+            <div className="text-slate-600 grid grid-cols-2 gap-1">
+              <div>Actual cost: ${(s.actual_cost_usd ?? 0).toLocaleString()}</div>
+              <div>Days recovered: {s.actual_time_recovered_days ?? "—"}</div>
+            </div>
+            {s.outcome_notes && (
+              <div className="text-slate-600 italic">{s.outcome_notes}</div>
+            )}
+            <button data-testid={`scenario-edit-outcome-${s.scenario_label}`} onClick={onRecordActuals}
+              className="text-blue-600 hover:underline">Edit outcome</button>
+          </div>
+        )}
+        {isChosen && !hasOutcome && isExecuted && (
+          <button data-testid={`scenario-record-actuals-${s.scenario_label}`} onClick={onRecordActuals}
+            className="w-full h-8 px-3 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">
+            Record actuals
+          </button>
+        )}
+        {isChosen && !hasOutcome && !isExecuted && (
           <div className="text-[11px] text-emerald-700 inline-flex items-center gap-1">
             <CheckCircle2 className="h-3 w-3" /> Chosen — see banner above to change.
           </div>
-        ) : isOtherChosen ? (
+        )}
+        {!isChosen && isOtherChosen && (
           <div className="text-[11px] text-slate-400">Not chosen</div>
-        ) : (
+        )}
+        {!isChosen && !isOtherChosen && (
           <button data-testid={`scenario-choose-${s.scenario_label}`} onClick={onChoose}
             className="w-full h-8 px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700">
             Choose this scenario

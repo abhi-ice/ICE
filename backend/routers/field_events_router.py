@@ -198,6 +198,18 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     # picks up the resolved state (excluded from the open-delay sum).
     if updates.get("status") == "resolved" and before.get("status") != "resolved":
         await _stamp_resolution_release(db, ctx["tenant_id"], delay_id, after)
+        # Bucket C2 Phase 3 — if a mitigation was chosen for this delay,
+        # flip it to 'executed' so the frontend knows to prompt for
+        # actuals. The transition is silent — no audit entry needed
+        # because the user-facing OUTCOME_RECORD audit fires when actuals
+        # are recorded via /mitigations/{id}/record-outcome.
+        if after.get("chosen_mitigation_id"):
+            await db.mitigations.update_one(
+                {"tenant_id": ctx["tenant_id"], "id": after["chosen_mitigation_id"],
+                 "decision_status": "chosen"},
+                {"$set": {"decision_status": "executed",
+                           "updated_at": utc_now().isoformat()}},
+            )
         after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
 
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",

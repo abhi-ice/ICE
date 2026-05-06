@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 
 from database import get_db, tenant_filter
-from models import Mitigation, MitigationChooseRequest, gen_id, utc_now
+from models import Mitigation, MitigationChooseRequest, MitigationOutcomeRequest, gen_id, utc_now
 from auth import require_tenant
 from audit import write_audit
 
@@ -346,3 +346,63 @@ async def unchoose_mitigation(mitigation_id: str, ctx: dict = Depends(require_te
         await compute_projected_finish_dates(db, ctx["tenant_id"], delay["project_id"],
                                               actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return {"ok": True, "delay_id": delay["id"]}
+
+
+# ============================================================
+# Phase 3 — Execution tracking + outcome capture
+# ============================================================
+
+@router.patch("/mitigations/{mitigation_id}/record-outcome")
+async def record_outcome(
+    mitigation_id: str, payload: MitigationOutcomeRequest,
+    ctx: dict = Depends(require_tenant),
+):
+    """Record actual cost / time / notes after the chosen mitigation has
+    executed. Allowed for mitigations whose decision_status is in the
+    executed-or-already-recorded states (so users can edit a previous
+    outcome with corrections). Setting any one of the three fields counts
+    as a recording — the others can be backfilled later by re-calling
+    this endpoint."""
+    db = get_db()
+    m = await db.mitigations.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": mitigation_id}), {"_id": 0},
+    )
+    if not m:
+        raise HTTPException(404, "Mitigation not found")
+    # Sanity gate — outcome only makes sense for a chosen scenario whose
+    # delay has been resolved (executed) or where outcome was previously
+    # recorded (we allow corrections).
+    if m.get("decision_status") not in ("chosen", "executed", "outcome_recorded"):
+        raise HTTPException(
+            409,
+            "Cannot record outcome on a mitigation that wasn't chosen and executed.",
+        )
+
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    # All-empty payload? Reject so we don't write a zero-information row.
+    if not any(v is not None for v in raw.values()):
+        raise HTTPException(400, "Provide at least one of actual_cost_usd, actual_time_recovered_days, outcome_notes.")
+
+    now_iso = utc_now().isoformat()
+    updates: dict = {k: v for k, v in raw.items() if v is not None}
+    updates["decision_status"] = "outcome_recorded"
+    updates["outcome_recorded_at"] = now_iso
+    updates["updated_at"] = now_iso
+
+    await db.mitigations.update_one(
+        {"tenant_id": ctx["tenant_id"], "id": mitigation_id},
+        {"$set": updates},
+    )
+
+    after = await db.mitigations.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": mitigation_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="mitigations", op="OUTCOME_RECORD",
+        record_id=mitigation_id,
+        before={k: m.get(k) for k in ("decision_status", "actual_cost_usd",
+                                        "actual_time_recovered_days", "outcome_notes")},
+        after=updates,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return Mitigation(**after).model_dump(mode="json")

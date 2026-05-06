@@ -1118,6 +1118,17 @@ class MitigationChooseRequest(StrictModel):
     decision_rationale: Optional[str] = None
 
 
+class MitigationOutcomeRequest(StrictModel):
+    """Phase 3 — payload for PATCH /mitigations/{id}/record-outcome.
+    All three fields optional so a user without dollar/day numbers can
+    submit just notes ("looks like the freight expedite worked but
+    we don't have invoices yet"). At least one field MUST be provided
+    for the call to count — backend rejects all-empty payloads."""
+    actual_cost_usd: Optional[float] = None
+    actual_time_recovered_days: Optional[float] = None
+    outcome_notes: Optional[str] = None
+
+
 class Mitigation(ReadModel):
     """One AI-generated (or human-proposed) mitigation scenario for a delay.
 
