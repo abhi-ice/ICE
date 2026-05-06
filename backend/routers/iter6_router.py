@@ -70,17 +70,20 @@ async def export_daily_report_pdf(
     presence = await db.daily_presence.find(
         tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
     ).sort("trade", 1).to_list(200)
+    # Same status!='deleted' filter as the /context endpoint so the PDF
+    # never prints soft-deleted leftovers from the legacy /crud DELETE path.
+    not_deleted = {"status": {"$ne": "deleted"}}
     delays = await db.delays.find(
-        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0},
     ).sort("date", -1).to_list(200)
     qc = await db.qc_issues.find(
-        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0},
     ).sort("date", -1).to_list(200)
     safety = await db.safety_events.find(
-        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0},
     ).sort("date", -1).to_list(200)
     rfis = await db.rfis.find(
-        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0},
     ).sort("date_initiated", -1).to_list(100)
     deliveries = await db.deliveries.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "delivery_date": dr["report_date"]}), {"_id": 0},
