@@ -167,6 +167,9 @@ function DailyReportDetail({ id, onBack }) {
   const [bundle, setBundle] = useState(null);
   const [available, setAvailable] = useState([]);
   const [busy, setBusy] = useState(false);
+  // Bucket C3a Phase 3 — per-row submit errors keyed by row id. Cleared
+  // on next submit attempt or when the user successfully edits the row.
+  const [submitRowErrors, setSubmitRowErrors] = useState({});
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
@@ -212,10 +215,27 @@ function DailyReportDetail({ id, onBack }) {
       return;
     }
     setBusy(true);
+    setSubmitRowErrors({});
     try {
       await api.post(`/daily-reports/${id}/submit`, {});
       toast.success("Daily report submitted and locked.");
       reload();
+    } catch (e) {
+      // Bucket C3a Phase 3 — server returns structured per-row errors as
+      // 422 detail.row_errors. Render them inline next to each offending
+      // row instead of as a single toast.
+      const detail = e.response?.data?.detail;
+      if (e.response?.status === 422 && detail && typeof detail === "object" && Array.isArray(detail.row_errors)) {
+        const byRow = {};
+        for (const err of detail.row_errors) {
+          if (!byRow[err.row_id]) byRow[err.row_id] = [];
+          byRow[err.row_id].push(err);
+        }
+        setSubmitRowErrors(byRow);
+        toast.error(detail.message || "Submit blocked — fix the rows highlighted in red.");
+      } else {
+        toast.error(e.response?.data?.detail?.message || e.response?.data?.detail || e.message || "Submit failed");
+      }
     } finally { setBusy(false); }
   };
 
@@ -264,7 +284,8 @@ function DailyReportDetail({ id, onBack }) {
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
         dailyReportId={id} locked={locked} reportDate={report.report_date}
-        presence={presence} projectId={project.id} />
+        presence={presence} projectId={project.id}
+        submitRowErrors={submitRowErrors} />
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
@@ -690,7 +711,7 @@ function ConstraintCell({ row, projectId, locked, updateRow }) {
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], projectId }) {
+function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], projectId, submitRowErrors = {} }) {
   // Phase 2 — alias so the ConstraintCell call site reads cleanly.
   const dailyReportProjectId = projectId;
   const [picking, setPicking] = useState("");
@@ -796,8 +817,12 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               const isUnplanned = (r.activity_code || "").startsWith("AF");
               const isStale = staleRows.has(r.id);
               const isProvisional = r.sync_state === "provisional";
+              const rowErrs = submitRowErrors[r.id] || [];
+              const hasErr = rowErrs.length > 0;
+              const rowClass = isStale ? "bg-amber-50/40"
+                : hasErr ? "bg-red-50/40" : undefined;
               return (
-                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`} className={isStale ? "bg-amber-50/40" : undefined}>
+                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
                   <td className="font-mono text-xs">
                     {r.activity_code}
                     {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[9px] uppercase">field</span>}
@@ -812,6 +837,12 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                         className="ml-1 inline-flex items-center gap-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
                         <RefreshCw className="h-2.5 w-2.5" /> refresh
                       </button>
+                    )}
+                    {hasErr && (
+                      <div data-testid={`dr-row-err-${r.activity_code}`}
+                        className="mt-1 text-[10px] text-red-700 normal-case font-sans">
+                        {rowErrs.map((e, i) => <div key={i}>⚠ {e.message}</div>)}
+                      </div>
                     )}
                   </td>
                   <td className="truncate max-w-[260px]">{r.activity_description}</td>

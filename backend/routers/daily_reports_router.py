@@ -631,6 +631,54 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Daily report not found")
+
+    # Bucket C3a Phase 3 — submit-time validation. A zero-progress row
+    # (EOD% == SOD%) without an explicit constraint isn't TIA-ready.
+    # If a constraint type that needs a reference is set but the
+    # reference is missing, also reject. Returns a structured per-row
+    # error list so the frontend can show inline messages instead of
+    # a single toast.
+    grid_rows = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id}, {"_id": 0},
+    ).to_list(500)
+    row_errors: list[dict] = []
+    for r in grid_rows:
+        sod = float(r.get("pct_complete_start_of_day") or 0)
+        eod = float(r.get("pct_complete_end_of_day") or 0)
+        ct = r.get("constraint_type")
+        if eod == sod and ct in (None, "not_constrained"):
+            row_errors.append({
+                "row_id": r.get("id"),
+                "activity_code": r.get("activity_code"),
+                "field": "constraint_type",
+                "message": "Activity shows zero progress. Set a constraint type or record progress.",
+            })
+            continue
+        if ct and ct not in ("not_constrained", "other"):
+            if not r.get("constraint_reference_entity_id"):
+                row_errors.append({
+                    "row_id": r.get("id"),
+                    "activity_code": r.get("activity_code"),
+                    "field": "constraint_reference_entity_id",
+                    "message": f"Pick a reference entity for constraint '{ct}'.",
+                })
+        elif ct == "other" and not (r.get("constraint_other_description") or "").strip():
+            row_errors.append({
+                "row_id": r.get("id"),
+                "activity_code": r.get("activity_code"),
+                "field": "constraint_other_description",
+                "message": "Describe the constraint.",
+            })
+    if row_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "row_validation_failed",
+                "message": f"{len(row_errors)} grid row(s) need attention before submit.",
+                "row_errors": row_errors,
+            },
+        )
+
     updates = {
         "status": "submitted",
         "submitted_by": ctx["user"]["id"],
@@ -1161,6 +1209,63 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
         lmt_by_id = {t["id"]: t.get("updated_at") for t in task_lmts}
         for r in grid:
             r["task_updated_at"] = lmt_by_id.get(r.get("schedule_activity_id"))
+
+    # Bucket C3a Phase 3 — pre-populate constraint_type +
+    # constraint_reference for any row that has no constraint set yet,
+    # using the most recent open gating_entity that gates the row's
+    # task. Persisted (idempotent) so a manual override sticks across
+    # reads. Skipped on submitted/approved DRs — those are locked.
+    if grid_task_ids and dr.get("status") == "draft":
+        # Map type → expected constraint_type so the auto-fill picks the
+        # right vocabulary value.
+        TYPE_TO_CONSTRAINT = {
+            "rfi": "awaiting_rfi_response",
+            "submittal": "awaiting_submittal_return",
+            "field_issue": "awaiting_predecessor_completion",
+            "bulletin": "awaiting_bulletin_approval",
+            "coordination_request": "awaiting_predecessor_completion",
+        }
+        OPEN_STATES = ["draft", "submitted", "open", "under_review", "awaiting_clarification"]
+        # Single $in across the union of task IDs.
+        gates = await db.gating_entities.find(
+            tenant_filter(ctx["tenant_id"], {
+                "gates_task_ids": {"$in": grid_task_ids},
+                "status": {"$in": OPEN_STATES},
+            }),
+            {"_id": 0, "id": 1, "entity_type": 1, "gates_task_ids": 1, "submitted_at": 1},
+        ).sort("submitted_at", -1).to_list(500)
+        # Build {task_id → first (most-recent) open gate}.
+        first_gate: dict[str, dict] = {}
+        for g in gates:
+            for tid in (g.get("gates_task_ids") or []):
+                if tid in grid_task_ids and tid not in first_gate:
+                    first_gate[tid] = g
+        now_iso = utc_now().isoformat()
+        for r in grid:
+            tid = r.get("schedule_activity_id")
+            if not tid or r.get("constraint_type"):
+                continue  # already has a constraint (auto-filled or user-set)
+            g = first_gate.get(tid)
+            if not g:
+                continue
+            ctype = TYPE_TO_CONSTRAINT.get(g["entity_type"])
+            if not ctype:
+                continue
+            await db.daily_report_activities.update_one(
+                {"id": r["id"]},
+                {"$set": {
+                    "constraint_type": ctype,
+                    "constraint_reference_entity_type": g["entity_type"],
+                    "constraint_reference_entity_id": g["id"],
+                    "constraint_auto_filled": True,
+                    "last_sync_at": now_iso,
+                }},
+            )
+            # Reflect in the response so the frontend sees it on this read.
+            r["constraint_type"] = ctype
+            r["constraint_reference_entity_type"] = g["entity_type"]
+            r["constraint_reference_entity_id"] = g["id"]
+            r["constraint_auto_filled"] = True
     presence = await db.daily_presence.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("trade", 1).to_list(200)
     photos = await db.photos.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("captured_at", -1).to_list(200)
 
