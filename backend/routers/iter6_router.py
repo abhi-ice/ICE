@@ -88,10 +88,15 @@ async def export_daily_report_pdf(
     deliveries = await db.deliveries.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "delivery_date": dr["report_date"]}), {"_id": 0},
     ).to_list(100)
+    # Item 4 (2026-05-06) — pull storage_path + thumbnail_path so the
+    # PDF can embed the actual image (downscaled to ~150px) rather than
+    # just the id. Cap at 24 photos to keep PDF size reasonable for
+    # report-heavy days.
     photos = await db.photos.find(
         tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
-        {"_id": 0, "id": 1, "caption": 1, "captured_at": 1},
-    ).sort("captured_at", -1).to_list(500)
+        {"_id": 0, "id": 1, "caption": 1, "captured_at": 1,
+         "storage_path": 1, "thumbnail_path": 1},
+    ).sort("captured_at", -1).to_list(24)
     audit_log = await db.audit_log.find(
         tenant_filter(ctx["tenant_id"], {
             "table_name": "daily_reports",
@@ -182,12 +187,54 @@ async def export_daily_report_pdf(
         fields=["vendor", "description", lambda d: d.get("po_number") or "—",
                 lambda d: d.get("status") or "—"],
     )
-    photo_html = event_rows(
-        photos,
-        fields=[lambda p: (p.get("id", "")[:8]),
-                lambda p: p.get("caption") or "—",
-                lambda p: p.get("captured_at") or "—"],
-    )
+    # Item 4 (2026-05-06) — embed real thumbnails in a 3-col grid rather
+    # than printing IDs in a table. Loads each photo's stored bytes,
+    # downscales to 320px wide via PIL (keeps file size sane), encodes
+    # as base64 and inlines as a data URI. Failures (storage hiccup,
+    # corrupt file) are skipped silently — a missing thumbnail is much
+    # better than a 500.
+    from io import BytesIO
+    import base64 as _b64
+    from PIL import Image
+    from services.storage import get_object
+
+    def _photo_data_uri(p: dict) -> Optional[str]:
+        path = p.get("thumbnail_path") or p.get("storage_path")
+        if not path:
+            return None
+        try:
+            data, ct = get_object(path)
+        except Exception:
+            return None
+        try:
+            img = Image.open(BytesIO(data))
+            img.thumbnail((320, 320))  # in-place; keeps aspect ratio
+            buf = BytesIO()
+            fmt = "JPEG" if (img.mode in ("RGB", "L")) else "PNG"
+            if fmt == "JPEG" and img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(buf, format=fmt, quality=78 if fmt == "JPEG" else None,
+                     optimize=True)
+            mime = "image/jpeg" if fmt == "JPEG" else "image/png"
+            return f"data:{mime};base64," + _b64.b64encode(buf.getvalue()).decode()
+        except Exception:
+            return None
+
+    photo_cards: list[str] = []
+    for p in photos:
+        uri = _photo_data_uri(p)
+        caption = _html_escape(p.get("caption") or "No caption")
+        captured = _html_escape(p.get("captured_at") or "—")
+        if uri:
+            img_tag = f"<img src='{uri}' alt='photo'/>"
+        else:
+            img_tag = "<div class='photo-placeholder'>image unavailable</div>"
+        photo_cards.append(
+            f"<div class='photo-card'>{img_tag}"
+            f"<div class='photo-caption'>{caption}</div>"
+            f"<div class='photo-meta'>{captured}</div></div>"
+        )
+    photo_html = "".join(photo_cards) or "<div class='muted'>No photos.</div>"
     audit_html = event_rows(
         audit_log,
         fields=["op", lambda a: a.get("actor_id") or "—", "created_at"],
@@ -225,6 +272,12 @@ td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
 .reminder {{ background: #fffbea; border-left: 3px solid #d97706; padding: 6px 10px; margin: 4px 0; font-size: 9pt; }}
 h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; }}
 .audience {{ float: right; font-size: 8pt; color: #94a3b8; }}
+.photo-grid {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }}
+.photo-card {{ width: 30%; box-sizing: border-box; border: 1px solid #e2e8f0; border-radius: 4px; padding: 4px; background: #fff; page-break-inside: avoid; }}
+.photo-card img {{ width: 100%; height: auto; display: block; border-radius: 2px; }}
+.photo-placeholder {{ height: 80px; display: flex; align-items: center; justify-content: center; background: #f1f5f9; color: #94a3b8; font-size: 8pt; border-radius: 2px; }}
+.photo-caption {{ font-size: 8.5pt; color: #1e293b; margin-top: 4px; }}
+.photo-meta {{ font-size: 7.5pt; color: #94a3b8; margin-top: 2px; font-variant-numeric: tabular-nums; }}
 </style></head><body>
 <div class='audience'>{'CLIENT COPY' if not is_internal else 'INTERNAL'}</div>
 <h1>Daily Report — {_html_escape(proj['name'] if proj else dr['project_id'])}{title_suffix}</h1>
@@ -273,10 +326,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 </table>
 
 <h2>Photos ({len(photos)})</h2>
-<table>
-<thead><tr><th>ID</th><th>Caption</th><th>Captured at</th></tr></thead>
-<tbody>{photo_html}</tbody>
-</table>
+<div class='photo-grid'>{photo_html}</div>
 
 {"<h2>Notes</h2><div>" + _html_escape(dr.get('notes') or '').replace(chr(10), '<br/>') + "</div>" if dr.get('notes') else ""}
 
