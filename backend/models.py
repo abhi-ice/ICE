@@ -387,6 +387,25 @@ class DailyReport(ReadModel):
     created_at: datetime
 
 
+ConstraintType = Literal[
+    "not_constrained",
+    "awaiting_rfi_response",
+    "awaiting_submittal_return",
+    "awaiting_bulletin_proposal",
+    "awaiting_bulletin_approval",
+    "awaiting_ae_direction",
+    "awaiting_shutdown_window",
+    "awaiting_tenant_access",
+    "awaiting_clearance",
+    "awaiting_predecessor_completion",
+    "concealed_condition_under_investigation",
+    "weather_impact",
+    "labor_unavailability",
+    "material_not_on_site",
+    "other",
+]
+
+
 class DailyReportActivityUpdate(StrictModel):
     pct_complete_end_of_day: Optional[float] = Field(default=None, ge=0, le=100)
     crew_count: Optional[int] = None
@@ -408,6 +427,16 @@ class DailyReportActivityUpdate(StrictModel):
     # (back-compat) and so brand-new tasks (no updated_at yet) accept
     # any token.
     task_last_modified_at: Optional[datetime] = None
+    # Bucket C3a Phase 2 — constraint capture. Validated server-side:
+    # if constraint_type is set and != not_constrained / != other,
+    # constraint_reference_entity_id must point to an existing
+    # gating_entities.id. If = other, constraint_other_description must
+    # be non-empty.
+    constraint_type: Optional[ConstraintType] = None
+    constraint_reference_entity_type: Optional[str] = None
+    constraint_reference_entity_id: Optional[str] = None
+    constraint_other_description: Optional[str] = None
+    production_impact_hours: Optional[float] = Field(default=None, ge=0)
 
 
 class DailyReportActivity(ReadModel):
@@ -442,6 +471,16 @@ class DailyReportActivity(ReadModel):
     # the frontend the optimistic-lock token for the linked task without
     # forcing a second round-trip to /tasks.
     task_updated_at: Optional[datetime] = None
+    # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
+    # the gating entity that's blocking this row, or free-text "other").
+    # constraint_auto_filled marks rows where the system pre-populated
+    # the constraint from an open gating entity (Phase 3).
+    constraint_type: Optional[ConstraintType] = None
+    constraint_reference_entity_type: Optional[str] = None
+    constraint_reference_entity_id: Optional[str] = None
+    constraint_other_description: Optional[str] = None
+    production_impact_hours: Optional[float] = None
+    constraint_auto_filled: bool = False
 
 
 class DailyReportUpdate(StrictModel):

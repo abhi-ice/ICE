@@ -409,6 +409,42 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             detail=f"Cannot edit a {dr.get('status')} daily report; create an amendment instead.",
         )
 
+    # Bucket C3a Phase 2 — constraint validation. Cross-field rules
+    # StrictModel can't express alone. We let the user effectively
+    # CHANGE the constraint type by reading from `updates` first and
+    # falling back to the row's existing value when the patch only
+    # supplies one of the related fields.
+    if "constraint_type" in updates:
+        ct = updates["constraint_type"]
+        if ct in (None, "not_constrained"):
+            # Clearing the constraint also clears its dependents so the
+            # row doesn't carry stale ref/desc data.
+            updates["constraint_reference_entity_type"] = None
+            updates["constraint_reference_entity_id"] = None
+            updates["constraint_other_description"] = None
+        elif ct == "other":
+            desc = updates.get("constraint_other_description") or before.get("constraint_other_description")
+            if not (desc and str(desc).strip()):
+                raise HTTPException(422, "constraint_other_description required when constraint_type is 'other'.")
+            # Other has no ref entity.
+            updates["constraint_reference_entity_type"] = None
+            updates["constraint_reference_entity_id"] = None
+        else:
+            ref_id = updates.get("constraint_reference_entity_id") or before.get("constraint_reference_entity_id")
+            if not ref_id:
+                raise HTTPException(422, f"constraint_reference_entity_id required when constraint_type is '{ct}'.")
+            ge = await db.gating_entities.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": ref_id}),
+                {"_id": 0, "id": 1, "entity_type": 1},
+            )
+            if not ge:
+                raise HTTPException(422, f"constraint_reference_entity_id {ref_id} not found in gating_entities.")
+            # Snapshot entity_type so reads don't need a second lookup.
+            updates["constraint_reference_entity_type"] = ge.get("entity_type")
+            updates["constraint_other_description"] = None
+        # User-set constraint always clears the auto_filled flag.
+        updates["constraint_auto_filled"] = False
+
     # Look up the linked task NOW so stale-write detection runs before
     # we touch the grid row.
     task_before = await db.tasks.find_one(

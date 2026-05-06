@@ -264,7 +264,7 @@ function DailyReportDetail({ id, onBack }) {
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
         dailyReportId={id} locked={locked} reportDate={report.report_date}
-        presence={presence} />
+        presence={presence} projectId={project.id} />
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
@@ -561,7 +561,138 @@ function CrewSelector({ row, presence, locked, updateRow }) {
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [] }) {
+// Bucket C3a Phase 2 — controlled constraint vocabulary; mirrors the
+// backend ConstraintType Literal in models.py.
+const CONSTRAINT_TYPES = [
+  { value: "not_constrained", label: "(none — not constrained)" },
+  { value: "awaiting_rfi_response", label: "Awaiting RFI response" },
+  { value: "awaiting_submittal_return", label: "Awaiting submittal return" },
+  { value: "awaiting_bulletin_proposal", label: "Awaiting bulletin proposal" },
+  { value: "awaiting_bulletin_approval", label: "Awaiting bulletin approval" },
+  { value: "awaiting_ae_direction", label: "Awaiting A/E direction" },
+  { value: "awaiting_shutdown_window", label: "Awaiting shutdown window" },
+  { value: "awaiting_tenant_access", label: "Awaiting tenant access" },
+  { value: "awaiting_clearance", label: "Awaiting clearance" },
+  { value: "awaiting_predecessor_completion", label: "Awaiting predecessor completion" },
+  { value: "concealed_condition_under_investigation", label: "Concealed condition under investigation" },
+  { value: "weather_impact", label: "Weather impact" },
+  { value: "labor_unavailability", label: "Labor unavailability" },
+  { value: "material_not_on_site", label: "Material not on site" },
+  { value: "other", label: "Other (free text)" },
+];
+
+const CONSTRAINT_TYPES_NEEDING_REF = new Set([
+  "awaiting_rfi_response", "awaiting_submittal_return",
+  "awaiting_bulletin_proposal", "awaiting_bulletin_approval",
+  "awaiting_ae_direction", "awaiting_predecessor_completion",
+]);
+
+// Bucket C3a Phase 2 — Constraint cell on the activity grid. Stacks
+// type dropdown + (reference dropdown OR other-text) + impact-hours
+// vertically inside a single cell. Reference dropdown lazy-loads the
+// open gating entities for this row's task on focus.
+function ConstraintCell({ row, projectId, locked, updateRow }) {
+  const taskId = row.schedule_activity_id;
+  const ct = row.constraint_type || "not_constrained";
+  const needsRef = CONSTRAINT_TYPES_NEEDING_REF.has(ct);
+  const isOther = ct === "other";
+
+  const [refOptions, setRefOptions] = useState([]);
+  const [refLoaded, setRefLoaded] = useState(false);
+
+  const ensureRefs = async () => {
+    if (refLoaded || !needsRef || !projectId || !taskId) return;
+    try {
+      const { data } = await api.get(`/projects/${projectId}/gating-entities`, {
+        params: { task_id: taskId, open_only: true },
+      });
+      setRefOptions(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setRefOptions([]);
+    } finally { setRefLoaded(true); }
+  };
+
+  const setType = (newType) => {
+    const fields = { constraint_type: newType };
+    // Clearing chains so backend validation doesn't fight us on the
+    // next save — backend also nulls these but explicit is friendlier.
+    if (newType === "not_constrained" || newType === "other") {
+      fields.constraint_reference_entity_id = null;
+    }
+    if (!isOther && newType !== "other") {
+      fields.constraint_other_description = null;
+    }
+    updateRow(row.id, fields);
+  };
+
+  return (
+    <div className="flex flex-col gap-1 min-w-[200px]" data-testid={`dr-constraint-${row.activity_code}`}>
+      <select
+        data-testid={`dr-constraint-type-${row.activity_code}`}
+        value={ct}
+        onChange={(e) => setType(e.target.value)}
+        onFocus={ensureRefs}
+        disabled={locked}
+        className={`h-7 text-[11px] px-1 border rounded ${row.constraint_auto_filled ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"}`}
+        title={row.constraint_auto_filled ? "Auto-filled from open gating entity. Override to take ownership." : undefined}
+      >
+        {CONSTRAINT_TYPES.map((c) => (
+          <option key={c.value} value={c.value}>{c.label}</option>
+        ))}
+      </select>
+
+      {needsRef && (
+        <select
+          data-testid={`dr-constraint-ref-${row.activity_code}`}
+          value={row.constraint_reference_entity_id || ""}
+          onChange={(e) => updateRow(row.id, { constraint_reference_entity_id: e.target.value || null })}
+          onFocus={ensureRefs}
+          disabled={locked}
+          className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+        >
+          <option value="">{refLoaded ? `— pick (${refOptions.length} open) —` : "— focus to load —"}</option>
+          {refOptions.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.entity_number ? `${o.entity_number}: ` : ""}{(o.display_label || "").slice(0, 60)}
+              {o.is_over_sla ? " · OVER SLA" : ""}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {isOther && (
+        <input
+          data-testid={`dr-constraint-other-${row.activity_code}`}
+          type="text"
+          defaultValue={row.constraint_other_description || ""}
+          onBlur={(e) => updateRow(row.id, { constraint_other_description: e.target.value || null })}
+          disabled={locked}
+          placeholder="Describe the constraint"
+          className="h-7 text-[11px] px-1 border border-slate-200 rounded"
+        />
+      )}
+
+      {ct !== "not_constrained" && (
+        <input
+          data-testid={`dr-constraint-hours-${row.activity_code}`}
+          type="number"
+          min="0"
+          step="0.5"
+          defaultValue={row.production_impact_hours ?? ""}
+          onBlur={(e) => updateRow(row.id, { production_impact_hours: e.target.value === "" ? null : Number(e.target.value) })}
+          disabled={locked}
+          placeholder="impact hrs"
+          title="Crew-hours lost on this activity due to the constraint"
+          className="h-6 text-[11px] px-1 border border-slate-200 rounded tabular-nums"
+        />
+      )}
+    </div>
+  );
+}
+
+function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], projectId }) {
+  // Phase 2 — alias so the ConstraintCell call site reads cleanly.
+  const dailyReportProjectId = projectId;
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
@@ -653,7 +784,9 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
             <tr>
               <th>Code</th><th>Description</th><th>Loc</th><th>Trade</th>
               <th>Crew</th><th>SOD %</th><th>EOD %</th><th>Δ</th>
-              <th>Hours</th><th>Status</th><th>Notes</th><th></th>
+              <th>Hours</th><th>Status</th>
+              <th title="Bucket C3a — what's blocking this row, if anything. Required on submit when EOD% = SOD%.">Constraint</th>
+              <th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -698,12 +831,15 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                       {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
                     </select>
                   </td>
+                  <td>
+                    <ConstraintCell row={r} projectId={dailyReportProjectId} locked={locked} updateRow={updateRow} />
+                  </td>
                   <td><input type="text" defaultValue={r.notes || ""} onBlur={(e) => updateRow(r.id, { notes: e.target.value })} disabled={locked} placeholder="Notes…" className="w-44" /></td>
                   <td>{!locked && <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded text-xs">remove</button>}</td>
                 </tr>
               );
             })}
-            {!grid.length && <tr><td colSpan="12" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
+            {!grid.length && <tr><td colSpan="13" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
           </tbody>
         </table>
       </div>
