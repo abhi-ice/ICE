@@ -190,10 +190,26 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
             403, f"Cannot delete a {before.get('status')} daily report — only drafts can be deleted",
         )
 
+    # Bucket C3b Phase 5 — record what we're about to cascade-delete so
+    # the audit chain captures the presence rows' final state. Without
+    # this, the rows are gone with no trail of who they belonged to.
+    presence_to_delete = await db.daily_presence.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+        {"_id": 0},
+    ).to_list(2000)
+
     await db.daily_report_activities.delete_many({"daily_report_id": daily_report_id})
     await db.daily_presence.delete_many(
         tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
     )
+    for p in presence_to_delete:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="daily_presence",
+            op="CASCADE_DELETE_FROM_DR",
+            record_id=p["id"], before=p, after=None,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+
     # Null out daily_report_id on independent linked records — they live
     # in their own collections and shouldn't disappear with the DR.
     cascade_collections = ["delays", "qc_issues", "safety_events", "rfis",
@@ -203,6 +219,15 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
             tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
             {"$set": {"daily_report_id": None}},
         )
+
+    # Bucket C3b Phase 5 — coordination_events live alongside the DR via
+    # linked_daily_report_id (set by the quick-log on the DR header). The
+    # event itself outlives the DR (it's a phone call / RFI exchange) so
+    # null the link rather than delete the row.
+    await db.coordination_events.update_many(
+        tenant_filter(ctx["tenant_id"], {"linked_daily_report_id": daily_report_id}),
+        {"$set": {"linked_daily_report_id": None}},
+    )
 
     # Bucket C1 Phase 6 — clear the sync-layer marker on any task whose
     # last_synced_from_dr points at this DR. The task data persists
@@ -239,7 +264,9 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
         record_id=daily_report_id, before=before, after=None,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
-    return {"ok": True, "cascade_unlinked": cascade_collections}
+    return {"ok": True,
+            "cascade_unlinked": cascade_collections + ["coordination_events"],
+            "cascade_deleted": {"daily_presence": len(presence_to_delete)}}
 
 
 @router.get("/daily-reports/{daily_report_id}", response_model=DailyReport)
@@ -627,6 +654,15 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                         "created_at": now_iso,
                     })
                     await db.daily_presence.insert_one(presence_doc.copy())
+                    # Bucket C3b Phase 5 — audit the auto-create with a
+                    # tag in `op` so it's distinguishable from an explicit
+                    # roster INSERT in audit replays.
+                    await write_audit(
+                        tenant_id=ctx["tenant_id"], table_name="daily_presence",
+                        op="AUTO_INSERT_FROM_GRID",
+                        record_id=presence_doc["id"], before=None, after=presence_doc,
+                        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                    )
             except Exception:
                 # Auto-create is best-effort — sync write-back already
                 # wrote the linked_crew_id; presence row failure shouldn't
@@ -1061,6 +1097,13 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     })
     doc = _presence_doc_with_derived(doc)
     await db.daily_presence.insert_one(doc.copy())
+    # Bucket C3b Phase 5 — audit every presence mutation so the federal
+    # contract trail captures who logged crew, when, and at what counts.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_presence", op="INSERT",
+        record_id=doc["id"], before=None, after=doc,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return DailyPresence(**doc)
 
 
@@ -1091,19 +1134,34 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
             updates["sub_name"] = updates["company_name"]
         await db.daily_presence.update_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"$set": updates})
     after = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
+    # Bucket C3b Phase 5 — audit on every PATCH, even no-op (so the chain
+    # records that someone hit the endpoint), but include a meaningful
+    # diff via before/after.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_presence", op="UPDATE",
+        record_id=presence_id, before=doc, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return DailyPresence(**after)
 
 
 @router.delete("/daily-presence/{presence_id}")
 async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0, "daily_report_id": 1})
+    doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1})
     if dr and dr.get("status") == "submitted":
         raise HTTPException(409, "Daily report locked")
     await db.daily_presence.delete_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}))
+    # Bucket C3b Phase 5 — audit the hard-delete (presence has no soft
+    # delete; deletion erases the row, so the audit is the only trail).
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_presence", op="DELETE",
+        record_id=presence_id, before=doc, after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return {"ok": True}
 
 

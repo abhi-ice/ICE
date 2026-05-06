@@ -106,6 +106,16 @@ async def _ensure_indexes():
     await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("daily_report_id", 1)])
     await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("zone_id", 1), ("shift", 1)])
     await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("trade", 1)])
+    # Bucket C3b Phase 5 — photo evidentiary indexes.
+    # sha256_hash uniqueness check on upload (sparse so legacy photos
+    # without a hash don't collide with each other on null).
+    await db.photos.create_index(
+        [("tenant_id", 1), ("sha256_hash", 1)],
+        partialFilterExpression={"sha256_hash": {"$type": "string"}},
+    )
+    # Evidentiary-only lookups + class filter on the Photos page.
+    await db.photos.create_index([("tenant_id", 1), ("project_id", 1), ("evidentiary_flag", 1)])
+    await db.photos.create_index([("tenant_id", 1), ("project_id", 1), ("photo_class", 1)])
 
 
 @asynccontextmanager
