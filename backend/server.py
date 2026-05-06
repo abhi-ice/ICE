@@ -43,6 +43,7 @@ from routers.iter8_router import router as iter8_router  # noqa: E402
 from routers.schedule_proposals_router import router as schedule_proposals_router  # noqa: E402
 from routers.mitigations_router import router as mitigations_router  # noqa: E402
 from routers.gating_entities_router import router as gating_entities_router  # noqa: E402
+from routers.coordination_router import router as coordination_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -87,6 +88,17 @@ async def _ensure_indexes():
     await db.project_calendar_days.create_index(
         [("tenant_id", 1), ("project_id", 1), ("calendar_date", 1)],
         unique=True,
+    )
+    # Bucket C3b — coordination event log. List page sorts by occurred_at;
+    # filters frequently by topic; backlinks to a daily report.
+    await db.coordination_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("occurred_at", -1)],
+    )
+    await db.coordination_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("topic", 1)],
+    )
+    await db.coordination_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("linked_daily_report_id", 1)],
     )
 
 
@@ -142,6 +154,7 @@ api_router.include_router(iter8_router)
 api_router.include_router(schedule_proposals_router)
 api_router.include_router(mitigations_router)
 api_router.include_router(gating_entities_router)
+api_router.include_router(coordination_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

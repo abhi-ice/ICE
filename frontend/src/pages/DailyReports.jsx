@@ -16,6 +16,8 @@ import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copil
 import { localTodayISO } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
+import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
@@ -170,6 +172,8 @@ function DailyReportDetail({ id, onBack }) {
   // Bucket C3a Phase 3 — per-row submit errors keyed by row id. Cleared
   // on next submit attempt or when the user successfully edits the row.
   const [submitRowErrors, setSubmitRowErrors] = useState({});
+  // Bucket C3b Phase 1 — quick-log coordination event dialog.
+  const [coordOpen, setCoordOpen] = useState(false);
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
@@ -273,7 +277,24 @@ function DailyReportDetail({ id, onBack }) {
               totalHeadcount={totalHeadcount} totalCrewHours={totalCrewHours}
               locked={locked}
               onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
-              busy={busy} validate={validate} />
+              busy={busy} validate={validate}
+              onQuickLogCoordination={() => setCoordOpen(true)} />
+
+      {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.
+          Pre-links the event to this daily report on save so it shows up
+          on the Coordination page filtered by linked_daily_report_id. */}
+      <Dialog open={coordOpen} onOpenChange={setCoordOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Quick-log coordination event</DialogTitle></DialogHeader>
+          <CoordinationEventForm
+            projectId={project.id}
+            linkedDailyReportId={id}
+            abbreviated={true}
+            onSaved={() => { setCoordOpen(false); toast.success("Coordination event logged"); }}
+            onCancel={() => setCoordOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
 
       {/* WEATHER */}
       <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
@@ -335,7 +356,7 @@ function StatusPill({ status }) {
 
 function Header({ report, project, userLabels, ppc, totalHours,
                   totalHeadcount, totalCrewHours, locked, onBack, onSubmit,
-                  onApprove, onDownload, busy, validate }) {
+                  onApprove, onDownload, busy, validate, onQuickLogCoordination }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
@@ -382,6 +403,15 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </div>
         )}
         <div className="ml-auto flex gap-2">
+          {/* Bucket C3b Phase 1 — quick-log a coordination event from
+              the daily report. Pre-links to this DR; user can expand
+              to full form on the Coordination page later. */}
+          {onQuickLogCoordination && !locked && (
+            <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
+              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
+              <MessageSquare className="h-4 w-4" /> + Coordination
+            </button>
+          )}
           <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
             className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
             <Download className="h-4 w-4" /> Export for Internal

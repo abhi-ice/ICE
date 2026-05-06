@@ -1317,3 +1317,119 @@ class ProjectCalendarDay(ReadModel):
     is_restricted_access: bool = False
     notes: Optional[str] = None
     created_at: datetime
+
+
+# ============================================================
+# Bucket C3b — Coordination event log + per-trade-zone presence
+# ============================================================
+CoordinationChannel = Literal[
+    "email", "phone", "in_person", "formal_letter",
+    "text_message", "meeting", "system_notification",
+]
+CoordinationDirection = Literal["inbound", "outbound", "internal"]
+CoordinationTopic = Literal[
+    "tenant_access", "building_coordination", "a_e_clarification",
+    "owner_direction", "sub_coordination", "regulatory", "safety",
+    "quality", "scope", "payment", "other",
+]
+CoordinationOutcome = Literal[
+    "agreement", "disagreement", "pending", "informational", "escalation_required",
+]
+
+
+class CoordinationEventCreate(StrictModel):
+    """Phase 1 create payload. summary + occurred_at + channel + direction
+    + topic + other_party_name are the minimum the platform demands; the
+    rest fills in over time as evidence accumulates."""
+    project_id: str
+    occurred_at: datetime
+    channel: CoordinationChannel
+    direction: CoordinationDirection
+    our_party_user_id: Optional[str] = None
+    other_party_name: str
+    other_party_org: Optional[str] = None
+    other_party_role: Optional[str] = None
+    other_party_email: Optional[str] = None
+    other_party_phone: Optional[str] = None
+    topic: CoordinationTopic
+    topic_other_description: Optional[str] = None
+    summary: str
+    detail_text: Optional[str] = None
+    outcome: CoordinationOutcome = "informational"
+    outcome_notes: Optional[str] = None
+    evidence_attachment_ids: List[str] = Field(default_factory=list)
+    linked_rfi_ids: List[str] = Field(default_factory=list)
+    linked_field_issue_ids: List[str] = Field(default_factory=list)
+    linked_submittal_ids: List[str] = Field(default_factory=list)
+    linked_bulletin_ids: List[str] = Field(default_factory=list)
+    linked_activity_ids: List[str] = Field(default_factory=list)
+    linked_gating_entity_ids: List[str] = Field(default_factory=list)
+    linked_daily_report_id: Optional[str] = None
+    # Phase 2 marks events created by the voice extractor — UI shows them
+    # as a "voice draft" so the user can review before treating as final.
+    voice_extracted: bool = False
+
+
+class CoordinationEventUpdate(StrictModel):
+    """All fields optional — patch what changed. project_id intentionally
+    not patchable (would orphan the row across tenants/projects)."""
+    occurred_at: Optional[datetime] = None
+    channel: Optional[CoordinationChannel] = None
+    direction: Optional[CoordinationDirection] = None
+    our_party_user_id: Optional[str] = None
+    other_party_name: Optional[str] = None
+    other_party_org: Optional[str] = None
+    other_party_role: Optional[str] = None
+    other_party_email: Optional[str] = None
+    other_party_phone: Optional[str] = None
+    topic: Optional[CoordinationTopic] = None
+    topic_other_description: Optional[str] = None
+    summary: Optional[str] = None
+    detail_text: Optional[str] = None
+    outcome: Optional[CoordinationOutcome] = None
+    outcome_notes: Optional[str] = None
+    evidence_attachment_ids: Optional[List[str]] = None
+    linked_rfi_ids: Optional[List[str]] = None
+    linked_field_issue_ids: Optional[List[str]] = None
+    linked_submittal_ids: Optional[List[str]] = None
+    linked_bulletin_ids: Optional[List[str]] = None
+    linked_activity_ids: Optional[List[str]] = None
+    linked_gating_entity_ids: Optional[List[str]] = None
+    linked_daily_report_id: Optional[str] = None
+    voice_extracted: Optional[bool] = None
+
+
+class CoordinationEvent(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    occurred_at: datetime
+    channel: CoordinationChannel
+    direction: CoordinationDirection
+    our_party_user_id: Optional[str] = None
+    other_party_name: str
+    other_party_org: Optional[str] = None
+    other_party_role: Optional[str] = None
+    other_party_email: Optional[str] = None
+    other_party_phone: Optional[str] = None
+    topic: CoordinationTopic
+    topic_other_description: Optional[str] = None
+    summary: str
+    detail_text: Optional[str] = None
+    outcome: CoordinationOutcome = "informational"
+    outcome_notes: Optional[str] = None
+    evidence_attachment_ids: List[str] = Field(default_factory=list)
+    linked_rfi_ids: List[str] = Field(default_factory=list)
+    linked_field_issue_ids: List[str] = Field(default_factory=list)
+    linked_submittal_ids: List[str] = Field(default_factory=list)
+    linked_bulletin_ids: List[str] = Field(default_factory=list)
+    linked_activity_ids: List[str] = Field(default_factory=list)
+    linked_gating_entity_ids: List[str] = Field(default_factory=list)
+    linked_daily_report_id: Optional[str] = None
+    voice_extracted: bool = False
+    created_at: datetime
+    created_by_user_id: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    # Soft-delete marker — list endpoints filter where this is None.
+    deleted_at: Optional[datetime] = None
+    deleted_by_user_id: Optional[str] = None

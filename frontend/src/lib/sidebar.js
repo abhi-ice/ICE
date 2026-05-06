@@ -26,6 +26,8 @@ export const SIDEBAR_SECTIONS = [
       { label: "Delays", path: "/delays", icon: AlertTriangle, testid: "sidebar-delays" },
       { label: "Safety", path: "/safety-events", icon: ShieldAlert, testid: "sidebar-safety" },
       { label: "QC issues", path: "/qc-issues", icon: ClipboardCheck, testid: "sidebar-qc" },
+      // Bucket C3b Phase 1 — coordination event log (TIA-ready).
+      { label: "Coordination", path: "/coordination", icon: MessagesSquare, testid: "sidebar-coordination" },
     ],
   },
   {

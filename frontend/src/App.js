@@ -18,6 +18,8 @@ import Approvals from "./pages/Approvals";
 import Recovery from "./pages/Recovery";
 import DelayDetail from "./pages/DelayDetail";
 import GatingEntityDetail from "./pages/GatingEntityDetail";
+import CoordinationEvents from "./pages/CoordinationEvents";
+import CoordinationEventDetail from "./pages/CoordinationEventDetail";
 import Imports from "./pages/Imports";
 import ScheduleProposals from "./pages/ScheduleProposals";
 import Drawings from "./pages/Drawings";
@@ -66,6 +68,8 @@ export default function App() {
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />
             <Route path="delays/:id" element={<DelayDetail />} />
             <Route path="gating-entities/:id" element={<GatingEntityDetail />} />
+            <Route path="coordination" element={<CoordinationEvents />} />
+            <Route path="coordination/:id" element={<CoordinationEventDetail />} />
             <Route path="safety-events" element={<ProjectScopedList kind="safety-events" />} />
             <Route path="qc-issues" element={<ProjectScopedList kind="qc-issues" />} />
 
