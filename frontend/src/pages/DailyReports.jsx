@@ -744,12 +744,14 @@ function ReminderCard({ delay, reload }) {
 }
 
 function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss", osha_recordable: false });
+  // Phase C — simplified: description + type + severity. OSHA recordable
+  // checkbox removed per spec.
+  const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss" });
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
       await api.post(`/safety-events`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor", event_type: "near_miss", osha_recordable: false });
+      setDraft({ description: "", severity: "minor", event_type: "near_miss" });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create safety event")); }
   };
@@ -759,22 +761,26 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <div key={r.id} data-testid={`safety-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
           <span className="pill pill-slate mr-2">{r.event_type}</span>
           <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
-          {r.osha_recordable && <span className="pill pill-red mr-2">OSHA</span>}
-          <span className="text-slate-700">{r.description}</span>
+          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="safety-new-desc" placeholder="Describe the event" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <label className="text-xs flex items-center gap-1 col-span-1"><input type="checkbox" data-testid="safety-new-osha" checked={draft.osha_recordable} onChange={(e) => setDraft({ ...draft, osha_recordable: e.target.checked })} /> OSHA recordable</label>
-          <button data-testid="safety-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Add</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
+          <textarea data-testid="safety-new-desc" rows={6} placeholder="Describe the event"
+            value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            className="w-full p-2 rounded border border-slate-200 text-sm" />
+          <div className="grid grid-cols-2 gap-2">
+            <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+            </select>
+            <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <button data-testid="safety-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+            <Plus className="h-3.5 w-3.5" /> Add
+          </button>
         </div>
       )}
     </PanelShell>
@@ -782,12 +788,14 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
 }
 
 function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ description: "", severity: "minor", spec_section_ref: "" });
+  // Phase C — simplified: description + severity only. Spec section
+  // reference removed per spec.
+  const [draft, setDraft] = useState({ description: "", severity: "minor" });
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
       await api.post(`/qc-issues`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor", spec_section_ref: "" });
+      setDraft({ description: "", severity: "minor" });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
   };
@@ -795,20 +803,24 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload })
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
       {rows.map((r) => (
         <div key={r.id} data-testid={`qc-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="pill pill-slate mr-2">{r.severity}</span>
-          {r.spec_section_ref && <span className="font-mono text-[10px] mr-2">{r.spec_section_ref}</span>}
-          <span className="text-slate-700">{r.description}</span>
+          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
+          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="qc-new-desc" placeholder="Describe the issue" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <input data-testid="qc-new-spec" placeholder="Spec section (e.g. 03 30 00)" value={draft.spec_section_ref} onChange={(e) => setDraft({ ...draft, spec_section_ref: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="qc-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <button data-testid="qc-add" onClick={create} className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Add QC issue</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
+          <textarea data-testid="qc-new-desc" rows={6} placeholder="Describe the issue"
+            value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            className="w-full p-2 rounded border border-slate-200 text-sm" />
+          <div className="flex items-center gap-2">
+            <select data-testid="qc-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button data-testid="qc-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+              <Plus className="h-3.5 w-3.5" /> Add QC issue
+            </button>
+          </div>
         </div>
       )}
     </PanelShell>

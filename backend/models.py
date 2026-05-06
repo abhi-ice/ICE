@@ -728,32 +728,31 @@ class Delay(ReadModel):
     created_at: datetime
 
 
+SafetyEventType = Literal["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"]
+
+
 class SafetyEventCreate(StrictModel):
+    """Phase C — stripped to description + type + severity + audit. Old
+    fields (schedule_activity_id, location_id, photo_urls, osha_recordable)
+    intentionally removed; rely on ReadModel.extra='ignore' for legacy
+    Mongo docs that still carry them."""
     project_id: str
-    schedule_activity_id: Optional[str] = None
-    location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity = "minor"
-    event_type: str = "near_miss"
-    photo_urls: List[str] = Field(default_factory=list)
-    osha_recordable: bool = False
+    event_type: SafetyEventType = "near_miss"
 
 
 class SafetyEvent(ReadModel):
     id: str
     tenant_id: str
     project_id: str
-    schedule_activity_id: Optional[str] = None
-    location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity
     event_type: str
-    photo_urls: List[str] = Field(default_factory=list)
-    osha_recordable: bool = False
     status: str = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
@@ -761,29 +760,24 @@ class SafetyEvent(ReadModel):
 
 
 class QcIssueCreate(StrictModel):
+    """Phase C — stripped to description + severity + audit. Old fields
+    (schedule_activity_id, location_id, photo_urls, spec_section_ref)
+    removed."""
     project_id: str
-    schedule_activity_id: Optional[str] = None
-    location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity = "minor"
-    spec_section_ref: Optional[str] = None
-    photo_urls: List[str] = Field(default_factory=list)
 
 
 class QcIssue(ReadModel):
     id: str
     tenant_id: str
     project_id: str
-    schedule_activity_id: Optional[str] = None
-    location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
     description: str
     severity: Severity
-    spec_section_ref: Optional[str] = None
-    photo_urls: List[str] = Field(default_factory=list)
     status: str = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
