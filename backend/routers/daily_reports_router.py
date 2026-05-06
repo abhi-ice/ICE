@@ -204,9 +204,36 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
             {"$set": {"daily_report_id": None}},
         )
 
+    # Bucket C1 Phase 6 — clear the sync-layer marker on any task whose
+    # last_synced_from_dr points at this DR. The task data persists
+    # (pct_complete, status, current_crew_id all stay) — only the
+    # "this came from DR X" pointer is cleared. Status recompute below
+    # picks up the new state.
+    affected_task_docs = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"last_synced_from_dr.daily_report_id": daily_report_id}),
+        {"_id": 0, "id": 1},
+    ).to_list(2000)
+    affected_task_ids = [t["id"] for t in affected_task_docs]
+    if affected_task_ids:
+        await db.tasks.update_many(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": affected_task_ids}}),
+            {"$set": {"last_synced_from_dr": None,
+                      "updated_at": utc_now().isoformat()}},
+        )
+
     await db.daily_reports.delete_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
     )
+
+    # Recompute status for the affected tasks (now they're un-blocked
+    # from any delays whose daily_report_id we just nulled out).
+    if affected_task_ids:
+        from services.task_status import compute_and_persist_status
+        for tid in affected_task_ids:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="DELETE",
         record_id=daily_report_id, before=before, after=None,
@@ -373,6 +400,14 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     )
     if not dr:
         raise HTTPException(404, "Row not found")
+    # Bucket C1 Phase 6 — submitted/approved daily reports are part of
+    # the field-attested record and cannot be edited. Frontend already
+    # disables the inputs but the backend is the source of truth.
+    if dr.get("status") not in ("draft", None):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot edit a {dr.get('status')} daily report; create an amendment instead.",
+        )
 
     # Look up the linked task NOW so stale-write detection runs before
     # we touch the grid row.
