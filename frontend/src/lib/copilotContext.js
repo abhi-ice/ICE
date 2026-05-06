@@ -21,3 +21,20 @@ export function subscribeDailyReportId(fn) {
   fn(activeDailyReportId);
   return () => subs.delete(fn);
 }
+
+/**
+ * Phase D — pub/sub for "send copilot text to a form description". The
+ * CopilotPanel emits ({target: 'qc'|'safety', text}); the QC/Safety panels
+ * on DailyReports.jsx subscribe and prepend the text to their draft. Decoupled
+ * so the copilot doesn't need direct refs into the page tree.
+ */
+const insertSubs = new Set();
+export function emitDescriptionInsert(target, text) {
+  insertSubs.forEach((fn) => {
+    try { fn({ target, text }); } catch (_) { /* ignore */ }
+  });
+}
+export function subscribeDescriptionInsert(fn) {
+  insertSubs.add(fn);
+  return () => insertSubs.delete(fn);
+}

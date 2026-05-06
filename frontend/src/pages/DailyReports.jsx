@@ -12,8 +12,9 @@
 import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { setActiveDailyReportId } from "../lib/copilotContext";
+import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { toast } from "../components/ui/sonner";
+import DelayForm from "../components/forms/DelayForm";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
@@ -105,13 +106,16 @@ function DailyReportDetail({ id, onBack }) {
   const [available, setAvailable] = useState([]);
   const [busy, setBusy] = useState(false);
 
+  const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
-    const [{ data: ctx }, { data: avail }] = await Promise.all([
+    const [{ data: ctx }, { data: avail }, remindersRes] = await Promise.all([
       api.get(`/daily-reports/${id}/context`),
       api.get(`/daily-reports/${id}/available-tasks`),
+      api.get(`/daily-reports/${id}/delay-reminders`).catch(() => ({ data: [] })),
     ]);
     setBundle(ctx);
     setAvailable(avail);
+    setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -123,7 +127,6 @@ function DailyReportDetail({ id, onBack }) {
   const isRenovation = RENOVATION_TYPES.includes(project.project_type || "");
 
   const totalHours = grid.reduce((s, r) => s + (r.hours_worked || 0), 0);
-  const totalDelay = grid.reduce((s, r) => s + (r.delay_minutes || 0), 0);
   const totalHeadcount = presence.reduce((s, p) => s + (p.headcount || 0), 0);
   const totalCrewHours = presence.reduce((s, p) => s + (p.headcount || 0) * (p.hours_per_person || 0), 0);
   const completed = grid.filter((r) => (r.pct_complete_end_of_day || 0) >= 100).length;
@@ -165,11 +168,18 @@ function DailyReportDetail({ id, onBack }) {
     } finally { setBusy(false); }
   };
 
-  const downloadPdf = async () => {
-    const res = await api.get(`/daily-reports/${id}/pdf-rich`, { responseType: "blob" });
+  // Phase F — PDF export now takes a mode: "internal" (full) or "external"
+  // (omits QC, Safety, and the rolled-forward delay reminders banner).
+  const downloadPdf = async (mode = "internal") => {
+    const res = await api.get(`/daily-reports/${id}/pdf-rich`, {
+      params: { mode },
+      responseType: "blob",
+    });
     const url = URL.createObjectURL(res.data);
     const a = document.createElement("a");
-    a.href = url; a.download = `daily_report_${report.report_date}.pdf`; a.click();
+    a.href = url;
+    a.download = `daily_report_${report.report_date}_${mode}.pdf`;
+    a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -177,7 +187,7 @@ function DailyReportDetail({ id, onBack }) {
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
       {/* HEADER */}
       <Header report={report} project={project} userLabels={user_labels}
-              ppc={ppc} totalHours={totalHours} totalDelay={totalDelay}
+              ppc={ppc} totalHours={totalHours}
               totalHeadcount={totalHeadcount} totalCrewHours={totalCrewHours}
               locked={locked}
               onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
@@ -191,12 +201,16 @@ function DailyReportDetail({ id, onBack }) {
 
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
-        dailyReportId={id} locked={locked} reportDate={report.report_date} />
+        dailyReportId={id} locked={locked} reportDate={report.report_date}
+        presence={presence} />
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
         <RenovationPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       )}
+
+      {/* OPEN DELAY REMINDERS — only renders when reminders array non-empty */}
+      <ReminderBanner reminders={reminders} reload={reload} />
 
       {/* INLINE EVENT PANELS */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -236,7 +250,7 @@ function StatusPill({ status }) {
   return <span data-testid={`dr-status-${status}`} className={`pill ${klass}`}>{status}</span>;
 }
 
-function Header({ report, project, userLabels, ppc, totalHours, totalDelay,
+function Header({ report, project, userLabels, ppc, totalHours,
                   totalHeadcount, totalCrewHours, locked, onBack, onSubmit,
                   onApprove, onDownload, busy, validate }) {
   const v = validate();
@@ -274,7 +288,6 @@ function Header({ report, project, userLabels, ppc, totalHours, totalDelay,
           <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
           <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
           <KPI label="Activity hrs" value={totalHours.toFixed(1)} testid="kpi-activity-hours" />
-          <KPI label="Delay min" value={totalDelay} testid="kpi-delay-min" />
         </div>
       </div>
 
@@ -286,9 +299,13 @@ function Header({ report, project, userLabels, ppc, totalHours, totalDelay,
           </div>
         )}
         <div className="ml-auto flex gap-2">
-          <button data-testid="dr-download-pdf" onClick={onDownload} disabled={busy}
+          <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
+            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
+            <Download className="h-4 w-4" /> Export for Internal
+          </button>
+          <button data-testid="dr-download-pdf-external" onClick={() => onDownload("external")} disabled={busy}
             className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
-            <Download className="h-4 w-4" /> Export PDF
+            <Download className="h-4 w-4" /> Export for External
           </button>
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
@@ -432,7 +449,57 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate }) {
+// Phase E — Crew column on the activity grid: trade dropdown sourced from
+// the Crew presence panel + an auto-filled-but-editable headcount input.
+// Picking a trade sets linked_crew_id AND crew_count (server PATCH does both).
+function CrewSelector({ row, presence, locked, updateRow }) {
+  const onPickTrade = (e) => {
+    const presenceId = e.target.value || null;
+    const picked = presence.find((p) => p.id === presenceId);
+    const fields = { linked_crew_id: presenceId };
+    // Auto-fill headcount from picked presence row (super can override after)
+    if (picked && typeof picked.headcount === "number") {
+      fields.crew_count = picked.headcount;
+    } else if (!presenceId) {
+      // Cleared selection — leave crew_count as-is so the user doesn't lose
+      // a manual override they typed earlier.
+    }
+    updateRow(row.id, fields);
+  };
+  const onChangeHeadcount = (e) => {
+    updateRow(row.id, { crew_count: Number(e.target.value) });
+  };
+  return (
+    <div className="flex flex-col gap-1 min-w-[140px]">
+      <select
+        data-testid={`dr-crew-trade-${row.activity_code}`}
+        value={row.linked_crew_id || ""}
+        onChange={onPickTrade}
+        disabled={locked}
+        className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+      >
+        <option value="">— no crew assigned —</option>
+        {presence.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.trade}{p.company_name ? ` — ${p.company_name}` : ""}
+          </option>
+        ))}
+      </select>
+      <input
+        data-testid={`dr-crew-${row.activity_code}`}
+        type="number"
+        defaultValue={row.crew_count}
+        key={`hc-${row.linked_crew_id || "none"}-${row.crew_count}`}
+        onBlur={onChangeHeadcount}
+        disabled={locked}
+        title="Headcount on this activity (auto-filled from picked crew, but editable)"
+        className="w-full h-6 text-xs px-1 border border-slate-200 rounded tabular-nums"
+      />
+    </div>
+  );
+}
+
+function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [] }) {
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
@@ -493,7 +560,7 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
             <tr>
               <th>Code</th><th>Description</th><th>Loc</th><th>Trade</th>
               <th>Crew</th><th>SOD %</th><th>EOD %</th><th>Δ</th>
-              <th>Hours</th><th>Delay min</th><th>Status</th><th>Notes</th><th></th>
+              <th>Hours</th><th>Status</th><th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -510,14 +577,15 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                   <td className="truncate max-w-[260px]">{r.activity_description}</td>
                   <td className="text-xs">{r.location_name || "—"}</td>
                   <td className="text-xs">{r.trade_code || "—"}</td>
-                  <td><input data-testid={`dr-crew-${r.activity_code}`} type="number" defaultValue={r.crew_count} onBlur={(e) => updateRow(r.id, { crew_count: Number(e.target.value) })} disabled={locked} className="w-14" /></td>
+                  <td>
+                    <CrewSelector row={r} presence={presence} locked={locked} updateRow={updateRow} />
+                  </td>
                   <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
                   <td><input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100" defaultValue={r.pct_complete_end_of_day} onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })} disabled={locked} className="w-14 tabular-nums" /></td>
                   <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
                     {delta > 0 ? "+" : ""}{delta}
                   </td>
                   <td><input type="number" defaultValue={r.hours_worked} onBlur={(e) => updateRow(r.id, { hours_worked: Number(e.target.value) })} disabled={locked} className="w-14" /></td>
-                  <td><input type="number" defaultValue={r.delay_minutes} onBlur={(e) => updateRow(r.id, { delay_minutes: Number(e.target.value) })} disabled={locked} className="w-14" /></td>
                   <td>
                     <select data-testid={`dr-status-${r.activity_code}`} defaultValue={r.status_at_end_of_day || "not_started"} onChange={(e) => updateRow(r.id, { status_at_end_of_day: e.target.value })} disabled={locked} className="text-xs h-7 border border-slate-200 rounded px-1">
                       {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
@@ -528,7 +596,7 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                 </tr>
               );
             })}
-            {!grid.length && <tr><td colSpan="13" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
+            {!grid.length && <tr><td colSpan="12" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -584,55 +652,175 @@ function RenovationPanel({ report, dailyReportId, locked, reload }) {
 
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ description: "", severity: "moderate", delay_days: 1, reason_category: "weather" });
-  const create = async () => {
-    if (!draft.description) return toast.error("Description required");
-    try {
-      await api.post(`/delays`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "moderate", delay_days: 1, reason_category: "weather" });
-      reload();
-    } catch (e) { toast.error(formatErr(e, "Create delay")); }
-  };
+  const [showForm, setShowForm] = useState(false);
+
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`delay-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
-          <span className="text-slate-700">{r.description}</span>
-          {r.delay_days != null ? <span className="text-slate-500 ml-2">{r.delay_days}d</span> : null}
-          {r.reason_category ? <span className="text-slate-400 ml-2">· {r.reason_category}</span> : null}
-        </div>
+        <DelayRowInline key={r.id} delay={r} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No delays today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="delay-new-desc" placeholder="What happened?" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="delay-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select data-testid="delay-new-category" value={draft.reason_category} onChange={(e) => setDraft({ ...draft, reason_category: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["weather", "rfi_pending", "submittal_pending", "design_change", "site_condition", "manpower", "other"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <label className="text-xs flex items-center gap-2">
-            <span className="text-slate-500">Days</span>
-            <input data-testid="delay-new-days" type="number" step="0.5" min="0" placeholder="days"
-              value={draft.delay_days} onChange={(e) => setDraft({ ...draft, delay_days: e.target.value === "" ? "" : Number(e.target.value) })}
-              className="h-8 w-24 px-2 rounded border border-slate-200 text-sm" />
-          </label>
-          <button data-testid="delay-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Add delay</button>
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          {!showForm ? (
+            <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
+              <Plus className="h-3.5 w-3.5" /> Log a delay
+            </button>
+          ) : (
+            <DelayForm
+              projectId={projectId}
+              reportDate={reportDate}
+              dailyReportId={dailyReportId}
+              onSaved={() => { setShowForm(false); reload(); toast.success("Delay logged"); }}
+              onCancel={() => setShowForm(false)}
+            />
+          )}
         </div>
       )}
     </PanelShell>
   );
 }
 
+function DelayRowInline({ delay, reload }) {
+  const [resolving, setResolving] = useState(false);
+  const [resolveDate, setResolveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [resolveNote, setResolveNote] = useState("");
+
+  const resolve = async () => {
+    try {
+      await api.patch(`/delays/${delay.id}`, {
+        status: "resolved",
+        resolved_date: resolveDate,
+        resolved_note: resolveNote || null,
+      });
+      setResolving(false);
+      reload();
+      toast.success("Delay marked resolved");
+    } catch (e) { toast.error(formatErr(e, "Resolve delay")); }
+  };
+
+  const sevColor = delay.severity === "critical" || delay.severity === "major" ? "pill-red" : "pill-slate";
+  const statusColor = delay.status === "resolved" ? "pill-green" : delay.status === "in_progress" ? "pill-amber" : "pill-slate";
+  const linkedCount = (delay.linked_task_ids || []).length;
+  return (
+    <div data-testid={`delay-row-${delay.id}`} className="border-b border-slate-100 py-2 text-xs space-y-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={`pill ${sevColor}`}>{delay.severity}</span>
+        <span className={`pill ${statusColor}`}>{(delay.status || "open").replace(/_/g, " ")}</span>
+        {delay.reason_category && <span className="text-slate-400">{delay.reason_category}</span>}
+        {linkedCount > 0 && <span className="text-slate-500">· {linkedCount} task{linkedCount === 1 ? "" : "s"}</span>}
+        {delay.duration_days != null && <span className="text-slate-500">· {delay.duration_days}d open</span>}
+        {delay.status !== "resolved" && (
+          <button data-testid={`delay-resolve-open-${delay.id}`} onClick={() => setResolving((v) => !v)}
+            className="ml-auto text-blue-600 hover:underline">
+            {resolving ? "cancel" : "mark resolved"}
+          </button>
+        )}
+      </div>
+      <div className="text-slate-700 whitespace-pre-wrap">{delay.description}</div>
+      {resolving && (
+        <div className="mt-2 p-2 bg-slate-50 rounded grid grid-cols-2 gap-2">
+          <input type="date" value={resolveDate} onChange={(e) => setResolveDate(e.target.value)}
+            className="h-7 px-2 border border-slate-200 rounded text-xs" />
+          <input type="text" placeholder="Resolution note (optional)" value={resolveNote}
+            onChange={(e) => setResolveNote(e.target.value)}
+            className="h-7 px-2 border border-slate-200 rounded text-xs" />
+          <button data-testid={`delay-resolve-confirm-${delay.id}`} onClick={resolve}
+            className="col-span-2 h-7 px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700">
+            Mark resolved
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReminderBanner({ reminders, reload }) {
+  if (!reminders?.length) return null;
+  return (
+    <div data-testid="dr-reminder-banner" className="surface p-4 border-l-4 border-amber-400 bg-amber-50/40">
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle className="h-4 w-4 text-amber-600" />
+        <div className="font-medium text-sm text-amber-900">Open delay reminders</div>
+        <span className="text-xs text-amber-700">({reminders.length})</span>
+        <span className="text-[11px] text-slate-500 ml-auto">delays from earlier days that touch tasks scheduled today</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {reminders.map((r) => (
+          <ReminderCard key={r.id} delay={r} reload={reload} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReminderCard({ delay, reload }) {
+  const [resolving, setResolving] = useState(false);
+  const [resolveDate, setResolveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [resolveNote, setResolveNote] = useState("");
+
+  const resolve = async () => {
+    try {
+      await api.patch(`/delays/${delay.id}`, {
+        status: "resolved",
+        resolved_date: resolveDate,
+        resolved_note: resolveNote || null,
+      });
+      setResolving(false);
+      reload();
+      toast.success("Delay marked resolved");
+    } catch (e) { toast.error(formatErr(e, "Resolve delay")); }
+  };
+
+  const sevColor = delay.severity === "critical" || delay.severity === "major" ? "pill-red" : "pill-slate";
+  const linked = delay.linked_task_ids || [];
+  const firstLine = (delay.description || "").split("\n")[0].slice(0, 140);
+  return (
+    <div data-testid={`reminder-card-${delay.id}`} className="bg-white rounded border border-amber-200 p-2 text-xs space-y-1">
+      <div className="flex items-center gap-1.5">
+        <span className={`pill ${sevColor}`}>{delay.severity}</span>
+        {delay.reason_category && <span className="text-slate-400">{delay.reason_category}</span>}
+        {delay.duration_days != null && <span className="text-slate-500">· {delay.duration_days}d open</span>}
+        {!resolving && (
+          <button data-testid={`reminder-resolve-open-${delay.id}`} onClick={() => setResolving(true)}
+            className="ml-auto text-blue-600 hover:underline">mark resolved</button>
+        )}
+      </div>
+      <div className="text-slate-800 truncate">{firstLine}</div>
+      {linked.length > 0 && (
+        <div className="text-[10px] text-slate-500">tasks: {linked.length} linked</div>
+      )}
+      {resolving && (
+        <div className="mt-1 p-2 bg-amber-50 rounded grid grid-cols-2 gap-2">
+          <input type="date" value={resolveDate} onChange={(e) => setResolveDate(e.target.value)}
+            className="h-7 px-2 border border-slate-200 rounded text-xs" />
+          <input type="text" placeholder="Resolution note" value={resolveNote}
+            onChange={(e) => setResolveNote(e.target.value)}
+            className="h-7 px-2 border border-slate-200 rounded text-xs" />
+          <button onClick={() => setResolving(false)} className="h-7 px-2 rounded border border-slate-200 text-xs">Cancel</button>
+          <button data-testid={`reminder-resolve-confirm-${delay.id}`} onClick={resolve}
+            className="h-7 px-2 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700">Save</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss", osha_recordable: false });
+  // Phase C — simplified: description + type + severity. OSHA recordable
+  // checkbox removed per spec.
+  const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss" });
+  // Phase D — copilot can push a drafted description into this form.
+  useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
+    if (target !== "safety" || !text) return;
+    setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
+  }), []);
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
       await api.post(`/safety-events`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor", event_type: "near_miss", osha_recordable: false });
+      setDraft({ description: "", severity: "minor", event_type: "near_miss" });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create safety event")); }
   };
@@ -642,22 +830,26 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <div key={r.id} data-testid={`safety-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
           <span className="pill pill-slate mr-2">{r.event_type}</span>
           <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
-          {r.osha_recordable && <span className="pill pill-red mr-2">OSHA</span>}
-          <span className="text-slate-700">{r.description}</span>
+          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="safety-new-desc" placeholder="Describe the event" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <label className="text-xs flex items-center gap-1 col-span-1"><input type="checkbox" data-testid="safety-new-osha" checked={draft.osha_recordable} onChange={(e) => setDraft({ ...draft, osha_recordable: e.target.checked })} /> OSHA recordable</label>
-          <button data-testid="safety-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Add</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
+          <textarea data-testid="safety-new-desc" rows={6} placeholder="Describe the event"
+            value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            className="w-full p-2 rounded border border-slate-200 text-sm" />
+          <div className="grid grid-cols-2 gap-2">
+            <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+            </select>
+            <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <button data-testid="safety-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+            <Plus className="h-3.5 w-3.5" /> Add
+          </button>
         </div>
       )}
     </PanelShell>
@@ -665,12 +857,19 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
 }
 
 function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ description: "", severity: "minor", spec_section_ref: "" });
+  // Phase C — simplified: description + severity only. Spec section
+  // reference removed per spec.
+  const [draft, setDraft] = useState({ description: "", severity: "minor" });
+  // Phase D — copilot can push a drafted description into this form.
+  useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
+    if (target !== "qc" || !text) return;
+    setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
+  }), []);
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
       await api.post(`/qc-issues`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor", spec_section_ref: "" });
+      setDraft({ description: "", severity: "minor" });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
   };
@@ -678,20 +877,24 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload })
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
       {rows.map((r) => (
         <div key={r.id} data-testid={`qc-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="pill pill-slate mr-2">{r.severity}</span>
-          {r.spec_section_ref && <span className="font-mono text-[10px] mr-2">{r.spec_section_ref}</span>}
-          <span className="text-slate-700">{r.description}</span>
+          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
+          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="qc-new-desc" placeholder="Describe the issue" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <input data-testid="qc-new-spec" placeholder="Spec section (e.g. 03 30 00)" value={draft.spec_section_ref} onChange={(e) => setDraft({ ...draft, spec_section_ref: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="qc-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <button data-testid="qc-add" onClick={create} className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Add QC issue</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
+          <textarea data-testid="qc-new-desc" rows={6} placeholder="Describe the issue"
+            value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+            className="w-full p-2 rounded border border-slate-200 text-sm" />
+          <div className="flex items-center gap-2">
+            <select data-testid="qc-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button data-testid="qc-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+              <Plus className="h-3.5 w-3.5" /> Add QC issue
+            </button>
+          </div>
         </div>
       )}
     </PanelShell>

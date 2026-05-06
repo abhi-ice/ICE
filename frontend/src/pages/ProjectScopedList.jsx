@@ -1,6 +1,8 @@
 // ProjectScopedList — generic list page for entities scoped to the active
-// project. Now full CRUD via CrudList component.
+// project. Now full CRUD via CrudList component. Delays use a custom page
+// (DelayList) because the Phase A multi-task picker doesn't fit CrudList.
 import CrudList from "../components/CrudList";
+import DelayList from "./DelayList";
 import { useProjects } from "../lib/projects";
 
 const TRADE_OPTIONS = [
@@ -13,6 +15,8 @@ const RFI_STATUS = ["draft", "sent", "in_review", "answered", "closed"].map((s) 
 const PRIORITY = ["low", "normal", "high", "critical"].map((p) => ({ value: p, label: p }));
 const SEVERITY_LMH = ["low", "moderate", "high"].map((s) => ({ value: s, label: s }));
 const SEVERITY_QC = ["minor", "major", "critical"].map((s) => ({ value: s, label: s }));
+// Phase C — backend Severity enum is minor/moderate/major/critical for both QC + Safety.
+const SEVERITY_FULL = ["minor", "moderate", "major", "critical"].map((s) => ({ value: s, label: s }));
 const DELAY_REASON = [
   { value: "weather", label: "Weather" },
   { value: "rfi_pending", label: "RFI pending" },
@@ -27,6 +31,8 @@ const SAFETY_TYPES = [
   { value: "first_aid", label: "First aid" },
   { value: "recordable", label: "Recordable" },
   { value: "lost_time", label: "Lost time" },
+  { value: "fatality", label: "Fatality" },
+  { value: "other", label: "Other" },
 ];
 
 const KIND_CONFIG = {
@@ -138,9 +144,11 @@ const KIND_CONFIG = {
     buildPayload: (form, projectId) => ({ project_id: projectId, ...form }),
   },
   "safety-events": {
+    // Phase C — simplified to description + type + severity. OSHA
+    // recordable removed. Severity dropdown is now minor/moderate/major/critical.
     title: "Safety events",
-    subtitle: "Near misses through OSHA recordables. Severity drives investigation pace.",
-    help: "Log every safety event — even near misses — so we can spot patterns. OSHA-recordable flag triggers OSHA 300 log entry. Investigation status moves the event from open to closed.",
+    subtitle: "Near misses, first aid, recordables, lost-time. Severity drives investigation pace.",
+    help: "Log every safety event — even near misses — so we can spot patterns. Investigation status moves the event from open to closed.",
     list: (p) => `/projects/${p}/safety-events`,
     create: "/safety-events",
     columns: [
@@ -148,36 +156,33 @@ const KIND_CONFIG = {
       { key: "event_type", label: "Type" },
       { key: "description", label: "Description" },
       { key: "severity", label: "Severity" },
-      { key: "osha_recordable", label: "OSHA?", render: (r) => r.osha_recordable ? "Yes" : "No" },
       { key: "status", label: "Status" },
     ],
     form: [
       { key: "date", label: "Date", type: "date" },
-      { key: "description", label: "Description", type: "textarea", required: true },
+      { key: "description", label: "Describe the event", type: "textarea", required: true },
       { key: "event_type", label: "Type", type: "select", options: SAFETY_TYPES, default: "near_miss" },
-      { key: "severity", label: "Severity", type: "select", options: SEVERITY_LMH, default: "moderate" },
-      { key: "osha_recordable", label: "OSHA recordable", type: "checkbox" },
+      { key: "severity", label: "Severity", type: "select", options: SEVERITY_FULL, default: "minor" },
     ],
     buildPayload: (form, projectId) => ({ project_id: projectId, ...form }),
   },
   "qc-issues": {
+    // Phase C — simplified to description + severity. Spec section field removed.
     title: "QC issues",
-    subtitle: "Quality-control deficiencies tied to spec sections.",
-    help: "Quality-control issues are deviations from spec — wrong material, sloppy workmanship, missing inspection. Each is tied to a spec section reference.",
+    subtitle: "Quality-control deficiencies — wrong material, sloppy workmanship, missing inspection.",
+    help: "Quality-control issues are deviations from spec. Status moves from open to closed when remediated.",
     list: (p) => `/projects/${p}/qc-issues`,
     create: "/qc-issues",
     columns: [
       { key: "date", label: "Date" },
       { key: "description", label: "Description" },
       { key: "severity", label: "Severity" },
-      { key: "spec_section_ref", label: "Spec ref" },
       { key: "status", label: "Status" },
     ],
     form: [
       { key: "date", label: "Date", type: "date" },
-      { key: "description", label: "Description", type: "textarea", required: true },
-      { key: "severity", label: "Severity", type: "select", options: SEVERITY_QC, default: "minor" },
-      { key: "spec_section_ref", label: "Spec section ref (e.g. 03 30 00)" },
+      { key: "description", label: "Describe the issue", type: "textarea", required: true },
+      { key: "severity", label: "Severity", type: "select", options: SEVERITY_FULL, default: "minor" },
     ],
     buildPayload: (form, projectId) => ({ project_id: projectId, ...form }),
   },
@@ -219,6 +224,7 @@ const KIND_CONFIG = {
 
 export default function ProjectScopedList({ kind }) {
   const { activeId } = useProjects();
+  if (kind === "delays") return <DelayList />;
   const cfg = KIND_CONFIG[kind];
   if (!cfg) {
     return <div className="text-sm text-slate-500">Unknown list: {kind}</div>;
