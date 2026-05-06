@@ -26,6 +26,9 @@ import ScheduleDiffs from "./pages/ScheduleDiffs";
 import ScheduleDiffDetail from "./pages/ScheduleDiffDetail";
 import CascadeDashboard from "./pages/CascadeDashboard";
 import CalendarReconciliation from "./pages/CalendarReconciliation";
+import TIAGenerator from "./pages/TIAGenerator";
+import TIAGenerationsList from "./pages/TIAGenerationsList";
+import TIAGenerationDetail from "./pages/TIAGenerationDetail";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
@@ -100,6 +103,9 @@ export default function App() {
             <Route path="recovery" element={<Recovery />} />
             <Route path="cascade-dashboard" element={<CascadeDashboard />} />
             <Route path="calendar-reconciliation" element={<CalendarReconciliation />} />
+            <Route path="tia" element={<TIAGenerator />} />
+            <Route path="tia/history" element={<TIAGenerationsList />} />
+            <Route path="tia/generations/:id" element={<TIAGenerationDetail />} />
 
             {/* Resources */}
             <Route path="resources/crews" element={<ResourceList kind="crews" />} />

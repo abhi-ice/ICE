@@ -66,6 +66,8 @@ export const SIDEBAR_SECTIONS = [
       // Bucket C3c Phase 2 — RFI-to-CPM cascade dashboard.
       { label: "Cascade", path: "/cascade-dashboard", icon: Activity, testid: "sidebar-cascade" },
       { label: "Recovery", path: "/recovery", icon: Sparkles, testid: "sidebar-recovery" },
+      // Bucket C3c Phase 4 — TIA source document generator.
+      { label: "TIA generator", path: "/tia", icon: FileText, testid: "sidebar-tia" },
     ],
   },
   {
