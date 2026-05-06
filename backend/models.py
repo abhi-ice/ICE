@@ -274,6 +274,25 @@ class TaskUpdate(StrictModel):
     location_id: Optional[str] = None
 
 
+class CrewAssignmentEntry(ReadModel):
+    """Bucket C1 Phase 1 — one entry per crew change recorded against a task
+    via the daily-report grid sync write-back. Append-only history for later
+    productivity analysis; the current crew lives on task.current_crew_id."""
+    crew_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
+    assigned_date: Optional[date] = None
+
+
+class LastSyncedFromDR(ReadModel):
+    """Bucket C1 Phase 1 — denormalized 'last write-back from a daily
+    report' marker. sync_state flips provisional → confirmed when the
+    parent daily report is submitted."""
+    daily_report_id: Optional[str] = None
+    daily_report_date: Optional[date] = None
+    synced_at: Optional[datetime] = None
+    sync_state: Literal["provisional", "confirmed"] = "provisional"
+
+
 class Task(ReadModel):
     id: str
     tenant_id: str
@@ -309,6 +328,14 @@ class Task(ReadModel):
     requires_pm_review: bool = False
     created_from_daily_report_id: Optional[str] = None
     created_at: datetime
+    # Bucket C1 Phase 1 — sync layer state. Optional / default-None so
+    # records persisted before the sync layer landed continue to deserialize.
+    updated_at: Optional[datetime] = None
+    actual_hours_to_date: float = 0
+    current_crew_id: Optional[str] = None
+    crew_assignment_history: List[CrewAssignmentEntry] = Field(default_factory=list)
+    last_synced_from_dr: Optional[LastSyncedFromDR] = None
+    external_modified_after_sync: bool = False
 
 
 # ---------- Daily reports ----------
@@ -364,6 +391,13 @@ class DailyReportActivityUpdate(StrictModel):
     weather_impact_minutes: Optional[int] = None
     notes: Optional[str] = None
     status_at_end_of_day: Optional[TaskStatus] = None
+    # Bucket C1 Phase 1 — optimistic-lock token. The grid load sends the
+    # task's updated_at it observed; the PATCH refuses with 409 if the
+    # task has been modified externally in the meantime. Optional so old
+    # frontends without the token fall through to unconditional write
+    # (back-compat) and so brand-new tasks (no updated_at yet) accept
+    # any token.
+    task_last_modified_at: Optional[datetime] = None
 
 
 class DailyReportActivity(ReadModel):
@@ -388,6 +422,16 @@ class DailyReportActivity(ReadModel):
     activity_description: Optional[str] = None
     location_name: Optional[str] = None
     trade_code: Optional[str] = None
+    # Bucket C1 Phase 1 — sync state for the corresponding write-back
+    # against the linked task. Default provisional (frontend showed an
+    # in-progress edit); flipped confirmed when the parent DR submits.
+    sync_state: Literal["provisional", "confirmed"] = "provisional"
+    last_sync_at: Optional[datetime] = None
+    task_external_modified_warning: bool = False
+    # Denormalized at /context read time (NOT persisted to mongo) — gives
+    # the frontend the optimistic-lock token for the linked task without
+    # forcing a second round-trip to /tasks.
+    task_updated_at: Optional[datetime] = None
 
 
 class DailyReportUpdate(StrictModel):

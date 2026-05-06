@@ -565,20 +565,51 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
+  // Bucket C1 Phase 1 — rows that the backend rejected with 409 because
+  // the linked task was modified externally between grid load and PATCH.
+  // Cleared by reload() (which pulls a fresh task_updated_at via /context).
+  const [staleRows, setStaleRows] = useState(() => new Set());
 
   const refreshFromSchedule = async () => {
     setRefreshing(true);
     try {
       const { data } = await api.post(`/daily-reports/${dailyReportId}/refresh-grid`);
       toast.success(data.inserted ? `${data.inserted} activity row(s) added from schedule.` : "Already up to date.");
+      setStaleRows(new Set());
       reload();
     } catch (e) { toast.error(formatErr(e, "Refresh grid")); }
     finally { setRefreshing(false); }
   };
 
   const updateRow = async (rowId, fields) => {
-    try { await api.patch(`/daily-report-activities/${rowId}`, fields); reload(); }
-    catch (e) { toast.error(formatErr(e, "Update row")); }
+    // Bucket C1 Phase 1 — attach the optimistic-lock token captured
+    // from /context. If the linked task has moved underneath us, the
+    // backend rejects with 409 and we mark the row stale so the user
+    // sees a "Schedule updated — refresh row" hint.
+    const row = grid.find((r) => r.id === rowId) || {};
+    const payload = { ...fields };
+    if (row.task_updated_at) payload.task_last_modified_at = row.task_updated_at;
+    try {
+      await api.patch(`/daily-report-activities/${rowId}`, payload);
+      // Successful write; clear any stale flag and pull fresh data.
+      if (staleRows.has(rowId)) {
+        const next = new Set(staleRows); next.delete(rowId); setStaleRows(next);
+      }
+      reload();
+    } catch (e) {
+      if (e.response?.status === 409) {
+        const next = new Set(staleRows); next.add(rowId); setStaleRows(next);
+        toast.error("Schedule was updated externally — click Refresh on the row to pull the latest before re-entering.");
+      } else {
+        toast.error(formatErr(e, "Update row"));
+      }
+    }
+  };
+  const refreshStaleRow = () => {
+    // Easiest reliable refresh: pull /context again. Clears the
+    // stale set and gets a fresh task_updated_at for every row.
+    setStaleRows(new Set());
+    reload();
   };
   const removeRow = async (rowId) => {
     if (!window.confirm("Remove from grid?")) return;
@@ -630,11 +661,25 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               const delta = (r.pct_complete_end_of_day || 0) - (r.pct_complete_start_of_day || 0);
               const variance = delta < 0 ? "neg" : delta === 0 ? "zero" : "pos";
               const isUnplanned = (r.activity_code || "").startsWith("AF");
+              const isStale = staleRows.has(r.id);
+              const isProvisional = r.sync_state === "provisional";
               return (
-                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`}>
+                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`} className={isStale ? "bg-amber-50/40" : undefined}>
                   <td className="font-mono text-xs">
                     {r.activity_code}
                     {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[9px] uppercase">field</span>}
+                    {isProvisional && !isStale && (
+                      <span title="Provisional sync — confirmed on submit"
+                        className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
+                    )}
+                    {isStale && (
+                      <button data-testid={`dr-row-refresh-${r.activity_code}`}
+                        onClick={refreshStaleRow}
+                        title="Schedule was updated externally — click to refresh row"
+                        className="ml-1 inline-flex items-center gap-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
+                        <RefreshCw className="h-2.5 w-2.5" /> refresh
+                      </button>
+                    )}
                   </td>
                   <td className="truncate max-w-[260px]">{r.activity_description}</td>
                   <td className="text-xs">{r.location_name || "—"}</td>

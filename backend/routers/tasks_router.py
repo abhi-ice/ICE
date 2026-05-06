@@ -27,6 +27,7 @@ async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
     if not proj:
         raise HTTPException(404, "Project not found")
     doc = payload.model_dump(mode="json")
+    now_iso = utc_now().isoformat()
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -40,7 +41,15 @@ async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
         "is_critical_path": False,
         "total_float_days": None,
         "lookahead_status": "not_in_window",
-        "created_at": utc_now().isoformat(),
+        "created_at": now_iso,
+        # Bucket C1 Phase 1 — initialize sync-layer fields so freshly
+        # created tasks already have a token for stale-write detection.
+        "updated_at": now_iso,
+        "actual_hours_to_date": 0,
+        "current_crew_id": None,
+        "crew_assignment_history": [],
+        "last_synced_from_dr": None,
+        "external_modified_after_sync": False,
     })
     await db.tasks.insert_one(doc.copy())
     await write_audit(
@@ -87,6 +96,10 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ct
     # If pct_complete is changing, snapshot prev_pct (set BY THE APPLIER, NOT by TaskCreate)
     if "pct_complete" in updates and updates["pct_complete"] != before.get("pct_complete"):
         updates["prev_pct_complete"] = before.get("pct_complete", 0)
+
+    # Bucket C1 Phase 1 — stamp updated_at so the daily-report sync layer
+    # can detect stale writes against this task.
+    updates["updated_at"] = utc_now().isoformat()
 
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"$set": updates})
     after = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})

@@ -344,57 +344,202 @@ async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant)):
 
 @router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity)
 async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: dict = Depends(require_tenant)):
+    """Bucket C1 Phase 1 — write-back foundation.
+
+    Beyond updating the grid row, this PATCH now also syncs the linked
+    task: pct_complete, status, hours, current crew. The write is marked
+    sync_state='provisional' until the parent daily report is submitted
+    (then submit_daily_report flips every row's task entry to 'confirmed').
+
+    Stale-write detection: the frontend may send `task_last_modified_at`
+    captured at grid load. If the task has been modified externally
+    since then, return 409 with the latest task data so the frontend
+    can show "Schedule updated — refresh row" rather than silently
+    overwriting more authoritative edits.
+    """
     db = get_db()
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    raw = payload.model_dump(mode="json")
+    # Optimistic-lock token is a control field — pop before writing the row.
+    client_task_lmt = raw.pop("task_last_modified_at", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+
     before = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Row not found")
     # tenant guard via parent daily report
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}), {"_id": 0, "id": 1})
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}),
+        {"_id": 0, "id": 1, "status": 1, "report_date": 1, "project_id": 1},
+    )
     if not dr:
         raise HTTPException(404, "Row not found")
-    await db.daily_report_activities.update_one({"id": row_id}, {"$set": updates})
+
+    # Look up the linked task NOW so stale-write detection runs before
+    # we touch the grid row.
+    task_before = await db.tasks.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}),
+        {"_id": 0},
+    )
+    if client_task_lmt and task_before and task_before.get("updated_at"):
+        # Both ISO strings — string compare works because ISO is sortable.
+        # Also tolerates client sending a datetime object that Pydantic
+        # serialised to ISO via model_dump(mode="json").
+        try:
+            server_lmt = str(task_before["updated_at"])
+            if server_lmt > str(client_task_lmt):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "stale_write",
+                        "message": "Schedule was updated externally — refresh the row.",
+                        "task_id": task_before["id"],
+                        "current_task": _task_for_409(task_before),
+                    },
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # If timestamp comparison fails for any weird reason, fall
+            # through to normal write rather than blocking the user.
+            pass
+
+    # 1. Update the grid row itself (existing behaviour) and stamp the
+    #    sync_state metadata so the UI can show the provisional indicator.
+    now_iso = utc_now().isoformat()
+    row_updates = dict(updates)
+    row_updates["sync_state"] = "provisional"
+    row_updates["last_sync_at"] = now_iso
+    row_updates["task_external_modified_warning"] = False
+    await db.daily_report_activities.update_one({"id": row_id}, {"$set": row_updates})
     after = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
 
-    # Item 7 (2026-05-06) — write the audit entry consistent with how
-    # the rest of this file's mutation handlers do it. linked_crew_id
-    # picks (Phase E crew dropdown) used to land here without an audit
-    # row; this closes that gap so when GovCloud audit hardening lands
-    # the wiring is already in place.
+    # 2. Audit the row update (Item 7 fix from earlier — kept).
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_report_activities", op="UPDATE",
         record_id=row_id, before=before, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
 
-    # Cascade pct_complete back to the underlying task
+    # 3. Sync write-back to the linked task. Builds a single $set so the
+    #    task gets one stamp, one audit entry, one task_sync_events row.
+    task_id = before["schedule_activity_id"]
+    task_set: dict = {"updated_at": now_iso, "external_modified_after_sync": False}
+    history_push: Optional[dict] = None
+
     if "pct_complete_end_of_day" in updates:
         new_pct = float(updates["pct_complete_end_of_day"])
+        task_set["prev_pct_complete"] = before.get("pct_complete_end_of_day", 0)
+        task_set["pct_complete"] = new_pct
+        # Existing simple status mapping — Phase 2 will replace this with
+        # the computed_status state machine.
+        task_set["status"] = "complete" if new_pct >= 100 else "in_progress"
+    if "status_at_end_of_day" in updates:
+        # Map the row's per-day status to the task's lifecycle status.
+        # 'not_started' / 'blocked' from the grid mean the task isn't
+        # finished — keep it in_progress unless EOD% above bumped it.
+        row_status = updates["status_at_end_of_day"]
+        if row_status == "complete":
+            task_set["status"] = "complete"
+        elif row_status == "blocked":
+            task_set["status"] = "in_progress"
+    if "hours_worked" in updates:
+        delta = float(updates["hours_worked"]) - float(before.get("hours_worked") or 0)
+        if delta:
+            task_set["actual_hours_to_date"] = float(task_before.get("actual_hours_to_date") or 0) + delta
+    if "linked_crew_id" in updates:
+        new_crew = updates["linked_crew_id"]
+        if new_crew != (task_before or {}).get("current_crew_id"):
+            task_set["current_crew_id"] = new_crew
+            history_push = {
+                "crew_id": new_crew,
+                "daily_report_id": before["daily_report_id"],
+                "assigned_date": dr.get("report_date"),
+            }
+    # Always stamp the last-synced marker so the UI can show provisional.
+    task_set["last_synced_from_dr"] = {
+        "daily_report_id": before["daily_report_id"],
+        "daily_report_date": dr.get("report_date"),
+        "synced_at": now_iso,
+        "sync_state": "provisional" if dr.get("status") == "draft" else "confirmed",
+    }
+
+    update_doc: dict = {"$set": task_set}
+    if history_push is not None:
+        update_doc["$push"] = {"crew_assignment_history": history_push}
+
+    # Only fire if there's something meaningful to write (always the case
+    # because last_synced_from_dr is always set, but be explicit).
+    if task_before:
         await db.tasks.update_one(
-            tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}),
-            {"$set": {
-                "prev_pct_complete": before.get("pct_complete_end_of_day", 0),
-                "pct_complete": new_pct,
-                "status": "complete" if new_pct >= 100 else "in_progress",
-            }},
+            tenant_filter(ctx["tenant_id"], {"id": task_id}),
+            update_doc,
         )
-        # productivity observation (master prompt §16)
-        if updates.get("hours_worked") or after.get("hours_worked"):
-            t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}), {"_id": 0})
+        task_after = await db.tasks.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0},
+        )
+        # 4. Audit the task update too — separate entry on the same hash chain.
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="tasks", op="SYNC",
+            record_id=task_id, before=task_before, after=task_after,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+        # 5. task_sync_events — diagnostic-grade record per write-back.
+        fields_updated = {
+            k: {"before": task_before.get(k), "after": task_set.get(k)}
+            for k in task_set if k != "updated_at"
+        }
+        await db.task_sync_events.insert_one({
+            "id": gen_id(),
+            "tenant_id": ctx["tenant_id"],
+            "project_id": dr.get("project_id") or task_before.get("project_id"),
+            "task_id": task_id,
+            "daily_report_id": before["daily_report_id"],
+            "daily_report_activity_id": row_id,
+            "triggered_by_user_id": ctx["user"]["id"],
+            "triggered_at": now_iso,
+            "sync_state": task_set["last_synced_from_dr"]["sync_state"],
+            "fields_updated": fields_updated,
+            # Phase 2/4 will populate these — Phase 1 leaves them empty.
+            "cpm_recomputed": False,
+            "cpm_changes": [],
+        })
+
+        # productivity observation (master prompt §16) — unchanged from
+        # before this commit; lives here so it fires on the same EOD%
+        # transition as the sync write-back.
+        if "pct_complete_end_of_day" in updates and (updates.get("hours_worked") or after.get("hours_worked")):
+            t = task_after or task_before
             await db.productivity_observations.insert_one({
                 "id": gen_id(),
                 "tenant_id": ctx["tenant_id"],
-                "project_id": dr.get("project_id") or t.get("project_id"),
-                "schedule_activity_id": before["schedule_activity_id"],
+                "project_id": dr.get("project_id") or (t.get("project_id") if t else None),
+                "schedule_activity_id": task_id,
                 "trade": t.get("trade_code") if t else None,
                 "location_id": t.get("location_id") if t else None,
                 "crew_id": after.get("crew_id"),
                 "date": utc_now().date().isoformat(),
                 "hours_worked": float(after.get("hours_worked") or 0),
-                "pct_delta": new_pct - before.get("pct_complete_end_of_day", 0),
-                "created_at": utc_now().isoformat(),
+                "pct_delta": float(updates["pct_complete_end_of_day"]) - float(before.get("pct_complete_end_of_day", 0)),
+                "created_at": now_iso,
             })
+
     return DailyReportActivity(**after)
+
+
+def _task_for_409(t: dict) -> dict:
+    """Pick the fields the frontend needs to repaint a row after a stale
+    write detection. Trimmed so we don't ship the entire task doc."""
+    return {
+        "id": t.get("id"),
+        "activity_code": t.get("activity_code"),
+        "wbs": t.get("wbs"),
+        "description": t.get("description"),
+        "pct_complete": t.get("pct_complete"),
+        "status": t.get("status"),
+        "current_crew_id": t.get("current_crew_id"),
+        "actual_hours_to_date": t.get("actual_hours_to_date"),
+        "updated_at": t.get("updated_at"),
+    }
 
 
 class SubmitPayload(StrictModel):
@@ -417,6 +562,24 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates}
     )
+
+    # Bucket C1 Phase 1 — flip every provisional sync mark to confirmed.
+    # This makes the write-backs that landed during the day part of the
+    # field-attested record once the super submits the report.
+    confirm_at = utc_now().isoformat()
+    await db.daily_report_activities.update_many(
+        {"daily_report_id": daily_report_id},
+        {"$set": {"sync_state": "confirmed", "last_sync_at": confirm_at}},
+    )
+    # Same flip on tasks whose last_synced_from_dr points at this report.
+    await db.tasks.update_many(
+        tenant_filter(ctx["tenant_id"], {"last_synced_from_dr.daily_report_id": daily_report_id}),
+        {"$set": {
+            "last_synced_from_dr.sync_state": "confirmed",
+            "updated_at": confirm_at,
+        }},
+    )
+
     after = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="UPDATE",
@@ -907,6 +1070,18 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0}) or {}
 
     grid = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"_id": 0}).sort("position", 1).to_list(500)
+    # Bucket C1 Phase 1 — denormalize task.updated_at onto each grid row
+    # so the frontend has the optimistic-lock token without a second
+    # round-trip. Single $in query, not per-row lookups.
+    grid_task_ids = [r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")]
+    if grid_task_ids:
+        task_lmts = await db.tasks.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": grid_task_ids}}),
+            {"_id": 0, "id": 1, "updated_at": 1},
+        ).to_list(len(grid_task_ids))
+        lmt_by_id = {t["id"]: t.get("updated_at") for t in task_lmts}
+        for r in grid:
+            r["task_updated_at"] = lmt_by_id.get(r.get("schedule_activity_id"))
     presence = await db.daily_presence.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("trade", 1).to_list(200)
     photos = await db.photos.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("captured_at", -1).to_list(200)
 
