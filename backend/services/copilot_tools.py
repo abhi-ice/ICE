@@ -987,6 +987,49 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                 f"ACTIVITY GRID:\n{grid_lines}\n"
                 f"PRESENCE:\n{pres_lines}"
             )
+    # Phase D — when a daily report is in focus, attach today's photos as
+    # vision context. Capped at 6 photos (token cost). Each photo becomes
+    # an ImageContent on the UserMessage, letting the LLM ground draft
+    # descriptions ("draft a QC issue from today's photos") in the actual
+    # field imagery rather than guessing from text alone.
+    photo_attachments: list = []
+    photo_summary_lines: list[str] = []
+    if daily_report_id:
+        photos = await db.photos.find(
+            tenant_filter(tenant_id, {"daily_report_id": daily_report_id}),
+            {"_id": 0, "id": 1, "storage_path": 1, "caption": 1, "captured_at": 1},
+        ).sort("captured_at", -1).limit(6).to_list(6)
+        if photos:
+            from emergentintegrations.llm.chat import ImageContent  # type: ignore
+            from services.storage import get_object
+            import base64 as _b64
+            for p in photos:
+                if not p.get("storage_path"):
+                    continue
+                try:
+                    data, _ct = get_object(p["storage_path"])
+                    b64 = _b64.b64encode(data).decode()
+                    photo_attachments.append(ImageContent(image_base64=b64))
+                    photo_summary_lines.append(
+                        f"  photo {p.get('id', '?')[:8]} captured {p.get('captured_at')}"
+                        + (f" — {p['caption']}" if p.get("caption") else "")
+                    )
+                except Exception:
+                    # If a single photo fails to load (storage hiccup), skip it
+                    # rather than failing the whole copilot turn.
+                    continue
+            if photo_summary_lines:
+                blocks.append(
+                    "TODAY'S DAILY-REPORT PHOTOS (attached as vision context, in order):\n"
+                    + "\n".join(photo_summary_lines)
+                    + "\nWhen the user asks to draft a QC issue or safety event from photos, "
+                    "examine them visually and produce a concrete description (no markdown). "
+                    "When generating description text the user will paste into a form, put it "
+                    "verbatim into the 'reply' field — do NOT call create_qc_issue / "
+                    "create_safety_event tools yourself; the user will use the Send-to-form "
+                    "button to insert it."
+                )
+
     user_text = "\n\n".join(blocks) + f"\n\nUser request: {message}"
     if not blocks:
         user_text = f"User request: {message}"
@@ -998,7 +1041,9 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
     ).with_model(MODEL_PROVIDER, MODEL_NAME)
     started = datetime.now(timezone.utc)
     try:
-        raw = await chat.send_message(UserMessage(text=user_text))
+        msg = UserMessage(text=user_text, file_contents=photo_attachments) if photo_attachments \
+            else UserMessage(text=user_text)
+        raw = await chat.send_message(msg)
     except Exception as e:
         return {"reply": f"AI error: {e}", "actions_executed": [], "tool_results": []}
 

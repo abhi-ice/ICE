@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Send, X, CheckCircle2, FileSpreadsheet } from "lucide-react";
+import { Bot, Send, X, CheckCircle2, FileSpreadsheet, ClipboardCheck, ShieldAlert } from "lucide-react";
 import { useProjects } from "../../lib/projects";
-import { subscribeDailyReportId } from "../../lib/copilotContext";
+import { subscribeDailyReportId, emitDescriptionInsert } from "../../lib/copilotContext";
 import api from "../../lib/api";
+import { toast } from "../ui/sonner";
 
 export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
@@ -99,6 +100,27 @@ export default function CopilotPanel({ open, onClose }) {
                     <CheckCircle2 className="h-2.5 w-2.5" /> {tt}
                   </span>
                 ))}
+              </div>
+            )}
+            {/* Phase D — when a daily report is open, every AI reply gets two
+                send-to-form buttons. They emit a context event the QC and
+                Safety panels listen for to insert text into their drafts. */}
+            {m.role === "ai" && activeDrId && i > 0 && m.text && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                <button
+                  data-testid={`copilot-send-qc-${i}`}
+                  onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
+                  className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-blue-200 text-blue-700 hover:bg-blue-50"
+                >
+                  <ClipboardCheck className="h-3 w-3" /> Send to QC description
+                </button>
+                <button
+                  data-testid={`copilot-send-safety-${i}`}
+                  onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
+                  className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-amber-200 text-amber-700 hover:bg-amber-50"
+                >
+                  <ShieldAlert className="h-3 w-3" /> Send to Safety description
+                </button>
               </div>
             )}
           </div>

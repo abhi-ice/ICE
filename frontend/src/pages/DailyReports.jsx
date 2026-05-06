@@ -12,7 +12,7 @@
 import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { setActiveDailyReportId } from "../lib/copilotContext";
+import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import {
@@ -747,6 +747,11 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   // Phase C — simplified: description + type + severity. OSHA recordable
   // checkbox removed per spec.
   const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss" });
+  // Phase D — copilot can push a drafted description into this form.
+  useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
+    if (target !== "safety" || !text) return;
+    setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
+  }), []);
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
@@ -791,6 +796,11 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload })
   // Phase C — simplified: description + severity only. Spec section
   // reference removed per spec.
   const [draft, setDraft] = useState({ description: "", severity: "minor" });
+  // Phase D — copilot can push a drafted description into this form.
+  useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
+    if (target !== "qc" || !text) return;
+    setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
+  }), []);
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
