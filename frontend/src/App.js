@@ -17,8 +17,18 @@ import ResourceList, { Availability } from "./pages/Resources";
 import Approvals from "./pages/Approvals";
 import Recovery from "./pages/Recovery";
 import DelayDetail from "./pages/DelayDetail";
+import GatingEntityDetail from "./pages/GatingEntityDetail";
+import CoordinationEvents from "./pages/CoordinationEvents";
+import CoordinationEventDetail from "./pages/CoordinationEventDetail";
 import Imports from "./pages/Imports";
 import ScheduleProposals from "./pages/ScheduleProposals";
+import ScheduleDiffs from "./pages/ScheduleDiffs";
+import ScheduleDiffDetail from "./pages/ScheduleDiffDetail";
+import CascadeDashboard from "./pages/CascadeDashboard";
+import CalendarReconciliation from "./pages/CalendarReconciliation";
+import TIAGenerator from "./pages/TIAGenerator";
+import TIAGenerationsList from "./pages/TIAGenerationsList";
+import TIAGenerationDetail from "./pages/TIAGenerationDetail";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
@@ -64,6 +74,9 @@ export default function App() {
             <Route path="photos" element={<Photos />} />
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />
             <Route path="delays/:id" element={<DelayDetail />} />
+            <Route path="gating-entities/:id" element={<GatingEntityDetail />} />
+            <Route path="coordination" element={<CoordinationEvents />} />
+            <Route path="coordination/:id" element={<CoordinationEventDetail />} />
             <Route path="safety-events" element={<ProjectScopedList kind="safety-events" />} />
             <Route path="qc-issues" element={<ProjectScopedList kind="qc-issues" />} />
 
@@ -88,6 +101,11 @@ export default function App() {
             <Route path="approvals" element={<Approvals />} />
             <Route path="work-items" element={<ProjectScopedList kind="work-items" />} />
             <Route path="recovery" element={<Recovery />} />
+            <Route path="cascade-dashboard" element={<CascadeDashboard />} />
+            <Route path="calendar-reconciliation" element={<CalendarReconciliation />} />
+            <Route path="tia" element={<TIAGenerator />} />
+            <Route path="tia/history" element={<TIAGenerationsList />} />
+            <Route path="tia/generations/:id" element={<TIAGenerationDetail />} />
 
             {/* Resources */}
             <Route path="resources/crews" element={<ResourceList kind="crews" />} />
@@ -100,6 +118,8 @@ export default function App() {
             {/* System */}
             <Route path="imports" element={<Imports />} />
             <Route path="schedule-changes" element={<ScheduleProposals />} />
+            <Route path="schedule-updates" element={<ScheduleDiffs />} />
+            <Route path="schedule-diffs/:id" element={<ScheduleDiffDetail />} />
             <Route path="agents" element={<AiAgentsPage />} />
             <Route path="marketplace" element={<MarketplaceFull />} />
             <Route path="kb" element={<KnowledgeBase />} />

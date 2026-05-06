@@ -4,6 +4,7 @@
 import CrudList from "../components/CrudList";
 import DelayList from "./DelayList";
 import { useProjects } from "../lib/projects";
+import { Link } from "react-router-dom";
 
 const TRADE_OPTIONS = [
   "general", "concrete", "masonry", "steel", "framing", "drywall",
@@ -43,7 +44,12 @@ const KIND_CONFIG = {
     list: (p) => `/projects/${p}/rfis`,
     create: "/rfis",
     columns: [
-      { key: "rfi_number", label: "Number" },
+      // Bucket C3a Phase 4 — number cell links to the gating-entity
+      // detail page (schedule + SLA + affected daily reports). Falls
+      // back to plain text when the row hasn't been backfilled yet.
+      { key: "rfi_number", label: "Number", render: (r) => r.gating_entity_id
+          ? <Link to={`/gating-entities/${r.gating_entity_id}`} className="text-blue-700 font-mono hover:underline">{r.rfi_number}</Link>
+          : <span className="font-mono">{r.rfi_number}</span> },
       { key: "subject", label: "Subject" },
       { key: "trade_code", label: "Trade" },
       { key: "status", label: "Status", render: (r) => <span className="pill pill-blue capitalize">{r.status}</span> },
@@ -86,7 +92,10 @@ const KIND_CONFIG = {
     list: (p) => `/projects/${p}/work-items`,
     create: "/work-items",
     columns: [
-      { key: "title", label: "Title" },
+      // Bucket C3a Phase 4 — title links to gating-entity detail.
+      { key: "title", label: "Title", render: (r) => r.gating_entity_id
+          ? <Link to={`/gating-entities/${r.gating_entity_id}`} className="text-blue-700 hover:underline">{r.title}</Link>
+          : r.title },
       { key: "priority", label: "Priority", render: (r) => <span className={`pill capitalize ${r.priority === "high" || r.priority === "critical" ? "pill-amber" : "pill-slate"}`}>{r.priority}</span> },
       { key: "category", label: "Category" },
       { key: "status", label: "Status", render: (r) => <span className="pill pill-slate">{r.status}</span> },

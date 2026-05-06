@@ -27,6 +27,7 @@ async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
     if not proj:
         raise HTTPException(404, "Project not found")
     doc = payload.model_dump(mode="json")
+    now_iso = utc_now().isoformat()
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -40,7 +41,15 @@ async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
         "is_critical_path": False,
         "total_float_days": None,
         "lookahead_status": "not_in_window",
-        "created_at": utc_now().isoformat(),
+        "created_at": now_iso,
+        # Bucket C1 Phase 1 — initialize sync-layer fields so freshly
+        # created tasks already have a token for stale-write detection.
+        "updated_at": now_iso,
+        "actual_hours_to_date": 0,
+        "current_crew_id": None,
+        "crew_assignment_history": [],
+        "last_synced_from_dr": None,
+        "external_modified_after_sync": False,
     })
     await db.tasks.insert_one(doc.copy())
     await write_audit(
@@ -62,7 +71,25 @@ async def list_tasks(project_id: str, ctx: dict = Depends(require_tenant)):
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0},
     ).sort([("sequence", 1), ("planned_start", 1), ("activity_code", 1)]).to_list(10000)
-    return [Task(**d) for d in docs]
+
+    # Bucket C1 Phase 2 — read-time status refresh. There's no scheduler
+    # in the runtime, so a task that was 'on_track' yesterday and crossed
+    # planned_pct(today) into 'behind' won't update otherwise. Cheap
+    # because compute_and_persist_status is idempotent ($set only fires
+    # if a value moved). For projects with hundreds of tasks this adds a
+    # few hundred no-op queries on each list call — acceptable for ICE-
+    # scale (<500 activities per project per Bucket C1 design).
+    from services.task_status import compute_and_persist_status
+    refreshed = []
+    for d in docs:
+        new_fields = await compute_and_persist_status(
+            db, ctx["tenant_id"], d["id"],
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+        if new_fields:
+            d.update({k: v for k, v in new_fields.items() if k != "updated_at"})
+        refreshed.append(d)
+    return [Task(**d) for d in refreshed]
 
 
 @router.get("/tasks/{task_id}", response_model=Task)
@@ -87,6 +114,10 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ct
     # If pct_complete is changing, snapshot prev_pct (set BY THE APPLIER, NOT by TaskCreate)
     if "pct_complete" in updates and updates["pct_complete"] != before.get("pct_complete"):
         updates["prev_pct_complete"] = before.get("pct_complete", 0)
+
+    # Bucket C1 Phase 1 — stamp updated_at so the daily-report sync layer
+    # can detect stale writes against this task.
+    updates["updated_at"] = utc_now().isoformat()
 
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"$set": updates})
     after = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})

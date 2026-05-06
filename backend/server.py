@@ -41,6 +41,12 @@ from routers.iter6_router import router as iter6_router  # noqa: E402
 from routers.iter7_router import router as iter7_router  # noqa: E402
 from routers.iter8_router import router as iter8_router  # noqa: E402
 from routers.schedule_proposals_router import router as schedule_proposals_router  # noqa: E402
+from routers.schedule_diffs_router import router as schedule_diffs_router  # noqa: E402
+from routers.calendar_reconciliation_router import router as calendar_reconciliation_router  # noqa: E402
+from routers.tia_router import router as tia_router  # noqa: E402
+from routers.mitigations_router import router as mitigations_router  # noqa: E402
+from routers.gating_entities_router import router as gating_entities_router  # noqa: E402
+from routers.coordination_router import router as coordination_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -70,6 +76,75 @@ async def _ensure_indexes():
     await db.team_invites.create_index([("code", 1)], unique=True)
     await db.team_invites.create_index([("tenant_id", 1), ("status", 1)])
     await db.daily_presence.create_index([("tenant_id", 1), ("daily_report_id", 1)])
+    # Bucket C2 — mitigation calibration RAG queries by (tenant_id,
+    # outcome_recorded_at desc); detail page queries by linked_delay_id.
+    await db.mitigations.create_index([("tenant_id", 1), ("outcome_recorded_at", -1)])
+    await db.mitigations.create_index([("tenant_id", 1), ("linked_delay_id", 1)])
+    # Bucket C3a — gating entities (Phase 2 dropdown queries by gates_task_ids;
+    # detail page by id; status/over-SLA dashboards by (tenant, project, status))
+    # plus the entity-type back-pointer for sync_status lookups.
+    await db.gating_entities.create_index([("tenant_id", 1), ("project_id", 1), ("status", 1)])
+    await db.gating_entities.create_index([("tenant_id", 1), ("entity_type", 1), ("entity_id", 1)])
+    await db.gating_entities.create_index([("tenant_id", 1), ("gates_task_ids", 1)])
+    # Project working-day calendar — keyed by (tenant, project, date) for
+    # working-day math walks.
+    await db.project_calendar_days.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("calendar_date", 1)],
+        unique=True,
+    )
+    # Bucket C3b — coordination event log. List page sorts by occurred_at;
+    # filters frequently by topic; backlinks to a daily report.
+    await db.coordination_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("occurred_at", -1)],
+    )
+    await db.coordination_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("topic", 1)],
+    )
+    await db.coordination_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("linked_daily_report_id", 1)],
+    )
+    # Bucket C3b Phase 3 — daily_presence granular layer.
+    # Existing (tenant, daily_report_id) index is kept; these add the
+    # project + zone/shift + trade indexes for cross-DR aggregations.
+    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("daily_report_id", 1)])
+    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("zone_id", 1), ("shift", 1)])
+    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("trade", 1)])
+    # Bucket C3b Phase 5 — photo evidentiary indexes.
+    # sha256_hash uniqueness check on upload (sparse so legacy photos
+    # without a hash don't collide with each other on null).
+    await db.photos.create_index(
+        [("tenant_id", 1), ("sha256_hash", 1)],
+        partialFilterExpression={"sha256_hash": {"$type": "string"}},
+    )
+    # Evidentiary-only lookups + class filter on the Photos page.
+    await db.photos.create_index([("tenant_id", 1), ("project_id", 1), ("evidentiary_flag", 1)])
+    await db.photos.create_index([("tenant_id", 1), ("project_id", 1), ("photo_class", 1)])
+    # Bucket C3c Phase 1 — schedule_update_diffs. List page sorts by
+    # computed_at desc per project; idempotency check uses the version
+    # pair index.
+    await db.schedule_update_diffs.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("computed_at", -1)],
+    )
+    await db.schedule_update_diffs.create_index(
+        [("tenant_id", 1), ("earlier_schedule_version_id", 1),
+         ("later_schedule_version_id", 1)],
+        unique=True,
+    )
+    # Bucket C3c Phase 2 — cascade_snapshots. Dashboard query is "latest
+    # snapshot per gating_entity in this project"; history endpoint
+    # queries "all snapshots for one entity sorted by computed_at desc".
+    await db.cascade_snapshots.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("gating_entity_id", 1),
+         ("computed_at", -1)],
+    )
+    await db.cascade_snapshots.create_index(
+        [("tenant_id", 1), ("gating_entity_id", 1), ("computed_at", -1)],
+    )
+    # Bucket C3c Phase 4 — tia_generations. List page query is by
+    # (tenant, project, generated_at desc); detail by (tenant, id).
+    await db.tia_generations.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("generated_at", -1)],
+    )
 
 
 @asynccontextmanager
@@ -122,6 +197,12 @@ api_router.include_router(iter6_router)
 api_router.include_router(iter7_router)
 api_router.include_router(iter8_router)
 api_router.include_router(schedule_proposals_router)
+api_router.include_router(schedule_diffs_router)
+api_router.include_router(calendar_reconciliation_router)
+api_router.include_router(tia_router)
+api_router.include_router(mitigations_router)
+api_router.include_router(gating_entities_router)
+api_router.include_router(coordination_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

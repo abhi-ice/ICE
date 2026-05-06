@@ -166,6 +166,109 @@ async def list_daily_reports(project_id: str, ctx: dict = Depends(require_tenant
     return [DailyReport(**d) for d in docs]
 
 
+@router.delete("/daily-reports/{daily_report_id}")
+async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_tenant)):
+    """Item 8 (2026-05-06) — hard-delete a draft daily report and cascade.
+
+    Forbidden once status != 'draft' (submitted/approved reports are part
+    of the federal-contract record and must stay).
+
+    Cascade:
+      - hard delete daily_report_activities + daily_presence for this DR
+      - null out daily_report_id on linked field-event records (delays,
+        qc_issues, safety_events, rfis, photos, voice_annotations) so
+        those independent records survive but stop pointing at a ghost.
+    """
+    db = get_db()
+    before = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Daily report not found")
+    if before.get("status") != "draft":
+        raise HTTPException(
+            403, f"Cannot delete a {before.get('status')} daily report — only drafts can be deleted",
+        )
+
+    # Bucket C3b Phase 5 — record what we're about to cascade-delete so
+    # the audit chain captures the presence rows' final state. Without
+    # this, the rows are gone with no trail of who they belonged to.
+    presence_to_delete = await db.daily_presence.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+        {"_id": 0},
+    ).to_list(2000)
+
+    await db.daily_report_activities.delete_many({"daily_report_id": daily_report_id})
+    await db.daily_presence.delete_many(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+    )
+    for p in presence_to_delete:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="daily_presence",
+            op="CASCADE_DELETE_FROM_DR",
+            record_id=p["id"], before=p, after=None,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+
+    # Null out daily_report_id on independent linked records — they live
+    # in their own collections and shouldn't disappear with the DR.
+    cascade_collections = ["delays", "qc_issues", "safety_events", "rfis",
+                            "photos", "voice_annotations"]
+    for coll in cascade_collections:
+        await db[coll].update_many(
+            tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+            {"$set": {"daily_report_id": None}},
+        )
+
+    # Bucket C3b Phase 5 — coordination_events live alongside the DR via
+    # linked_daily_report_id (set by the quick-log on the DR header). The
+    # event itself outlives the DR (it's a phone call / RFI exchange) so
+    # null the link rather than delete the row.
+    await db.coordination_events.update_many(
+        tenant_filter(ctx["tenant_id"], {"linked_daily_report_id": daily_report_id}),
+        {"$set": {"linked_daily_report_id": None}},
+    )
+
+    # Bucket C1 Phase 6 — clear the sync-layer marker on any task whose
+    # last_synced_from_dr points at this DR. The task data persists
+    # (pct_complete, status, current_crew_id all stay) — only the
+    # "this came from DR X" pointer is cleared. Status recompute below
+    # picks up the new state.
+    affected_task_docs = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"last_synced_from_dr.daily_report_id": daily_report_id}),
+        {"_id": 0, "id": 1},
+    ).to_list(2000)
+    affected_task_ids = [t["id"] for t in affected_task_docs]
+    if affected_task_ids:
+        await db.tasks.update_many(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": affected_task_ids}}),
+            {"$set": {"last_synced_from_dr": None,
+                      "updated_at": utc_now().isoformat()}},
+        )
+
+    await db.daily_reports.delete_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+    )
+
+    # Recompute status for the affected tasks (now they're un-blocked
+    # from any delays whose daily_report_id we just nulled out).
+    if affected_task_ids:
+        from services.task_status import compute_and_persist_status
+        for tid in affected_task_ids:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_reports", op="DELETE",
+        record_id=daily_report_id, before=before, after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True,
+            "cascade_unlinked": cascade_collections + ["coordination_events"],
+            "cascade_deleted": {"daily_presence": len(presence_to_delete)}}
+
+
 @router.get("/daily-reports/{daily_report_id}", response_model=DailyReport)
 async def get_daily_report(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -295,46 +398,313 @@ async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant)):
 
 @router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity)
 async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: dict = Depends(require_tenant)):
+    """Bucket C1 Phase 1 — write-back foundation.
+
+    Beyond updating the grid row, this PATCH now also syncs the linked
+    task: pct_complete, status, hours, current crew. The write is marked
+    sync_state='provisional' until the parent daily report is submitted
+    (then submit_daily_report flips every row's task entry to 'confirmed').
+
+    Stale-write detection: the frontend may send `task_last_modified_at`
+    captured at grid load. If the task has been modified externally
+    since then, return 409 with the latest task data so the frontend
+    can show "Schedule updated — refresh row" rather than silently
+    overwriting more authoritative edits.
+    """
     db = get_db()
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    raw = payload.model_dump(mode="json")
+    # Optimistic-lock token is a control field — pop before writing the row.
+    client_task_lmt = raw.pop("task_last_modified_at", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+
     before = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
     if not before:
         raise HTTPException(404, "Row not found")
     # tenant guard via parent daily report
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}), {"_id": 0, "id": 1})
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}),
+        {"_id": 0, "id": 1, "status": 1, "report_date": 1, "project_id": 1},
+    )
     if not dr:
         raise HTTPException(404, "Row not found")
-    await db.daily_report_activities.update_one({"id": row_id}, {"$set": updates})
+    # Bucket C1 Phase 6 — submitted/approved daily reports are part of
+    # the field-attested record and cannot be edited. Frontend already
+    # disables the inputs but the backend is the source of truth.
+    if dr.get("status") not in ("draft", None):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot edit a {dr.get('status')} daily report; create an amendment instead.",
+        )
+
+    # Bucket C3a Phase 2 — constraint validation. Cross-field rules
+    # StrictModel can't express alone. We let the user effectively
+    # CHANGE the constraint type by reading from `updates` first and
+    # falling back to the row's existing value when the patch only
+    # supplies one of the related fields.
+    if "constraint_type" in updates:
+        ct = updates["constraint_type"]
+        if ct in (None, "not_constrained"):
+            # Clearing the constraint also clears its dependents so the
+            # row doesn't carry stale ref/desc data.
+            updates["constraint_reference_entity_type"] = None
+            updates["constraint_reference_entity_id"] = None
+            updates["constraint_other_description"] = None
+        elif ct == "other":
+            desc = updates.get("constraint_other_description") or before.get("constraint_other_description")
+            if not (desc and str(desc).strip()):
+                raise HTTPException(422, "constraint_other_description required when constraint_type is 'other'.")
+            # Other has no ref entity.
+            updates["constraint_reference_entity_type"] = None
+            updates["constraint_reference_entity_id"] = None
+        else:
+            ref_id = updates.get("constraint_reference_entity_id") or before.get("constraint_reference_entity_id")
+            if not ref_id:
+                raise HTTPException(422, f"constraint_reference_entity_id required when constraint_type is '{ct}'.")
+            ge = await db.gating_entities.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": ref_id}),
+                {"_id": 0, "id": 1, "entity_type": 1},
+            )
+            if not ge:
+                raise HTTPException(422, f"constraint_reference_entity_id {ref_id} not found in gating_entities.")
+            # Snapshot entity_type so reads don't need a second lookup.
+            updates["constraint_reference_entity_type"] = ge.get("entity_type")
+            updates["constraint_other_description"] = None
+        # User-set constraint always clears the auto_filled flag.
+        updates["constraint_auto_filled"] = False
+
+    # Look up the linked task NOW so stale-write detection runs before
+    # we touch the grid row.
+    task_before = await db.tasks.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}),
+        {"_id": 0},
+    )
+    if client_task_lmt and task_before and task_before.get("updated_at"):
+        # Both ISO strings — string compare works because ISO is sortable.
+        # Also tolerates client sending a datetime object that Pydantic
+        # serialised to ISO via model_dump(mode="json").
+        try:
+            server_lmt = str(task_before["updated_at"])
+            if server_lmt > str(client_task_lmt):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "stale_write",
+                        "message": "Schedule was updated externally — refresh the row.",
+                        "task_id": task_before["id"],
+                        "current_task": _task_for_409(task_before),
+                    },
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # If timestamp comparison fails for any weird reason, fall
+            # through to normal write rather than blocking the user.
+            pass
+
+    # 1. Update the grid row itself (existing behaviour) and stamp the
+    #    sync_state metadata so the UI can show the provisional indicator.
+    now_iso = utc_now().isoformat()
+    row_updates = dict(updates)
+    row_updates["sync_state"] = "provisional"
+    row_updates["last_sync_at"] = now_iso
+    row_updates["task_external_modified_warning"] = False
+    await db.daily_report_activities.update_one({"id": row_id}, {"$set": row_updates})
     after = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
 
-    # Cascade pct_complete back to the underlying task
+    # 2. Audit the row update (Item 7 fix from earlier — kept).
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_report_activities", op="UPDATE",
+        record_id=row_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+
+    # 3. Sync write-back to the linked task. Builds a single $set so the
+    #    task gets one stamp, one audit entry, one task_sync_events row.
+    task_id = before["schedule_activity_id"]
+    task_set: dict = {"updated_at": now_iso, "external_modified_after_sync": False}
+    history_push: Optional[dict] = None
+
     if "pct_complete_end_of_day" in updates:
         new_pct = float(updates["pct_complete_end_of_day"])
+        task_set["prev_pct_complete"] = before.get("pct_complete_end_of_day", 0)
+        task_set["pct_complete"] = new_pct
+        # Existing simple status mapping — Phase 2 will replace this with
+        # the computed_status state machine.
+        task_set["status"] = "complete" if new_pct >= 100 else "in_progress"
+    if "status_at_end_of_day" in updates:
+        # Map the row's per-day status to the task's lifecycle status.
+        # 'not_started' / 'blocked' from the grid mean the task isn't
+        # finished — keep it in_progress unless EOD% above bumped it.
+        row_status = updates["status_at_end_of_day"]
+        if row_status == "complete":
+            task_set["status"] = "complete"
+        elif row_status == "blocked":
+            task_set["status"] = "in_progress"
+    if "hours_worked" in updates:
+        delta = float(updates["hours_worked"]) - float(before.get("hours_worked") or 0)
+        if delta:
+            task_set["actual_hours_to_date"] = float(task_before.get("actual_hours_to_date") or 0) + delta
+    crew_picked_for_presence = None
+    if "linked_crew_id" in updates:
+        new_crew = updates["linked_crew_id"]
+        if new_crew != (task_before or {}).get("current_crew_id"):
+            task_set["current_crew_id"] = new_crew
+            history_push = {
+                "crew_id": new_crew,
+                "daily_report_id": before["daily_report_id"],
+                "assigned_date": dr.get("report_date"),
+            }
+            # Bucket C3b Phase 3 — auto-create a daily_presence row
+            # tying this trade to the activity at first shift, no zone.
+            # User can refine zone/shift on the detailed roster later.
+            crew_picked_for_presence = new_crew
+    # Always stamp the last-synced marker so the UI can show provisional.
+    task_set["last_synced_from_dr"] = {
+        "daily_report_id": before["daily_report_id"],
+        "daily_report_date": dr.get("report_date"),
+        "synced_at": now_iso,
+        "sync_state": "provisional" if dr.get("status") == "draft" else "confirmed",
+    }
+
+    update_doc: dict = {"$set": task_set}
+    if history_push is not None:
+        update_doc["$push"] = {"crew_assignment_history": history_push}
+
+    # Only fire if there's something meaningful to write (always the case
+    # because last_synced_from_dr is always set, but be explicit).
+    if task_before:
         await db.tasks.update_one(
-            tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}),
-            {"$set": {
-                "prev_pct_complete": before.get("pct_complete_end_of_day", 0),
-                "pct_complete": new_pct,
-                "status": "complete" if new_pct >= 100 else "in_progress",
-            }},
+            tenant_filter(ctx["tenant_id"], {"id": task_id}),
+            update_doc,
         )
-        # productivity observation (master prompt §16)
-        if updates.get("hours_worked") or after.get("hours_worked"):
-            t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}), {"_id": 0})
+        task_after = await db.tasks.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0},
+        )
+        # 4. Audit the task update too — separate entry on the same hash chain.
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="tasks", op="SYNC",
+            record_id=task_id, before=task_before, after=task_after,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+        # 5. task_sync_events — diagnostic-grade record per write-back.
+        fields_updated = {
+            k: {"before": task_before.get(k), "after": task_set.get(k)}
+            for k in task_set if k != "updated_at"
+        }
+        await db.task_sync_events.insert_one({
+            "id": gen_id(),
+            "tenant_id": ctx["tenant_id"],
+            "project_id": dr.get("project_id") or task_before.get("project_id"),
+            "task_id": task_id,
+            "daily_report_id": before["daily_report_id"],
+            "daily_report_activity_id": row_id,
+            "triggered_by_user_id": ctx["user"]["id"],
+            "triggered_at": now_iso,
+            "sync_state": task_set["last_synced_from_dr"]["sync_state"],
+            "fields_updated": fields_updated,
+            # Phase 2/4 will populate these — Phase 1 leaves them empty.
+            "cpm_recomputed": False,
+            "cpm_changes": [],
+        })
+
+        # Bucket C1 Phase 2 — recompute computed_status / blocker fields
+        # for the linked task. Idempotent; only writes if any value moved.
+        from services.task_status import compute_and_persist_status
+        await compute_and_persist_status(
+            db, ctx["tenant_id"], task_id,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+
+        # Bucket C3b Phase 3 — auto-create a daily_presence row tying
+        # the picked crew to the activity at first shift. Idempotent on
+        # (daily_report_id, schedule_activity_id, sub_id) so re-picking
+        # the same crew doesn't duplicate.
+        if crew_picked_for_presence:
+            try:
+                existing = await db.daily_presence.find_one(
+                    {"daily_report_id": before["daily_report_id"],
+                     "schedule_activity_id": task_id,
+                     "sub_id": crew_picked_for_presence},
+                    {"_id": 0, "id": 1},
+                )
+                if not existing:
+                    # Pull trade + company from the daily_presence aggregate
+                    # row that the user added to the crew presence panel.
+                    src = await db.daily_presence.find_one(
+                        {"id": crew_picked_for_presence},
+                        {"_id": 0, "trade": 1, "company_name": 1},
+                    ) or {}
+                    presence_doc = _presence_doc_with_derived({
+                        "id": gen_id(),
+                        "tenant_id": ctx["tenant_id"],
+                        "project_id": dr.get("project_id"),
+                        "daily_report_id": before["daily_report_id"],
+                        "trade": src.get("trade") or (task_before.get("trade_code") if task_before else "general"),
+                        "sub_id": crew_picked_for_presence,
+                        "company_name": src.get("company_name"),
+                        "sub_name": src.get("company_name"),
+                        "headcount": int(updates.get("crew_count") or after.get("crew_count") or 0),
+                        "hours_per_person": 8.0,
+                        "shift": "first",
+                        "schedule_activity_id": task_id,
+                        "zone_id": None,
+                        "zone_name": None,
+                        "notes": "Auto-created from activity grid crew dropdown",
+                        "created_by": ctx["user"]["id"],
+                        "created_at": now_iso,
+                    })
+                    await db.daily_presence.insert_one(presence_doc.copy())
+                    # Bucket C3b Phase 5 — audit the auto-create with a
+                    # tag in `op` so it's distinguishable from an explicit
+                    # roster INSERT in audit replays.
+                    await write_audit(
+                        tenant_id=ctx["tenant_id"], table_name="daily_presence",
+                        op="AUTO_INSERT_FROM_GRID",
+                        record_id=presence_doc["id"], before=None, after=presence_doc,
+                        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                    )
+            except Exception:
+                # Auto-create is best-effort — sync write-back already
+                # wrote the linked_crew_id; presence row failure shouldn't
+                # block the activity grid edit.
+                pass
+
+        # productivity observation (master prompt §16) — unchanged from
+        # before this commit; lives here so it fires on the same EOD%
+        # transition as the sync write-back.
+        if "pct_complete_end_of_day" in updates and (updates.get("hours_worked") or after.get("hours_worked")):
+            t = task_after or task_before
             await db.productivity_observations.insert_one({
                 "id": gen_id(),
                 "tenant_id": ctx["tenant_id"],
-                "project_id": dr.get("project_id") or t.get("project_id"),
-                "schedule_activity_id": before["schedule_activity_id"],
+                "project_id": dr.get("project_id") or (t.get("project_id") if t else None),
+                "schedule_activity_id": task_id,
                 "trade": t.get("trade_code") if t else None,
                 "location_id": t.get("location_id") if t else None,
                 "crew_id": after.get("crew_id"),
                 "date": utc_now().date().isoformat(),
                 "hours_worked": float(after.get("hours_worked") or 0),
-                "pct_delta": new_pct - before.get("pct_complete_end_of_day", 0),
-                "created_at": utc_now().isoformat(),
+                "pct_delta": float(updates["pct_complete_end_of_day"]) - float(before.get("pct_complete_end_of_day", 0)),
+                "created_at": now_iso,
             })
+
     return DailyReportActivity(**after)
+
+
+def _task_for_409(t: dict) -> dict:
+    """Pick the fields the frontend needs to repaint a row after a stale
+    write detection. Trimmed so we don't ship the entire task doc."""
+    return {
+        "id": t.get("id"),
+        "activity_code": t.get("activity_code"),
+        "wbs": t.get("wbs"),
+        "description": t.get("description"),
+        "pct_complete": t.get("pct_complete"),
+        "status": t.get("status"),
+        "current_crew_id": t.get("current_crew_id"),
+        "actual_hours_to_date": t.get("actual_hours_to_date"),
+        "updated_at": t.get("updated_at"),
+    }
 
 
 class SubmitPayload(StrictModel):
@@ -347,6 +717,54 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Daily report not found")
+
+    # Bucket C3a Phase 3 — submit-time validation. A zero-progress row
+    # (EOD% == SOD%) without an explicit constraint isn't TIA-ready.
+    # If a constraint type that needs a reference is set but the
+    # reference is missing, also reject. Returns a structured per-row
+    # error list so the frontend can show inline messages instead of
+    # a single toast.
+    grid_rows = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id}, {"_id": 0},
+    ).to_list(500)
+    row_errors: list[dict] = []
+    for r in grid_rows:
+        sod = float(r.get("pct_complete_start_of_day") or 0)
+        eod = float(r.get("pct_complete_end_of_day") or 0)
+        ct = r.get("constraint_type")
+        if eod == sod and ct in (None, "not_constrained"):
+            row_errors.append({
+                "row_id": r.get("id"),
+                "activity_code": r.get("activity_code"),
+                "field": "constraint_type",
+                "message": "Activity shows zero progress. Set a constraint type or record progress.",
+            })
+            continue
+        if ct and ct not in ("not_constrained", "other"):
+            if not r.get("constraint_reference_entity_id"):
+                row_errors.append({
+                    "row_id": r.get("id"),
+                    "activity_code": r.get("activity_code"),
+                    "field": "constraint_reference_entity_id",
+                    "message": f"Pick a reference entity for constraint '{ct}'.",
+                })
+        elif ct == "other" and not (r.get("constraint_other_description") or "").strip():
+            row_errors.append({
+                "row_id": r.get("id"),
+                "activity_code": r.get("activity_code"),
+                "field": "constraint_other_description",
+                "message": "Describe the constraint.",
+            })
+    if row_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "row_validation_failed",
+                "message": f"{len(row_errors)} grid row(s) need attention before submit.",
+                "row_errors": row_errors,
+            },
+        )
+
     updates = {
         "status": "submitted",
         "submitted_by": ctx["user"]["id"],
@@ -357,6 +775,24 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates}
     )
+
+    # Bucket C1 Phase 1 — flip every provisional sync mark to confirmed.
+    # This makes the write-backs that landed during the day part of the
+    # field-attested record once the super submits the report.
+    confirm_at = utc_now().isoformat()
+    await db.daily_report_activities.update_many(
+        {"daily_report_id": daily_report_id},
+        {"$set": {"sync_state": "confirmed", "last_sync_at": confirm_at}},
+    )
+    # Same flip on tasks whose last_synced_from_dr points at this report.
+    await db.tasks.update_many(
+        tenant_filter(ctx["tenant_id"], {"last_synced_from_dr.daily_report_id": daily_report_id}),
+        {"$set": {
+            "last_synced_from_dr.sync_state": "confirmed",
+            "updated_at": confirm_at,
+        }},
+    )
+
     after = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="UPDATE",
@@ -626,6 +1062,21 @@ async def list_presence(daily_report_id: str, ctx: dict = Depends(require_tenant
     return [DailyPresence(**d) for d in docs]
 
 
+def _presence_doc_with_derived(doc: dict) -> dict:
+    """Bucket C3b Phase 3 — sub_name/company_name reconciliation +
+    total_hours computation. Done both at create and patch so the
+    aggregate views can sum total_hours directly without re-multiplying."""
+    sub_name = doc.get("sub_name")
+    if sub_name and not doc.get("company_name"):
+        doc["company_name"] = sub_name
+    elif doc.get("company_name") and not sub_name:
+        doc["sub_name"] = doc["company_name"]
+    headcount = float(doc.get("headcount") or 0)
+    hours = float(doc.get("hours_per_person") or 0)
+    doc["total_hours"] = round(headcount * hours, 2)
+    return doc
+
+
 @router.post("/daily-reports/{daily_report_id}/presence", response_model=DailyPresence)
 async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -639,9 +1090,20 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
+        # Bucket C3b Phase 3 — denormalize project_id so the new
+        # (tenant, project, *) indexes work for cross-DR aggregations.
+        "project_id": dr.get("project_id"),
         "created_by": ctx["user"]["id"], "created_at": utc_now().isoformat(),
     })
+    doc = _presence_doc_with_derived(doc)
     await db.daily_presence.insert_one(doc.copy())
+    # Bucket C3b Phase 5 — audit every presence mutation so the federal
+    # contract trail captures who logged crew, when, and at what counts.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_presence", op="INSERT",
+        record_id=doc["id"], before=None, after=doc,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return DailyPresence(**doc)
 
 
@@ -651,26 +1113,55 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1})
     if dr and dr.get("status") == "submitted":
         raise HTTPException(409, "Daily report locked")
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    updates = {k: v for k, v in raw.items() if v is not None}
     if updates:
+        # Recompute total_hours when headcount or hours_per_person moves.
+        if "headcount" in updates or "hours_per_person" in updates:
+            new_hc = updates.get("headcount", doc.get("headcount") or 0)
+            new_hp = updates.get("hours_per_person", doc.get("hours_per_person") or 0)
+            updates["total_hours"] = round(float(new_hc) * float(new_hp), 2)
+        # Backfill project_id if missing on legacy rows.
+        if not doc.get("project_id") and dr and dr.get("project_id"):
+            updates["project_id"] = dr["project_id"]
+        # Mirror sub_name/company_name when one is patched.
+        if "sub_name" in updates and "company_name" not in updates:
+            updates["company_name"] = updates["sub_name"]
+        elif "company_name" in updates and "sub_name" not in updates:
+            updates["sub_name"] = updates["company_name"]
         await db.daily_presence.update_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"$set": updates})
     after = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
+    # Bucket C3b Phase 5 — audit on every PATCH, even no-op (so the chain
+    # records that someone hit the endpoint), but include a meaningful
+    # diff via before/after.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_presence", op="UPDATE",
+        record_id=presence_id, before=doc, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return DailyPresence(**after)
 
 
 @router.delete("/daily-presence/{presence_id}")
 async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0, "daily_report_id": 1})
+    doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1})
     if dr and dr.get("status") == "submitted":
         raise HTTPException(409, "Daily report locked")
     await db.daily_presence.delete_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}))
+    # Bucket C3b Phase 5 — audit the hard-delete (presence has no soft
+    # delete; deletion erases the row, so the audit is the only trail).
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_presence", op="DELETE",
+        record_id=presence_id, before=doc, after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return {"ok": True}
 
 
@@ -847,6 +1338,75 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0}) or {}
 
     grid = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"_id": 0}).sort("position", 1).to_list(500)
+    # Bucket C1 Phase 1 — denormalize task.updated_at onto each grid row
+    # so the frontend has the optimistic-lock token without a second
+    # round-trip. Single $in query, not per-row lookups.
+    grid_task_ids = [r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")]
+    if grid_task_ids:
+        task_lmts = await db.tasks.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": grid_task_ids}}),
+            {"_id": 0, "id": 1, "updated_at": 1},
+        ).to_list(len(grid_task_ids))
+        lmt_by_id = {t["id"]: t.get("updated_at") for t in task_lmts}
+        for r in grid:
+            r["task_updated_at"] = lmt_by_id.get(r.get("schedule_activity_id"))
+
+    # Bucket C3a Phase 3 — pre-populate constraint_type +
+    # constraint_reference for any row that has no constraint set yet,
+    # using the most recent open gating_entity that gates the row's
+    # task. Persisted (idempotent) so a manual override sticks across
+    # reads. Skipped on submitted/approved DRs — those are locked.
+    if grid_task_ids and dr.get("status") == "draft":
+        # Map type → expected constraint_type so the auto-fill picks the
+        # right vocabulary value.
+        TYPE_TO_CONSTRAINT = {
+            "rfi": "awaiting_rfi_response",
+            "submittal": "awaiting_submittal_return",
+            "field_issue": "awaiting_predecessor_completion",
+            "bulletin": "awaiting_bulletin_approval",
+            "coordination_request": "awaiting_predecessor_completion",
+        }
+        OPEN_STATES = ["draft", "submitted", "open", "under_review", "awaiting_clarification"]
+        # Single $in across the union of task IDs.
+        gates = await db.gating_entities.find(
+            tenant_filter(ctx["tenant_id"], {
+                "gates_task_ids": {"$in": grid_task_ids},
+                "status": {"$in": OPEN_STATES},
+            }),
+            {"_id": 0, "id": 1, "entity_type": 1, "gates_task_ids": 1, "submitted_at": 1},
+        ).sort("submitted_at", -1).to_list(500)
+        # Build {task_id → first (most-recent) open gate}.
+        first_gate: dict[str, dict] = {}
+        for g in gates:
+            for tid in (g.get("gates_task_ids") or []):
+                if tid in grid_task_ids and tid not in first_gate:
+                    first_gate[tid] = g
+        now_iso = utc_now().isoformat()
+        for r in grid:
+            tid = r.get("schedule_activity_id")
+            if not tid or r.get("constraint_type"):
+                continue  # already has a constraint (auto-filled or user-set)
+            g = first_gate.get(tid)
+            if not g:
+                continue
+            ctype = TYPE_TO_CONSTRAINT.get(g["entity_type"])
+            if not ctype:
+                continue
+            await db.daily_report_activities.update_one(
+                {"id": r["id"]},
+                {"$set": {
+                    "constraint_type": ctype,
+                    "constraint_reference_entity_type": g["entity_type"],
+                    "constraint_reference_entity_id": g["id"],
+                    "constraint_auto_filled": True,
+                    "last_sync_at": now_iso,
+                }},
+            )
+            # Reflect in the response so the frontend sees it on this read.
+            r["constraint_type"] = ctype
+            r["constraint_reference_entity_type"] = g["entity_type"]
+            r["constraint_reference_entity_id"] = g["id"]
+            r["constraint_auto_filled"] = True
     presence = await db.daily_presence.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("trade", 1).to_list(200)
     photos = await db.photos.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("captured_at", -1).to_list(200)
 

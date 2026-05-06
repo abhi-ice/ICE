@@ -53,20 +53,55 @@ export default function Lookahead() {
       {view === "list" && (
         <div className="surface overflow-hidden">
           <table className="dense-table">
-            <thead><tr><th>Code</th><th>Description</th><th>Trade</th><th>Plan start</th><th>Plan finish</th><th>%</th><th>Status</th></tr></thead>
+            <thead><tr>
+              <th>Code</th><th>Description</th><th>Trade</th>
+              <th>Plan start</th><th>Plan finish</th>
+              <th title="Bucket C1 Phase 4 — projected_finish_date when open delays push the task past its planned_finish.">Projected</th>
+              <th>%</th>
+              <th title="Bucket C1 Phase 2 computed_status">Status</th>
+            </tr></thead>
             <tbody>
-              {rows.map((t) => (
-                <tr key={t.id} data-testid={`lookahead-row-${t.activity_code}`}>
-                  <td className="font-mono text-xs">{t.activity_code}</td>
-                  <td>{t.description}</td>
-                  <td>{t.trade_code || "—"}</td>
-                  <td className="font-mono text-xs">{t.planned_start}</td>
-                  <td className="font-mono text-xs">{t.planned_finish}</td>
-                  <td>{t.pct_complete}%</td>
-                  <td><span className={`pill ${t.status === "in_progress" ? "pill-blue" : "pill-slate"}`}>{t.status}</span></td>
-                </tr>
-              ))}
-              {!rows.length && <tr><td colSpan="7" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
+              {rows.map((t) => {
+                // Bucket C1 Phase 4 — at-risk highlighting. Red when blocker
+                // present, amber when behind or projected_finish > planned.
+                const cs = t.computed_status || "on_track";
+                const projShifted = t.projected_finish_date && t.planned_finish &&
+                  t.projected_finish_date > t.planned_finish;
+                const tint = cs === "blocked" || t.has_open_blocker ? "bg-red-50/50"
+                  : (cs === "behind" || projShifted) ? "bg-amber-50/50"
+                  : "";
+                const csClass = cs === "complete" ? "pill-green"
+                  : cs === "blocked" ? "pill-red"
+                  : cs === "behind" ? "pill-amber"
+                  : "pill-slate";
+                return (
+                  <tr key={t.id} data-testid={`lookahead-row-${t.activity_code}`} className={tint}>
+                    <td className="font-mono text-xs">{t.activity_code}</td>
+                    <td>{t.description}</td>
+                    <td>{t.trade_code || "—"}</td>
+                    <td className="font-mono text-xs">{t.planned_start}</td>
+                    <td className="font-mono text-xs">{t.planned_finish}</td>
+                    <td className="font-mono text-xs">
+                      {t.projected_finish_date
+                        ? <span className={projShifted ? "text-amber-700 font-semibold" : "text-slate-500"}
+                            title={projShifted ? `Projected ${t.projected_finish_date} (${slipDays(t.planned_finish, t.projected_finish_date)}d slip)` : "On schedule"}>
+                            {t.projected_finish_date}
+                          </span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td>{t.pct_complete}%</td>
+                    <td>
+                      <span data-testid={`lookahead-status-${t.activity_code}`} className={`pill ${csClass} inline-flex items-center gap-1`}>
+                        {cs.replace(/_/g, " ")}
+                        {t.has_open_blocker && t.open_blocker_count
+                          ? <span className="text-[10px] text-red-700/80">({t.open_blocker_count})</span>
+                          : null}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!rows.length && <tr><td colSpan="8" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -77,6 +112,15 @@ export default function Lookahead() {
       )}
     </div>
   );
+}
+
+function slipDays(planned, projected) {
+  if (!planned || !projected) return "?";
+  try {
+    const p = new Date(planned + "T00:00:00");
+    const pr = new Date(projected + "T00:00:00");
+    return Math.round((pr - p) / 86400000);
+  } catch { return "?"; }
 }
 
 function GanttView({ rows, days, onRefresh }) {
@@ -168,6 +212,19 @@ function GanttView({ rows, days, onRefresh }) {
             const left = 240 + sIdx * DAY_PX;
             const width = Math.max(DAY_PX, (fIdx - sIdx + 1) * DAY_PX);
             const isCP = t.is_critical_path;
+            // Bucket C1 Phase 4 — bar color reflects computed_status when
+            // it's worse than CP; amber/red overrides regardless of CP.
+            const cs = t.computed_status || "on_track";
+            let barClass = isCP ? "bg-red-600"
+              : t.status === "in_progress" ? "bg-blue-600"
+              : "bg-slate-400";
+            if (cs === "blocked") barClass = "bg-red-700";
+            else if (cs === "behind") barClass = "bg-amber-500";
+            // Projected_finish overlay — extension after the planned bar
+            // showing how far the open delays push the finish.
+            const projShiftDays = t.projected_finish_date && t.planned_finish && t.projected_finish_date > t.planned_finish
+              ? slipDays(t.planned_finish, t.projected_finish_date) : 0;
+            const projWidth = projShiftDays > 0 ? projShiftDays * DAY_PX : 0;
             return (
               <div key={t.id} className="flex relative border-b border-slate-100 hover:bg-slate-50" style={{ height: ROW_H }} data-testid={`gantt-row-${t.activity_code}`}>
                 <div style={{ width: 240, minWidth: 240 }} className="px-3 flex items-center gap-2 border-r border-slate-200 text-xs">
@@ -179,10 +236,22 @@ function GanttView({ rows, days, onRefresh }) {
                   data-testid={`gantt-bar-${t.activity_code}`}
                   onMouseDown={(e) => onMouseDown(e, t)}
                   style={{ position: "absolute", left, top: 4, width, height: ROW_H - 8 }}
-                  className={`rounded text-white text-[10px] flex items-center px-2 cursor-grab select-none transition-transform ${isCP ? "bg-red-600" : t.status === "in_progress" ? "bg-blue-600" : "bg-slate-400"}`}
+                  className={`rounded text-white text-[10px] flex items-center px-2 cursor-grab select-none transition-transform ${barClass}`}
+                  title={cs === "blocked" ? "Blocked — open delay/RFI/work-item linked"
+                    : cs === "behind" ? "Behind planned %"
+                    : isCP ? "Critical path" : ""}
                 >
                   <span className="truncate">{t.activity_code} · {t.pct_complete}%</span>
                 </div>
+                {projWidth > 0 && (
+                  <div
+                    title={`Projected slip +${projShiftDays}d → ${t.projected_finish_date}`}
+                    style={{ position: "absolute", left: left + width, top: 4, width: projWidth, height: ROW_H - 8 }}
+                    className="rounded-r border border-amber-400 bg-amber-100/70 text-amber-700 text-[10px] flex items-center justify-end px-1 select-none"
+                  >
+                    <span>+{projShiftDays}d</span>
+                  </div>
+                )}
               </div>
             );
           })}

@@ -13,8 +13,11 @@ import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
+import { localTodayISO } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
+import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
@@ -23,13 +26,26 @@ import {
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
+const PHOTO_CLASSES = [
+  { value: "progress", label: "Progress", color: "bg-slate-100 text-slate-700 border-slate-300" },
+  { value: "discovery", label: "Discovery", color: "bg-amber-100 text-amber-800 border-amber-300" },
+  { value: "damage", label: "Damage", color: "bg-rose-100 text-rose-800 border-rose-300" },
+  { value: "quality", label: "Quality", color: "bg-violet-100 text-violet-800 border-violet-300" },
+  { value: "safety", label: "Safety", color: "bg-orange-100 text-orange-800 border-orange-300" },
+  { value: "coordination", label: "Coordination", color: "bg-sky-100 text-sky-800 border-sky-300" },
+  { value: "closeout", label: "Closeout", color: "bg-emerald-100 text-emerald-800 border-emerald-300" },
+];
+const PHOTO_CLASS_BY_VALUE = Object.fromEntries(PHOTO_CLASSES.map((c) => [c.value, c]));
+
 // ------------------------------------------------------------
-//  Top-level list / open-today
+//  Top-level list — pick a date (any past/future), open or create
 // ------------------------------------------------------------
 export default function DailyReports() {
   const { activeId } = useProjects();
   const [reports, setReports] = useState([]);
   const [openId, setOpenId] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerDate, setPickerDate] = useState(localTodayISO());
 
   const load = useCallback(() => {
     if (!activeId) return;
@@ -43,15 +59,35 @@ export default function DailyReports() {
     return () => setActiveDailyReportId(null);
   }, [openId]);
 
-  const create = async () => {
-    const today = new Date().toISOString().slice(0, 10);
+  // Item 8 — date-picker driven create. Backend POST is idempotent on
+  // (project_id, report_date) so picking a date that already exists
+  // just returns that DR; no duplicates.
+  const createForDate = async () => {
+    if (!pickerDate) return toast.error("Pick a date first");
     try {
-      const { data } = await api.post("/daily-reports", { project_id: activeId, report_date: today });
-      toast.success(`Daily report opened for ${data.report_date}`);
+      const { data } = await api.post("/daily-reports", {
+        project_id: activeId, report_date: pickerDate,
+      });
+      const existed = reports.some((r) => r.report_date === pickerDate);
+      toast.success(existed ? `Opened existing report for ${data.report_date}`
+                            : `Daily report opened for ${data.report_date}`);
+      setPickerOpen(false);
       setOpenId(data.id);
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed");
+    }
+  };
+
+  const removeReport = async (r) => {
+    if (r.status !== "draft") return;
+    if (!window.confirm(`Delete the draft daily report for ${r.report_date}? Linked delays/QC/safety/RFIs/photos will keep their records but their daily_report_id will be cleared.`)) return;
+    try {
+      await api.delete(`/daily-reports/${r.id}`);
+      toast.success(`Deleted daily report for ${r.report_date}`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
     }
   };
 
@@ -68,29 +104,68 @@ export default function DailyReports() {
             One page per day — weather, crew presence, activities, events, photos, voice. Copilot is scoped to the open report.
           </p>
         </div>
-        <button data-testid="open-today-report" onClick={create}
+        <button data-testid="dr-new-button"
+          onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
           className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm flex items-center gap-2">
-          <FilePlus2 className="h-4 w-4" /> Open today&apos;s report
+          <FilePlus2 className="h-4 w-4" /> + New daily report
         </button>
       </div>
 
+      {pickerOpen && (
+        <div data-testid="dr-new-dialog"
+          className="surface p-4 border-l-4 border-blue-500 bg-blue-50/30">
+          <div className="font-medium text-sm mb-2">Open or create a daily report</div>
+          <div className="text-xs text-slate-600 mb-3">
+            If a daily report already exists for the selected date, it will be opened. Otherwise a new draft will be created.
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs">
+              <div className="text-slate-500 uppercase tracking-wide">Date</div>
+              <input data-testid="dr-new-date" type="date" value={pickerDate}
+                onChange={(e) => setPickerDate(e.target.value)}
+                className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm" />
+            </label>
+            <button data-testid="dr-new-confirm" onClick={createForDate}
+              className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">
+              Open / create
+            </button>
+            <button data-testid="dr-new-cancel" onClick={() => setPickerOpen(false)}
+              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         <table className="w-full dense-table">
-          <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th className="w-32"></th></tr></thead>
           <tbody>
-            {reports.map((r) => (
-              <tr key={r.id} data-testid={`dr-row-${r.id}`}>
-                <td className="font-mono">{r.report_date}</td>
-                <td><StatusPill status={r.status} /></td>
-                <td className="text-xs">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
-                <td>
-                  <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline">
-                    Open
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {!reports.length && <tr><td colSpan="4" className="text-center py-6 text-sm text-muted-foreground">No reports yet.</td></tr>}
+            {reports.map((r) => {
+              const canDelete = r.status === "draft";
+              return (
+                <tr key={r.id} data-testid={`dr-row-${r.id}`}>
+                  <td className="font-mono">{r.report_date}</td>
+                  <td><StatusPill status={r.status} /></td>
+                  <td className="text-xs">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
+                  <td className="text-right">
+                    <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline mr-3">
+                      Open
+                    </button>
+                    <button
+                      data-testid={`delete-dr-${r.id}`}
+                      onClick={() => removeReport(r)}
+                      disabled={!canDelete}
+                      title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
+                      className={`h-7 w-7 grid place-items-center rounded inline-flex align-middle ${canDelete ? "text-red-500 hover:bg-red-50" : "text-slate-300 cursor-not-allowed"}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!reports.length && <tr><td colSpan="4" className="text-center py-6 text-sm text-muted-foreground">No reports yet — click "+ New daily report" to start one for any date.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -105,6 +180,11 @@ function DailyReportDetail({ id, onBack }) {
   const [bundle, setBundle] = useState(null);
   const [available, setAvailable] = useState([]);
   const [busy, setBusy] = useState(false);
+  // Bucket C3a Phase 3 — per-row submit errors keyed by row id. Cleared
+  // on next submit attempt or when the user successfully edits the row.
+  const [submitRowErrors, setSubmitRowErrors] = useState({});
+  // Bucket C3b Phase 1 — quick-log coordination event dialog.
+  const [coordOpen, setCoordOpen] = useState(false);
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
@@ -150,10 +230,27 @@ function DailyReportDetail({ id, onBack }) {
       return;
     }
     setBusy(true);
+    setSubmitRowErrors({});
     try {
       await api.post(`/daily-reports/${id}/submit`, {});
       toast.success("Daily report submitted and locked.");
       reload();
+    } catch (e) {
+      // Bucket C3a Phase 3 — server returns structured per-row errors as
+      // 422 detail.row_errors. Render them inline next to each offending
+      // row instead of as a single toast.
+      const detail = e.response?.data?.detail;
+      if (e.response?.status === 422 && detail && typeof detail === "object" && Array.isArray(detail.row_errors)) {
+        const byRow = {};
+        for (const err of detail.row_errors) {
+          if (!byRow[err.row_id]) byRow[err.row_id] = [];
+          byRow[err.row_id].push(err);
+        }
+        setSubmitRowErrors(byRow);
+        toast.error(detail.message || "Submit blocked — fix the rows highlighted in red.");
+      } else {
+        toast.error(e.response?.data?.detail?.message || e.response?.data?.detail || e.message || "Submit failed");
+      }
     } finally { setBusy(false); }
   };
 
@@ -191,18 +288,37 @@ function DailyReportDetail({ id, onBack }) {
               totalHeadcount={totalHeadcount} totalCrewHours={totalCrewHours}
               locked={locked}
               onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
-              busy={busy} validate={validate} />
+              busy={busy} validate={validate}
+              onQuickLogCoordination={() => setCoordOpen(true)} />
+
+      {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.
+          Pre-links the event to this daily report on save so it shows up
+          on the Coordination page filtered by linked_daily_report_id. */}
+      <Dialog open={coordOpen} onOpenChange={setCoordOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Quick-log coordination event</DialogTitle></DialogHeader>
+          <CoordinationEventForm
+            projectId={project.id}
+            linkedDailyReportId={id}
+            abbreviated={true}
+            onSaved={() => { setCoordOpen(false); toast.success("Coordination event logged"); }}
+            onCancel={() => setCoordOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
 
       {/* WEATHER */}
       <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
 
       {/* CREW SUMMARY (presence) */}
-      <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload} />
+      <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
+        projectId={project.id} grid={grid} />
 
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
         dailyReportId={id} locked={locked} reportDate={report.report_date}
-        presence={presence} />
+        presence={presence} projectId={project.id}
+        submitRowErrors={submitRowErrors} />
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
@@ -252,7 +368,7 @@ function StatusPill({ status }) {
 
 function Header({ report, project, userLabels, ppc, totalHours,
                   totalHeadcount, totalCrewHours, locked, onBack, onSubmit,
-                  onApprove, onDownload, busy, validate }) {
+                  onApprove, onDownload, busy, validate, onQuickLogCoordination }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
@@ -299,6 +415,15 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </div>
         )}
         <div className="ml-auto flex gap-2">
+          {/* Bucket C3b Phase 1 — quick-log a coordination event from
+              the daily report. Pre-links to this DR; user can expand
+              to full form on the Coordination page later. */}
+          {onQuickLogCoordination && !locked && (
+            <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
+              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
+              <MessageSquare className="h-4 w-4" /> + Coordination
+            </button>
+          )}
           <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
             className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
             <Download className="h-4 w-4" /> Export for Internal
@@ -386,8 +511,32 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   );
 }
 
-function PresencePanel({ rows, dailyReportId, locked, reload }) {
+const PRESENCE_SHIFTS = ["first", "second", "third", "weekend", "holiday", "off_hours"];
+
+function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [] }) {
   const [draft, setDraft] = useState({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
+  // Bucket C3b Phase 3 — detailed roster toggle. When on, the table
+  // shows zone / shift / activity columns and the add-row form gets the
+  // same fields. Remembered per session via localStorage so users who
+  // prefer the granular view don't have to flip it every time.
+  const [showDetailed, setShowDetailed] = useState(() => {
+    try { return localStorage.getItem("ice.presence.detailed") === "1"; } catch { return false; }
+  });
+  const [zones, setZones] = useState([]);
+
+  useEffect(() => {
+    if (!showDetailed || !projectId) return;
+    api.get(`/projects/${projectId}/locations`).then(({ data }) => {
+      setZones(Array.isArray(data) ? data : []);
+    }).catch(() => setZones([]));
+  }, [showDetailed, projectId]);
+
+  const toggleDetailed = () => {
+    const next = !showDetailed;
+    setShowDetailed(next);
+    try { localStorage.setItem("ice.presence.detailed", next ? "1" : "0"); } catch { /* ignore */ }
+  };
+
   const total = rows.reduce((s, r) => s + (r.headcount || 0), 0);
   const totalHours = rows.reduce((s, r) => s + (r.headcount || 0) * (r.hours_per_person || 0), 0);
 
@@ -395,7 +544,8 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
     if (!draft.trade) return toast.error("Trade is required");
     try {
       await api.post(`/daily-reports/${dailyReportId}/presence`, { ...draft, daily_report_id: dailyReportId });
-      setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
+      setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "",
+                 zone_id: undefined, zone_name: undefined, shift: "first", schedule_activity_id: undefined });
       reload();
     } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
   };
@@ -408,29 +558,89 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
     await api.delete(`/daily-presence/${rid}`); reload();
   };
 
+  const taskOptions = grid.map((g) => ({
+    id: g.schedule_activity_id, code: g.activity_code, desc: g.activity_description,
+  })).filter((t) => t.id);
+
   return (
     <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
-      badge={<span className="text-[10px] text-slate-500 ml-2">total: {total} workers · {totalHours.toFixed(1)} hours</span>}>
+      badge={
+        <div className="ml-2 flex items-center gap-3">
+          <span className="text-[10px] text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
+          <button data-testid="presence-toggle-detailed" onClick={toggleDetailed}
+            className="text-[10px] text-blue-600 hover:underline">
+            {showDetailed ? "Hide detailed roster" : "Show detailed roster"}
+          </button>
+        </div>
+      }>
       <div className="overflow-x-auto">
         <table className="dense-table">
-          <thead><tr><th>Trade</th><th>Company</th><th>Headcount</th><th>Hrs/person</th><th>Sub-total</th><th>Notes</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th>Trade</th>
+              <th>Company</th>
+              <th>Headcount</th>
+              <th>Hrs/person</th>
+              <th>Sub-total</th>
+              {showDetailed && <th title="C3b Phase 3 — granular layer">Zone</th>}
+              {showDetailed && <th>Shift</th>}
+              {showDetailed && <th>Activity</th>}
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} data-testid={`presence-row-${r.id}`}>
-                <td>
-                  <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
-                    onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
-                    className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
-                </td>
-                <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
-                <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
-                <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
-                <td className="tabular-nums text-sm">{((r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
-                <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
-                <td>{!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded"><Trash2 className="h-3.5 w-3.5" /></button>}</td>
-              </tr>
-            ))}
-            {!rows.length && <tr><td colSpan="7" className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>}
+            {rows.map((r) => {
+              const isAuto = (r.notes || "").startsWith("Auto-created");
+              return (
+                <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
+                  <td>
+                    <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
+                      onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
+                      className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
+                  </td>
+                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
+                  <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
+                  <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
+                  {showDetailed && (
+                    <td>
+                      <select data-testid={`presence-zone-${r.id}`} defaultValue={r.zone_id || ""}
+                        onChange={(e) => {
+                          const z = zones.find((zz) => zz.id === e.target.value);
+                          patch(r.id, { zone_id: e.target.value || null, zone_name: z?.name || null });
+                        }} disabled={locked}
+                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[110px]">
+                        <option value="">— no zone —</option>
+                        {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
+                      </select>
+                    </td>
+                  )}
+                  {showDetailed && (
+                    <td>
+                      <select data-testid={`presence-shift-${r.id}`} defaultValue={r.shift || "first"}
+                        onChange={(e) => patch(r.id, { shift: e.target.value })} disabled={locked}
+                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white">
+                        {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+                      </select>
+                    </td>
+                  )}
+                  {showDetailed && (
+                    <td>
+                      <select data-testid={`presence-activity-${r.id}`} defaultValue={r.schedule_activity_id || ""}
+                        onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
+                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[120px]">
+                        <option value="">— project-wide —</option>
+                        {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                      </select>
+                    </td>
+                  )}
+                  <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td>{!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded"><Trash2 className="h-3.5 w-3.5" /></button>}</td>
+                </tr>
+              );
+            })}
+            {!rows.length && <tr><td colSpan={showDetailed ? "10" : "7"} className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -440,6 +650,39 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
           <Field label="Company" value={draft.company_name} onChange={(v) => setDraft({ ...draft, company_name: v })} testid="presence-new-company" />
           <Field label="Headcount" type="number" value={draft.headcount} onChange={(v) => setDraft({ ...draft, headcount: Number(v) })} testid="presence-new-headcount" />
           <Field label="Hrs/person" type="number" value={draft.hours_per_person} onChange={(v) => setDraft({ ...draft, hours_per_person: Number(v) })} testid="presence-new-hours" />
+          {showDetailed && (
+            <>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-500">Zone</span>
+                <select value={draft.zone_id || ""}
+                  onChange={(e) => {
+                    const z = zones.find((zz) => zz.id === e.target.value);
+                    setDraft({ ...draft, zone_id: e.target.value || null, zone_name: z?.name || null });
+                  }}
+                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
+                  <option value="">— no zone —</option>
+                  {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-500">Shift</span>
+                <select value={draft.shift || "first"}
+                  onChange={(e) => setDraft({ ...draft, shift: e.target.value })}
+                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
+                  {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+                </select>
+              </label>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-500">Activity</span>
+                <select value={draft.schedule_activity_id || ""}
+                  onChange={(e) => setDraft({ ...draft, schedule_activity_id: e.target.value || null })}
+                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
+                  <option value="">— project-wide —</option>
+                  {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                </select>
+              </label>
+            </>
+          )}
           <button data-testid="presence-add" onClick={add} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
             <Plus className="h-3.5 w-3.5" /> Add trade
           </button>
@@ -499,24 +742,186 @@ function CrewSelector({ row, presence, locked, updateRow }) {
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [] }) {
+// Bucket C3a Phase 2 — controlled constraint vocabulary; mirrors the
+// backend ConstraintType Literal in models.py.
+const CONSTRAINT_TYPES = [
+  { value: "not_constrained", label: "(none — not constrained)" },
+  { value: "awaiting_rfi_response", label: "Awaiting RFI response" },
+  { value: "awaiting_submittal_return", label: "Awaiting submittal return" },
+  { value: "awaiting_bulletin_proposal", label: "Awaiting bulletin proposal" },
+  { value: "awaiting_bulletin_approval", label: "Awaiting bulletin approval" },
+  { value: "awaiting_ae_direction", label: "Awaiting A/E direction" },
+  { value: "awaiting_shutdown_window", label: "Awaiting shutdown window" },
+  { value: "awaiting_tenant_access", label: "Awaiting tenant access" },
+  { value: "awaiting_clearance", label: "Awaiting clearance" },
+  { value: "awaiting_predecessor_completion", label: "Awaiting predecessor completion" },
+  { value: "concealed_condition_under_investigation", label: "Concealed condition under investigation" },
+  { value: "weather_impact", label: "Weather impact" },
+  { value: "labor_unavailability", label: "Labor unavailability" },
+  { value: "material_not_on_site", label: "Material not on site" },
+  { value: "other", label: "Other (free text)" },
+];
+
+const CONSTRAINT_TYPES_NEEDING_REF = new Set([
+  "awaiting_rfi_response", "awaiting_submittal_return",
+  "awaiting_bulletin_proposal", "awaiting_bulletin_approval",
+  "awaiting_ae_direction", "awaiting_predecessor_completion",
+]);
+
+// Bucket C3a Phase 2 — Constraint cell on the activity grid. Stacks
+// type dropdown + (reference dropdown OR other-text) + impact-hours
+// vertically inside a single cell. Reference dropdown lazy-loads the
+// open gating entities for this row's task on focus.
+function ConstraintCell({ row, projectId, locked, updateRow }) {
+  const taskId = row.schedule_activity_id;
+  const ct = row.constraint_type || "not_constrained";
+  const needsRef = CONSTRAINT_TYPES_NEEDING_REF.has(ct);
+  const isOther = ct === "other";
+
+  const [refOptions, setRefOptions] = useState([]);
+  const [refLoaded, setRefLoaded] = useState(false);
+
+  const ensureRefs = async () => {
+    if (refLoaded || !needsRef || !projectId || !taskId) return;
+    try {
+      const { data } = await api.get(`/projects/${projectId}/gating-entities`, {
+        params: { task_id: taskId, open_only: true },
+      });
+      setRefOptions(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setRefOptions([]);
+    } finally { setRefLoaded(true); }
+  };
+
+  const setType = (newType) => {
+    const fields = { constraint_type: newType };
+    // Clearing chains so backend validation doesn't fight us on the
+    // next save — backend also nulls these but explicit is friendlier.
+    if (newType === "not_constrained" || newType === "other") {
+      fields.constraint_reference_entity_id = null;
+    }
+    if (!isOther && newType !== "other") {
+      fields.constraint_other_description = null;
+    }
+    updateRow(row.id, fields);
+  };
+
+  return (
+    <div className="flex flex-col gap-1 min-w-[200px]" data-testid={`dr-constraint-${row.activity_code}`}>
+      <select
+        data-testid={`dr-constraint-type-${row.activity_code}`}
+        value={ct}
+        onChange={(e) => setType(e.target.value)}
+        onFocus={ensureRefs}
+        disabled={locked}
+        className={`h-7 text-[11px] px-1 border rounded ${row.constraint_auto_filled ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"}`}
+        title={row.constraint_auto_filled ? "Auto-filled from open gating entity. Override to take ownership." : undefined}
+      >
+        {CONSTRAINT_TYPES.map((c) => (
+          <option key={c.value} value={c.value}>{c.label}</option>
+        ))}
+      </select>
+
+      {needsRef && (
+        <select
+          data-testid={`dr-constraint-ref-${row.activity_code}`}
+          value={row.constraint_reference_entity_id || ""}
+          onChange={(e) => updateRow(row.id, { constraint_reference_entity_id: e.target.value || null })}
+          onFocus={ensureRefs}
+          disabled={locked}
+          className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+        >
+          <option value="">{refLoaded ? `— pick (${refOptions.length} open) —` : "— focus to load —"}</option>
+          {refOptions.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.entity_number ? `${o.entity_number}: ` : ""}{(o.display_label || "").slice(0, 60)}
+              {o.is_over_sla ? " · OVER SLA" : ""}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {isOther && (
+        <input
+          data-testid={`dr-constraint-other-${row.activity_code}`}
+          type="text"
+          defaultValue={row.constraint_other_description || ""}
+          onBlur={(e) => updateRow(row.id, { constraint_other_description: e.target.value || null })}
+          disabled={locked}
+          placeholder="Describe the constraint"
+          className="h-7 text-[11px] px-1 border border-slate-200 rounded"
+        />
+      )}
+
+      {ct !== "not_constrained" && (
+        <input
+          data-testid={`dr-constraint-hours-${row.activity_code}`}
+          type="number"
+          min="0"
+          step="0.5"
+          defaultValue={row.production_impact_hours ?? ""}
+          onBlur={(e) => updateRow(row.id, { production_impact_hours: e.target.value === "" ? null : Number(e.target.value) })}
+          disabled={locked}
+          placeholder="impact hrs"
+          title="Crew-hours lost on this activity due to the constraint"
+          className="h-6 text-[11px] px-1 border border-slate-200 rounded tabular-nums"
+        />
+      )}
+    </div>
+  );
+}
+
+function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], projectId, submitRowErrors = {} }) {
+  // Phase 2 — alias so the ConstraintCell call site reads cleanly.
+  const dailyReportProjectId = projectId;
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
+  // Bucket C1 Phase 1 — rows that the backend rejected with 409 because
+  // the linked task was modified externally between grid load and PATCH.
+  // Cleared by reload() (which pulls a fresh task_updated_at via /context).
+  const [staleRows, setStaleRows] = useState(() => new Set());
 
   const refreshFromSchedule = async () => {
     setRefreshing(true);
     try {
       const { data } = await api.post(`/daily-reports/${dailyReportId}/refresh-grid`);
       toast.success(data.inserted ? `${data.inserted} activity row(s) added from schedule.` : "Already up to date.");
+      setStaleRows(new Set());
       reload();
     } catch (e) { toast.error(formatErr(e, "Refresh grid")); }
     finally { setRefreshing(false); }
   };
 
   const updateRow = async (rowId, fields) => {
-    try { await api.patch(`/daily-report-activities/${rowId}`, fields); reload(); }
-    catch (e) { toast.error(formatErr(e, "Update row")); }
+    // Bucket C1 Phase 1 — attach the optimistic-lock token captured
+    // from /context. If the linked task has moved underneath us, the
+    // backend rejects with 409 and we mark the row stale so the user
+    // sees a "Schedule updated — refresh row" hint.
+    const row = grid.find((r) => r.id === rowId) || {};
+    const payload = { ...fields };
+    if (row.task_updated_at) payload.task_last_modified_at = row.task_updated_at;
+    try {
+      await api.patch(`/daily-report-activities/${rowId}`, payload);
+      // Successful write; clear any stale flag and pull fresh data.
+      if (staleRows.has(rowId)) {
+        const next = new Set(staleRows); next.delete(rowId); setStaleRows(next);
+      }
+      reload();
+    } catch (e) {
+      if (e.response?.status === 409) {
+        const next = new Set(staleRows); next.add(rowId); setStaleRows(next);
+        toast.error("Schedule was updated externally — click Refresh on the row to pull the latest before re-entering.");
+      } else {
+        toast.error(formatErr(e, "Update row"));
+      }
+    }
+  };
+  const refreshStaleRow = () => {
+    // Easiest reliable refresh: pull /context again. Clears the
+    // stale set and gets a fresh task_updated_at for every row.
+    setStaleRows(new Set());
+    reload();
   };
   const removeRow = async (rowId) => {
     if (!window.confirm("Remove from grid?")) return;
@@ -560,7 +965,9 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
             <tr>
               <th>Code</th><th>Description</th><th>Loc</th><th>Trade</th>
               <th>Crew</th><th>SOD %</th><th>EOD %</th><th>Δ</th>
-              <th>Hours</th><th>Status</th><th>Notes</th><th></th>
+              <th>Hours</th><th>Status</th>
+              <th title="Bucket C3a — what's blocking this row, if anything. Required on submit when EOD% = SOD%.">Constraint</th>
+              <th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -568,11 +975,35 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               const delta = (r.pct_complete_end_of_day || 0) - (r.pct_complete_start_of_day || 0);
               const variance = delta < 0 ? "neg" : delta === 0 ? "zero" : "pos";
               const isUnplanned = (r.activity_code || "").startsWith("AF");
+              const isStale = staleRows.has(r.id);
+              const isProvisional = r.sync_state === "provisional";
+              const rowErrs = submitRowErrors[r.id] || [];
+              const hasErr = rowErrs.length > 0;
+              const rowClass = isStale ? "bg-amber-50/40"
+                : hasErr ? "bg-red-50/40" : undefined;
               return (
-                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`}>
+                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
                   <td className="font-mono text-xs">
                     {r.activity_code}
                     {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[9px] uppercase">field</span>}
+                    {isProvisional && !isStale && (
+                      <span title="Provisional sync — confirmed on submit"
+                        className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
+                    )}
+                    {isStale && (
+                      <button data-testid={`dr-row-refresh-${r.activity_code}`}
+                        onClick={refreshStaleRow}
+                        title="Schedule was updated externally — click to refresh row"
+                        className="ml-1 inline-flex items-center gap-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
+                        <RefreshCw className="h-2.5 w-2.5" /> refresh
+                      </button>
+                    )}
+                    {hasErr && (
+                      <div data-testid={`dr-row-err-${r.activity_code}`}
+                        className="mt-1 text-[10px] text-red-700 normal-case font-sans">
+                        {rowErrs.map((e, i) => <div key={i}>⚠ {e.message}</div>)}
+                      </div>
+                    )}
                   </td>
                   <td className="truncate max-w-[260px]">{r.activity_description}</td>
                   <td className="text-xs">{r.location_name || "—"}</td>
@@ -591,12 +1022,15 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                       {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
                     </select>
                   </td>
+                  <td>
+                    <ConstraintCell row={r} projectId={dailyReportProjectId} locked={locked} updateRow={updateRow} />
+                  </td>
                   <td><input type="text" defaultValue={r.notes || ""} onBlur={(e) => updateRow(r.id, { notes: e.target.value })} disabled={locked} placeholder="Notes…" className="w-44" /></td>
                   <td>{!locked && <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded text-xs">remove</button>}</td>
                 </tr>
               );
             })}
-            {!grid.length && <tr><td colSpan="12" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
+            {!grid.length && <tr><td colSpan="13" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -684,7 +1118,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
 
 function DelayRowInline({ delay, reload }) {
   const [resolving, setResolving] = useState(false);
-  const [resolveDate, setResolveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [resolveDate, setResolveDate] = useState(localTodayISO());
   const [resolveNote, setResolveNote] = useState("");
 
   const resolve = async () => {
@@ -757,7 +1191,7 @@ function ReminderBanner({ reminders, reload }) {
 
 function ReminderCard({ delay, reload }) {
   const [resolving, setResolving] = useState(false);
-  const [resolveDate, setResolveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [resolveDate, setResolveDate] = useState(localTodayISO());
   const [resolveNote, setResolveNote] = useState("");
 
   const resolve = async () => {
@@ -993,6 +1427,7 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
 function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [busy, setBusy] = useState(false);
   const [caption, setCaption] = useState("");
+  const [photoClass, setPhotoClass] = useState("progress");
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1003,11 +1438,17 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       fd.append("project_id", projectId);
       fd.append("daily_report_id", dailyReportId);
       if (caption) fd.append("caption", caption);
+      fd.append("photo_class", photoClass);
       await api.post(`/photos/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } });
       setCaption("");
+      setPhotoClass("progress");
       reload();
       toast.success("Photo uploaded");
-    } catch (err) { toast.error(err.response?.data?.detail || "Upload failed"); }
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 409) toast.error("Duplicate photo — same image already uploaded.");
+      else toast.error(detail || "Upload failed");
+    }
     finally { setBusy(false); e.target.value = ""; }
   };
 
@@ -1020,6 +1461,9 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
           <input data-testid="photo-caption" placeholder="Caption (optional)" value={caption} onChange={(e) => setCaption(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
+          <select data-testid="photo-class" value={photoClass} onChange={(e) => setPhotoClass(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm bg-white">
+            {PHOTO_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
           <label data-testid="photo-upload-label" className="block">
             <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
               <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload photo"}
@@ -1042,10 +1486,26 @@ function AuthPhoto({ photo }) {
       .catch(() => { /* ignore — show placeholder */ });
     return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, [photo.id]);
+  const cls = PHOTO_CLASS_BY_VALUE[photo.photo_class] || PHOTO_CLASS_BY_VALUE.progress;
   return (
     <div data-testid={`photo-${photo.id}`} className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200">
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
+      <div className="absolute top-1 left-1 flex items-center gap-1">
+        <span data-testid={`photo-class-${photo.id}`} className={`text-[9px] leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
+          {cls.label}
+        </span>
+        {photo.evidentiary_flag && (
+          <span data-testid={`photo-evidentiary-${photo.id}`} title="Evidentiary — locked record" className="bg-black/70 text-white rounded p-0.5">
+            <Lock className="h-2.5 w-2.5" />
+          </span>
+        )}
+        {photo.timestamp_mismatch_flag && (
+          <span data-testid={`photo-tsmismatch-${photo.id}`} title="Device vs. server timestamp mismatch" className="bg-amber-500 text-white rounded p-0.5">
+            <AlertTriangle className="h-2.5 w-2.5" />
+          </span>
+        )}
+      </div>
       {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">{photo.caption}</div>}
     </div>
   );

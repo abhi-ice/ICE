@@ -45,6 +45,20 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     await write_audit(tenant_id=ctx["tenant_id"], table_name="rfis", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    # Bucket C3a Phase 1 — auto-create the gating_entities CPM-node row
+    # and write its id back onto the RFI. Schedule_activity_id (if set)
+    # populates gates_task_ids; a one-task RFI is the common case.
+    from services.gating_entities import create_for_entity
+    gates = [doc["schedule_activity_id"]] if doc.get("schedule_activity_id") else []
+    ge = await create_for_entity(
+        tenant_id=ctx["tenant_id"], project_id=doc["project_id"],
+        entity_type="rfi", entity=doc, gates_task_ids=gates,
+    )
+    await db.rfis.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": doc["id"]}),
+        {"$set": {"gating_entity_id": ge["id"]}},
+    )
+    doc["gating_entity_id"] = ge["id"]
     return Rfi(**doc)
 
 
@@ -78,6 +92,27 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
     await write_audit(tenant_id=ctx["tenant_id"], table_name="rfis", op="UPDATE",
                       record_id=rfi_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    # Bucket C3a Phase 1 — mirror status / response timestamps onto the
+    # gating_entities CPM node. Subject change → label denorm refresh.
+    if "status" in updates or "subject" in updates or "date_responded" in updates:
+        from services.gating_entities import sync_status, build_display_label
+        from datetime import datetime as _dt, time as _time
+        responded_at = None
+        if updates.get("date_responded"):
+            try:
+                responded_at = _dt.combine(date.fromisoformat(str(updates["date_responded"])[:10]), _time.min)
+            except Exception:
+                responded_at = None
+        new_label = None
+        if "subject" in updates:
+            _, new_label = build_display_label("rfi", after)
+        await sync_status(
+            tenant_id=ctx["tenant_id"], entity_type="rfi", entity_id=rfi_id,
+            underlying_status=after.get("status"),
+            actual_responded_at=responded_at,
+            new_display_label=new_label,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return Rfi(**after)
 
 
@@ -110,17 +145,33 @@ async def list_co(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.post("/work-items", response_model=WorkItem)
 async def create_work_item(payload: WorkItemCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
         "status": "open",
         "actual_cost_impact": None, "actual_time_impact_days": None,
-        "opened_by": ctx["user"]["id"], "opened_at": utc_now().isoformat(),
+        "opened_by": ctx["user"]["id"], "opened_at": now_iso,
         "owned_by": ctx["user"]["id"],
         "closed_at": None, "closure_summary": None,
-        "created_at": utc_now().isoformat(),
+        "created_at": now_iso,
     })
     await db.work_items.insert_one(doc.copy())
+    # Bucket C3a Phase 1 — auto-create gating_entities row for the field
+    # issue. WorkItems don't carry a single schedule_activity_id; gating
+    # link comes from work_item_links (entity_type='task') created later.
+    # Phase 1 leaves gates_task_ids empty here and lets a later sync /
+    # link patch populate it.
+    from services.gating_entities import create_for_entity
+    ge = await create_for_entity(
+        tenant_id=ctx["tenant_id"], project_id=doc["project_id"],
+        entity_type="field_issue", entity=doc, gates_task_ids=[],
+    )
+    await db.work_items.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": doc["id"]}),
+        {"$set": {"gating_entity_id": ge["id"]}},
+    )
+    doc["gating_entity_id"] = ge["id"]
     return WorkItem(**doc)
 
 

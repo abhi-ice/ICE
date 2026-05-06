@@ -228,3 +228,37 @@ async def dashboard_summary(ctx: dict = Depends(require_tenant)):
         "open_safety_events": open_safety,
         "schedule_health_pct": schedule_health,
     }
+
+
+# ============================================================
+# Bucket C3c Phase 2 — Cron-style entrypoint for nightly cascade recompute
+# ============================================================
+@router.post("/cron/cascade-recompute")
+async def cron_cascade_recompute(ctx: dict = Depends(require_tenant)):
+    """Walks every active project for the caller's tenant and recomputes
+    cascade snapshots for all open gating entities. Designed to be hit
+    once a day by an external scheduler (Railway cron / GitHub Actions /
+    a curl in the deploy host) — tenant-scoped so multi-tenant deploys
+    schedule one job per tenant.
+
+    No system-wide cross-tenant variant on purpose: each tenant's data
+    stays isolated. The on-demand /projects/{id}/cascade-dashboard/refresh
+    endpoint covers immediate-need recomputes."""
+    from services.cascade_engine import recompute_all_cascades
+    db = get_db()
+    proj_ids = await db.projects.find(
+        tenant_filter(ctx["tenant_id"], {}), {"_id": 0, "id": 1},
+    ).to_list(2000)
+    aggregate = {"projects_walked": 0, "open_gates": 0, "computed": 0, "notified": 0}
+    per_project: list[dict] = []
+    for p in proj_ids:
+        try:
+            r = await recompute_all_cascades(ctx["tenant_id"], p["id"])
+            per_project.append({"project_id": p["id"], **r})
+            aggregate["projects_walked"] += 1
+            aggregate["open_gates"] += r.get("open_gates", 0)
+            aggregate["computed"] += r.get("computed", 0)
+            aggregate["notified"] += r.get("notified", 0)
+        except Exception as e:
+            per_project.append({"project_id": p["id"], "error": str(e)[:200]})
+    return {**aggregate, "per_project": per_project}

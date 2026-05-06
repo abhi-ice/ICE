@@ -104,6 +104,13 @@ async def upload_photo(
     schedule_activity_id: Optional[str] = Form(None),
     daily_report_id: Optional[str] = Form(None),
     caption: Optional[str] = Form(None),
+    # Bucket C3b Phase 4 — required class tag (default progress for
+    # back-compat with old upload UIs); optional drawing pin at upload.
+    photo_class: str = Form("progress"),
+    drawing_pin_id: Optional[str] = Form(None),
+    pin_drawing_id: Optional[str] = Form(None),
+    pin_x: Optional[float] = Form(None),
+    pin_y: Optional[float] = Form(None),
     file: UploadFile = File(...),
     ctx: dict = Depends(require_tenant),
 ):
@@ -116,6 +123,37 @@ async def upload_photo(
         raise HTTPException(413, "Photo > 10MB")
     if not body:
         raise HTTPException(400, "Empty file")
+
+    # Bucket C3b Phase 4 — SHA-256 of body bytes BEFORE storage write so
+    # the hash is the canonical fingerprint of what the user uploaded.
+    import hashlib
+    sha256 = hashlib.sha256(body).hexdigest()
+
+    # Collision check — same project, same hash → 409 with the existing
+    # photo's id so the client can confirm or skip.
+    existing = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "sha256_hash": sha256,
+        }),
+        {"_id": 0, "id": 1},
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_photo",
+                "message": "A photo with the same SHA-256 already exists in this project.",
+                "existing_photo_id": existing["id"],
+            },
+        )
+
+    # Class validation. Falls back to progress on garbage values rather
+    # than 422 — friendly default for legacy clients.
+    valid_classes = {"progress", "discovery", "damage", "quality", "safety", "coordination", "closeout"}
+    if photo_class not in valid_classes:
+        photo_class = "progress"
+
     ct = file.content_type or "image/jpeg"
     ext = (file.filename.rsplit(".", 1)[-1] if "." in (file.filename or "") else "jpg").lower()
     if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
@@ -131,6 +169,14 @@ async def upload_photo(
         content_type=ct, size=len(body), kind="photo",
         actor_id=ctx["user"]["id"],
     )
+    server_now = utc_now()
+
+    # Evidentiary flag: only the discovery / damage / quality classes
+    # earn the flag, and only when a pin is present.
+    EVIDENTIARY_CLASSES = ("discovery", "damage", "quality")
+    has_pin = (pin_x is not None and pin_y is not None) or bool(pin_drawing_id) or bool(drawing_pin_id)
+    evidentiary_flag = (photo_class in EVIDENTIARY_CLASSES) and has_pin
+
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -140,14 +186,26 @@ async def upload_photo(
         "daily_report_id": daily_report_id,
         "storage_path": storage_path,
         "thumbnail_path": None,
-        "captured_at": utc_now().isoformat(),
+        "captured_at": server_now.isoformat(),
         "captured_by": ctx["user"]["id"],
         "caption": caption,
         "tags": [],
         "visual_fingerprint_match_id": None,
         "visual_fingerprint_match_confidence": None,
         "visual_fingerprint_overridden": False,
-        "created_at": utc_now().isoformat(),
+        "created_at": server_now.isoformat(),
+        # Bucket C3b Phase 4 evidentiary fields
+        "sha256_hash": sha256,
+        "device_timestamp": None,  # set below from EXIF if present
+        "server_received_timestamp": server_now.isoformat(),
+        "timestamp_mismatch_flag": False,
+        "exif_preserved": True,
+        "photo_class": photo_class,
+        "evidentiary_flag": evidentiary_flag,
+        "drawing_pin_id": drawing_pin_id,
+        "pin_drawing_id": pin_drawing_id,
+        "pin_x": pin_x,
+        "pin_y": pin_y,
     }
     await db.photos.insert_one(doc.copy())
     # Best-effort EXIF + perceptual hash (master prompt §13)
@@ -163,6 +221,25 @@ async def upload_photo(
         update: dict = {"phash": str(imagehash.phash(img))}
         if "DateTimeOriginal" in exif:
             update["captured_at_exif"] = str(exif["DateTimeOriginal"])
+            # Bucket C3b Phase 4 — also stamp device_timestamp + check
+            # for clock skew vs server-receive. EXIF datetime format:
+            # "YYYY:MM:DD HH:MM:SS" (note ':' separators in date).
+            try:
+                from datetime import datetime as _dt
+                raw = str(exif["DateTimeOriginal"])
+                # Convert "YYYY:MM:DD HH:MM:SS" → ISO
+                if len(raw) >= 19 and raw[4] == ":":
+                    iso = raw[:4] + "-" + raw[5:7] + "-" + raw[8:10] + "T" + raw[11:19]
+                else:
+                    iso = raw
+                dt = _dt.fromisoformat(iso)
+                update["device_timestamp"] = dt.isoformat()
+                # Compare to server_now without tzinfo on the device side
+                # (EXIF carries no offset). Mismatch threshold = 60 sec.
+                skew = abs((server_now.replace(tzinfo=None) - dt).total_seconds())
+                update["timestamp_mismatch_flag"] = skew > 60
+            except Exception:
+                pass
         gps_raw = exif.get("GPSInfo")
         if isinstance(gps_raw, dict):
             gps: dict = {}

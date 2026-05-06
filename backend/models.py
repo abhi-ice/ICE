@@ -274,6 +274,25 @@ class TaskUpdate(StrictModel):
     location_id: Optional[str] = None
 
 
+class CrewAssignmentEntry(ReadModel):
+    """Bucket C1 Phase 1 — one entry per crew change recorded against a task
+    via the daily-report grid sync write-back. Append-only history for later
+    productivity analysis; the current crew lives on task.current_crew_id."""
+    crew_id: Optional[str] = None
+    daily_report_id: Optional[str] = None
+    assigned_date: Optional[date] = None
+
+
+class LastSyncedFromDR(ReadModel):
+    """Bucket C1 Phase 1 — denormalized 'last write-back from a daily
+    report' marker. sync_state flips provisional → confirmed when the
+    parent daily report is submitted."""
+    daily_report_id: Optional[str] = None
+    daily_report_date: Optional[date] = None
+    synced_at: Optional[datetime] = None
+    sync_state: Literal["provisional", "confirmed"] = "provisional"
+
+
 class Task(ReadModel):
     id: str
     tenant_id: str
@@ -309,6 +328,24 @@ class Task(ReadModel):
     requires_pm_review: bool = False
     created_from_daily_report_id: Optional[str] = None
     created_at: datetime
+    # Bucket C1 Phase 1 — sync layer state. Optional / default-None so
+    # records persisted before the sync layer landed continue to deserialize.
+    updated_at: Optional[datetime] = None
+    actual_hours_to_date: float = 0
+    current_crew_id: Optional[str] = None
+    crew_assignment_history: List[CrewAssignmentEntry] = Field(default_factory=list)
+    last_synced_from_dr: Optional[LastSyncedFromDR] = None
+    external_modified_after_sync: bool = False
+    # Bucket C1 Phase 2 — computed/derived status fields. Persisted so
+    # other endpoints can filter on them; recomputed on every event that
+    # could move them (delay open/close, EOD% change, list_tasks read).
+    computed_status: Literal["on_track", "behind", "blocked", "complete"] = "on_track"
+    has_open_blocker: bool = False
+    open_blocker_count: int = 0
+    open_blocker_summary: List[dict] = Field(default_factory=list)
+    # Bucket C1 Phase 4 — CPM walk-forward result. None until first
+    # delay open / status compute writes it.
+    projected_finish_date: Optional[date] = None
 
 
 # ---------- Daily reports ----------
@@ -350,6 +387,25 @@ class DailyReport(ReadModel):
     created_at: datetime
 
 
+ConstraintType = Literal[
+    "not_constrained",
+    "awaiting_rfi_response",
+    "awaiting_submittal_return",
+    "awaiting_bulletin_proposal",
+    "awaiting_bulletin_approval",
+    "awaiting_ae_direction",
+    "awaiting_shutdown_window",
+    "awaiting_tenant_access",
+    "awaiting_clearance",
+    "awaiting_predecessor_completion",
+    "concealed_condition_under_investigation",
+    "weather_impact",
+    "labor_unavailability",
+    "material_not_on_site",
+    "other",
+]
+
+
 class DailyReportActivityUpdate(StrictModel):
     pct_complete_end_of_day: Optional[float] = Field(default=None, ge=0, le=100)
     crew_count: Optional[int] = None
@@ -364,6 +420,23 @@ class DailyReportActivityUpdate(StrictModel):
     weather_impact_minutes: Optional[int] = None
     notes: Optional[str] = None
     status_at_end_of_day: Optional[TaskStatus] = None
+    # Bucket C1 Phase 1 — optimistic-lock token. The grid load sends the
+    # task's updated_at it observed; the PATCH refuses with 409 if the
+    # task has been modified externally in the meantime. Optional so old
+    # frontends without the token fall through to unconditional write
+    # (back-compat) and so brand-new tasks (no updated_at yet) accept
+    # any token.
+    task_last_modified_at: Optional[datetime] = None
+    # Bucket C3a Phase 2 — constraint capture. Validated server-side:
+    # if constraint_type is set and != not_constrained / != other,
+    # constraint_reference_entity_id must point to an existing
+    # gating_entities.id. If = other, constraint_other_description must
+    # be non-empty.
+    constraint_type: Optional[ConstraintType] = None
+    constraint_reference_entity_type: Optional[str] = None
+    constraint_reference_entity_id: Optional[str] = None
+    constraint_other_description: Optional[str] = None
+    production_impact_hours: Optional[float] = Field(default=None, ge=0)
 
 
 class DailyReportActivity(ReadModel):
@@ -388,6 +461,26 @@ class DailyReportActivity(ReadModel):
     activity_description: Optional[str] = None
     location_name: Optional[str] = None
     trade_code: Optional[str] = None
+    # Bucket C1 Phase 1 — sync state for the corresponding write-back
+    # against the linked task. Default provisional (frontend showed an
+    # in-progress edit); flipped confirmed when the parent DR submits.
+    sync_state: Literal["provisional", "confirmed"] = "provisional"
+    last_sync_at: Optional[datetime] = None
+    task_external_modified_warning: bool = False
+    # Denormalized at /context read time (NOT persisted to mongo) — gives
+    # the frontend the optimistic-lock token for the linked task without
+    # forcing a second round-trip to /tasks.
+    task_updated_at: Optional[datetime] = None
+    # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
+    # the gating entity that's blocking this row, or free-text "other").
+    # constraint_auto_filled marks rows where the system pre-populated
+    # the constraint from an open gating entity (Phase 3).
+    constraint_type: Optional[ConstraintType] = None
+    constraint_reference_entity_type: Optional[str] = None
+    constraint_reference_entity_id: Optional[str] = None
+    constraint_other_description: Optional[str] = None
+    production_impact_hours: Optional[float] = None
+    constraint_auto_filled: bool = False
 
 
 class DailyReportUpdate(StrictModel):
@@ -406,6 +499,9 @@ class DailyReportUpdate(StrictModel):
     after_hours_work: Optional[bool] = None
 
 
+PresenceShift = Literal["first", "second", "third", "weekend", "holiday", "off_hours"]
+
+
 class DailyPresenceCreate(StrictModel):
     daily_report_id: str
     trade: str
@@ -414,6 +510,14 @@ class DailyPresenceCreate(StrictModel):
     headcount: int = 0
     hours_per_person: float = 8.0
     notes: Optional[str] = None
+    # Bucket C3b Phase 3 — granular fields. Older callers (existing
+    # PresencePanel) just send trade + headcount + hours; that still
+    # works and lands as an aggregate row with shift=first by default.
+    zone_id: Optional[str] = None       # FK to locations
+    zone_name: Optional[str] = None     # denormalized (or free-text fallback)
+    shift: Optional[PresenceShift] = "first"
+    schedule_activity_id: Optional[str] = None  # link to specific task
+    sub_name: Optional[str] = None      # alias the spec uses; we'll fill company_name from this if provided
 
 
 class DailyPresenceUpdate(StrictModel):
@@ -423,18 +527,31 @@ class DailyPresenceUpdate(StrictModel):
     headcount: Optional[int] = None
     hours_per_person: Optional[float] = None
     notes: Optional[str] = None
+    zone_id: Optional[str] = None
+    zone_name: Optional[str] = None
+    shift: Optional[PresenceShift] = None
+    schedule_activity_id: Optional[str] = None
+    sub_name: Optional[str] = None
 
 
 class DailyPresence(ReadModel):
     id: str
     tenant_id: str
     daily_report_id: str
+    project_id: Optional[str] = None  # auto-filled on write (Phase 3)
     trade: str
     sub_id: Optional[str] = None
     company_name: Optional[str] = None
     headcount: int = 0
     hours_per_person: float = 8.0
     notes: Optional[str] = None
+    # Phase 3 — granular layer.
+    zone_id: Optional[str] = None
+    zone_name: Optional[str] = None
+    shift: Optional[PresenceShift] = "first"
+    schedule_activity_id: Optional[str] = None
+    sub_name: Optional[str] = None
+    total_hours: float = 0.0  # computed at write time (headcount * hours_per_person)
     created_by: Optional[str] = None
     created_at: datetime
 
@@ -615,6 +732,10 @@ class Rfi(ReadModel):
     time_impact_estimated_days: Optional[int] = None
     created_by: Optional[str] = None
     created_at: datetime
+    # Bucket C3a Phase 1 — back-pointer to the gating_entities row that
+    # represents this RFI as a scheduleable CPM node. Auto-populated on
+    # POST /rfis. Older records get this via the 002 backfill.
+    gating_entity_id: Optional[str] = None
 
 
 class ChangeOrderCreate(StrictModel):
@@ -731,6 +852,25 @@ class Delay(ReadModel):
     # AI report (Phase B) — saved between views so regen is opt-in.
     ai_report: Optional[str] = None
     ai_report_generated_at: Optional[datetime] = None
+    # Bucket C1 Phase 5 — populated when status transitions to resolved.
+    # cpm_impact_summary entries: {task_id, projected_impact_days,
+    # actual_days_open, absorbed_days, restored_float_days,
+    # projected_finish_shift_days}.
+    cpm_impact_summary: List[dict] = Field(default_factory=list)
+    released_float_on_resolution: List[str] = Field(default_factory=list)
+    # Bucket C2 Phase 1 — AI mitigation scenarios. active_scenarios holds
+    # the current 3 mitigations.id values (A/B/C). scenario_history is a
+    # log of past generations (each entry: {generated_at, scenario_ids: [3 ids]})
+    # so the user can compare how AI thinking evolved across regenerations.
+    # chosen_mitigation_id stays null until Phase 2's /choose endpoint runs.
+    active_scenarios: List[str] = Field(default_factory=list)
+    scenario_history: List[dict] = Field(default_factory=list)
+    chosen_mitigation_id: Optional[str] = None
+    scenarios_last_generated_at: Optional[datetime] = None
+    # Bucket C2 Phase 2 — snapshot of per_task_impacts at the moment a
+    # scenario was chosen, so /unchoose can restore the original split.
+    # Populated only while chosen_mitigation_id is set; cleared on unchoose.
+    per_task_impacts_pre_choose: Optional[List[dict]] = None
     created_at: datetime
 
 
@@ -793,6 +933,10 @@ class QcIssue(ReadModel):
 
 
 # ---------- Photos ----------
+PhotoClass = Literal["progress", "discovery", "damage", "quality", "safety", "coordination", "closeout"]
+EVIDENTIARY_CLASSES = ("discovery", "damage", "quality")
+
+
 class PhotoCreate(StrictModel):
     project_id: str
     location_id: Optional[str] = None
@@ -801,6 +945,29 @@ class PhotoCreate(StrictModel):
     storage_path: str
     caption: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+    # Bucket C3b Phase 4 — required class tag (default progress for back-
+    # compat with old upload UIs). Optional drawing pin at upload time.
+    photo_class: PhotoClass = "progress"
+    drawing_pin_id: Optional[str] = None
+    pin_drawing_id: Optional[str] = None
+    pin_x: Optional[float] = None
+    pin_y: Optional[float] = None
+
+
+class PhotoUpdate(StrictModel):
+    """Phase 4 — caption + class editable; file is NOT replaceable
+    (tamper-evidence). Class change writes its own audit entry so the
+    chain shows when an evidentiary class flipped to/from progress."""
+    caption: Optional[str] = None
+    photo_class: Optional[PhotoClass] = None
+    tags: Optional[List[str]] = None
+
+
+class PhotoPinPayload(StrictModel):
+    drawing_pin_id: Optional[str] = None
+    pin_drawing_id: Optional[str] = None
+    pin_x: Optional[float] = None
+    pin_y: Optional[float] = None
 
 
 class Photo(ReadModel):
@@ -827,6 +994,20 @@ class Photo(ReadModel):
     camera_make: Optional[str] = None
     camera_model: Optional[str] = None
     created_at: datetime
+    # Bucket C3b Phase 4 — evidentiary discipline. sha256_hash is computed
+    # at upload from file bytes and never changes; mismatch_flag is true
+    # when device clock vs server clock skew exceeds 60 seconds.
+    sha256_hash: Optional[str] = None
+    device_timestamp: Optional[datetime] = None
+    server_received_timestamp: Optional[datetime] = None
+    timestamp_mismatch_flag: bool = False
+    exif_preserved: bool = True
+    photo_class: PhotoClass = "progress"
+    evidentiary_flag: bool = False  # auto: class in evidentiary set AND pin present
+    drawing_pin_id: Optional[str] = None
+    pin_drawing_id: Optional[str] = None
+    pin_x: Optional[float] = None
+    pin_y: Optional[float] = None
 
 
 # ---------- Work items / field issues ----------
@@ -866,6 +1047,8 @@ class WorkItem(ReadModel):
     closed_at: Optional[datetime] = None
     closure_summary: Optional[str] = None
     created_at: datetime
+    # Bucket C3a Phase 1 — back-pointer to the gating_entities CPM node.
+    gating_entity_id: Optional[str] = None
 
 
 class WorkItemLinkCreate(StrictModel):
@@ -1031,6 +1214,71 @@ class CopilotResponse(ReadModel):
     usage: dict = Field(default_factory=dict)
 
 
+# ============================================================
+# Bucket C2 — AI mitigation scenarios for delays
+# ============================================================
+MitigationSource = Literal["ai_recovery_engine", "human_proposal", "sub_proposal", "owner_request"]
+MitigationDecisionStatus = Literal["proposed", "chosen", "not_chosen", "superseded", "executed", "outcome_recorded"]
+MitigationRiskLevel = Literal["low", "medium", "high"]
+
+
+class MitigationChooseRequest(StrictModel):
+    """Phase 2 — payload for POST /mitigations/{id}/choose. Rationale
+    optional; we still capture decision_made_by from auth context."""
+    decision_rationale: Optional[str] = None
+
+
+class MitigationOutcomeRequest(StrictModel):
+    """Phase 3 — payload for PATCH /mitigations/{id}/record-outcome.
+    All three fields optional so a user without dollar/day numbers can
+    submit just notes ("looks like the freight expedite worked but
+    we don't have invoices yet"). At least one field MUST be provided
+    for the call to count — backend rejects all-empty payloads."""
+    actual_cost_usd: Optional[float] = None
+    actual_time_recovered_days: Optional[float] = None
+    outcome_notes: Optional[str] = None
+
+
+class Mitigation(ReadModel):
+    """One AI-generated (or human-proposed) mitigation scenario for a delay.
+
+    Lives only on the sidebar Delay detail page; never surfaced on the
+    daily report. AI normally generates 3 at a time labelled A/B/C; the
+    user picks one (Phase 2) and records actuals on resolution (Phase 3).
+    Old generations stay in this collection with status='superseded' so
+    the calibration loop can RAG against historical scenario+outcome
+    pairs."""
+    id: str
+    tenant_id: str
+    project_id: str
+    linked_delay_id: str
+    linked_task_ids: List[str] = Field(default_factory=list)
+    source: MitigationSource = "ai_recovery_engine"
+    scenario_label: Optional[str] = None  # "A" | "B" | "C" | None for human
+    strategy_name: str
+    assumption: str
+    proposed_action_description: str
+    prerequisites: List[str] = Field(default_factory=list)
+    estimated_schedule_impact_days: float = 0
+    estimated_cost_impact_usd: float = 0
+    estimated_risk_level: MitigationRiskLevel = "medium"
+    estimated_confidence: float = 0.5
+    ai_reasoning: str = ""
+    decision_status: MitigationDecisionStatus = "proposed"
+    proposed_at: datetime
+    proposed_by_user_id: Optional[str] = None
+    decision_made_at: Optional[datetime] = None
+    decision_made_by_user_id: Optional[str] = None
+    decision_rationale: Optional[str] = None
+    executed_action_payload: Optional[dict] = None
+    actual_cost_usd: Optional[float] = None
+    actual_time_recovered_days: Optional[float] = None
+    outcome_recorded_at: Optional[datetime] = None
+    outcome_notes: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
 class RecoveryRequest(StrictModel):
     project_id: str
     target_activity_id: str
@@ -1056,3 +1304,330 @@ class RfiDraftRequest(StrictModel):
     subject: str
     context: str
     schedule_activity_id: Optional[str] = None
+
+
+# ============================================================
+# Bucket C3a — Gating entities + project calendar
+# ============================================================
+GatingEntityType = Literal["rfi", "submittal", "bulletin", "field_issue",
+                            "coordination_request", "mop", "hot_work_permit"]
+GatingEntityStatus = Literal["draft", "submitted", "open", "under_review",
+                              "awaiting_clarification", "responded", "closed",
+                              "withdrawn", "expired"]
+OwnerAttribution = Literal["gc", "a_e", "owner", "sub", "external_authority",
+                            "tenant", "none"]
+CauseClass = Literal["design_clarification", "design_change",
+                      "differing_site_condition", "concealed_condition",
+                      "tenant_coordination", "building_coordination",
+                      "regulatory", "utility", "procurement", "other"]
+
+
+class GatingEntity(ReadModel):
+    """Polymorphic CPM-node wrapper around RFI / Submittal / WorkItem /
+    Bulletin / CoordinationRequest. Phase 1 wires RFI / Submittal /
+    WorkItem (the three with existing endpoints); Bulletin and
+    CoordinationRequest enums kept for forward compatibility.
+
+    The underlying entity_id row keeps its entity-specific fields
+    (rfi_number, subject, response_text, etc.) — this row holds the
+    schedule-relevant projection (submitted_at, target_response_at,
+    age, SLA flag, gates_task_ids) so the rest of the platform can
+    treat all gating entities uniformly."""
+    id: str
+    tenant_id: str
+    project_id: str
+    entity_type: GatingEntityType
+    entity_id: str  # FK to type-specific collection
+    # Denormalized so the dropdown UI doesn't need a per-row join.
+    entity_number: Optional[str] = None  # e.g. "RFI-014" / "SUB-008"
+    display_label: Optional[str] = None  # e.g. "RFI-014: Cast iron line routing"
+
+    # Schedule fields
+    submitted_at: Optional[datetime] = None
+    target_response_at: Optional[datetime] = None
+    actual_responded_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    sla_working_days: int = 10
+
+    # State
+    status: GatingEntityStatus = "open"
+    owner_attribution: OwnerAttribution = "none"
+    cause_class: CauseClass = "other"
+
+    # Linkage
+    gates_task_ids: List[str] = Field(default_factory=list)
+
+    # Computed at read time (not persisted authoritatively — refreshed
+    # via services.gating_entities.compute_age_fields when read)
+    current_age_calendar_days: Optional[int] = None
+    current_age_working_days: Optional[int] = None
+    is_over_sla: bool = False
+
+    # Audit
+    privileged: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class ProjectCalendarDay(ReadModel):
+    """One row per (project, calendar_date). C3a only populates
+    is_working_day; weather / closure tracking lands in C3b."""
+    id: str
+    tenant_id: str
+    project_id: str
+    calendar_date: date
+    is_working_day: bool = True
+    is_holiday: bool = False
+    is_building_closed: bool = False
+    is_restricted_access: bool = False
+    notes: Optional[str] = None
+    created_at: datetime
+
+
+# ============================================================
+# Bucket C3b — Coordination event log + per-trade-zone presence
+# ============================================================
+CoordinationChannel = Literal[
+    "email", "phone", "in_person", "formal_letter",
+    "text_message", "meeting", "system_notification",
+]
+CoordinationDirection = Literal["inbound", "outbound", "internal"]
+CoordinationTopic = Literal[
+    "tenant_access", "building_coordination", "a_e_clarification",
+    "owner_direction", "sub_coordination", "regulatory", "safety",
+    "quality", "scope", "payment", "other",
+]
+CoordinationOutcome = Literal[
+    "agreement", "disagreement", "pending", "informational", "escalation_required",
+]
+
+
+class CoordinationEventCreate(StrictModel):
+    """Phase 1 create payload. summary + occurred_at + channel + direction
+    + topic + other_party_name are the minimum the platform demands; the
+    rest fills in over time as evidence accumulates."""
+    project_id: str
+    occurred_at: datetime
+    channel: CoordinationChannel
+    direction: CoordinationDirection
+    our_party_user_id: Optional[str] = None
+    other_party_name: str
+    other_party_org: Optional[str] = None
+    other_party_role: Optional[str] = None
+    other_party_email: Optional[str] = None
+    other_party_phone: Optional[str] = None
+    topic: CoordinationTopic
+    topic_other_description: Optional[str] = None
+    summary: str
+    detail_text: Optional[str] = None
+    outcome: CoordinationOutcome = "informational"
+    outcome_notes: Optional[str] = None
+    evidence_attachment_ids: List[str] = Field(default_factory=list)
+    linked_rfi_ids: List[str] = Field(default_factory=list)
+    linked_field_issue_ids: List[str] = Field(default_factory=list)
+    linked_submittal_ids: List[str] = Field(default_factory=list)
+    linked_bulletin_ids: List[str] = Field(default_factory=list)
+    linked_activity_ids: List[str] = Field(default_factory=list)
+    linked_gating_entity_ids: List[str] = Field(default_factory=list)
+    linked_daily_report_id: Optional[str] = None
+    # Phase 2 marks events created by the voice extractor — UI shows them
+    # as a "voice draft" so the user can review before treating as final.
+    voice_extracted: bool = False
+
+
+class CoordinationEventUpdate(StrictModel):
+    """All fields optional — patch what changed. project_id intentionally
+    not patchable (would orphan the row across tenants/projects)."""
+    occurred_at: Optional[datetime] = None
+    channel: Optional[CoordinationChannel] = None
+    direction: Optional[CoordinationDirection] = None
+    our_party_user_id: Optional[str] = None
+    other_party_name: Optional[str] = None
+    other_party_org: Optional[str] = None
+    other_party_role: Optional[str] = None
+    other_party_email: Optional[str] = None
+    other_party_phone: Optional[str] = None
+    topic: Optional[CoordinationTopic] = None
+    topic_other_description: Optional[str] = None
+    summary: Optional[str] = None
+    detail_text: Optional[str] = None
+    outcome: Optional[CoordinationOutcome] = None
+    outcome_notes: Optional[str] = None
+    evidence_attachment_ids: Optional[List[str]] = None
+    linked_rfi_ids: Optional[List[str]] = None
+    linked_field_issue_ids: Optional[List[str]] = None
+    linked_submittal_ids: Optional[List[str]] = None
+    linked_bulletin_ids: Optional[List[str]] = None
+    linked_activity_ids: Optional[List[str]] = None
+    linked_gating_entity_ids: Optional[List[str]] = None
+    linked_daily_report_id: Optional[str] = None
+    voice_extracted: Optional[bool] = None
+
+
+class CoordinationEvent(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    occurred_at: datetime
+    channel: CoordinationChannel
+    direction: CoordinationDirection
+    our_party_user_id: Optional[str] = None
+    other_party_name: str
+    other_party_org: Optional[str] = None
+    other_party_role: Optional[str] = None
+    other_party_email: Optional[str] = None
+    other_party_phone: Optional[str] = None
+    topic: CoordinationTopic
+    topic_other_description: Optional[str] = None
+    summary: str
+    detail_text: Optional[str] = None
+    outcome: CoordinationOutcome = "informational"
+    outcome_notes: Optional[str] = None
+    evidence_attachment_ids: List[str] = Field(default_factory=list)
+    linked_rfi_ids: List[str] = Field(default_factory=list)
+    linked_field_issue_ids: List[str] = Field(default_factory=list)
+    linked_submittal_ids: List[str] = Field(default_factory=list)
+    linked_bulletin_ids: List[str] = Field(default_factory=list)
+    linked_activity_ids: List[str] = Field(default_factory=list)
+    linked_gating_entity_ids: List[str] = Field(default_factory=list)
+    linked_daily_report_id: Optional[str] = None
+    voice_extracted: bool = False
+    created_at: datetime
+    created_by_user_id: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    # Soft-delete marker — list endpoints filter where this is None.
+    deleted_at: Optional[datetime] = None
+    deleted_by_user_id: Optional[str] = None
+
+
+# ============================================================
+# Bucket C3c — Schedule update diffs (version-to-version)
+# ============================================================
+class ScheduleUpdateDiff(ReadModel):
+    """One row per pair of approved schedule versions. Auto-generated when
+    a new schedule_proposal flips to status='approved' and a prior
+    approved proposal exists for the same project. Stored as queryable
+    JSON (not PDF) so the TIA generator can pull it later."""
+    id: str
+    tenant_id: str
+    project_id: str
+    earlier_schedule_version_id: str  # prior approved proposal id
+    later_schedule_version_id: str    # new approved proposal id (the trigger)
+    computed_at: datetime
+
+    # Aggregate stats
+    activities_added_count: int = 0
+    activities_removed_count: int = 0
+    activities_modified_count: int = 0
+    predecessors_added_count: int = 0
+    predecessors_removed_count: int = 0
+    predecessors_modified_count: int = 0
+    cp_changes_count: int = 0
+    total_change_percentage: float = 0.0
+
+    # Detailed payload (free-form by design — heterogeneous keys per row)
+    activities_added: List[dict] = Field(default_factory=list)
+    activities_removed: List[dict] = Field(default_factory=list)
+    activities_modified: List[dict] = Field(default_factory=list)
+    predecessor_changes: List[dict] = Field(default_factory=list)
+    newly_critical_activities: List[str] = Field(default_factory=list)
+    removed_critical_activities: List[str] = Field(default_factory=list)
+    total_float_distribution_shift: dict = Field(default_factory=dict)
+
+    # AI narrative — generated on demand via /ai-narrative endpoint
+    ai_narrative: Optional[str] = None
+    ai_narrative_generated_at: Optional[datetime] = None
+    ai_narrative_generated_by: Optional[str] = None
+
+
+# ============================================================
+# Bucket C3c — Cascade snapshots (RFI-to-CPM projected slip)
+# ============================================================
+class CascadeSnapshot(ReadModel):
+    """Snapshot of one open gating entity's projected schedule impact at
+    multiple N-day horizons. New row per recompute; never overwrite —
+    historical record is the point."""
+    id: str
+    tenant_id: str
+    project_id: str
+    computed_at: datetime
+    gating_entity_id: str
+    directly_gated_activity_ids: List[str] = Field(default_factory=list)
+    transitively_gated_activity_ids: List[str] = Field(default_factory=list)
+    projected_slip_at_n5_days: float = 0.0
+    projected_slip_at_n10_days: float = 0.0
+    projected_slip_at_n20_days: float = 0.0
+    projected_cp_impact_at_n5_days: float = 0.0
+    projected_cp_impact_at_n10_days: float = 0.0
+    projected_cp_impact_at_n20_days: float = 0.0
+    source_schedule_version_id: Optional[str] = None  # latest approved proposal id at compute time
+    open_age_working_days: Optional[int] = None
+    sla_status: Optional[str] = None  # under_sla | at_sla | over_sla
+    severity_band: Optional[str] = None  # green | yellow | orange | red
+
+
+# ============================================================
+# Bucket C3c — TIA source document generations
+# ============================================================
+TIA_DEFAULT_PRIVILEGE_FLAG = True
+
+
+class TIAGenerationCreate(StrictModel):
+    project_id: str
+    date_range_start: date
+    date_range_end: date
+    cause_class: Optional[str] = None
+    zone_id: Optional[str] = None
+    gating_entity_id: Optional[str] = None
+
+    # Bucket C3c Phase 6 — guard against malformed ranges before the
+    # service spends time gathering data. Pydantic v2 model_validator
+    # runs after individual field validation; raise -> 422 from FastAPI.
+    def model_post_init(self, __context) -> None:
+        if self.date_range_end < self.date_range_start:
+            raise ValueError("date_range_end must be >= date_range_start")
+        if (self.date_range_end - self.date_range_start).days > 1095:
+            raise ValueError("Date range cannot exceed 3 years")
+
+
+class TIADownloadEntry(ReadModel):
+    downloaded_at: datetime
+    downloaded_by_user_id: Optional[str] = None
+    format: str  # json | word | pdf
+    privilege_state_at_download: bool
+
+
+class TIAGeneration(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    generated_at: datetime
+    generated_by_user_id: Optional[str] = None
+    status: str = "complete"  # generating | complete | failed
+    error: Optional[str] = None
+
+    date_range_start: date
+    date_range_end: date
+    filters_applied: dict = Field(default_factory=dict)
+
+    structured_json_artifact_id: Optional[str] = None
+    word_doc_artifact_id: Optional[str] = None
+    evidence_index_pdf_artifact_id: Optional[str] = None
+
+    delay_events_count: int = 0
+    mitigations_count: int = 0
+    coordination_events_count: int = 0
+    photos_evidentiary_count: int = 0
+    schedule_diffs_count: int = 0
+    total_evidence_items: int = 0
+
+    counsel_privileged_work_product: bool = TIA_DEFAULT_PRIVILEGE_FLAG
+    privilege_unflagged_at: Optional[datetime] = None
+    privilege_unflagged_by: Optional[str] = None
+    privilege_unflag_reason: Optional[str] = None
+
+    download_log: List[TIADownloadEntry] = Field(default_factory=list)
+
+
+class TIAUnflagPayload(StrictModel):
+    reason: str = Field(..., min_length=3, max_length=500)

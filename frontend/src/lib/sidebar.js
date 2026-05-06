@@ -26,6 +26,8 @@ export const SIDEBAR_SECTIONS = [
       { label: "Delays", path: "/delays", icon: AlertTriangle, testid: "sidebar-delays" },
       { label: "Safety", path: "/safety-events", icon: ShieldAlert, testid: "sidebar-safety" },
       { label: "QC issues", path: "/qc-issues", icon: ClipboardCheck, testid: "sidebar-qc" },
+      // Bucket C3b Phase 1 — coordination event log (TIA-ready).
+      { label: "Coordination", path: "/coordination", icon: MessagesSquare, testid: "sidebar-coordination" },
     ],
   },
   {
@@ -33,7 +35,11 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Tasks", path: "/tasks", icon: ListChecks, testid: "sidebar-tasks" },
       { label: "Look ahead", path: "/lookahead", icon: CalendarRange, testid: "sidebar-lookahead" },
+      // Bucket C3c Phase 1 — schedule update diffs (TIA-ready).
+      { label: "Schedule updates", path: "/schedule-updates", icon: GitPullRequest, testid: "sidebar-schedule-updates" },
       { label: "Weekly reports", path: "/weekly-reports", icon: FileBarChart, testid: "sidebar-weekly-reports" },
+      // Bucket C3c Phase 3 — calendar reconciliation (TIA-ready).
+      { label: "Calendar reconciliation", path: "/calendar-reconciliation", icon: CalendarClock, testid: "sidebar-calendar-reconciliation" },
       { label: "Locations", path: "/locations", icon: MapPin, testid: "sidebar-locations" },
       { label: "Polygon editor", path: "/polygon-editor", icon: MapPin, testid: "sidebar-polygon-editor" },
       { label: "Spatial 3D", path: "/spatial-3d", icon: Box, testid: "sidebar-spatial-3d" },
@@ -57,7 +63,11 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Approvals", path: "/approvals", icon: BadgeCheck, badgeKey: "approvals", testid: "sidebar-approvals" },
       { label: "Field issues", path: "/work-items", icon: Wrench, badgeKey: "work_items", testid: "sidebar-work-items" },
+      // Bucket C3c Phase 2 — RFI-to-CPM cascade dashboard.
+      { label: "Cascade", path: "/cascade-dashboard", icon: Activity, testid: "sidebar-cascade" },
       { label: "Recovery", path: "/recovery", icon: Sparkles, testid: "sidebar-recovery" },
+      // Bucket C3c Phase 4 — TIA source document generator.
+      { label: "TIA generator", path: "/tia", icon: FileText, testid: "sidebar-tia" },
     ],
   },
   {

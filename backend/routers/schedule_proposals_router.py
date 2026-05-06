@@ -12,7 +12,7 @@ Endpoints:
   POST   /api/schedule-proposals/{id}/reject    (admin/pm)
   POST   /api/schedule-proposals/{id}/refresh-ai-review
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from typing import Optional
 from datetime import datetime, date
 from database import get_db, tenant_filter
@@ -22,7 +22,7 @@ from models import (
 from auth import require_tenant
 from audit import write_audit
 from services.schedule_parser import parse_schedule_file
-from services.schedule_diff import compute_schedule_diff
+from services.schedule_diff import compute_schedule_diff, auto_diff_on_approval
 from services.schedule_ai_review import review_schedule_diff
 from services.schedule_proposal import parsed_to_task_create_payload, validate_payload
 from services.schedule_summary_filter import detect_summary_rows, visible_rows
@@ -174,10 +174,53 @@ async def get_proposal(proposal_id: str, ctx: dict = Depends(require_tenant)):
 # ============================================================
 # Approve — applies parsed_rows to tasks collection
 # ============================================================
+async def _bg_diff_and_audit(tenant_id: str, project_id: str, proposal_id: str,
+                              actor_id: Optional[str], request_id: Optional[str]) -> None:
+    """Bucket C3c Phase 1 — runs after the approve_proposal request returns.
+    Computes the version-to-version diff against the prior approved
+    proposal and writes an audit entry. Best-effort — never raises into
+    the caller because this is a BackgroundTask."""
+    try:
+        row = await auto_diff_on_approval(tenant_id, project_id, proposal_id)
+    except Exception as e:
+        # Surface to audit so operators can find it; don't crash the BG task.
+        try:
+            await write_audit(
+                tenant_id=tenant_id, table_name="schedule_update_diffs",
+                op="SCHEDULE_DIFF_GENERATION_FAILED",
+                record_id=proposal_id, before=None,
+                after={"error": str(e)[:500], "later_schedule_version_id": proposal_id},
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception:
+            pass
+        return
+    if not row:
+        return
+    try:
+        await write_audit(
+            tenant_id=tenant_id, table_name="schedule_update_diffs",
+            op="SCHEDULE_DIFF_GENERATED",
+            record_id=row["id"], before=None,
+            after={
+                "earlier_schedule_version_id": row["earlier_schedule_version_id"],
+                "later_schedule_version_id": row["later_schedule_version_id"],
+                "activities_added_count": row.get("activities_added_count", 0),
+                "activities_removed_count": row.get("activities_removed_count", 0),
+                "activities_modified_count": row.get("activities_modified_count", 0),
+                "cp_changes_count": row.get("cp_changes_count", 0),
+            },
+            actor_id=actor_id, request_id=request_id,
+        )
+    except Exception:
+        pass
+
+
 @router.post("/schedule-proposals/{proposal_id}/approve")
 async def approve_proposal(
     proposal_id: str,
     payload: ScheduleProposalDecision,
+    bg: BackgroundTasks,
     ctx: dict = Depends(require_tenant),
 ):
     if not _is_pm_or_admin(ctx["user"].get("role")):
@@ -292,6 +335,16 @@ async def approve_proposal(
         await compute_cpm(ctx["tenant_id"], project_id)
     except Exception:
         pass
+
+    # Bucket C3c Phase 1 — schedule version diff against prior approved
+    # proposal. Runs as BackgroundTask so the approval response stays fast
+    # (diff walks both schedules and writes audit; can take seconds on
+    # large projects). Idempotent so retries are safe.
+    bg.add_task(
+        _bg_diff_and_audit,
+        ctx["tenant_id"], project_id, proposal_id,
+        ctx["user"]["id"], ctx["request_id"],
+    )
 
     # Also persist a lightweight import history row so /imports list stays accurate.
     await db.imports.insert_one({

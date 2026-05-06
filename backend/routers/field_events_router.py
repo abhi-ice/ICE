@@ -5,7 +5,7 @@ from typing import Optional
 from database import get_db, tenant_filter
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate,
-    QcIssue, QcIssueCreate, Photo, PhotoCreate,
+    QcIssue, QcIssueCreate, Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
 from auth import require_tenant
@@ -114,6 +114,16 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    # Bucket C1 Phase 2 — opening a delay flips has_open_blocker on every
+    # linked task and may shift its computed_status to 'blocked'.
+    # Bucket C1 Phase 4 — and pushes downstream projected_finish dates.
+    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    for tid in (linked_ids or []):
+        await compute_and_persist_status(db, ctx["tenant_id"], tid,
+                                          actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if linked_ids:
+        await compute_projected_finish_dates(db, ctx["tenant_id"], doc["project_id"],
+                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(doc))
 
 
@@ -161,10 +171,15 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         updates["linked_task_ids"] = new_ids
         updates["per_task_impacts"] = new_impacts
 
-    # Status transition → resolved: stamp resolver fields if not provided
+    # Status transition → resolved: stamp resolver fields if not provided.
+    # Note (Item 1, 2026-05-06): we deliberately do NOT auto-fill
+    # resolved_date from utc_now().date() — the server's UTC date can be
+    # tomorrow relative to the user (e.g. EST 8 PM = next-day UTC), which
+    # caused same-day resolutions to render as 1 day open. The frontend
+    # always supplies resolved_date from a date picker prefilled with the
+    # user's LOCAL today, so the field arrives correct. Resolved_by we
+    # still stamp here because it isn't user-input.
     if updates.get("status") == "resolved":
-        if "resolved_date" not in updates:
-            updates["resolved_date"] = utc_now().date().isoformat()
         if "resolved_by_user_id" not in updates:
             updates["resolved_by_user_id"] = ctx["user"]["id"]
     # Any AI-report write also stamps generated_at
@@ -175,10 +190,92 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"$set": updates},
     )
     after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+
+    # Bucket C1 Phase 5 — when a delay transitions to resolved, compute
+    # actual-vs-projected impact per linked task and stamp a release/
+    # absorb summary on the delay so the AI report and detail page can
+    # surface it. Pure calculation; the projected_finish recompute below
+    # picks up the resolved state (excluded from the open-delay sum).
+    if updates.get("status") == "resolved" and before.get("status") != "resolved":
+        await _stamp_resolution_release(db, ctx["tenant_id"], delay_id, after)
+        # Bucket C2 Phase 3 — if a mitigation was chosen for this delay,
+        # flip it to 'executed' so the frontend knows to prompt for
+        # actuals. The transition is silent — no audit entry needed
+        # because the user-facing OUTCOME_RECORD audit fires when actuals
+        # are recorded via /mitigations/{id}/record-outcome.
+        if after.get("chosen_mitigation_id"):
+            await db.mitigations.update_one(
+                {"tenant_id": ctx["tenant_id"], "id": after["chosen_mitigation_id"],
+                 "decision_status": "chosen"},
+                {"$set": {"decision_status": "executed",
+                           "updated_at": utc_now().isoformat()}},
+            )
+        after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+
+    # Bucket C1 Phase 2 + 4 — recompute status for the union of OLD and
+    # NEW linked tasks (in case linkage changed) AND walk projected_finish
+    # forward across the project (a status change on one task can shift
+    # downstream activities even if their own linkage didn't move).
+    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    affected_task_ids = list({*(before.get("linked_task_ids") or []),
+                               *(after.get("linked_task_ids") or [])})
+    for tid in affected_task_ids:
+        await compute_and_persist_status(db, ctx["tenant_id"], tid,
+                                          actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if affected_task_ids:
+        await compute_projected_finish_dates(db, ctx["tenant_id"], after["project_id"],
+                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(after))
+
+
+async def _stamp_resolution_release(db, tenant_id: str, delay_id: str, delay: dict) -> None:
+    """Bucket C1 Phase 5 — at resolution time, compute actual elapsed days
+    vs each linked task's projected_impact_days, then stash the breakdown
+    on the delay record. Frontend Delay detail page + AI report read this.
+    Schedule float restoration happens automatically because the
+    subsequent compute_projected_finish_dates call no longer counts this
+    delay in its open-delay sum (status='resolved' excludes it)."""
+    logged = delay.get("logged_date") or delay.get("date")
+    resolved = delay.get("resolved_date")
+    actual_days = 0
+    if logged and resolved:
+        try:
+            ld = _date.fromisoformat(str(logged)[:10])
+            rd = _date.fromisoformat(str(resolved)[:10])
+            actual_days = max(0, (rd - ld).days)
+        except Exception:
+            actual_days = 0
+
+    cpm_impact: list[dict] = []
+    released: list[str] = []
+    for imp in (delay.get("per_task_impacts") or []):
+        proj = float(imp.get("projected_impact_days") or 0)
+        # Released float = projected - actual (clamped at 0). Schedule
+        # absorbs min(actual, projected); the remainder is restored.
+        absorbed = min(float(actual_days), proj)
+        restored = max(0.0, proj - float(actual_days))
+        cpm_impact.append({
+            "task_id": imp.get("task_id"),
+            "projected_impact_days": proj,
+            "actual_days_open": actual_days,
+            "absorbed_days": absorbed,
+            "restored_float_days": restored,
+            "projected_finish_shift_days": absorbed,
+        })
+        if restored > 0 and imp.get("task_id"):
+            released.append(imp["task_id"])
+
+    await db.delays.update_one(
+        {"id": delay_id},
+        {"$set": {
+            "cpm_impact_summary": cpm_impact,
+            "released_float_on_resolution": released,
+        }},
+    )
 
 
 @router.delete("/delays/{delay_id}")
@@ -191,6 +288,15 @@ async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="DELETE",
                       record_id=delay_id, before=before, after=None,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    # Bucket C1 Phase 2 + 4 — deleting a delay may unblock its linked
+    # tasks AND shift downstream projected_finish dates back in.
+    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    for tid in (before.get("linked_task_ids") or []):
+        await compute_and_persist_status(db, ctx["tenant_id"], tid,
+                                          actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if before.get("linked_task_ids"):
+        await compute_projected_finish_dates(db, ctx["tenant_id"], before["project_id"],
+                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return {"ok": True}
 
 
@@ -234,12 +340,33 @@ async def export_delay_ai_report_pdf(delay_id: str, ctx: dict = Depends(require_
         return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     delay = _enrich_delay_for_read(delay)
+
+    # Item 3 (2026-05-06) — render WBS code + description for linked tasks
+    # rather than a truncated UUID. Falls back to activity_code if wbs is
+    # missing, and to the truncated id if neither is set (impossible in
+    # practice but cheap to guard).
+    impacts = delay.get("per_task_impacts") or []
+    task_ids = [i["task_id"] for i in impacts if i.get("task_id")]
+    task_lookup: dict[str, dict] = {}
+    if task_ids:
+        task_docs = await db.tasks.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": task_ids}}),
+            {"_id": 0, "id": 1, "wbs": 1, "activity_code": 1, "description": 1},
+        ).to_list(len(task_ids))
+        task_lookup = {t["id"]: t for t in task_docs}
+
+    def _task_label(task_id: str) -> str:
+        t = task_lookup.get(task_id) or {}
+        code = t.get("wbs") or t.get("activity_code") or (task_id[:8] if task_id else "?")
+        desc = t.get("description") or ""
+        return f"{code} — {desc}" if desc else code
+
     impact_rows = "".join(
-        f"<tr><td class='code'>{esc(i.get('task_id', '')[:8])}</td>"
+        f"<tr><td>{esc(_task_label(i.get('task_id') or ''))}</td>"
         f"<td class='num'>{esc(i.get('projected_impact_days'))}</td>"
         f"<td class='num'>{esc(i.get('float_at_logging_days'))}</td>"
         f"<td>{('within float' if i.get('consumes_float_only') else 'pushes CP' if i.get('pushes_critical_path') else 'exceeds non-CP float')}</td></tr>"
-        for i in (delay.get("per_task_impacts") or [])
+        for i in impacts
     ) or "<tr><td colspan='4' class='muted'>No linked tasks.</td></tr>"
 
     body_html = esc(delay.get("ai_report") or "").replace("\n", "<br/>")
@@ -377,27 +504,166 @@ async def list_qc(project_id: str, ctx: dict = Depends(require_tenant)):
 
 
 # --- Photos ---
+def _compute_evidentiary(photo_class: str, pin_x, pin_y, drawing_id) -> bool:
+    """Bucket C3b Phase 4 — class in evidentiary set AND has a pin =
+    evidentiary. Pin is a recommendation, not blocking, on those classes."""
+    from models import EVIDENTIARY_CLASSES
+    if photo_class not in EVIDENTIARY_CLASSES:
+        return False
+    has_pin = (pin_x is not None and pin_y is not None) or bool(drawing_id)
+    return has_pin
+
+
+async def _hash_storage_object(storage_path: str) -> Optional[str]:
+    """Pull bytes from storage and SHA-256 them. Returns None on any
+    storage hiccup so the photo create still succeeds — sha256 backfill
+    can recompute later via 003_photo_evidentiary_backfill.py."""
+    if not storage_path:
+        return None
+    try:
+        from services.storage import get_object
+        import hashlib
+        data, _ct = get_object(storage_path)
+        return hashlib.sha256(data).hexdigest()
+    except Exception:
+        return None
+
+
 @router.post("/photos", response_model=Photo)
 async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    from datetime import timezone as _tz
     doc = payload.model_dump(mode="json")
+    now = utc_now()
+    sha256 = await _hash_storage_object(payload.storage_path)
+
+    # Bucket C3b Phase 4 — sha256 collision check. Real-world chance is
+    # negligible but we surface it as a 409 with the existing photo's id
+    # so the user can confirm it's an intentional re-upload (or skip).
+    if sha256:
+        existing = await db.photos.find_one(
+            tenant_filter(ctx["tenant_id"], {
+                "project_id": payload.project_id,
+                "sha256_hash": sha256,
+            }),
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "duplicate_photo",
+                    "message": "A photo with the same SHA-256 already exists in this project.",
+                    "existing_photo_id": existing["id"],
+                },
+            )
+
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
         "thumbnail_path": None,
-        "captured_at": utc_now().isoformat(),
+        "captured_at": now.isoformat(),
         "captured_by": ctx["user"]["id"],
         "visual_fingerprint_match_id": None,
         "visual_fingerprint_match_confidence": None,
         "visual_fingerprint_overridden": False,
-        "created_at": utc_now().isoformat(),
+        "created_at": now.isoformat(),
+        # Phase 4 evidentiary fields
+        "sha256_hash": sha256,
+        "device_timestamp": None,  # populated by extract-exif background call
+        "server_received_timestamp": now.isoformat(),
+        "timestamp_mismatch_flag": False,
+        "exif_preserved": True,
+        "evidentiary_flag": _compute_evidentiary(
+            doc.get("photo_class") or "progress",
+            doc.get("pin_x"), doc.get("pin_y"), doc.get("pin_drawing_id"),
+        ),
     })
     await db.photos.insert_one(doc.copy())
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_CREATE", record_id=doc["id"],
+        before=None, after=doc,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return Photo(**doc)
+
+
+@router.patch("/photos/{photo_id}", response_model=Photo)
+async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(require_tenant)):
+    """Caption + class + tags editable. File replacement intentionally
+    NOT supported (tamper-evidence). Class change emits its own audit op
+    so reviewers can see when an evidentiary classification flipped."""
+    db = get_db()
+    before = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Photo not found")
+    updates = {k: v for k, v in payload.model_dump(mode="json", exclude_unset=True).items()
+                if v is not None}
+    if not updates:
+        return Photo(**before)
+    # Recompute evidentiary_flag if class changed.
+    if "photo_class" in updates:
+        updates["evidentiary_flag"] = _compute_evidentiary(
+            updates["photo_class"],
+            before.get("pin_x"), before.get("pin_y"), before.get("pin_drawing_id"),
+        )
+    await db.photos.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"$set": updates},
+    )
+    after = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    op = "PHOTO_CLASS_CHANGE" if "photo_class" in updates and updates["photo_class"] != before.get("photo_class") else "PHOTO_UPDATE"
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos", op=op, record_id=photo_id,
+        before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return Photo(**after)
+
+
+@router.post("/photos/{photo_id}/pin", response_model=Photo)
+async def pin_photo(photo_id: str, payload: PhotoPinPayload, ctx: dict = Depends(require_tenant)):
+    """Set or clear the drawing pin on a photo. Refreshes evidentiary_flag
+    based on current photo_class + new pin state."""
+    db = get_db()
+    before = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Photo not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    # Recompute evidentiary_flag using NEW pin values where provided.
+    new_x = updates.get("pin_x", before.get("pin_x"))
+    new_y = updates.get("pin_y", before.get("pin_y"))
+    new_drawing = updates.get("pin_drawing_id", before.get("pin_drawing_id"))
+    updates["evidentiary_flag"] = _compute_evidentiary(
+        before.get("photo_class") or "progress", new_x, new_y, new_drawing,
+    )
+    await db.photos.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"$set": updates},
+    )
+    after = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_PIN_SET", record_id=photo_id,
+        before={k: before.get(k) for k in ("pin_x", "pin_y", "pin_drawing_id", "drawing_pin_id", "evidentiary_flag")},
+        after={k: updates.get(k, before.get(k)) for k in ("pin_x", "pin_y", "pin_drawing_id", "drawing_pin_id", "evidentiary_flag")},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return Photo(**after)
 
 
 @router.get("/projects/{project_id}/photos", response_model=list[Photo])
 async def list_photos(project_id: str, location_id: Optional[str] = None,
                       schedule_activity_id: Optional[str] = None,
+                      photo_class: Optional[str] = None,
+                      evidentiary_only: bool = False,
                       ctx: dict = Depends(require_tenant)):
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
@@ -405,5 +671,9 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
         f["location_id"] = location_id
     if schedule_activity_id:
         f["schedule_activity_id"] = schedule_activity_id
+    if photo_class:
+        f["photo_class"] = photo_class
+    if evidentiary_only:
+        f["evidentiary_flag"] = True
     docs = await db.photos.find(f, {"_id": 0}).sort("captured_at", -1).to_list(500)
     return [Photo(**d) for d in docs]
