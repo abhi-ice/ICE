@@ -6,11 +6,19 @@ import { useParams, Link } from "react-router-dom";
 import { ChevronLeft, Download, ShieldAlert, ShieldOff, History } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { getUser } from "../lib/auth";
 
 export default function TIAGenerationDetail() {
   const { id } = useParams();
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [unflagOpen, setUnflagOpen] = useState(false);
+  const [unflagReason, setUnflagReason] = useState("");
+  const [unflagBusy, setUnflagBusy] = useState(false);
+
+  const me = getUser();
+  const isAdmin = (me?.role || "").toLowerCase() === "admin";
 
   const load = () => {
     setLoading(true);
@@ -21,6 +29,34 @@ export default function TIAGenerationDetail() {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+
+  const unflag = async () => {
+    if (unflagReason.trim().length < 3) {
+      toast.error("Reason is required (3+ chars)");
+      return;
+    }
+    setUnflagBusy(true);
+    try {
+      await api.post(`/tia/generations/${id}/unflag-privilege`, { reason: unflagReason.trim() });
+      toast.success("Privilege unflagged");
+      setUnflagOpen(false);
+      setUnflagReason("");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Unflag failed");
+    } finally { setUnflagBusy(false); }
+  };
+
+  const reflag = async () => {
+    if (!window.confirm("Reflag this TIA as privileged? Downloads will be restricted to the generator and admins again.")) return;
+    try {
+      await api.post(`/tia/generations/${id}/reflag-privilege`);
+      toast.success("Privilege reflagged");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Reflag failed");
+    }
+  };
 
   const download = async (kind) => {
     try {
@@ -50,10 +86,61 @@ export default function TIAGenerationDetail() {
       </Link>
       <header className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-800">TIA generation detail</h1>
-        {doc.counsel_privileged_work_product
-          ? <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded"><ShieldAlert className="h-3 w-3" /> Privileged work product</span>
-          : <span className="inline-flex items-center gap-1 text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded"><ShieldOff className="h-3 w-3" /> Open</span>}
+        <div className="flex items-center gap-2">
+          {doc.counsel_privileged_work_product
+            ? <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded"><ShieldAlert className="h-3 w-3" /> Privileged work product</span>
+            : <span className="inline-flex items-center gap-1 text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded"><ShieldOff className="h-3 w-3" /> Open</span>}
+          {isAdmin && doc.counsel_privileged_work_product && (
+            <button data-testid="tia-unflag-privilege" onClick={() => setUnflagOpen(true)}
+              className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 inline-flex items-center gap-1">
+              <ShieldOff className="h-3 w-3" /> Unflag privilege
+            </button>
+          )}
+          {isAdmin && !doc.counsel_privileged_work_product && (
+            <button data-testid="tia-reflag-privilege" onClick={reflag}
+              className="h-7 px-2 rounded bg-amber-600 text-white text-xs hover:bg-amber-700 inline-flex items-center gap-1">
+              <ShieldAlert className="h-3 w-3" /> Reflag privilege
+            </button>
+          )}
+        </div>
       </header>
+
+      {!doc.counsel_privileged_work_product && doc.privilege_unflagged_at && (
+        <div className="bg-slate-50 border-l-4 border-slate-400 p-3 rounded mb-4 text-xs text-slate-600">
+          Privilege unflagged on <strong>{new Date(doc.privilege_unflagged_at).toLocaleString()}</strong>
+          {doc.privilege_unflagged_by && <> by user <span className="font-mono">{(doc.privilege_unflagged_by || "").slice(0, 8)}</span></>}
+          {doc.privilege_unflag_reason && <>. Reason: <em>"{doc.privilege_unflag_reason}"</em></>}
+        </div>
+      )}
+
+      <Dialog open={unflagOpen} onOpenChange={setUnflagOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Unflag counsel privilege</DialogTitle></DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-700">
+              Unflagging removes the access restriction on this TIA. <strong>All project members will be able to download
+              the JSON, Word doc, and evidence index PDF.</strong>
+            </p>
+            <p className="text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 text-xs">
+              This is a deliberate action. The unflag event (who, when, why) is captured on the row forever and in the audit log.
+              You can reflag later, but past downloads can't be reversed.
+            </p>
+            <div>
+              <label className="text-[11px] text-slate-500 uppercase">Reason (required)</label>
+              <textarea data-testid="tia-unflag-reason" rows={3} value={unflagReason} onChange={(e) => setUnflagReason(e.target.value)}
+                placeholder="e.g. shared with sub for change-order negotiation per counsel approval 2026-05-06"
+                className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setUnflagOpen(false)} className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300">Cancel</button>
+              <button data-testid="tia-unflag-confirm" onClick={unflag} disabled={unflagBusy}
+                className="h-9 px-3 rounded bg-rose-600 text-white text-sm hover:bg-rose-700 disabled:opacity-50">
+                {unflagBusy ? "Unflagging…" : "Confirm unflag"}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="bg-white border border-slate-200 rounded p-4 mb-4 space-y-2 text-sm">
         <div><span className="text-slate-500 text-xs uppercase">Generated:</span> {new Date(doc.generated_at).toLocaleString()}</div>
