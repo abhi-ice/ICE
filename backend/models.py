@@ -1580,6 +1580,15 @@ class TIAGenerationCreate(StrictModel):
     zone_id: Optional[str] = None
     gating_entity_id: Optional[str] = None
 
+    # Bucket C3c Phase 6 — guard against malformed ranges before the
+    # service spends time gathering data. Pydantic v2 model_validator
+    # runs after individual field validation; raise -> 422 from FastAPI.
+    def model_post_init(self, __context) -> None:
+        if self.date_range_end < self.date_range_start:
+            raise ValueError("date_range_end must be >= date_range_start")
+        if (self.date_range_end - self.date_range_start).days > 1095:
+            raise ValueError("Date range cannot exceed 3 years")
+
 
 class TIADownloadEntry(ReadModel):
     downloaded_at: datetime

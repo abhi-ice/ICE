@@ -254,7 +254,12 @@ async def maybe_notify(tenant_id: str, snap: dict) -> Optional[dict]:
 async def recompute_all_cascades(tenant_id: str, project_id: str) -> dict:
     """For every open gating_entity in the project, compute a fresh
     cascade snapshot and (if state changed) fire the threshold
-    notifications. Returns aggregate stats."""
+    notifications. Returns aggregate stats.
+
+    Bucket C3c Phase 6 adds a batch-level CASCADE_RECOMPUTE_BATCH audit
+    entry so cron-driven runs leave a trace even when no per-snapshot
+    notification fires (per-snapshot audits are too chatty for nightly
+    runs across hundreds of gates)."""
     db = get_db()
     ges = await db.gating_entities.find(
         tenant_filter(tenant_id, {
@@ -274,4 +279,22 @@ async def recompute_all_cascades(tenant_id: str, project_id: str) -> dict:
         notif = await maybe_notify(tenant_id, snap)
         if notif:
             notified += 1
+
+    # Batch-level audit -- single entry per recompute so the chain
+    # records when the snapshot family was refreshed.
+    if ges:
+        from audit import write_audit
+        try:
+            await write_audit(
+                tenant_id=tenant_id, table_name="cascade_snapshots",
+                op="CASCADE_RECOMPUTE_BATCH",
+                record_id=project_id, before=None,
+                after={"open_gates": len(ges), "computed": computed,
+                       "notified": notified},
+                actor_id=None, request_id=None,
+            )
+        except Exception:
+            # Audit failure must not crash the recompute.
+            pass
+
     return {"open_gates": len(ges), "computed": computed, "notified": notified}

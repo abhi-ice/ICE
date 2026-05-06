@@ -1,4 +1,5 @@
-"""Bucket C3b Phase 5 — unified migration runner.
+"""Bucket C3b Phase 5 — unified migration runner. Final list confirmed
+in Bucket C3c Phase 6.
 
 Runs every shipped migration in ascending numeric order. Each individual
 script is already idempotent (per-record skip checks), so re-running this
@@ -9,6 +10,13 @@ Order matters only weakly today (none of the migrations write to the same
 collection in conflicting ways), but stable order is defensive: the
 delays restructure (001) seeds linked_task_ids referenced by the gating
 backfill (002) calibration logic, and 003 is photos-only.
+
+Bucket C3c added no new migration files: the new collections
+(schedule_update_diffs, cascade_snapshots, tia_generations) are created
+by Mongo on first insert with no historical backfill needed (diffs and
+snapshots are forward-going by design; TIA generations have no prior
+data to lift). The _discover() guard catches a future addition that
+isn't registered here.
 
 Usage from backend/:
 

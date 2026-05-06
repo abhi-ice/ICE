@@ -12,6 +12,7 @@ on the download endpoints; Phase 4 stamps counsel_privileged_work_product
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from datetime import date
 from typing import Optional
+import asyncio
 import logging
 
 from database import get_db, tenant_filter
@@ -19,6 +20,13 @@ from auth import require_tenant
 from audit import write_audit
 from models import TIAGenerationCreate, TIAUnflagPayload, utc_now
 from services.tia_generator import generate_tia, fetch_artifact_bytes
+
+
+# Bucket C3c Phase 6 — TIA generation hard timeout. Empirically a 12-month
+# range over a busy project finishes in 30-60s; 5 minutes is the safety
+# valve. Hitting it almost certainly means the gather phase has a runaway
+# query, which Phase 6 surfaces as status='failed' rather than hanging.
+TIA_GENERATION_TIMEOUT_SECONDS = 300
 
 
 def _is_admin(ctx: dict) -> bool:
@@ -68,12 +76,35 @@ async def kick_off_generation(
     }
 
     try:
-        row = await generate_tia(
-            tenant_id=ctx["tenant_id"], project_id=project_id,
-            start=payload.date_range_start, end=payload.date_range_end,
-            filters=filters,
-            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        row = await asyncio.wait_for(
+            generate_tia(
+                tenant_id=ctx["tenant_id"], project_id=project_id,
+                start=payload.date_range_start, end=payload.date_range_end,
+                filters=filters,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            ),
+            timeout=TIA_GENERATION_TIMEOUT_SECONDS,
         )
+    except asyncio.TimeoutError:
+        # The generator's exception handler already marked the
+        # placeholder row failed if it got that far; if the timeout
+        # fired before the inner try/except, mark the latest 'generating'
+        # row for this user as failed so the UI doesn't lie.
+        try:
+            db = get_db()
+            await db.tia_generations.update_many(
+                tenant_filter(ctx["tenant_id"], {
+                    "project_id": project_id,
+                    "generated_by_user_id": ctx["user"]["id"],
+                    "status": "generating",
+                }),
+                {"$set": {"status": "failed",
+                            "error": f"Generation exceeded {TIA_GENERATION_TIMEOUT_SECONDS}s timeout"}},
+            )
+        except Exception:
+            pass
+        logger.exception("TIA generation timed out for project %s", project_id)
+        raise HTTPException(504, "TIA generation timed out (>5 min). Try a narrower date range.")
     except Exception as e:
         logger.exception("TIA generation failed for project %s", project_id)
         raise HTTPException(500, f"TIA generation failed: {str(e)[:300]}")
