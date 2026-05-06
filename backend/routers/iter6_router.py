@@ -37,8 +37,21 @@ def _html_escape(s: str | None) -> str:
 
 
 @router.get("/daily-reports/{daily_report_id}/pdf-rich")
-async def export_daily_report_pdf(daily_report_id: str, ctx: dict = Depends(require_tenant)):
-    """Stream a true PDF (WeasyPrint) of the daily report. Master prompt §10.5."""
+async def export_daily_report_pdf(
+    daily_report_id: str,
+    mode: Literal["internal", "external"] = "internal",
+    ctx: dict = Depends(require_tenant),
+):
+    """Stream a true PDF (WeasyPrint) of the daily report.
+
+    Phase F — `mode` query param toggles which sections render.
+      - internal (default): everything (header, weather, crew presence,
+        activity grid, open delay reminders, delays, QC issues, safety
+        events, RFIs, deliveries, photo summary, notes, audit trail).
+      - external: same as internal MINUS QC issues, Safety events,
+        and the rolled-forward Open delay reminders banner. The day's
+        Delays section itself stays — only the reminder banner is hidden.
+    """
     from weasyprint import HTML
     db = get_db()
     dr = await db.daily_reports.find_one(
@@ -46,17 +59,63 @@ async def export_daily_report_pdf(daily_report_id: str, ctx: dict = Depends(requ
     )
     if not dr:
         raise HTTPException(404, "Daily report not found")
-    rows = await db.daily_report_activities.find(
-        {"daily_report_id": daily_report_id}, {"_id": 0},
-    ).sort("position", 1).to_list(500)
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0},
     )
-    attendance = await db.daily_report_attendance.find(
-        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
-    ).to_list(200)
+    project_id = dr["project_id"]
 
-    rows_html = "".join(
+    grid = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id}, {"_id": 0},
+    ).sort("position", 1).to_list(500)
+    presence = await db.daily_presence.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+    ).sort("trade", 1).to_list(200)
+    delays = await db.delays.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+    ).sort("date", -1).to_list(200)
+    qc = await db.qc_issues.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+    ).sort("date", -1).to_list(200)
+    safety = await db.safety_events.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+    ).sort("date", -1).to_list(200)
+    rfis = await db.rfis.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
+    ).sort("date_initiated", -1).to_list(100)
+    deliveries = await db.deliveries.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "delivery_date": dr["report_date"]}), {"_id": 0},
+    ).to_list(100)
+    photos = await db.photos.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+        {"_id": 0, "id": 1, "caption": 1, "captured_at": 1},
+    ).sort("captured_at", -1).to_list(500)
+    audit_log = await db.audit_log.find(
+        tenant_filter(ctx["tenant_id"], {
+            "table_name": "daily_reports",
+            "record_id": daily_report_id,
+        }),
+        {"_id": 0, "created_at": 1, "op": 1, "actor_id": 1},
+    ).sort("created_at", -1).limit(50).to_list(50)
+
+    # Reminders — open/in_progress delays whose linked tasks intersect today's grid
+    grid_task_ids = {r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")}
+    reminders: list[dict] = []
+    if grid_task_ids and mode == "internal":
+        reminders = await db.delays.find(
+            tenant_filter(ctx["tenant_id"], {
+                "project_id": project_id,
+                "status": {"$in": ["open", "in_progress"]},
+                "linked_task_ids": {"$in": list(grid_task_ids)},
+                # Exclude delays logged today — those appear in the Delays
+                # section already, no need to double-list.
+                "id": {"$nin": [d["id"] for d in delays]},
+            }),
+            {"_id": 0},
+        ).sort("date", -1).to_list(100)
+
+    is_internal = mode == "internal"
+
+    grid_rows_html = "".join(
         f"<tr><td class='code'>{_html_escape(r.get('activity_code'))}</td>"
         f"<td>{_html_escape((r.get('activity_description') or '')[:80])}</td>"
         f"<td>{_html_escape(r.get('location_name') or '—')}</td>"
@@ -64,16 +123,68 @@ async def export_daily_report_pdf(daily_report_id: str, ctx: dict = Depends(requ
         f"<td class='num'>{r.get('pct_complete_end_of_day') or 0}%</td>"
         f"<td class='num'>{r.get('crew_count') or 0}</td>"
         f"<td class='num'>{r.get('hours_worked') or 0}</td>"
-        f"<td class='num'>{r.get('delay_minutes') or 0}</td></tr>"
-        for r in rows
+        f"<td>{_html_escape(r.get('status_at_end_of_day') or 'not_started')}</td></tr>"
+        for r in grid
     ) or "<tr><td colspan='8' class='muted'>No activities reported.</td></tr>"
 
-    att_html = "".join(
-        f"<tr><td>{_html_escape(a.get('name') or a.get('person_id') or '—')}</td>"
-        f"<td>{_html_escape(a.get('role') or '—')}</td>"
-        f"<td class='num'>{a.get('hours_on_site') or 0}</td></tr>"
-        for a in attendance
-    ) or "<tr><td colspan='3' class='muted'>No attendance recorded.</td></tr>"
+    presence_rows_html = "".join(
+        f"<tr><td>{_html_escape(p.get('trade'))}</td>"
+        f"<td>{_html_escape(p.get('company_name') or '—')}</td>"
+        f"<td class='num'>{p.get('headcount') or 0}</td>"
+        f"<td class='num'>{p.get('hours_per_person') or 0}</td>"
+        f"<td class='num'>{(p.get('headcount') or 0) * (p.get('hours_per_person') or 0):.1f}</td>"
+        f"<td>{_html_escape(p.get('notes') or '')}</td></tr>"
+        for p in presence
+    ) or "<tr><td colspan='6' class='muted'>No crew presence recorded.</td></tr>"
+
+    def event_rows(items, *, fields):
+        if not items:
+            return f"<tr><td colspan='{len(fields)}' class='muted'>None.</td></tr>"
+        return "".join(
+            "<tr>" + "".join(f"<td>{_html_escape(it.get(f) if not callable(f) else f(it))}</td>" for f in fields) + "</tr>"
+            for it in items
+        )
+
+    delays_html = event_rows(
+        delays,
+        fields=["severity", "status", lambda d: d.get("reason_category") or "—",
+                lambda d: ", ".join(d.get("linked_task_ids") or []) or "—",
+                "description"],
+    )
+    qc_html = event_rows(qc, fields=["severity", "status", "description"])
+    safety_html = event_rows(safety, fields=["event_type", "severity", "status", "description"])
+    rfi_html = event_rows(rfis, fields=["rfi_number", "subject", "status",
+                                         lambda r: r.get("date_initiated") or "—"])
+    delivery_html = event_rows(
+        deliveries,
+        fields=["vendor", "description", lambda d: d.get("po_number") or "—",
+                lambda d: d.get("status") or "—"],
+    )
+    photo_html = event_rows(
+        photos,
+        fields=[lambda p: (p.get("id", "")[:8]),
+                lambda p: p.get("caption") or "—",
+                lambda p: p.get("captured_at") or "—"],
+    )
+    audit_html = event_rows(
+        audit_log,
+        fields=["op", lambda a: a.get("actor_id") or "—", "created_at"],
+    )
+
+    reminder_html = ""
+    if is_internal and reminders:
+        cards = "".join(
+            f"<div class='reminder'>"
+            f"<b>{_html_escape(d.get('severity'))}</b> · "
+            f"{(d.get('description') or '')[:140]} · "
+            f"{len(d.get('linked_task_ids') or [])} tasks linked"
+            f"</div>"
+            for d in reminders
+        )
+        reminder_html = f"<h2>Open delay reminders ({len(reminders)})</h2>{cards}"
+
+    # External-mode flag in the page title so reviewers can tell at a glance
+    title_suffix = " — Client Copy" if not is_internal else ""
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset='utf-8'><style>
@@ -82,39 +193,79 @@ body {{ font-family: 'Helvetica', sans-serif; color: #0f172a; font-size: 10pt; }
 h1 {{ font-size: 18pt; margin: 0; }}
 .muted {{ color: #64748b; }}
 .meta {{ margin-top: 4px; font-size: 9pt; color: #475569; }}
-table {{ width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 8.5pt; }}
+table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 8.5pt; }}
 th {{ background: #1e293b; color: white; padding: 6px; text-align: left; font-weight: 600; }}
-td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; }}
+td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }}
 .code {{ font-family: monospace; font-size: 8pt; }}
 .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .pill {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e2e8f0; font-size: 8pt; }}
 .banner {{ background: #f1f5f9; border-left: 3px solid #2563eb; padding: 8px 12px; margin: 12px 0; font-size: 9pt; }}
+.reminder {{ background: #fffbea; border-left: 3px solid #d97706; padding: 6px 10px; margin: 4px 0; font-size: 9pt; }}
 h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; }}
+.audience {{ float: right; font-size: 8pt; color: #94a3b8; }}
 </style></head><body>
-<h1>Daily Report — {_html_escape(proj['name'] if proj else dr['project_id'])}</h1>
+<div class='audience'>{'CLIENT COPY' if not is_internal else 'INTERNAL'}</div>
+<h1>Daily Report — {_html_escape(proj['name'] if proj else dr['project_id'])}{title_suffix}</h1>
 <div class='meta'>Date: <b>{dr['report_date']}</b> · Status: <span class='pill'>{dr['status']}</span></div>
 <div class='banner'>
   <b>Weather:</b> {_html_escape(dr.get('weather_conditions') or 'n/a')} ·
   high {dr.get('weather_temp_high_f') or '—'}°F / low {dr.get('weather_temp_low_f') or '—'}°F ·
-  precip {dr.get('weather_precipitation_in') or 0}in
+  precip {dr.get('weather_precipitation_in') or 0}in ·
+  wind {dr.get('weather_wind_mph') or '—'}mph
 </div>
-<h2>Activity grid ({len(rows)})</h2>
+
+{reminder_html}
+
+<h2>Crew presence ({len(presence)})</h2>
 <table>
-<thead><tr><th>Code</th><th>Description</th><th>Location</th><th>SOD</th><th>EOD</th><th>Crew</th><th>Hrs</th><th>Delay (min)</th></tr></thead>
-<tbody>{rows_html}</tbody>
+<thead><tr><th>Trade</th><th>Company</th><th>Headcount</th><th>Hrs/person</th><th>Sub-total</th><th>Notes</th></tr></thead>
+<tbody>{presence_rows_html}</tbody>
 </table>
-<h2>Attendance ({len(attendance)})</h2>
+
+<h2>Activity grid ({len(grid)})</h2>
 <table>
-<thead><tr><th>Name</th><th>Role</th><th>Hours on site</th></tr></thead>
-<tbody>{att_html}</tbody>
+<thead><tr><th>Code</th><th>Description</th><th>Location</th><th>SOD</th><th>EOD</th><th>Crew</th><th>Hrs</th><th>Status</th></tr></thead>
+<tbody>{grid_rows_html}</tbody>
 </table>
-{"<h2>Notes</h2><div>" + _html_escape(dr.get('notes') or '') + "</div>" if dr.get('notes') else ""}
+
+<h2>Delays ({len(delays)})</h2>
+<table>
+<thead><tr><th>Severity</th><th>Status</th><th>Category</th><th>Linked tasks</th><th>Description</th></tr></thead>
+<tbody>{delays_html}</tbody>
+</table>
+
+{("<h2>QC issues (" + str(len(qc)) + ")</h2><table><thead><tr><th>Severity</th><th>Status</th><th>Description</th></tr></thead><tbody>" + qc_html + "</tbody></table>") if is_internal else ""}
+
+{("<h2>Safety events (" + str(len(safety)) + ")</h2><table><thead><tr><th>Type</th><th>Severity</th><th>Status</th><th>Description</th></tr></thead><tbody>" + safety_html + "</tbody></table>") if is_internal else ""}
+
+<h2>RFIs ({len(rfis)})</h2>
+<table>
+<thead><tr><th>Number</th><th>Subject</th><th>Status</th><th>Initiated</th></tr></thead>
+<tbody>{rfi_html}</tbody>
+</table>
+
+<h2>Deliveries ({len(deliveries)})</h2>
+<table>
+<thead><tr><th>Vendor</th><th>Description</th><th>PO</th><th>Status</th></tr></thead>
+<tbody>{delivery_html}</tbody>
+</table>
+
+<h2>Photos ({len(photos)})</h2>
+<table>
+<thead><tr><th>ID</th><th>Caption</th><th>Captured at</th></tr></thead>
+<tbody>{photo_html}</tbody>
+</table>
+
+{"<h2>Notes</h2><div>" + _html_escape(dr.get('notes') or '').replace(chr(10), '<br/>') + "</div>" if dr.get('notes') else ""}
+
+{("<h2>Audit trail (" + str(len(audit_log)) + ")</h2><table><thead><tr><th>Op</th><th>Actor</th><th>When</th></tr></thead><tbody>" + audit_html + "</tbody></table>") if is_internal else ""}
 </body></html>"""
     pdf = HTML(string=html).write_pdf()
+    suffix = "internal" if is_internal else "external"
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"content-disposition": f'attachment; filename="daily_report_{dr["report_date"]}.pdf"'},
+        headers={"content-disposition": f'attachment; filename="daily_report_{dr["report_date"]}_{suffix}.pdf"'},
     )
 
 

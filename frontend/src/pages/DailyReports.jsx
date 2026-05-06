@@ -168,11 +168,18 @@ function DailyReportDetail({ id, onBack }) {
     } finally { setBusy(false); }
   };
 
-  const downloadPdf = async () => {
-    const res = await api.get(`/daily-reports/${id}/pdf-rich`, { responseType: "blob" });
+  // Phase F — PDF export now takes a mode: "internal" (full) or "external"
+  // (omits QC, Safety, and the rolled-forward delay reminders banner).
+  const downloadPdf = async (mode = "internal") => {
+    const res = await api.get(`/daily-reports/${id}/pdf-rich`, {
+      params: { mode },
+      responseType: "blob",
+    });
     const url = URL.createObjectURL(res.data);
     const a = document.createElement("a");
-    a.href = url; a.download = `daily_report_${report.report_date}.pdf`; a.click();
+    a.href = url;
+    a.download = `daily_report_${report.report_date}_${mode}.pdf`;
+    a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -292,9 +299,13 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </div>
         )}
         <div className="ml-auto flex gap-2">
-          <button data-testid="dr-download-pdf" onClick={onDownload} disabled={busy}
+          <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
+            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
+            <Download className="h-4 w-4" /> Export for Internal
+          </button>
+          <button data-testid="dr-download-pdf-external" onClick={() => onDownload("external")} disabled={busy}
             className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
-            <Download className="h-4 w-4" /> Export PDF
+            <Download className="h-4 w-4" /> Export for External
           </button>
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
