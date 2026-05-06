@@ -25,6 +25,7 @@ from pydantic import Field
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
+from audit import write_audit
 
 
 router = APIRouter(tags=["iter8"])
@@ -33,14 +34,29 @@ router = APIRouter(tags=["iter8"])
 # ============================================================
 # Generic CRUD helper
 # ============================================================
+# Per-entity behaviour for the generic /crud/{entity}/{id} routes.
+#
+# soft_delete=True keeps the row but marks status="deleted". This is
+# safe for entities with foreign-key references elsewhere (a deleted
+# crew is still referenced by daily_presence rows).
+#
+# soft_delete=False does an actual delete_one. Used for leaf entities
+# (delays, qc-issues, safety-events, floors, locations, photos) where
+# nothing else references them and the user expects the row to vanish.
+#
+# Bug fix 2026-05: delays/safety-events/qc-issues were soft-delete but
+# the corresponding list endpoints don't filter status="deleted", so
+# the rows kept showing up after the user clicked Delete (and no audit
+# entry was written). Switched to hard delete to match the Phase A
+# DELETE /delays/{id} behaviour and to match what the UI promises.
 ENTITY_CONFIG = {
     "crews":           {"collection": "crews",           "tenant_scope": True,  "project_scope": False, "soft_delete": True},
     "equipment":       {"collection": "equipment",       "tenant_scope": True,  "project_scope": False, "soft_delete": True},
     "people":          {"collection": "people",          "tenant_scope": True,  "project_scope": False, "soft_delete": True},
     "certifications":  {"collection": "certifications",  "tenant_scope": True,  "project_scope": False, "soft_delete": True},
-    "delays":          {"collection": "delays",          "tenant_scope": True,  "project_scope": True,  "soft_delete": True},
-    "safety-events":   {"collection": "safety_events",   "tenant_scope": True,  "project_scope": True,  "soft_delete": True},
-    "qc-issues":       {"collection": "qc_issues",       "tenant_scope": True,  "project_scope": True,  "soft_delete": True},
+    "delays":          {"collection": "delays",          "tenant_scope": True,  "project_scope": True,  "soft_delete": False},
+    "safety-events":   {"collection": "safety_events",   "tenant_scope": True,  "project_scope": True,  "soft_delete": False},
+    "qc-issues":       {"collection": "qc_issues",       "tenant_scope": True,  "project_scope": True,  "soft_delete": False},
     "rfis":            {"collection": "rfis",            "tenant_scope": True,  "project_scope": True,  "soft_delete": True},
     "deliveries":      {"collection": "deliveries",      "tenant_scope": True,  "project_scope": True,  "soft_delete": True},
     "work-items":      {"collection": "work_items",      "tenant_scope": True,  "project_scope": True,  "soft_delete": True},
@@ -49,6 +65,12 @@ ENTITY_CONFIG = {
     "locations":       {"collection": "locations",       "tenant_scope": True,  "project_scope": True,  "soft_delete": False},
     "photos":          {"collection": "photos",          "tenant_scope": True,  "project_scope": True,  "soft_delete": False},
 }
+
+
+# Map ENTITY_CONFIG keys to audit table_name strings (mongo collection name
+# with underscores). audit.write_audit hashes by table_name + record_id, so
+# we want the same string the entity-specific routers use.
+_AUDIT_TABLE = {k: v["collection"] for k, v in ENTITY_CONFIG.items()}
 
 
 def _cfg(entity: str) -> dict:
@@ -84,20 +106,33 @@ async def crud_delete(entity: str, id: str, ctx: dict = Depends(require_tenant))
     cfg = _cfg(entity)
     db = get_db()
     coll = db[cfg["collection"]]
+    table_name = _AUDIT_TABLE.get(entity, cfg["collection"])
+    # Snapshot the row BEFORE we touch it so the audit entry has the full
+    # before-state. Tenant-filtered so cross-tenant attempts return 404.
+    before = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
+    if not before:
+        raise HTTPException(404, f"{entity} {id} not found")
     if cfg.get("soft_delete"):
-        res = await coll.update_one(
+        await coll.update_one(
             tenant_filter(ctx["tenant_id"], {"id": id}),
             {"$set": {"status": "deleted",
                       "deleted_at": utc_now().isoformat(),
                       "deleted_by": ctx["user"]["id"]}},
         )
-        if not res.matched_count:
-            raise HTTPException(404, f"{entity} {id} not found")
+        after = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name=table_name, op="UPDATE",
+            record_id=id, before=before, after=after,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
         return {"ok": True, "soft_deleted": True}
     else:
-        res = await coll.delete_one(tenant_filter(ctx["tenant_id"], {"id": id}))
-        if not res.deleted_count:
-            raise HTTPException(404, f"{entity} {id} not found")
+        await coll.delete_one(tenant_filter(ctx["tenant_id"], {"id": id}))
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name=table_name, op="DELETE",
+            record_id=id, before=before, after=None,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
         return {"ok": True, "hard_deleted": True}
 
 

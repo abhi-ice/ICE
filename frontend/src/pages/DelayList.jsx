@@ -3,7 +3,7 @@
 // + days open in the table. Each row is clickable to /delays/:id (detail).
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Pencil } from "lucide-react";
+import { Plus, Pencil, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { Button } from "../components/ui/button";
@@ -35,6 +35,16 @@ export default function DelayList() {
 
   const startCreate = () => { setEditing(null); setOpen(true); };
   const startEdit = (r) => { setEditing(r); setOpen(true); };
+  const remove = async (r) => {
+    if (!window.confirm(`Delete this delay? This is permanent and the audit log will record it.`)) return;
+    try {
+      await api.delete(`/delays/${r.id}`);
+      toast.success("Delay deleted");
+      refresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
+    }
+  };
 
   return (
     <div data-testid="delays-page" className="space-y-4">
@@ -83,8 +93,14 @@ export default function DelayList() {
                   <td className="text-xs">{r.duration_days ?? "—"}</td>
                   <td className="text-right">
                     <button data-testid={`delays-edit-${r.id}`} onClick={() => startEdit(r)}
-                      className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500">
+                      className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500"
+                      title="Edit">
                       <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button data-testid={`delays-delete-${r.id}`} onClick={() => remove(r)}
+                      className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500"
+                      title="Delete">
+                      <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </td>
                 </tr>

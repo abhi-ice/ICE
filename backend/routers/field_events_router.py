@@ -120,8 +120,13 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
 @router.get("/projects/{project_id}/delays", response_model=list[Delay])
 async def list_delays(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # Filter soft-deleted leftovers from before the hard-delete fix
+    # (status='deleted' was set by the old /crud/delays/{id} DELETE path).
     docs = await db.delays.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "status": {"$ne": "deleted"},
+        }), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [Delay(**_enrich_delay_for_read(d)) for d in docs]
 
@@ -333,8 +338,12 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
 @router.get("/projects/{project_id}/safety-events", response_model=list[SafetyEvent])
 async def list_safety(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # Filter soft-deleted leftovers from the old /crud/ DELETE path.
     docs = await db.safety_events.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "status": {"$ne": "deleted"},
+        }), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [SafetyEvent(**d) for d in docs]
 
@@ -357,8 +366,12 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
 @router.get("/projects/{project_id}/qc-issues", response_model=list[QcIssue])
 async def list_qc(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # Filter soft-deleted leftovers from the old /crud/ DELETE path.
     docs = await db.qc_issues.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "status": {"$ne": "deleted"},
+        }), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [QcIssue(**d) for d in docs]
 
