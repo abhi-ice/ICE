@@ -933,6 +933,10 @@ class QcIssue(ReadModel):
 
 
 # ---------- Photos ----------
+PhotoClass = Literal["progress", "discovery", "damage", "quality", "safety", "coordination", "closeout"]
+EVIDENTIARY_CLASSES = ("discovery", "damage", "quality")
+
+
 class PhotoCreate(StrictModel):
     project_id: str
     location_id: Optional[str] = None
@@ -941,6 +945,29 @@ class PhotoCreate(StrictModel):
     storage_path: str
     caption: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+    # Bucket C3b Phase 4 — required class tag (default progress for back-
+    # compat with old upload UIs). Optional drawing pin at upload time.
+    photo_class: PhotoClass = "progress"
+    drawing_pin_id: Optional[str] = None
+    pin_drawing_id: Optional[str] = None
+    pin_x: Optional[float] = None
+    pin_y: Optional[float] = None
+
+
+class PhotoUpdate(StrictModel):
+    """Phase 4 — caption + class editable; file is NOT replaceable
+    (tamper-evidence). Class change writes its own audit entry so the
+    chain shows when an evidentiary class flipped to/from progress."""
+    caption: Optional[str] = None
+    photo_class: Optional[PhotoClass] = None
+    tags: Optional[List[str]] = None
+
+
+class PhotoPinPayload(StrictModel):
+    drawing_pin_id: Optional[str] = None
+    pin_drawing_id: Optional[str] = None
+    pin_x: Optional[float] = None
+    pin_y: Optional[float] = None
 
 
 class Photo(ReadModel):
@@ -967,6 +994,20 @@ class Photo(ReadModel):
     camera_make: Optional[str] = None
     camera_model: Optional[str] = None
     created_at: datetime
+    # Bucket C3b Phase 4 — evidentiary discipline. sha256_hash is computed
+    # at upload from file bytes and never changes; mismatch_flag is true
+    # when device clock vs server clock skew exceeds 60 seconds.
+    sha256_hash: Optional[str] = None
+    device_timestamp: Optional[datetime] = None
+    server_received_timestamp: Optional[datetime] = None
+    timestamp_mismatch_flag: bool = False
+    exif_preserved: bool = True
+    photo_class: PhotoClass = "progress"
+    evidentiary_flag: bool = False  # auto: class in evidentiary set AND pin present
+    drawing_pin_id: Optional[str] = None
+    pin_drawing_id: Optional[str] = None
+    pin_x: Optional[float] = None
+    pin_y: Optional[float] = None
 
 
 # ---------- Work items / field issues ----------

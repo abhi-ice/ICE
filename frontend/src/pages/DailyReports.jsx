@@ -26,6 +26,17 @@ import {
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
+const PHOTO_CLASSES = [
+  { value: "progress", label: "Progress", color: "bg-slate-100 text-slate-700 border-slate-300" },
+  { value: "discovery", label: "Discovery", color: "bg-amber-100 text-amber-800 border-amber-300" },
+  { value: "damage", label: "Damage", color: "bg-rose-100 text-rose-800 border-rose-300" },
+  { value: "quality", label: "Quality", color: "bg-violet-100 text-violet-800 border-violet-300" },
+  { value: "safety", label: "Safety", color: "bg-orange-100 text-orange-800 border-orange-300" },
+  { value: "coordination", label: "Coordination", color: "bg-sky-100 text-sky-800 border-sky-300" },
+  { value: "closeout", label: "Closeout", color: "bg-emerald-100 text-emerald-800 border-emerald-300" },
+];
+const PHOTO_CLASS_BY_VALUE = Object.fromEntries(PHOTO_CLASSES.map((c) => [c.value, c]));
+
 // ------------------------------------------------------------
 //  Top-level list — pick a date (any past/future), open or create
 // ------------------------------------------------------------
@@ -1416,6 +1427,7 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
 function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [busy, setBusy] = useState(false);
   const [caption, setCaption] = useState("");
+  const [photoClass, setPhotoClass] = useState("progress");
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1426,11 +1438,17 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       fd.append("project_id", projectId);
       fd.append("daily_report_id", dailyReportId);
       if (caption) fd.append("caption", caption);
+      fd.append("photo_class", photoClass);
       await api.post(`/photos/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } });
       setCaption("");
+      setPhotoClass("progress");
       reload();
       toast.success("Photo uploaded");
-    } catch (err) { toast.error(err.response?.data?.detail || "Upload failed"); }
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 409) toast.error("Duplicate photo — same image already uploaded.");
+      else toast.error(detail || "Upload failed");
+    }
     finally { setBusy(false); e.target.value = ""; }
   };
 
@@ -1443,6 +1461,9 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
           <input data-testid="photo-caption" placeholder="Caption (optional)" value={caption} onChange={(e) => setCaption(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
+          <select data-testid="photo-class" value={photoClass} onChange={(e) => setPhotoClass(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm bg-white">
+            {PHOTO_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
           <label data-testid="photo-upload-label" className="block">
             <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
               <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload photo"}
@@ -1465,10 +1486,26 @@ function AuthPhoto({ photo }) {
       .catch(() => { /* ignore — show placeholder */ });
     return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, [photo.id]);
+  const cls = PHOTO_CLASS_BY_VALUE[photo.photo_class] || PHOTO_CLASS_BY_VALUE.progress;
   return (
     <div data-testid={`photo-${photo.id}`} className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200">
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
+      <div className="absolute top-1 left-1 flex items-center gap-1">
+        <span data-testid={`photo-class-${photo.id}`} className={`text-[9px] leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
+          {cls.label}
+        </span>
+        {photo.evidentiary_flag && (
+          <span data-testid={`photo-evidentiary-${photo.id}`} title="Evidentiary — locked record" className="bg-black/70 text-white rounded p-0.5">
+            <Lock className="h-2.5 w-2.5" />
+          </span>
+        )}
+        {photo.timestamp_mismatch_flag && (
+          <span data-testid={`photo-tsmismatch-${photo.id}`} title="Device vs. server timestamp mismatch" className="bg-amber-500 text-white rounded p-0.5">
+            <AlertTriangle className="h-2.5 w-2.5" />
+          </span>
+        )}
+      </div>
       {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">{photo.caption}</div>}
     </div>
   );

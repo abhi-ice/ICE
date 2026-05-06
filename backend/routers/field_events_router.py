@@ -5,7 +5,7 @@ from typing import Optional
 from database import get_db, tenant_filter
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate,
-    QcIssue, QcIssueCreate, Photo, PhotoCreate,
+    QcIssue, QcIssueCreate, Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
 from auth import require_tenant
@@ -504,27 +504,166 @@ async def list_qc(project_id: str, ctx: dict = Depends(require_tenant)):
 
 
 # --- Photos ---
+def _compute_evidentiary(photo_class: str, pin_x, pin_y, drawing_id) -> bool:
+    """Bucket C3b Phase 4 — class in evidentiary set AND has a pin =
+    evidentiary. Pin is a recommendation, not blocking, on those classes."""
+    from models import EVIDENTIARY_CLASSES
+    if photo_class not in EVIDENTIARY_CLASSES:
+        return False
+    has_pin = (pin_x is not None and pin_y is not None) or bool(drawing_id)
+    return has_pin
+
+
+async def _hash_storage_object(storage_path: str) -> Optional[str]:
+    """Pull bytes from storage and SHA-256 them. Returns None on any
+    storage hiccup so the photo create still succeeds — sha256 backfill
+    can recompute later via 003_photo_evidentiary_backfill.py."""
+    if not storage_path:
+        return None
+    try:
+        from services.storage import get_object
+        import hashlib
+        data, _ct = get_object(storage_path)
+        return hashlib.sha256(data).hexdigest()
+    except Exception:
+        return None
+
+
 @router.post("/photos", response_model=Photo)
 async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    from datetime import timezone as _tz
     doc = payload.model_dump(mode="json")
+    now = utc_now()
+    sha256 = await _hash_storage_object(payload.storage_path)
+
+    # Bucket C3b Phase 4 — sha256 collision check. Real-world chance is
+    # negligible but we surface it as a 409 with the existing photo's id
+    # so the user can confirm it's an intentional re-upload (or skip).
+    if sha256:
+        existing = await db.photos.find_one(
+            tenant_filter(ctx["tenant_id"], {
+                "project_id": payload.project_id,
+                "sha256_hash": sha256,
+            }),
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "duplicate_photo",
+                    "message": "A photo with the same SHA-256 already exists in this project.",
+                    "existing_photo_id": existing["id"],
+                },
+            )
+
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
         "thumbnail_path": None,
-        "captured_at": utc_now().isoformat(),
+        "captured_at": now.isoformat(),
         "captured_by": ctx["user"]["id"],
         "visual_fingerprint_match_id": None,
         "visual_fingerprint_match_confidence": None,
         "visual_fingerprint_overridden": False,
-        "created_at": utc_now().isoformat(),
+        "created_at": now.isoformat(),
+        # Phase 4 evidentiary fields
+        "sha256_hash": sha256,
+        "device_timestamp": None,  # populated by extract-exif background call
+        "server_received_timestamp": now.isoformat(),
+        "timestamp_mismatch_flag": False,
+        "exif_preserved": True,
+        "evidentiary_flag": _compute_evidentiary(
+            doc.get("photo_class") or "progress",
+            doc.get("pin_x"), doc.get("pin_y"), doc.get("pin_drawing_id"),
+        ),
     })
     await db.photos.insert_one(doc.copy())
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_CREATE", record_id=doc["id"],
+        before=None, after=doc,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return Photo(**doc)
+
+
+@router.patch("/photos/{photo_id}", response_model=Photo)
+async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(require_tenant)):
+    """Caption + class + tags editable. File replacement intentionally
+    NOT supported (tamper-evidence). Class change emits its own audit op
+    so reviewers can see when an evidentiary classification flipped."""
+    db = get_db()
+    before = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Photo not found")
+    updates = {k: v for k, v in payload.model_dump(mode="json", exclude_unset=True).items()
+                if v is not None}
+    if not updates:
+        return Photo(**before)
+    # Recompute evidentiary_flag if class changed.
+    if "photo_class" in updates:
+        updates["evidentiary_flag"] = _compute_evidentiary(
+            updates["photo_class"],
+            before.get("pin_x"), before.get("pin_y"), before.get("pin_drawing_id"),
+        )
+    await db.photos.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"$set": updates},
+    )
+    after = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    op = "PHOTO_CLASS_CHANGE" if "photo_class" in updates and updates["photo_class"] != before.get("photo_class") else "PHOTO_UPDATE"
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos", op=op, record_id=photo_id,
+        before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return Photo(**after)
+
+
+@router.post("/photos/{photo_id}/pin", response_model=Photo)
+async def pin_photo(photo_id: str, payload: PhotoPinPayload, ctx: dict = Depends(require_tenant)):
+    """Set or clear the drawing pin on a photo. Refreshes evidentiary_flag
+    based on current photo_class + new pin state."""
+    db = get_db()
+    before = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Photo not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    # Recompute evidentiary_flag using NEW pin values where provided.
+    new_x = updates.get("pin_x", before.get("pin_x"))
+    new_y = updates.get("pin_y", before.get("pin_y"))
+    new_drawing = updates.get("pin_drawing_id", before.get("pin_drawing_id"))
+    updates["evidentiary_flag"] = _compute_evidentiary(
+        before.get("photo_class") or "progress", new_x, new_y, new_drawing,
+    )
+    await db.photos.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"$set": updates},
+    )
+    after = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_PIN_SET", record_id=photo_id,
+        before={k: before.get(k) for k in ("pin_x", "pin_y", "pin_drawing_id", "drawing_pin_id", "evidentiary_flag")},
+        after={k: updates.get(k, before.get(k)) for k in ("pin_x", "pin_y", "pin_drawing_id", "drawing_pin_id", "evidentiary_flag")},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return Photo(**after)
 
 
 @router.get("/projects/{project_id}/photos", response_model=list[Photo])
 async def list_photos(project_id: str, location_id: Optional[str] = None,
                       schedule_activity_id: Optional[str] = None,
+                      photo_class: Optional[str] = None,
+                      evidentiary_only: bool = False,
                       ctx: dict = Depends(require_tenant)):
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
@@ -532,5 +671,9 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
         f["location_id"] = location_id
     if schedule_activity_id:
         f["schedule_activity_id"] = schedule_activity_id
+    if photo_class:
+        f["photo_class"] = photo_class
+    if evidentiary_only:
+        f["evidentiary_flag"] = True
     docs = await db.photos.find(f, {"_id": 0}).sort("captured_at", -1).to_list(500)
     return [Photo(**d) for d in docs]
