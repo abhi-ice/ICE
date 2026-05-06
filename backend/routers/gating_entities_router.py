@@ -9,21 +9,23 @@ service helpers it imports).
 
 All endpoints are tenant-scoped.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from typing import Optional, List
 
 from database import get_db, tenant_filter
 from models import GatingEntity
 from auth import require_tenant
-from services.gating_entities import compute_age_fields
+from services.gating_entities import compute_age_fields, OPEN_STATUSES_PROXY
+from services.cascade_engine import recompute_all_cascades
 
 
 router = APIRouter(tags=["gating-entities"])
 
 
 # Statuses that count as "still gating" — used by both the dropdown and
-# the daily-report constraint pre-population.
-OPEN_STATUSES = ("draft", "submitted", "open", "under_review", "awaiting_clarification")
+# the daily-report constraint pre-population. Mirrors OPEN_STATUSES_PROXY
+# in services.gating_entities so non-router services can share the set.
+OPEN_STATUSES = OPEN_STATUSES_PROXY
 
 
 async def _enrich(ge: dict) -> dict:
@@ -164,3 +166,99 @@ async def affected_daily_reports(ge_id: str, ctx: dict = Depends(require_tenant)
         "total_production_impact_hours": round(total_hours, 2),
         "rows": enriched,
     }
+
+
+# ============================================================
+# Bucket C3c Phase 2 — Cascade dashboard
+# ============================================================
+@router.get("/projects/{project_id}/cascade-dashboard")
+async def cascade_dashboard(project_id: str, ctx: dict = Depends(require_tenant)):
+    """Latest cascade_snapshots for every still-open gating_entity in the
+    project, joined with the gating_entity row for display. Sorted by
+    projected CP impact at N=10 days (worst first). Returns empty rows
+    list if no snapshots exist yet — UI prompts user to hit Refresh."""
+    db = get_db()
+    open_ges = await db.gating_entities.find(
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "status": {"$in": list(OPEN_STATUSES)},
+        }),
+        {"_id": 0},
+    ).to_list(2000)
+    if not open_ges:
+        return {"rows": [], "last_computed_at": None}
+
+    ge_by_id = {g["id"]: g for g in open_ges}
+
+    # Latest snapshot per gating_entity. Mongo doesn't have window funcs;
+    # do it with an aggregation. Cap to recent snapshots so this stays
+    # cheap even after months of nightly runs.
+    pipeline = [
+        {"$match": {
+            "tenant_id": ctx["tenant_id"],
+            "project_id": project_id,
+            "gating_entity_id": {"$in": list(ge_by_id.keys())},
+        }},
+        {"$sort": {"computed_at": -1}},
+        {"$group": {"_id": "$gating_entity_id", "snap": {"$first": "$$ROOT"}}},
+    ]
+    docs = await db.cascade_snapshots.aggregate(pipeline).to_list(5000)
+
+    rows: list[dict] = []
+    last_computed_at: Optional[str] = None
+    for d in docs:
+        snap = d.get("snap") or {}
+        snap.pop("_id", None)
+        ge = ge_by_id.get(snap.get("gating_entity_id"))
+        if not ge:
+            continue
+        snap["entity_label"] = ge.get("display_label") or ge.get("entity_number")
+        snap["entity_type"] = ge.get("entity_type")
+        snap["entity_id"] = ge.get("entity_id")
+        snap["sla_working_days"] = ge.get("sla_working_days")
+        rows.append(snap)
+        if last_computed_at is None or (snap.get("computed_at") or "") > last_computed_at:
+            last_computed_at = snap.get("computed_at")
+
+    rows.sort(key=lambda r: float(r.get("projected_cp_impact_at_n10_days") or 0), reverse=True)
+    return {"rows": rows, "last_computed_at": last_computed_at}
+
+
+@router.post("/projects/{project_id}/cascade-dashboard/refresh")
+async def cascade_dashboard_refresh(
+    project_id: str, bg: BackgroundTasks, ctx: dict = Depends(require_tenant),
+):
+    """Kick off an immediate recompute of every open gating_entity's
+    cascade for this project. Runs synchronously when the gate count is
+    small (returns the result), otherwise hands off to BackgroundTasks
+    and returns 202."""
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    open_count = await db.gating_entities.count_documents(
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "status": {"$in": list(OPEN_STATUSES)},
+        }),
+    )
+    if open_count <= 25:
+        result = await recompute_all_cascades(ctx["tenant_id"], project_id)
+        return {"mode": "sync", **result}
+    bg.add_task(recompute_all_cascades, ctx["tenant_id"], project_id)
+    return {"mode": "background", "open_gates": open_count}
+
+
+@router.get("/gating-entities/{ge_id}/cascade-history")
+async def cascade_history(ge_id: str, limit: int = 50, ctx: dict = Depends(require_tenant)):
+    """Time-series of cascade snapshots for a single gating entity.
+    Useful on the GatingEntityDetail page to show how projected impact
+    has evolved as the gate has stayed open."""
+    db = get_db()
+    docs = await db.cascade_snapshots.find(
+        tenant_filter(ctx["tenant_id"], {"gating_entity_id": ge_id}),
+        {"_id": 0},
+    ).sort("computed_at", -1).limit(min(limit, 500)).to_list(500)
+    return {"rows": docs}

@@ -24,6 +24,7 @@ import Imports from "./pages/Imports";
 import ScheduleProposals from "./pages/ScheduleProposals";
 import ScheduleDiffs from "./pages/ScheduleDiffs";
 import ScheduleDiffDetail from "./pages/ScheduleDiffDetail";
+import CascadeDashboard from "./pages/CascadeDashboard";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
@@ -96,6 +97,7 @@ export default function App() {
             <Route path="approvals" element={<Approvals />} />
             <Route path="work-items" element={<ProjectScopedList kind="work-items" />} />
             <Route path="recovery" element={<Recovery />} />
+            <Route path="cascade-dashboard" element={<CascadeDashboard />} />
 
             {/* Resources */}
             <Route path="resources/crews" element={<ResourceList kind="crews" />} />

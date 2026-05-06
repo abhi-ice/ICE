@@ -61,6 +61,8 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Approvals", path: "/approvals", icon: BadgeCheck, badgeKey: "approvals", testid: "sidebar-approvals" },
       { label: "Field issues", path: "/work-items", icon: Wrench, badgeKey: "work_items", testid: "sidebar-work-items" },
+      // Bucket C3c Phase 2 — RFI-to-CPM cascade dashboard.
+      { label: "Cascade", path: "/cascade-dashboard", icon: Activity, testid: "sidebar-cascade" },
       { label: "Recovery", path: "/recovery", icon: Sparkles, testid: "sidebar-recovery" },
     ],
   },

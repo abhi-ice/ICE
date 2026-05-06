@@ -128,6 +128,16 @@ async def _ensure_indexes():
          ("later_schedule_version_id", 1)],
         unique=True,
     )
+    # Bucket C3c Phase 2 — cascade_snapshots. Dashboard query is "latest
+    # snapshot per gating_entity in this project"; history endpoint
+    # queries "all snapshots for one entity sorted by computed_at desc".
+    await db.cascade_snapshots.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("gating_entity_id", 1),
+         ("computed_at", -1)],
+    )
+    await db.cascade_snapshots.create_index(
+        [("tenant_id", 1), ("gating_entity_id", 1), ("computed_at", -1)],
+    )
 
 
 @asynccontextmanager

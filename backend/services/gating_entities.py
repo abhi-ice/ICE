@@ -18,6 +18,15 @@ from database import get_db, tenant_filter
 from models import gen_id, utc_now
 
 
+# Statuses considered "still gating". Mirror of OPEN_STATUSES in
+# routers.gating_entities_router; defined here so other services
+# (services.cascade_engine, etc.) can import without dragging in
+# the FastAPI router module.
+OPEN_STATUSES_PROXY: tuple[str, ...] = (
+    "draft", "submitted", "open", "under_review", "awaiting_clarification",
+)
+
+
 # SLA defaults (working days). Per-project override lives on the entity
 # row when we add a project_settings collection — for C3a, defaults only.
 SLA_DEFAULTS: dict[str, int] = {
