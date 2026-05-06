@@ -854,10 +854,15 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
         tenant_filter(ctx["tenant_id"], {"linked_entity_type": "daily_report", "linked_entity_id": daily_report_id}), {"_id": 0},
     ).sort("created_at", -1).to_list(200)
 
-    delays = await db.delays.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("reported_at", -1).to_list(200)
-    safety = await db.safety_events.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("reported_at", -1).to_list(200)
-    qc = await db.qc_issues.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("reported_at", -1).to_list(200)
-    rfis = await db.rfis.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0}).sort("date_initiated", -1).to_list(100)
+    # Bug 2026-05: panel queries must exclude soft-deleted leftovers
+    # (legacy /crud/{entity}/{id} DELETE set status='deleted' before the
+    # hard-delete fix). RFIs are still soft-delete by design (FK refs),
+    # so the filter stays load-bearing for them.
+    not_deleted = {"status": {"$ne": "deleted"}}
+    delays = await db.delays.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0}).sort("reported_at", -1).to_list(200)
+    safety = await db.safety_events.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0}).sort("reported_at", -1).to_list(200)
+    qc = await db.qc_issues.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0}).sort("reported_at", -1).to_list(200)
+    rfis = await db.rfis.find(tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}), {"_id": 0}).sort("date_initiated", -1).to_list(100)
     deliveries = await db.deliveries.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "delivery_date": dr["report_date"]}), {"_id": 0},
     ).sort("delivery_date", -1).to_list(100)

@@ -53,7 +53,15 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None, ctx: d
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
     if status_filter:
+        # Caller asked for a specific status — honour it as-is (might
+        # legitimately want to inspect deleted records).
         f["status"] = status_filter
+    else:
+        # Default: hide soft-deleted RFIs. RFIs are still soft-delete via
+        # /crud/{entity}/{id} (FK refs from work_item_links), so without
+        # this filter deleted RFIs would keep appearing in the sidebar
+        # list and the daily-report panel.
+        f["status"] = {"$ne": "deleted"}
     docs = await db.rfis.find(f, {"_id": 0}).sort("date_initiated", -1).to_list(500)
     return [Rfi(**d) for d in docs]
 
