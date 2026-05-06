@@ -785,6 +785,12 @@ class Delay(ReadModel):
     # AI report (Phase B) — saved between views so regen is opt-in.
     ai_report: Optional[str] = None
     ai_report_generated_at: Optional[datetime] = None
+    # Bucket C1 Phase 5 — populated when status transitions to resolved.
+    # cpm_impact_summary entries: {task_id, projected_impact_days,
+    # actual_days_open, absorbed_days, restored_float_days,
+    # projected_finish_shift_days}.
+    cpm_impact_summary: List[dict] = Field(default_factory=list)
+    released_float_on_resolution: List[str] = Field(default_factory=list)
     created_at: datetime
 
 

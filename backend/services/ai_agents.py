@@ -436,6 +436,32 @@ async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
         for c in cascade[:20]
     ]
 
+    # Bucket C1 Phase 5 — when the delay has been resolved, surface the
+    # actual-vs-projected breakdown so the AI report's "Projected vs
+    # actual impact" section grounds in real numbers instead of guesses.
+    cpm_impact = delay.get("cpm_impact_summary") or []
+    released = delay.get("released_float_on_resolution") or []
+    resolution_block = ""
+    if delay.get("status") == "resolved" and cpm_impact:
+        impact_lines = []
+        for imp in cpm_impact:
+            t = next((tt for tt in tasks if tt["id"] == imp.get("task_id")), {})
+            label = f"[{t.get('activity_code')}] {t.get('description')}" if t else imp.get("task_id", "?")[:8]
+            impact_lines.append(
+                f"  {label}\n"
+                f"    projected_impact={imp.get('projected_impact_days')}d  "
+                f"actual_days_open={imp.get('actual_days_open')}  "
+                f"absorbed={imp.get('absorbed_days')}d  "
+                f"restored_float={imp.get('restored_float_days')}d"
+            )
+        resolution_block = (
+            f"\n\nRESOLUTION ANALYSIS (delay was resolved {delay.get('resolved_date')}, "
+            f"resolved_note: {delay.get('resolved_note') or 'none'}):\n"
+            + "\n".join(impact_lines)
+            + (f"\n  TASKS WITH RESTORED FLOAT (no actual schedule consumption): {len(released)}"
+               if released else "")
+        )
+
     user_text = (
         (md_block + "\n\n" if md_block else "")
         + (f"PROJECT: {proj['name']} (status={proj.get('status')})\n\n" if proj else "")
@@ -450,6 +476,7 @@ async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
         f"LINKED TASKS ({len(tasks)}):\n" + ("\n".join(task_lines) or "  (none)")
         + f"\n\nCPM DOWNSTREAM CASCADE ({len(cascade)} reached):\n"
         + ("\n".join(cascade_lines) or "  (none)")
+        + resolution_block
         + "\n\nWrite the structured delay analysis report now."
     )
     started = datetime.now(timezone.utc)

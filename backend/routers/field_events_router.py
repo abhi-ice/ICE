@@ -190,6 +190,16 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"$set": updates},
     )
     after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+
+    # Bucket C1 Phase 5 — when a delay transitions to resolved, compute
+    # actual-vs-projected impact per linked task and stamp a release/
+    # absorb summary on the delay so the AI report and detail page can
+    # surface it. Pure calculation; the projected_finish recompute below
+    # picks up the resolved state (excluded from the open-delay sum).
+    if updates.get("status") == "resolved" and before.get("status") != "resolved":
+        await _stamp_resolution_release(db, ctx["tenant_id"], delay_id, after)
+        after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
@@ -208,6 +218,52 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         await compute_projected_finish_dates(db, ctx["tenant_id"], after["project_id"],
                                               actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(after))
+
+
+async def _stamp_resolution_release(db, tenant_id: str, delay_id: str, delay: dict) -> None:
+    """Bucket C1 Phase 5 — at resolution time, compute actual elapsed days
+    vs each linked task's projected_impact_days, then stash the breakdown
+    on the delay record. Frontend Delay detail page + AI report read this.
+    Schedule float restoration happens automatically because the
+    subsequent compute_projected_finish_dates call no longer counts this
+    delay in its open-delay sum (status='resolved' excludes it)."""
+    logged = delay.get("logged_date") or delay.get("date")
+    resolved = delay.get("resolved_date")
+    actual_days = 0
+    if logged and resolved:
+        try:
+            ld = _date.fromisoformat(str(logged)[:10])
+            rd = _date.fromisoformat(str(resolved)[:10])
+            actual_days = max(0, (rd - ld).days)
+        except Exception:
+            actual_days = 0
+
+    cpm_impact: list[dict] = []
+    released: list[str] = []
+    for imp in (delay.get("per_task_impacts") or []):
+        proj = float(imp.get("projected_impact_days") or 0)
+        # Released float = projected - actual (clamped at 0). Schedule
+        # absorbs min(actual, projected); the remainder is restored.
+        absorbed = min(float(actual_days), proj)
+        restored = max(0.0, proj - float(actual_days))
+        cpm_impact.append({
+            "task_id": imp.get("task_id"),
+            "projected_impact_days": proj,
+            "actual_days_open": actual_days,
+            "absorbed_days": absorbed,
+            "restored_float_days": restored,
+            "projected_finish_shift_days": absorbed,
+        })
+        if restored > 0 and imp.get("task_id"):
+            released.append(imp["task_id"])
+
+    await db.delays.update_one(
+        {"id": delay_id},
+        {"$set": {
+            "cpm_impact_summary": cpm_impact,
+            "released_float_on_resolution": released,
+        }},
+    )
 
 
 @router.delete("/delays/{delay_id}")

@@ -115,10 +115,15 @@ export default function DelayDetail() {
         <div className="space-y-2">
           {tasks.map((t) => {
             const impact = (delay.per_task_impacts || []).find((i) => i.task_id === t.id) || {};
+            // Bucket C1 Phase 5 — also pull the resolution-time outcome
+            // (absorbed vs restored float) from cpm_impact_summary so a
+            // resolved delay shows what actually happened, not just what
+            // was projected at logging.
+            const outcome = (delay.cpm_impact_summary || []).find((c) => c.task_id === t.id);
             const flagColor = impact.pushes_critical_path ? "pill-red"
               : impact.consumes_float_only ? "pill-green" : "pill-amber";
             return (
-              <div key={t.id} className="border border-slate-200 rounded p-2 text-xs grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div key={t.id} className="border border-slate-200 rounded p-2 text-xs grid grid-cols-1 md:grid-cols-5 gap-2">
                 <div className="md:col-span-2">
                   <span className="font-mono text-blue-700">{t.activity_code}</span>
                   <span className="ml-2">{t.description}</span>
@@ -126,6 +131,9 @@ export default function DelayDetail() {
                 <div>
                   <div className="text-slate-400 uppercase tracking-wide text-[10px]">Now</div>
                   <div>pct {t.pct_complete ?? 0}% · float {t.total_float_days ?? "—"}d{t.is_critical_path ? " · CP" : ""}</div>
+                  {t.projected_finish_date && t.projected_finish_date > (t.planned_finish || "") && (
+                    <div className="text-amber-700 mt-0.5">proj. finish {t.projected_finish_date}</div>
+                  )}
                 </div>
                 <div>
                   <div className="text-slate-400 uppercase tracking-wide text-[10px]">At logging</div>
@@ -133,6 +141,21 @@ export default function DelayDetail() {
                   <span className={`pill ${flagColor} mt-1 inline-block`}>
                     {impact.pushes_critical_path ? "pushes CP" : impact.consumes_float_only ? "within float" : "exceeds non-CP float"}
                   </span>
+                </div>
+                <div>
+                  <div className="text-slate-400 uppercase tracking-wide text-[10px]">At resolution</div>
+                  {outcome ? (
+                    <div>
+                      <div>actual {outcome.actual_days_open}d · absorbed {outcome.absorbed_days}d</div>
+                      {outcome.restored_float_days > 0 ? (
+                        <span className="pill pill-green mt-1 inline-block">+{outcome.restored_float_days}d float restored</span>
+                      ) : (
+                        <span className="pill pill-slate mt-1 inline-block">no float restored</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-slate-400">—</div>
+                  )}
                 </div>
               </div>
             );
