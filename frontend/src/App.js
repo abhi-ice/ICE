@@ -22,6 +22,8 @@ import CoordinationEvents from "./pages/CoordinationEvents";
 import CoordinationEventDetail from "./pages/CoordinationEventDetail";
 import Imports from "./pages/Imports";
 import ScheduleProposals from "./pages/ScheduleProposals";
+import ScheduleDiffs from "./pages/ScheduleDiffs";
+import ScheduleDiffDetail from "./pages/ScheduleDiffDetail";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
@@ -106,6 +108,8 @@ export default function App() {
             {/* System */}
             <Route path="imports" element={<Imports />} />
             <Route path="schedule-changes" element={<ScheduleProposals />} />
+            <Route path="schedule-updates" element={<ScheduleDiffs />} />
+            <Route path="schedule-diffs/:id" element={<ScheduleDiffDetail />} />
             <Route path="agents" element={<AiAgentsPage />} />
             <Route path="marketplace" element={<MarketplaceFull />} />
             <Route path="kb" element={<KnowledgeBase />} />

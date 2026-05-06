@@ -1498,3 +1498,127 @@ class CoordinationEvent(ReadModel):
     # Soft-delete marker — list endpoints filter where this is None.
     deleted_at: Optional[datetime] = None
     deleted_by_user_id: Optional[str] = None
+
+
+# ============================================================
+# Bucket C3c — Schedule update diffs (version-to-version)
+# ============================================================
+class ScheduleUpdateDiff(ReadModel):
+    """One row per pair of approved schedule versions. Auto-generated when
+    a new schedule_proposal flips to status='approved' and a prior
+    approved proposal exists for the same project. Stored as queryable
+    JSON (not PDF) so the TIA generator can pull it later."""
+    id: str
+    tenant_id: str
+    project_id: str
+    earlier_schedule_version_id: str  # prior approved proposal id
+    later_schedule_version_id: str    # new approved proposal id (the trigger)
+    computed_at: datetime
+
+    # Aggregate stats
+    activities_added_count: int = 0
+    activities_removed_count: int = 0
+    activities_modified_count: int = 0
+    predecessors_added_count: int = 0
+    predecessors_removed_count: int = 0
+    predecessors_modified_count: int = 0
+    cp_changes_count: int = 0
+    total_change_percentage: float = 0.0
+
+    # Detailed payload (free-form by design — heterogeneous keys per row)
+    activities_added: List[dict] = Field(default_factory=list)
+    activities_removed: List[dict] = Field(default_factory=list)
+    activities_modified: List[dict] = Field(default_factory=list)
+    predecessor_changes: List[dict] = Field(default_factory=list)
+    newly_critical_activities: List[str] = Field(default_factory=list)
+    removed_critical_activities: List[str] = Field(default_factory=list)
+    total_float_distribution_shift: dict = Field(default_factory=dict)
+
+    # AI narrative — generated on demand via /ai-narrative endpoint
+    ai_narrative: Optional[str] = None
+    ai_narrative_generated_at: Optional[datetime] = None
+    ai_narrative_generated_by: Optional[str] = None
+
+
+# ============================================================
+# Bucket C3c — Cascade snapshots (RFI-to-CPM projected slip)
+# ============================================================
+class CascadeSnapshot(ReadModel):
+    """Snapshot of one open gating entity's projected schedule impact at
+    multiple N-day horizons. New row per recompute; never overwrite —
+    historical record is the point."""
+    id: str
+    tenant_id: str
+    project_id: str
+    computed_at: datetime
+    gating_entity_id: str
+    directly_gated_activity_ids: List[str] = Field(default_factory=list)
+    transitively_gated_activity_ids: List[str] = Field(default_factory=list)
+    projected_slip_at_n5_days: float = 0.0
+    projected_slip_at_n10_days: float = 0.0
+    projected_slip_at_n20_days: float = 0.0
+    projected_cp_impact_at_n5_days: float = 0.0
+    projected_cp_impact_at_n10_days: float = 0.0
+    projected_cp_impact_at_n20_days: float = 0.0
+    source_schedule_version_id: Optional[str] = None  # latest approved proposal id at compute time
+    open_age_working_days: Optional[int] = None
+    sla_status: Optional[str] = None  # under_sla | at_sla | over_sla
+    severity_band: Optional[str] = None  # green | yellow | orange | red
+
+
+# ============================================================
+# Bucket C3c — TIA source document generations
+# ============================================================
+TIA_DEFAULT_PRIVILEGE_FLAG = True
+
+
+class TIAGenerationCreate(StrictModel):
+    project_id: str
+    date_range_start: date
+    date_range_end: date
+    cause_class: Optional[str] = None
+    zone_id: Optional[str] = None
+    gating_entity_id: Optional[str] = None
+
+
+class TIADownloadEntry(ReadModel):
+    downloaded_at: datetime
+    downloaded_by_user_id: Optional[str] = None
+    format: str  # json | word | pdf
+    privilege_state_at_download: bool
+
+
+class TIAGeneration(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    generated_at: datetime
+    generated_by_user_id: Optional[str] = None
+    status: str = "complete"  # generating | complete | failed
+    error: Optional[str] = None
+
+    date_range_start: date
+    date_range_end: date
+    filters_applied: dict = Field(default_factory=dict)
+
+    structured_json_artifact_id: Optional[str] = None
+    word_doc_artifact_id: Optional[str] = None
+    evidence_index_pdf_artifact_id: Optional[str] = None
+
+    delay_events_count: int = 0
+    mitigations_count: int = 0
+    coordination_events_count: int = 0
+    photos_evidentiary_count: int = 0
+    schedule_diffs_count: int = 0
+    total_evidence_items: int = 0
+
+    counsel_privileged_work_product: bool = TIA_DEFAULT_PRIVILEGE_FLAG
+    privilege_unflagged_at: Optional[datetime] = None
+    privilege_unflagged_by: Optional[str] = None
+    privilege_unflag_reason: Optional[str] = None
+
+    download_log: List[TIADownloadEntry] = Field(default_factory=list)
+
+
+class TIAUnflagPayload(StrictModel):
+    reason: str = Field(..., min_length=3, max_length=500)

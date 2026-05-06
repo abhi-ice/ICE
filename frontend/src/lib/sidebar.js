@@ -35,6 +35,8 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Tasks", path: "/tasks", icon: ListChecks, testid: "sidebar-tasks" },
       { label: "Look ahead", path: "/lookahead", icon: CalendarRange, testid: "sidebar-lookahead" },
+      // Bucket C3c Phase 1 — schedule update diffs (TIA-ready).
+      { label: "Schedule updates", path: "/schedule-updates", icon: GitPullRequest, testid: "sidebar-schedule-updates" },
       { label: "Weekly reports", path: "/weekly-reports", icon: FileBarChart, testid: "sidebar-weekly-reports" },
       { label: "Locations", path: "/locations", icon: MapPin, testid: "sidebar-locations" },
       { label: "Polygon editor", path: "/polygon-editor", icon: MapPin, testid: "sidebar-polygon-editor" },
