@@ -71,7 +71,25 @@ async def list_tasks(project_id: str, ctx: dict = Depends(require_tenant)):
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0},
     ).sort([("sequence", 1), ("planned_start", 1), ("activity_code", 1)]).to_list(10000)
-    return [Task(**d) for d in docs]
+
+    # Bucket C1 Phase 2 — read-time status refresh. There's no scheduler
+    # in the runtime, so a task that was 'on_track' yesterday and crossed
+    # planned_pct(today) into 'behind' won't update otherwise. Cheap
+    # because compute_and_persist_status is idempotent ($set only fires
+    # if a value moved). For projects with hundreds of tasks this adds a
+    # few hundred no-op queries on each list call — acceptable for ICE-
+    # scale (<500 activities per project per Bucket C1 design).
+    from services.task_status import compute_and_persist_status
+    refreshed = []
+    for d in docs:
+        new_fields = await compute_and_persist_status(
+            db, ctx["tenant_id"], d["id"],
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+        if new_fields:
+            d.update({k: v for k, v in new_fields.items() if k != "updated_at"})
+        refreshed.append(d)
+    return [Task(**d) for d in refreshed]
 
 
 @router.get("/tasks/{task_id}", response_model=Task)

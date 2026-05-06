@@ -336,6 +336,16 @@ class Task(ReadModel):
     crew_assignment_history: List[CrewAssignmentEntry] = Field(default_factory=list)
     last_synced_from_dr: Optional[LastSyncedFromDR] = None
     external_modified_after_sync: bool = False
+    # Bucket C1 Phase 2 — computed/derived status fields. Persisted so
+    # other endpoints can filter on them; recomputed on every event that
+    # could move them (delay open/close, EOD% change, list_tasks read).
+    computed_status: Literal["on_track", "behind", "blocked", "complete"] = "on_track"
+    has_open_blocker: bool = False
+    open_blocker_count: int = 0
+    open_blocker_summary: List[dict] = Field(default_factory=list)
+    # Bucket C1 Phase 4 — CPM walk-forward result. None until first
+    # delay open / status compute writes it.
+    projected_finish_date: Optional[date] = None
 
 
 # ---------- Daily reports ----------

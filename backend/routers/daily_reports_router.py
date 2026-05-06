@@ -504,6 +504,14 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             "cpm_changes": [],
         })
 
+        # Bucket C1 Phase 2 — recompute computed_status / blocker fields
+        # for the linked task. Idempotent; only writes if any value moved.
+        from services.task_status import compute_and_persist_status
+        await compute_and_persist_status(
+            db, ctx["tenant_id"], task_id,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+
         # productivity observation (master prompt §16) — unchanged from
         # before this commit; lives here so it fires on the same EOD%
         # transition as the sync write-back.

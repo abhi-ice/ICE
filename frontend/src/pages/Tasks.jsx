@@ -188,7 +188,7 @@ export default function Tasks() {
               <th>Plan finish</th>
               <th>Dur (d)</th>
               <th>%</th>
-              <th>Status</th>
+              <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
               <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
               <th></th>
@@ -217,9 +217,7 @@ export default function Tasks() {
                 <td className="font-mono text-xs">{t.planned_finish || "—"}</td>
                 <td className="tabular-nums text-xs">{t.duration_days}</td>
                 <td className="tabular-nums">{t.pct_complete}%</td>
-                <td>
-                  <span className={`pill ${t.status === "complete" ? "pill-green" : t.status === "in_progress" ? "pill-blue" : "pill-slate"}`}>{t.status}</span>
-                </td>
+                <td><ComputedStatusPill task={t} /></td>
                 <td>{t.is_critical_path ? <span className="pill pill-red" title="Critical Path">CP</span> : null}</td>
                 <td className="tabular-nums text-xs" title="Days of slack before this task delays the project finish">
                   {t.total_float_days ?? "—"}
@@ -249,3 +247,24 @@ export default function Tasks() {
     </div>
   );
 }
+
+// Bucket C1 Phase 2 — Status pill driven by computed_status, with a small
+// blue dot when the latest sync was provisional (i.e. the daily report
+// that generated it hasn't been submitted yet).
+function ComputedStatusPill({ task }) {
+  const cs = task.computed_status || "on_track";
+  const klass = cs === "complete" ? "pill-green"
+    : cs === "blocked" ? "pill-red"
+    : cs === "behind" ? "pill-amber"
+    : "pill-slate";
+  const isProvisional = task.last_synced_from_dr?.sync_state === "provisional";
+  const lifecycle = task.status; // not_started / in_progress / complete / on_hold etc
+  const title = `Computed status (lifecycle: ${lifecycle || "—"})${isProvisional ? " · provisional from open daily report" : ""}`;
+  return (
+    <span title={title} data-testid={`task-computed-${task.activity_code}`} className={`pill ${klass} inline-flex items-center gap-1`}>
+      {cs.replace(/_/g, " ")}
+      {isProvisional && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />}
+    </span>
+  );
+}
+

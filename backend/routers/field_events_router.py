@@ -114,6 +114,12 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    # Bucket C1 Phase 2 — opening a delay flips has_open_blocker on every
+    # linked task and may shift its computed_status to 'blocked'.
+    from services.task_status import compute_and_persist_status
+    for tid in (linked_ids or []):
+        await compute_and_persist_status(db, ctx["tenant_id"], tid,
+                                          actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(doc))
 
 
@@ -183,6 +189,15 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+
+    # Bucket C1 Phase 2 — recompute status for the union of OLD and NEW
+    # linked tasks (in case linkage changed via this patch).
+    from services.task_status import compute_and_persist_status
+    affected_task_ids = list({*(before.get("linked_task_ids") or []),
+                               *(after.get("linked_task_ids") or [])})
+    for tid in affected_task_ids:
+        await compute_and_persist_status(db, ctx["tenant_id"], tid,
+                                          actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(after))
 
 
@@ -196,6 +211,11 @@ async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="DELETE",
                       record_id=delay_id, before=before, after=None,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    # Bucket C1 Phase 2 — deleting a delay may unblock its linked tasks.
+    from services.task_status import compute_and_persist_status
+    for tid in (before.get("linked_task_ids") or []):
+        await compute_and_persist_status(db, ctx["tenant_id"], tid,
+                                          actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return {"ok": True}
 
 
