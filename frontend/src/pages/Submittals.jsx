@@ -2,6 +2,7 @@
 // schedule activity linkage + auto-link button.
 // Auto-generated rows come from spec_ingest._autogenerate_submittals().
 import { useEffect, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { Plus, Wand2, Link2, Sparkles } from "lucide-react";
@@ -127,7 +128,11 @@ export default function Submittals() {
               const linkedTask = s.schedule_activity_id ? taskById[s.schedule_activity_id] : null;
               return (
                 <tr key={s.id} data-testid={`sub-row-${s.submittal_number}`}>
-                  <td className="font-mono text-xs">{s.submittal_number}</td>
+                  <td className="font-mono text-xs">
+                    {s.gating_entity_id
+                      ? <RouterLink to={`/gating-entities/${s.gating_entity_id}`} className="text-blue-700 hover:underline">{s.submittal_number}</RouterLink>
+                      : s.submittal_number}
+                  </td>
                   <td className="font-mono text-xs">{s.spec_section_code || "—"}</td>
                   <td className="truncate max-w-[320px]">
                     {s.title}
