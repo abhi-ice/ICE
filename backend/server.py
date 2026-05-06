@@ -42,6 +42,7 @@ from routers.iter7_router import router as iter7_router  # noqa: E402
 from routers.iter8_router import router as iter8_router  # noqa: E402
 from routers.schedule_proposals_router import router as schedule_proposals_router  # noqa: E402
 from routers.schedule_diffs_router import router as schedule_diffs_router  # noqa: E402
+from routers.calendar_reconciliation_router import router as calendar_reconciliation_router  # noqa: E402
 from routers.mitigations_router import router as mitigations_router  # noqa: E402
 from routers.gating_entities_router import router as gating_entities_router  # noqa: E402
 from routers.coordination_router import router as coordination_router  # noqa: E402
@@ -191,6 +192,7 @@ api_router.include_router(iter7_router)
 api_router.include_router(iter8_router)
 api_router.include_router(schedule_proposals_router)
 api_router.include_router(schedule_diffs_router)
+api_router.include_router(calendar_reconciliation_router)
 api_router.include_router(mitigations_router)
 api_router.include_router(gating_entities_router)
 api_router.include_router(coordination_router)

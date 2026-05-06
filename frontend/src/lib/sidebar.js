@@ -38,6 +38,8 @@ export const SIDEBAR_SECTIONS = [
       // Bucket C3c Phase 1 — schedule update diffs (TIA-ready).
       { label: "Schedule updates", path: "/schedule-updates", icon: GitPullRequest, testid: "sidebar-schedule-updates" },
       { label: "Weekly reports", path: "/weekly-reports", icon: FileBarChart, testid: "sidebar-weekly-reports" },
+      // Bucket C3c Phase 3 — calendar reconciliation (TIA-ready).
+      { label: "Calendar reconciliation", path: "/calendar-reconciliation", icon: CalendarClock, testid: "sidebar-calendar-reconciliation" },
       { label: "Locations", path: "/locations", icon: MapPin, testid: "sidebar-locations" },
       { label: "Polygon editor", path: "/polygon-editor", icon: MapPin, testid: "sidebar-polygon-editor" },
       { label: "Spatial 3D", path: "/spatial-3d", icon: Box, testid: "sidebar-spatial-3d" },
