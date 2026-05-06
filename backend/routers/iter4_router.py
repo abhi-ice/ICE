@@ -82,6 +82,8 @@ class Submittal(ReadModel):
     auto_generated: bool = False
     created_by: Optional[str] = None
     created_at: str
+    # Bucket C3a Phase 1 — back-pointer to gating_entities CPM node.
+    gating_entity_id: Optional[str] = None
 
 
 async def _next_submittal_number(db, tenant_id: str, project_id: str) -> str:
@@ -109,6 +111,18 @@ async def create_submittal(payload: SubmittalCreate, ctx: dict = Depends(require
         "created_at": utc_now().isoformat(),
     })
     await db.submittals.insert_one(doc.copy())
+    # Bucket C3a Phase 1 — auto-create gating_entities row.
+    from services.gating_entities import create_for_entity
+    gates = [doc["schedule_activity_id"]] if doc.get("schedule_activity_id") else []
+    ge = await create_for_entity(
+        tenant_id=ctx["tenant_id"], project_id=doc["project_id"],
+        entity_type="submittal", entity=doc, gates_task_ids=gates,
+    )
+    await db.submittals.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": doc["id"]}),
+        {"$set": {"gating_entity_id": ge["id"]}},
+    )
+    doc["gating_entity_id"] = ge["id"]
     return Submittal(**doc)
 
 
@@ -144,6 +158,23 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
     if not res.matched_count:
         raise HTTPException(404, "Submittal not found")
     row = await db.submittals.find_one(tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"_id": 0})
+    # Bucket C3a Phase 1 — mirror status / response timestamp onto the
+    # gating_entities CPM node.
+    if "status" in updates or "approved_at" in updates:
+        from services.gating_entities import sync_status
+        from datetime import datetime as _dt
+        responded_at = None
+        if updates.get("approved_at"):
+            try:
+                responded_at = _dt.fromisoformat(str(updates["approved_at"]).replace("Z", "+00:00"))
+            except Exception:
+                responded_at = None
+        await sync_status(
+            tenant_id=ctx["tenant_id"], entity_type="submittal", entity_id=submittal_id,
+            underlying_status=row.get("status"),
+            actual_responded_at=responded_at,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return Submittal(**row)
 
 

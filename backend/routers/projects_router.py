@@ -1,4 +1,5 @@
 """Projects + floors + locations CRUD."""
+from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Optional
 from database import get_db, tenant_filter
@@ -11,6 +12,72 @@ from auth import require_tenant
 from audit import write_audit
 
 router = APIRouter(tags=["projects"])
+
+
+# Bucket C3a Phase 1 — populates project_calendar_days for the project's
+# planned date range. Mon-Fri = working day; weekends not. C3b will
+# extend with holidays / closures / weather.
+async def _initialize_project_calendar(
+    db, tenant_id: str, project_id: str,
+    start: Optional[date] = None, end: Optional[date] = None,
+) -> int:
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}), {"_id": 0},
+    )
+    if not proj:
+        return 0
+    s = start
+    if not s:
+        raw = proj.get("start_date") or proj.get("created_at")
+        try:
+            s = date.fromisoformat(str(raw)[:10]) if raw else date.today()
+        except Exception:
+            s = date.today()
+    e = end
+    if not e:
+        raw = proj.get("planned_completion_date") or proj.get("actual_completion_date")
+        try:
+            e = date.fromisoformat(str(raw)[:10]) if raw else (s + timedelta(days=730))  # 2y default
+        except Exception:
+            e = s + timedelta(days=730)
+    if e < s:
+        return 0
+    # Find which dates are already populated (idempotent re-run).
+    existing = await db.project_calendar_days.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id,
+            "calendar_date": {"$gte": s.isoformat(), "$lte": e.isoformat()},
+        }),
+        {"_id": 0, "calendar_date": 1},
+    ).to_list(5000)
+    seen = {str(d["calendar_date"])[:10] for d in existing}
+    now_iso = utc_now().isoformat()
+    inserted = 0
+    cur = s
+    batch: list[dict] = []
+    while cur <= e:
+        iso = cur.isoformat()
+        if iso not in seen:
+            batch.append({
+                "id": gen_id(),
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "calendar_date": iso,
+                "is_working_day": cur.weekday() < 5,
+                "is_holiday": False,
+                "is_building_closed": False,
+                "is_restricted_access": False,
+                "notes": None,
+                "created_at": now_iso,
+            })
+            inserted += 1
+        cur += timedelta(days=1)
+        if len(batch) >= 500:
+            await db.project_calendar_days.insert_many(batch)
+            batch = []
+    if batch:
+        await db.project_calendar_days.insert_many(batch)
+    return inserted
 
 
 # --- projects ---
@@ -31,7 +98,39 @@ async def create_project(payload: ProjectCreate, ctx: dict = Depends(require_ten
         record_id=doc["id"], before=None, after=doc, actor_id=ctx["user"]["id"],
         request_id=ctx["request_id"],
     )
+    # Bucket C3a Phase 1 — auto-populate the working-day calendar so SLA
+    # math on RFIs / submittals / etc has a calendar to reference. Mon-Fri
+    # default; user can call /initialize-calendar later to re-seed a
+    # different range.
+    try:
+        await _initialize_project_calendar(db, ctx["tenant_id"], doc["id"])
+    except Exception:
+        # Calendar init is best-effort on create — don't block project
+        # creation if it fails. /initialize-calendar can be called later.
+        pass
     return Project(**doc)
+
+
+@router.post("/projects/{project_id}/initialize-calendar")
+async def initialize_calendar(
+    project_id: str,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    ctx: dict = Depends(require_tenant),
+):
+    """Populate project_calendar_days for the project's planned date range
+    (or [start_date, end_date] if specified). Mon-Fri = working day;
+    weekends not. Idempotent — re-runs skip dates already present."""
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    inserted = await _initialize_project_calendar(
+        db, ctx["tenant_id"], project_id, start=start_date, end=end_date,
+    )
+    return {"inserted": inserted}
 
 
 @router.get("/projects", response_model=list[Project])

@@ -75,6 +75,18 @@ async def _ensure_indexes():
     # outcome_recorded_at desc); detail page queries by linked_delay_id.
     await db.mitigations.create_index([("tenant_id", 1), ("outcome_recorded_at", -1)])
     await db.mitigations.create_index([("tenant_id", 1), ("linked_delay_id", 1)])
+    # Bucket C3a — gating entities (Phase 2 dropdown queries by gates_task_ids;
+    # detail page by id; status/over-SLA dashboards by (tenant, project, status))
+    # plus the entity-type back-pointer for sync_status lookups.
+    await db.gating_entities.create_index([("tenant_id", 1), ("project_id", 1), ("status", 1)])
+    await db.gating_entities.create_index([("tenant_id", 1), ("entity_type", 1), ("entity_id", 1)])
+    await db.gating_entities.create_index([("tenant_id", 1), ("gates_task_ids", 1)])
+    # Project working-day calendar — keyed by (tenant, project, date) for
+    # working-day math walks.
+    await db.project_calendar_days.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("calendar_date", 1)],
+        unique=True,
+    )
 
 
 @asynccontextmanager

@@ -669,6 +669,10 @@ class Rfi(ReadModel):
     time_impact_estimated_days: Optional[int] = None
     created_by: Optional[str] = None
     created_at: datetime
+    # Bucket C3a Phase 1 — back-pointer to the gating_entities row that
+    # represents this RFI as a scheduleable CPM node. Auto-populated on
+    # POST /rfis. Older records get this via the 002 backfill.
+    gating_entity_id: Optional[str] = None
 
 
 class ChangeOrderCreate(StrictModel):
@@ -939,6 +943,8 @@ class WorkItem(ReadModel):
     closed_at: Optional[datetime] = None
     closure_summary: Optional[str] = None
     created_at: datetime
+    # Bucket C3a Phase 1 — back-pointer to the gating_entities CPM node.
+    gating_entity_id: Optional[str] = None
 
 
 class WorkItemLinkCreate(StrictModel):
@@ -1194,3 +1200,81 @@ class RfiDraftRequest(StrictModel):
     subject: str
     context: str
     schedule_activity_id: Optional[str] = None
+
+
+# ============================================================
+# Bucket C3a — Gating entities + project calendar
+# ============================================================
+GatingEntityType = Literal["rfi", "submittal", "bulletin", "field_issue",
+                            "coordination_request", "mop", "hot_work_permit"]
+GatingEntityStatus = Literal["draft", "submitted", "open", "under_review",
+                              "awaiting_clarification", "responded", "closed",
+                              "withdrawn", "expired"]
+OwnerAttribution = Literal["gc", "a_e", "owner", "sub", "external_authority",
+                            "tenant", "none"]
+CauseClass = Literal["design_clarification", "design_change",
+                      "differing_site_condition", "concealed_condition",
+                      "tenant_coordination", "building_coordination",
+                      "regulatory", "utility", "procurement", "other"]
+
+
+class GatingEntity(ReadModel):
+    """Polymorphic CPM-node wrapper around RFI / Submittal / WorkItem /
+    Bulletin / CoordinationRequest. Phase 1 wires RFI / Submittal /
+    WorkItem (the three with existing endpoints); Bulletin and
+    CoordinationRequest enums kept for forward compatibility.
+
+    The underlying entity_id row keeps its entity-specific fields
+    (rfi_number, subject, response_text, etc.) — this row holds the
+    schedule-relevant projection (submitted_at, target_response_at,
+    age, SLA flag, gates_task_ids) so the rest of the platform can
+    treat all gating entities uniformly."""
+    id: str
+    tenant_id: str
+    project_id: str
+    entity_type: GatingEntityType
+    entity_id: str  # FK to type-specific collection
+    # Denormalized so the dropdown UI doesn't need a per-row join.
+    entity_number: Optional[str] = None  # e.g. "RFI-014" / "SUB-008"
+    display_label: Optional[str] = None  # e.g. "RFI-014: Cast iron line routing"
+
+    # Schedule fields
+    submitted_at: Optional[datetime] = None
+    target_response_at: Optional[datetime] = None
+    actual_responded_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    sla_working_days: int = 10
+
+    # State
+    status: GatingEntityStatus = "open"
+    owner_attribution: OwnerAttribution = "none"
+    cause_class: CauseClass = "other"
+
+    # Linkage
+    gates_task_ids: List[str] = Field(default_factory=list)
+
+    # Computed at read time (not persisted authoritatively — refreshed
+    # via services.gating_entities.compute_age_fields when read)
+    current_age_calendar_days: Optional[int] = None
+    current_age_working_days: Optional[int] = None
+    is_over_sla: bool = False
+
+    # Audit
+    privileged: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class ProjectCalendarDay(ReadModel):
+    """One row per (project, calendar_date). C3a only populates
+    is_working_day; weather / closure tracking lands in C3b."""
+    id: str
+    tenant_id: str
+    project_id: str
+    calendar_date: date
+    is_working_day: bool = True
+    is_holiday: bool = False
+    is_building_closed: bool = False
+    is_restricted_access: bool = False
+    notes: Optional[str] = None
+    created_at: datetime

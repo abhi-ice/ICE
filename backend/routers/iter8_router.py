@@ -72,6 +72,15 @@ ENTITY_CONFIG = {
 # we want the same string the entity-specific routers use.
 _AUDIT_TABLE = {k: v["collection"] for k, v in ENTITY_CONFIG.items()}
 
+# Bucket C3a Phase 1 — entities whose generic CRUD PATCH should also
+# sync to their gating_entities CPM-node row. Maps the URL entity key to
+# the GatingEntity entity_type.
+_GATING_ENTITY_TYPE = {
+    "rfis": "rfi",
+    "submittals": "submittal",
+    "work-items": "field_issue",
+}
+
 
 def _cfg(entity: str) -> dict:
     cfg = ENTITY_CONFIG.get(entity)
@@ -98,6 +107,23 @@ async def crud_patch(entity: str, id: str, payload: dict, ctx: dict = Depends(re
     if not res.matched_count:
         raise HTTPException(404, f"{entity} {id} not found")
     doc = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
+    # Bucket C3a Phase 1 — keep gating_entities row in sync when status
+    # changes through this generic CRUD path. Only fires for entity types
+    # that have a gating CPM-node mapping. Status field name varies by
+    # entity; the status mapper in services.gating_entities handles each.
+    ge_type = _GATING_ENTITY_TYPE.get(entity)
+    if ge_type and "status" in payload:
+        try:
+            from services.gating_entities import sync_status
+            await sync_status(
+                tenant_id=ctx["tenant_id"], entity_type=ge_type, entity_id=id,
+                underlying_status=doc.get("status"),
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+        except Exception:
+            # Sync is best-effort here — don't fail the underlying patch
+            # if the gating service is in an odd state.
+            pass
     return doc
 
 
