@@ -161,10 +161,15 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         updates["linked_task_ids"] = new_ids
         updates["per_task_impacts"] = new_impacts
 
-    # Status transition → resolved: stamp resolver fields if not provided
+    # Status transition → resolved: stamp resolver fields if not provided.
+    # Note (Item 1, 2026-05-06): we deliberately do NOT auto-fill
+    # resolved_date from utc_now().date() — the server's UTC date can be
+    # tomorrow relative to the user (e.g. EST 8 PM = next-day UTC), which
+    # caused same-day resolutions to render as 1 day open. The frontend
+    # always supplies resolved_date from a date picker prefilled with the
+    # user's LOCAL today, so the field arrives correct. Resolved_by we
+    # still stamp here because it isn't user-input.
     if updates.get("status") == "resolved":
-        if "resolved_date" not in updates:
-            updates["resolved_date"] = utc_now().date().isoformat()
         if "resolved_by_user_id" not in updates:
             updates["resolved_by_user_id"] = ctx["user"]["id"]
     # Any AI-report write also stamps generated_at

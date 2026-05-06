@@ -13,6 +13,7 @@ import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
+import { localTodayISO } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import {
@@ -44,7 +45,7 @@ export default function DailyReports() {
   }, [openId]);
 
   const create = async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localTodayISO();
     try {
       const { data } = await api.post("/daily-reports", { project_id: activeId, report_date: today });
       toast.success(`Daily report opened for ${data.report_date}`);
@@ -684,7 +685,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
 
 function DelayRowInline({ delay, reload }) {
   const [resolving, setResolving] = useState(false);
-  const [resolveDate, setResolveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [resolveDate, setResolveDate] = useState(localTodayISO());
   const [resolveNote, setResolveNote] = useState("");
 
   const resolve = async () => {
@@ -757,7 +758,7 @@ function ReminderBanner({ reminders, reload }) {
 
 function ReminderCard({ delay, reload }) {
   const [resolving, setResolving] = useState(false);
-  const [resolveDate, setResolveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [resolveDate, setResolveDate] = useState(localTodayISO());
   const [resolveNote, setResolveNote] = useState("");
 
   const resolve = async () => {

@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import api from "../../lib/api";
+import { localTodayISO } from "../../lib/dateUtil";
 import { toast } from "../ui/sonner";
 
 const SEVERITY_OPTS = ["minor", "moderate", "major", "critical"];
@@ -98,7 +99,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
         })),
       };
       if (form.status === "resolved") {
-        payload.resolved_date = form.resolved_date || new Date().toISOString().slice(0, 10);
+        payload.resolved_date = form.resolved_date || localTodayISO();
         payload.resolved_note = form.resolved_note || null;
       }
       let res;
@@ -109,7 +110,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           ...payload,
           project_id: projectId,
           daily_report_id: dailyReportId || undefined,
-          date: reportDate || new Date().toISOString().slice(0, 10),
+          date: reportDate || localTodayISO(),
         });
       }
       onSaved?.(res.data);
