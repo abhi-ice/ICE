@@ -7,7 +7,7 @@
 // EXCLUSIVELY here: never shown on the daily report or anywhere else.
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, Sparkles, FileDown, Pencil, RefreshCw, Lightbulb, ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronLeft, Sparkles, FileDown, Pencil, RefreshCw, Lightbulb, ChevronDown, ChevronUp, CheckCircle2, RotateCcw } from "lucide-react";
 import api from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -208,15 +208,20 @@ export default function DelayDetail() {
   );
 }
 
-// Bucket C2 Phase 1 — AI mitigation scenarios block. Manages its own
+// Bucket C2 Phase 1 + 2 — AI mitigation scenarios block. Manages its own
 // fetch/regenerate cycle so the parent doesn't need to wire scenario
-// state through props. Phase 2 will add Choose / Change choice; Phase 3
+// state through props. Phase 2 wires Choose / Change choice; Phase 3
 // will add Record actuals.
 function ScenariosSection({ delayId }) {
   const [data, setData] = useState(null);          // {scenarios_last_generated_at, active, history, chosen_mitigation_id}
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
+  // Phase 2 — confirmation dialog state. We open it with the scenario the
+  // user clicked Choose on; closing without confirming aborts the action.
+  const [chooseTarget, setChooseTarget] = useState(null);
+  const [rationale, setRationale] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -243,9 +248,39 @@ function ScenariosSection({ delayId }) {
     } finally { setGenerating(false); }
   };
 
+  const confirmChoose = async () => {
+    if (!chooseTarget) return;
+    setBusy(true);
+    try {
+      await api.post(`/mitigations/${chooseTarget.id}/choose`, {
+        decision_rationale: rationale || null,
+      });
+      toast.success(`Scenario ${chooseTarget.scenario_label} chosen — schedule reflowed`);
+      setChooseTarget(null);
+      setRationale("");
+      await refresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Choose failed");
+    } finally { setBusy(false); }
+  };
+
+  const unchoose = async (m) => {
+    if (!window.confirm("Revert the chosen scenario? The delay's per-task impacts and the projected finish dates will go back to what they were before you chose.")) return;
+    setBusy(true);
+    try {
+      await api.post(`/mitigations/${m.id}/unchoose`);
+      toast.success("Choice reverted — schedule restored");
+      await refresh();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Unchoose failed");
+    } finally { setBusy(false); }
+  };
+
   const active = data?.active || [];
   const hasActive = active.length > 0;
   const lastGen = data?.scenarios_last_generated_at;
+  const chosenId = data?.chosen_mitigation_id;
+  const chosen = active.find((s) => s.id === chosenId);
 
   return (
     <div className="surface p-4" data-testid="delay-scenarios">
@@ -256,8 +291,12 @@ function ScenariosSection({ delayId }) {
           <span className="text-[10px] text-slate-400 ml-2">last generated {new Date(lastGen).toLocaleString()}</span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <Button data-testid="scenarios-generate" onClick={generate} disabled={generating}
-            className="gap-1 bg-amber-600 hover:bg-amber-700 text-white">
+          {/* Block regenerate while a scenario is chosen — would orphan
+              the chosen pointer and confuse the schedule reflow. User
+              must Change choice first. */}
+          <Button data-testid="scenarios-generate" onClick={generate} disabled={generating || !!chosenId}
+            title={chosenId ? "Click 'Change choice' on the executing scenario before regenerating" : ""}
+            className="gap-1 bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50">
             <RefreshCw className={`h-3.5 w-3.5 ${generating ? "animate-spin" : ""}`} />
             {hasActive ? "Regenerate scenarios" : "Generate 3 mitigation scenarios"}
           </Button>
@@ -269,13 +308,36 @@ function ScenariosSection({ delayId }) {
       {!loading && !hasActive && (
         <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-3">
           The AI will produce three ranked mitigation scenarios — wait/monitor, re-sequence, accelerate, and similar.
-          Each one shows the schedule impact, cost impact, risk level, and the AI's confidence. You can pick one (Phase 2 — coming) and the schedule will reflow accordingly.
+          Each one shows the schedule impact, cost impact, risk level, and the AI's confidence. Pick one and the
+          delay's projected impact reflows across the linked tasks.
+        </div>
+      )}
+
+      {chosen && (
+        <div data-testid="scenarios-executing-banner"
+          className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-center gap-2 text-sm">
+          <CheckCircle2 className="h-4 w-4 text-emerald-700" />
+          <div className="flex-1">
+            <span className="font-mono text-emerald-700 mr-2">EXECUTING: Scenario {chosen.scenario_label}</span>
+            <span className="text-emerald-900">{chosen.strategy_name}</span>
+            {chosen.decision_rationale && (
+              <div className="text-[11px] text-emerald-800/80 mt-0.5">Rationale: {chosen.decision_rationale}</div>
+            )}
+          </div>
+          <button data-testid="scenarios-change-choice" onClick={() => unchoose(chosen)} disabled={busy}
+            className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 underline">
+            <RotateCcw className="h-3 w-3" /> Change choice
+          </button>
         </div>
       )}
 
       {!loading && hasActive && (
         <div data-testid="scenarios-active" className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {active.map((s) => <ScenarioCard key={s.id} scenario={s} />)}
+          {active.map((s) => (
+            <ScenarioCard key={s.id} scenario={s}
+              chosenId={chosenId}
+              onChoose={() => { setChooseTarget(s); setRationale(""); }} />
+          ))}
         </div>
       )}
 
@@ -301,12 +363,51 @@ function ScenariosSection({ delayId }) {
           )}
         </div>
       )}
+
+      {/* Choose-confirmation dialog */}
+      <Dialog open={!!chooseTarget} onOpenChange={(v) => !v && setChooseTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Choose scenario {chooseTarget?.scenario_label}?</DialogTitle>
+          </DialogHeader>
+          {chooseTarget && (
+            <div className="space-y-3 text-sm">
+              <div className="text-slate-700">{chooseTarget.strategy_name}</div>
+              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded p-2">
+                Choosing this scenario will set the delay's projected schedule impact to{" "}
+                <b>{chooseTarget.estimated_schedule_impact_days}d</b> total, redistribute it
+                across the {(chooseTarget.linked_task_ids || []).length} linked task(s) proportionally,
+                and reflow downstream projected finish dates.
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Rationale (optional)</label>
+                <textarea data-testid="scenario-choose-rationale"
+                  value={rationale} onChange={(e) => setRationale(e.target.value)}
+                  placeholder="Why is the team picking this one over the alternatives?"
+                  className="mt-1 w-full p-2 rounded border border-slate-200 text-sm h-20" />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setChooseTarget(null)} disabled={busy}
+                  className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+                  Cancel
+                </button>
+                <button data-testid="scenario-choose-confirm" onClick={confirmChoose} disabled={busy}
+                  className="h-9 px-4 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50">
+                  {busy ? "Choosing…" : `Choose ${chooseTarget.scenario_label}`}
+                </button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ScenarioCard({ scenario: s }) {
+function ScenarioCard({ scenario: s, chosenId, onChoose }) {
   const [showReasoning, setShowReasoning] = useState(false);
+  const isChosen = chosenId === s.id;
+  const isOtherChosen = chosenId && chosenId !== s.id;
   const labelColor = s.scenario_label === "A" ? "bg-blue-600"
     : s.scenario_label === "B" ? "bg-emerald-600"
     : s.scenario_label === "C" ? "bg-purple-600"
@@ -318,10 +419,15 @@ function ScenarioCard({ scenario: s }) {
   const scheduleSign = s.estimated_schedule_impact_days > 0 ? "+" : "";
   return (
     <div data-testid={`scenario-card-${s.scenario_label}`}
-      className="border border-slate-200 rounded-lg overflow-hidden bg-white flex flex-col">
+      className={`border rounded-lg overflow-hidden bg-white flex flex-col transition-opacity ${
+        isChosen ? "border-emerald-400 ring-2 ring-emerald-200"
+        : isOtherChosen ? "border-slate-200 opacity-60"
+        : "border-slate-200"
+      }`}>
       <div className={`${labelColor} text-white px-3 py-2 flex items-center gap-2`}>
         <div className="font-mono text-sm font-bold">{s.scenario_label}</div>
         <div className="text-sm flex-1 truncate">{s.strategy_name}</div>
+        {isChosen && <CheckCircle2 className="h-4 w-4" />}
       </div>
       <div className="p-3 text-xs space-y-2 flex-1">
         <div>
@@ -363,9 +469,19 @@ function ScenarioCard({ scenario: s }) {
           </div>
         )}
       </div>
-      {/* Phase 2 will add a "Choose this scenario" CTA here. */}
-      <div className="px-3 py-2 border-t border-slate-100 bg-slate-50/50 text-[10px] text-slate-400 italic">
-        Phase 1 preview — Choose / Change / Record-outcome controls land in Phase 2 + 3.
+      <div className="px-3 py-2 border-t border-slate-100">
+        {isChosen ? (
+          <div className="text-[11px] text-emerald-700 inline-flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" /> Chosen — see banner above to change.
+          </div>
+        ) : isOtherChosen ? (
+          <div className="text-[11px] text-slate-400">Not chosen</div>
+        ) : (
+          <button data-testid={`scenario-choose-${s.scenario_label}`} onClick={onChoose}
+            className="w-full h-8 px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700">
+            Choose this scenario
+          </button>
+        )}
       </div>
     </div>
   );

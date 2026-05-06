@@ -800,6 +800,10 @@ class Delay(ReadModel):
     scenario_history: List[dict] = Field(default_factory=list)
     chosen_mitigation_id: Optional[str] = None
     scenarios_last_generated_at: Optional[datetime] = None
+    # Bucket C2 Phase 2 — snapshot of per_task_impacts at the moment a
+    # scenario was chosen, so /unchoose can restore the original split.
+    # Populated only while chosen_mitigation_id is set; cleared on unchoose.
+    per_task_impacts_pre_choose: Optional[List[dict]] = None
     created_at: datetime
 
 
@@ -1106,6 +1110,12 @@ class CopilotResponse(ReadModel):
 MitigationSource = Literal["ai_recovery_engine", "human_proposal", "sub_proposal", "owner_request"]
 MitigationDecisionStatus = Literal["proposed", "chosen", "not_chosen", "superseded", "executed", "outcome_recorded"]
 MitigationRiskLevel = Literal["low", "medium", "high"]
+
+
+class MitigationChooseRequest(StrictModel):
+    """Phase 2 — payload for POST /mitigations/{id}/choose. Rationale
+    optional; we still capture decision_made_by from auth context."""
+    decision_rationale: Optional[str] = None
 
 
 class Mitigation(ReadModel):
