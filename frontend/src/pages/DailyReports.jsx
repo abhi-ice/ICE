@@ -300,7 +300,8 @@ function DailyReportDetail({ id, onBack }) {
       <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
 
       {/* CREW SUMMARY (presence) */}
-      <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload} />
+      <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
+        projectId={project.id} grid={grid} />
 
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
@@ -499,8 +500,32 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   );
 }
 
-function PresencePanel({ rows, dailyReportId, locked, reload }) {
+const PRESENCE_SHIFTS = ["first", "second", "third", "weekend", "holiday", "off_hours"];
+
+function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [] }) {
   const [draft, setDraft] = useState({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
+  // Bucket C3b Phase 3 — detailed roster toggle. When on, the table
+  // shows zone / shift / activity columns and the add-row form gets the
+  // same fields. Remembered per session via localStorage so users who
+  // prefer the granular view don't have to flip it every time.
+  const [showDetailed, setShowDetailed] = useState(() => {
+    try { return localStorage.getItem("ice.presence.detailed") === "1"; } catch { return false; }
+  });
+  const [zones, setZones] = useState([]);
+
+  useEffect(() => {
+    if (!showDetailed || !projectId) return;
+    api.get(`/projects/${projectId}/locations`).then(({ data }) => {
+      setZones(Array.isArray(data) ? data : []);
+    }).catch(() => setZones([]));
+  }, [showDetailed, projectId]);
+
+  const toggleDetailed = () => {
+    const next = !showDetailed;
+    setShowDetailed(next);
+    try { localStorage.setItem("ice.presence.detailed", next ? "1" : "0"); } catch { /* ignore */ }
+  };
+
   const total = rows.reduce((s, r) => s + (r.headcount || 0), 0);
   const totalHours = rows.reduce((s, r) => s + (r.headcount || 0) * (r.hours_per_person || 0), 0);
 
@@ -508,7 +533,8 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
     if (!draft.trade) return toast.error("Trade is required");
     try {
       await api.post(`/daily-reports/${dailyReportId}/presence`, { ...draft, daily_report_id: dailyReportId });
-      setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
+      setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "",
+                 zone_id: undefined, zone_name: undefined, shift: "first", schedule_activity_id: undefined });
       reload();
     } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
   };
@@ -521,29 +547,89 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
     await api.delete(`/daily-presence/${rid}`); reload();
   };
 
+  const taskOptions = grid.map((g) => ({
+    id: g.schedule_activity_id, code: g.activity_code, desc: g.activity_description,
+  })).filter((t) => t.id);
+
   return (
     <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
-      badge={<span className="text-[10px] text-slate-500 ml-2">total: {total} workers · {totalHours.toFixed(1)} hours</span>}>
+      badge={
+        <div className="ml-2 flex items-center gap-3">
+          <span className="text-[10px] text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
+          <button data-testid="presence-toggle-detailed" onClick={toggleDetailed}
+            className="text-[10px] text-blue-600 hover:underline">
+            {showDetailed ? "Hide detailed roster" : "Show detailed roster"}
+          </button>
+        </div>
+      }>
       <div className="overflow-x-auto">
         <table className="dense-table">
-          <thead><tr><th>Trade</th><th>Company</th><th>Headcount</th><th>Hrs/person</th><th>Sub-total</th><th>Notes</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th>Trade</th>
+              <th>Company</th>
+              <th>Headcount</th>
+              <th>Hrs/person</th>
+              <th>Sub-total</th>
+              {showDetailed && <th title="C3b Phase 3 — granular layer">Zone</th>}
+              {showDetailed && <th>Shift</th>}
+              {showDetailed && <th>Activity</th>}
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} data-testid={`presence-row-${r.id}`}>
-                <td>
-                  <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
-                    onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
-                    className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
-                </td>
-                <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
-                <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
-                <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
-                <td className="tabular-nums text-sm">{((r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
-                <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
-                <td>{!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded"><Trash2 className="h-3.5 w-3.5" /></button>}</td>
-              </tr>
-            ))}
-            {!rows.length && <tr><td colSpan="7" className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>}
+            {rows.map((r) => {
+              const isAuto = (r.notes || "").startsWith("Auto-created");
+              return (
+                <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
+                  <td>
+                    <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
+                      onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
+                      className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
+                  </td>
+                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
+                  <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
+                  <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
+                  {showDetailed && (
+                    <td>
+                      <select data-testid={`presence-zone-${r.id}`} defaultValue={r.zone_id || ""}
+                        onChange={(e) => {
+                          const z = zones.find((zz) => zz.id === e.target.value);
+                          patch(r.id, { zone_id: e.target.value || null, zone_name: z?.name || null });
+                        }} disabled={locked}
+                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[110px]">
+                        <option value="">— no zone —</option>
+                        {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
+                      </select>
+                    </td>
+                  )}
+                  {showDetailed && (
+                    <td>
+                      <select data-testid={`presence-shift-${r.id}`} defaultValue={r.shift || "first"}
+                        onChange={(e) => patch(r.id, { shift: e.target.value })} disabled={locked}
+                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white">
+                        {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+                      </select>
+                    </td>
+                  )}
+                  {showDetailed && (
+                    <td>
+                      <select data-testid={`presence-activity-${r.id}`} defaultValue={r.schedule_activity_id || ""}
+                        onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
+                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[120px]">
+                        <option value="">— project-wide —</option>
+                        {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                      </select>
+                    </td>
+                  )}
+                  <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td>{!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded"><Trash2 className="h-3.5 w-3.5" /></button>}</td>
+                </tr>
+              );
+            })}
+            {!rows.length && <tr><td colSpan={showDetailed ? "10" : "7"} className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -553,6 +639,39 @@ function PresencePanel({ rows, dailyReportId, locked, reload }) {
           <Field label="Company" value={draft.company_name} onChange={(v) => setDraft({ ...draft, company_name: v })} testid="presence-new-company" />
           <Field label="Headcount" type="number" value={draft.headcount} onChange={(v) => setDraft({ ...draft, headcount: Number(v) })} testid="presence-new-headcount" />
           <Field label="Hrs/person" type="number" value={draft.hours_per_person} onChange={(v) => setDraft({ ...draft, hours_per_person: Number(v) })} testid="presence-new-hours" />
+          {showDetailed && (
+            <>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-500">Zone</span>
+                <select value={draft.zone_id || ""}
+                  onChange={(e) => {
+                    const z = zones.find((zz) => zz.id === e.target.value);
+                    setDraft({ ...draft, zone_id: e.target.value || null, zone_name: z?.name || null });
+                  }}
+                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
+                  <option value="">— no zone —</option>
+                  {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-500">Shift</span>
+                <select value={draft.shift || "first"}
+                  onChange={(e) => setDraft({ ...draft, shift: e.target.value })}
+                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
+                  {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+                </select>
+              </label>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-500">Activity</span>
+                <select value={draft.schedule_activity_id || ""}
+                  onChange={(e) => setDraft({ ...draft, schedule_activity_id: e.target.value || null })}
+                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
+                  <option value="">— project-wide —</option>
+                  {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                </select>
+              </label>
+            </>
+          )}
           <button data-testid="presence-add" onClick={add} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
             <Plus className="h-3.5 w-3.5" /> Add trade
           </button>

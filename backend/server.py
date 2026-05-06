@@ -100,6 +100,12 @@ async def _ensure_indexes():
     await db.coordination_events.create_index(
         [("tenant_id", 1), ("project_id", 1), ("linked_daily_report_id", 1)],
     )
+    # Bucket C3b Phase 3 — daily_presence granular layer.
+    # Existing (tenant, daily_report_id) index is kept; these add the
+    # project + zone/shift + trade indexes for cross-DR aggregations.
+    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("daily_report_id", 1)])
+    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("zone_id", 1), ("shift", 1)])
+    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("trade", 1)])
 
 
 @asynccontextmanager

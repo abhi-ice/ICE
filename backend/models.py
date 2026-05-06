@@ -499,6 +499,9 @@ class DailyReportUpdate(StrictModel):
     after_hours_work: Optional[bool] = None
 
 
+PresenceShift = Literal["first", "second", "third", "weekend", "holiday", "off_hours"]
+
+
 class DailyPresenceCreate(StrictModel):
     daily_report_id: str
     trade: str
@@ -507,6 +510,14 @@ class DailyPresenceCreate(StrictModel):
     headcount: int = 0
     hours_per_person: float = 8.0
     notes: Optional[str] = None
+    # Bucket C3b Phase 3 — granular fields. Older callers (existing
+    # PresencePanel) just send trade + headcount + hours; that still
+    # works and lands as an aggregate row with shift=first by default.
+    zone_id: Optional[str] = None       # FK to locations
+    zone_name: Optional[str] = None     # denormalized (or free-text fallback)
+    shift: Optional[PresenceShift] = "first"
+    schedule_activity_id: Optional[str] = None  # link to specific task
+    sub_name: Optional[str] = None      # alias the spec uses; we'll fill company_name from this if provided
 
 
 class DailyPresenceUpdate(StrictModel):
@@ -516,18 +527,31 @@ class DailyPresenceUpdate(StrictModel):
     headcount: Optional[int] = None
     hours_per_person: Optional[float] = None
     notes: Optional[str] = None
+    zone_id: Optional[str] = None
+    zone_name: Optional[str] = None
+    shift: Optional[PresenceShift] = None
+    schedule_activity_id: Optional[str] = None
+    sub_name: Optional[str] = None
 
 
 class DailyPresence(ReadModel):
     id: str
     tenant_id: str
     daily_report_id: str
+    project_id: Optional[str] = None  # auto-filled on write (Phase 3)
     trade: str
     sub_id: Optional[str] = None
     company_name: Optional[str] = None
     headcount: int = 0
     hours_per_person: float = 8.0
     notes: Optional[str] = None
+    # Phase 3 — granular layer.
+    zone_id: Optional[str] = None
+    zone_name: Optional[str] = None
+    shift: Optional[PresenceShift] = "first"
+    schedule_activity_id: Optional[str] = None
+    sub_name: Optional[str] = None
+    total_hours: float = 0.0  # computed at write time (headcount * hours_per_person)
     created_by: Optional[str] = None
     created_at: datetime
 

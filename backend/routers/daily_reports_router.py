@@ -517,6 +517,7 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         delta = float(updates["hours_worked"]) - float(before.get("hours_worked") or 0)
         if delta:
             task_set["actual_hours_to_date"] = float(task_before.get("actual_hours_to_date") or 0) + delta
+    crew_picked_for_presence = None
     if "linked_crew_id" in updates:
         new_crew = updates["linked_crew_id"]
         if new_crew != (task_before or {}).get("current_crew_id"):
@@ -526,6 +527,10 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                 "daily_report_id": before["daily_report_id"],
                 "assigned_date": dr.get("report_date"),
             }
+            # Bucket C3b Phase 3 — auto-create a daily_presence row
+            # tying this trade to the activity at first shift, no zone.
+            # User can refine zone/shift on the detailed roster later.
+            crew_picked_for_presence = new_crew
     # Always stamp the last-synced marker so the UI can show provisional.
     task_set["last_synced_from_dr"] = {
         "daily_report_id": before["daily_report_id"],
@@ -582,6 +587,51 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             db, ctx["tenant_id"], task_id,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
         )
+
+        # Bucket C3b Phase 3 — auto-create a daily_presence row tying
+        # the picked crew to the activity at first shift. Idempotent on
+        # (daily_report_id, schedule_activity_id, sub_id) so re-picking
+        # the same crew doesn't duplicate.
+        if crew_picked_for_presence:
+            try:
+                existing = await db.daily_presence.find_one(
+                    {"daily_report_id": before["daily_report_id"],
+                     "schedule_activity_id": task_id,
+                     "sub_id": crew_picked_for_presence},
+                    {"_id": 0, "id": 1},
+                )
+                if not existing:
+                    # Pull trade + company from the daily_presence aggregate
+                    # row that the user added to the crew presence panel.
+                    src = await db.daily_presence.find_one(
+                        {"id": crew_picked_for_presence},
+                        {"_id": 0, "trade": 1, "company_name": 1},
+                    ) or {}
+                    presence_doc = _presence_doc_with_derived({
+                        "id": gen_id(),
+                        "tenant_id": ctx["tenant_id"],
+                        "project_id": dr.get("project_id"),
+                        "daily_report_id": before["daily_report_id"],
+                        "trade": src.get("trade") or (task_before.get("trade_code") if task_before else "general"),
+                        "sub_id": crew_picked_for_presence,
+                        "company_name": src.get("company_name"),
+                        "sub_name": src.get("company_name"),
+                        "headcount": int(updates.get("crew_count") or after.get("crew_count") or 0),
+                        "hours_per_person": 8.0,
+                        "shift": "first",
+                        "schedule_activity_id": task_id,
+                        "zone_id": None,
+                        "zone_name": None,
+                        "notes": "Auto-created from activity grid crew dropdown",
+                        "created_by": ctx["user"]["id"],
+                        "created_at": now_iso,
+                    })
+                    await db.daily_presence.insert_one(presence_doc.copy())
+            except Exception:
+                # Auto-create is best-effort — sync write-back already
+                # wrote the linked_crew_id; presence row failure shouldn't
+                # block the activity grid edit.
+                pass
 
         # productivity observation (master prompt §16) — unchanged from
         # before this commit; lives here so it fires on the same EOD%
@@ -976,6 +1026,21 @@ async def list_presence(daily_report_id: str, ctx: dict = Depends(require_tenant
     return [DailyPresence(**d) for d in docs]
 
 
+def _presence_doc_with_derived(doc: dict) -> dict:
+    """Bucket C3b Phase 3 — sub_name/company_name reconciliation +
+    total_hours computation. Done both at create and patch so the
+    aggregate views can sum total_hours directly without re-multiplying."""
+    sub_name = doc.get("sub_name")
+    if sub_name and not doc.get("company_name"):
+        doc["company_name"] = sub_name
+    elif doc.get("company_name") and not sub_name:
+        doc["sub_name"] = doc["company_name"]
+    headcount = float(doc.get("headcount") or 0)
+    hours = float(doc.get("hours_per_person") or 0)
+    doc["total_hours"] = round(headcount * hours, 2)
+    return doc
+
+
 @router.post("/daily-reports/{daily_report_id}/presence", response_model=DailyPresence)
 async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -989,8 +1054,12 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
+        # Bucket C3b Phase 3 — denormalize project_id so the new
+        # (tenant, project, *) indexes work for cross-DR aggregations.
+        "project_id": dr.get("project_id"),
         "created_by": ctx["user"]["id"], "created_at": utc_now().isoformat(),
     })
+    doc = _presence_doc_with_derived(doc)
     await db.daily_presence.insert_one(doc.copy())
     return DailyPresence(**doc)
 
@@ -1001,11 +1070,25 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1})
     if dr and dr.get("status") == "submitted":
         raise HTTPException(409, "Daily report locked")
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    updates = {k: v for k, v in raw.items() if v is not None}
     if updates:
+        # Recompute total_hours when headcount or hours_per_person moves.
+        if "headcount" in updates or "hours_per_person" in updates:
+            new_hc = updates.get("headcount", doc.get("headcount") or 0)
+            new_hp = updates.get("hours_per_person", doc.get("hours_per_person") or 0)
+            updates["total_hours"] = round(float(new_hc) * float(new_hp), 2)
+        # Backfill project_id if missing on legacy rows.
+        if not doc.get("project_id") and dr and dr.get("project_id"):
+            updates["project_id"] = dr["project_id"]
+        # Mirror sub_name/company_name when one is patched.
+        if "sub_name" in updates and "company_name" not in updates:
+            updates["company_name"] = updates["sub_name"]
+        elif "company_name" in updates and "sub_name" not in updates:
+            updates["sub_name"] = updates["company_name"]
         await db.daily_presence.update_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"$set": updates})
     after = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     return DailyPresence(**after)
