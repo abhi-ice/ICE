@@ -353,3 +353,114 @@ async def rfi_draft(*, tenant_id: str, project_id: str, subject: str, context: s
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     await _track_usage(tenant_id, request_id, latency_ms, ok)
     return {"draft": resp, "citations": _extract_spec_citations(resp), "usage": {"latency_ms": latency_ms}}
+
+
+# ---------- DELAY REPORT (Phase B) ----------
+DELAY_REPORT_SYSTEM = """You are a federal-construction project controls analyst writing
+a formal delay analysis report for the project's records. The report MUST follow this
+exact structure (use the section headings verbatim, no markdown):
+
+  Summary
+  Linked tasks and float analysis
+  CPM cascade
+  Projected vs actual impact
+  Recommendations
+
+Write professional, factual prose. Reference activity codes in brackets, e.g. [A1240].
+Where the data shows a task pushes the critical path, say so explicitly. Where the
+projected impact is absorbed by float, note the residual float remaining. Keep each
+section to 3-6 short sentences. Do NOT use markdown bullets, asterisks, or hashes —
+plain text only. Do NOT speculate beyond the data provided."""
+
+
+async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
+    """Produce a structured delay narrative for a single delay record. Pulls
+    the linked tasks (current state) + project + master doc and asks Claude
+    for a 5-section report. Returns the report text. Caller persists it on
+    the delay record (caller also handles auth + tenant filtering)."""
+    db = get_db()
+    project_id = delay.get("project_id")
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}), {"_id": 0},
+    ) if project_id else None
+
+    md_block = await _master_doc_block(tenant_id, project_id) if project_id else ""
+
+    linked_ids = delay.get("linked_task_ids") or []
+    impacts_by_id = {i.get("task_id"): i for i in (delay.get("per_task_impacts") or [])}
+    tasks: list[dict] = []
+    if linked_ids:
+        tasks = await db.tasks.find(
+            tenant_filter(tenant_id, {"id": {"$in": linked_ids}}),
+            {"_id": 0, "id": 1, "activity_code": 1, "description": 1,
+             "pct_complete": 1, "is_critical_path": 1, "total_float_days": 1,
+             "planned_start": 1, "planned_finish": 1, "predecessors": 1, "trade_code": 1},
+        ).to_list(len(linked_ids))
+
+    # Cascade — for each linked task, walk down its successors so the AI has
+    # the same downstream context the recovery agent uses.
+    cascade: list[dict] = []
+    visited: set[str] = set()
+    queue = [t.get("activity_code") for t in tasks if t.get("activity_code")]
+    while queue and len(cascade) < 30:
+        code = queue.pop(0)
+        if not code or code in visited:
+            continue
+        visited.add(code)
+        succs = await db.tasks.find(
+            tenant_filter(tenant_id, {"project_id": project_id, "predecessors": code}),
+            {"_id": 0, "activity_code": 1, "description": 1,
+             "is_critical_path": 1, "planned_finish": 1, "total_float_days": 1},
+        ).limit(10).to_list(10)
+        for s in succs:
+            cascade.append(s)
+            if s.get("activity_code"):
+                queue.append(s["activity_code"])
+
+    task_lines = []
+    for t in tasks:
+        impact = impacts_by_id.get(t["id"]) or {}
+        task_lines.append(
+            f"  [{t.get('activity_code')}] {t.get('description')}\n"
+            f"    pct_complete={t.get('pct_complete', 0)}%  "
+            f"current_float_days={t.get('total_float_days')}  "
+            f"is_critical_path={bool(t.get('is_critical_path'))}\n"
+            f"    impact_logged={impact.get('projected_impact_days', 0)}d  "
+            f"float_at_logging={impact.get('float_at_logging_days')}d  "
+            f"consumes_float_only={impact.get('consumes_float_only', False)}  "
+            f"pushes_critical_path={impact.get('pushes_critical_path', False)}"
+        )
+    cascade_lines = [
+        f"  [{c.get('activity_code')}] {c.get('description')} "
+        f"(CP={bool(c.get('is_critical_path'))}, float={c.get('total_float_days')}d)"
+        for c in cascade[:20]
+    ]
+
+    user_text = (
+        (md_block + "\n\n" if md_block else "")
+        + (f"PROJECT: {proj['name']} (status={proj.get('status')})\n\n" if proj else "")
+        + f"DELAY RECORD\n"
+        f"  logged_date={delay.get('logged_date') or delay.get('date')}\n"
+        f"  status={delay.get('status')}\n"
+        f"  severity={delay.get('severity')}\n"
+        f"  reason_category={delay.get('reason_category')}\n"
+        f"  description: {delay.get('description')}\n"
+        f"  resolved_date={delay.get('resolved_date')}\n"
+        f"  duration_days_so_far={delay.get('duration_days')}\n\n"
+        f"LINKED TASKS ({len(tasks)}):\n" + ("\n".join(task_lines) or "  (none)")
+        + f"\n\nCPM DOWNSTREAM CASCADE ({len(cascade)} reached):\n"
+        + ("\n".join(cascade_lines) or "  (none)")
+        + "\n\nWrite the structured delay analysis report now."
+    )
+    started = datetime.now(timezone.utc)
+    request_id = gen_id()
+    try:
+        chat = _new_chat(f"delay-report-{delay.get('id') or request_id}", DELAY_REPORT_SYSTEM)
+        resp = await chat.send_message(UserMessage(text=user_text))
+        ok = True
+    except Exception as e:
+        resp = f"AI delay report temporarily unavailable: {e}"
+        ok = False
+    latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    await _track_usage(tenant_id, request_id, latency_ms, ok)
+    return resp

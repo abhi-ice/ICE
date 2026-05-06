@@ -189,6 +189,100 @@ async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
+@router.post("/delays/{delay_id}/generate-ai-report", response_model=Delay)
+async def generate_delay_ai_report(delay_id: str, ctx: dict = Depends(require_tenant)):
+    """Generate (or regenerate) the AI narrative for this delay and persist
+    it on the delay record. Idempotent — overwrites previous report."""
+    from services.ai_agents import generate_delay_report
+    db = get_db()
+    delay = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    if not delay:
+        raise HTTPException(404, "Delay not found")
+    delay = _enrich_delay_for_read(delay)
+    report = await generate_delay_report(tenant_id=ctx["tenant_id"], delay=delay)
+    await db.delays.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": delay_id}),
+        {"$set": {"ai_report": report, "ai_report_generated_at": utc_now().isoformat()}},
+    )
+    after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    return Delay(**_enrich_delay_for_read(after))
+
+
+@router.get("/delays/{delay_id}/ai-report/pdf")
+async def export_delay_ai_report_pdf(delay_id: str, ctx: dict = Depends(require_tenant)):
+    """Stream a WeasyPrint PDF of the AI delay report. 422 if the report
+    has not been generated yet — UI should generate first."""
+    from fastapi import Response
+    from weasyprint import HTML
+    db = get_db()
+    delay = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+    if not delay:
+        raise HTTPException(404, "Delay not found")
+    if not delay.get("ai_report"):
+        raise HTTPException(422, "AI report not generated yet — call /generate-ai-report first")
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": delay["project_id"]}),
+        {"_id": 0, "name": 1},
+    ) or {}
+
+    def esc(s):
+        return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    delay = _enrich_delay_for_read(delay)
+    impact_rows = "".join(
+        f"<tr><td class='code'>{esc(i.get('task_id', '')[:8])}</td>"
+        f"<td class='num'>{esc(i.get('projected_impact_days'))}</td>"
+        f"<td class='num'>{esc(i.get('float_at_logging_days'))}</td>"
+        f"<td>{('within float' if i.get('consumes_float_only') else 'pushes CP' if i.get('pushes_critical_path') else 'exceeds non-CP float')}</td></tr>"
+        for i in (delay.get("per_task_impacts") or [])
+    ) or "<tr><td colspan='4' class='muted'>No linked tasks.</td></tr>"
+
+    body_html = esc(delay.get("ai_report") or "").replace("\n", "<br/>")
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'><style>
+@page {{ size: Letter; margin: 0.75in; }}
+body {{ font-family: 'Helvetica', sans-serif; color: #0f172a; font-size: 10pt; }}
+h1 {{ font-size: 17pt; margin: 0; }}
+.meta {{ margin-top: 4px; font-size: 9pt; color: #475569; }}
+.banner {{ background: #f1f5f9; border-left: 3px solid #d97706; padding: 8px 12px; margin: 12px 0; font-size: 9pt; }}
+table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 9pt; }}
+th {{ background: #1e293b; color: white; padding: 6px; text-align: left; font-weight: 600; }}
+td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; }}
+.code {{ font-family: monospace; font-size: 8pt; }}
+.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+.muted {{ color: #64748b; }}
+h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; }}
+.report {{ font-size: 10pt; line-height: 1.55; margin-top: 6px; }}
+</style></head><body>
+<h1>AI Delay Report — {esc(proj.get('name') or delay.get('project_id'))}</h1>
+<div class='meta'>Delay logged: <b>{esc(delay.get('logged_date') or delay.get('date'))}</b>
+  · severity <b>{esc(delay.get('severity'))}</b>
+  · status <b>{esc(delay.get('status'))}</b>
+  · {esc(delay.get('duration_days') or 0)}d open</div>
+<div class='banner'><b>Description:</b> {esc(delay.get('description'))}</div>
+
+<h2>Linked tasks · projected impact at logging</h2>
+<table>
+<thead><tr><th>Task</th><th>Impact (d)</th><th>Float at log (d)</th><th>Verdict</th></tr></thead>
+<tbody>{impact_rows}</tbody>
+</table>
+
+<h2>AI analysis</h2>
+<div class='report'>{body_html}</div>
+
+<div class='meta' style='margin-top:24px;font-size:8pt;color:#94a3b8;'>
+  Generated {esc(delay.get('ai_report_generated_at'))} · ICE Schedule Ops
+</div>
+</body></html>"""
+    pdf = HTML(string=html).write_pdf()
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"content-disposition": f'attachment; filename="delay_{delay_id[:8]}_ai_report.pdf"'},
+    )
+
+
 @router.get("/daily-reports/{daily_report_id}/delay-reminders", response_model=list[Delay])
 async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Open/in-progress delays whose linked_task_ids intersect with the
