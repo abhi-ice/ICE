@@ -505,11 +505,17 @@ async def list_qc(project_id: str, ctx: dict = Depends(require_tenant)):
 
 # --- Photos ---
 def _compute_evidentiary(photo_class: str, pin_x, pin_y, drawing_id) -> bool:
-    """Bucket C3b Phase 4 — class in evidentiary set AND has a pin =
-    evidentiary. Pin is a recommendation, not blocking, on those classes."""
+    """Bucket C3b Phase 4 — evidentiary if EITHER:
+       (a) class is in the evidentiary set (discovery / damage / quality), OR
+       (b) the photo carries a drawing pin.
+
+    Followup-fix 8 (2026-05-07): originally written with AND semantics
+    (required class AND pin together) which downgraded discovery/damage/
+    quality photos to evidentiary=false until they were pinned, contra
+    the C3b spec. Switched to OR per the spec."""
     from models import EVIDENTIARY_CLASSES
-    if photo_class not in EVIDENTIARY_CLASSES:
-        return False
+    if photo_class in EVIDENTIARY_CLASSES:
+        return True
     has_pin = (pin_x is not None and pin_y is not None) or bool(drawing_id)
     return has_pin
 
