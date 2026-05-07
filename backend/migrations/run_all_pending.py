@@ -41,6 +41,9 @@ MIGRATIONS = [
     "migrations.001_delays_restructure",
     "migrations.002_gating_entities_backfill",
     "migrations.003_photo_evidentiary_backfill",
+    # Followup-fix 1+3 (2026-05-07) -- DR cascade orphans + gating
+    # entity orphans + photo evidentiary backfill (Fix 8 retroactive).
+    "migrations.004_orphan_cleanup",
 ]
 
 
