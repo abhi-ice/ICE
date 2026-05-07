@@ -5,11 +5,14 @@ import { Clock, AlertTriangle, MessagesSquare, FileSignature, Wrench, BadgeCheck
 import api from "../lib/api";
 import { Link } from "react-router-dom";
 
+// Followup-fix 2 (2026-05-07): summaryKeys list new (_wd) names first so
+// the page reads working-day-aware counts on the latest backend, with
+// legacy (_d) fallback until the deploy fully rolls.
 const SECTIONS = [
-  { key: "rfis", icon: MessagesSquare, label: "RFIs > 5 days", route: "/rfis", colId: "rfi_number", colTitle: "subject" },
-  { key: "submittals", icon: FileSignature, label: "Submittals > 14 days", route: "/submittals", colId: "submittal_number", colTitle: "title" },
-  { key: "work_items", icon: Wrench, label: "Field issues > 7 days", route: "/work-items", colId: "id", colTitle: "title" },
-  { key: "approvals", icon: BadgeCheck, label: "Approvals > 3 days", route: "/approvals", colId: "id", colTitle: "subject" },
+  { key: "rfis",       icon: MessagesSquare, label: "RFIs > 5 working days",        route: "/rfis",        colId: "rfi_number",       colTitle: "subject", summaryKeys: ["rfis_over_5wd", "rfis_over_5d"] },
+  { key: "submittals", icon: FileSignature,  label: "Submittals > 14 working days", route: "/submittals",  colId: "submittal_number", colTitle: "title",   summaryKeys: ["submittals_over_14wd", "submittals_over_14d"] },
+  { key: "work_items", icon: Wrench,         label: "Field issues > 7 working days", route: "/work-items", colId: "id",               colTitle: "title",   summaryKeys: ["work_items_over_7wd", "work_items_over_7d"] },
+  { key: "approvals",  icon: BadgeCheck,     label: "Approvals > 3 days",            route: "/approvals",   colId: "id",               colTitle: "subject", summaryKeys: ["approvals_over_3wd", "approvals_over_3d"] },
 ];
 
 export default function Aging() {
@@ -33,7 +36,8 @@ export default function Aging() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {SECTIONS.map((s) => {
             const Icon = s.icon;
-            const v = summary[`${s.key.replace("work_items", "work_items_over_7d").replace("rfis", "rfis_over_5d").replace("submittals", "submittals_over_14d").replace("approvals", "approvals_over_3d")}`] || 0;
+            // Read first defined value across summaryKeys (new _wd then legacy _d).
+            const v = s.summaryKeys.map((k) => summary[k]).find((x) => x !== undefined) ?? 0;
             const overdue = v > 0;
             return (
               <Link

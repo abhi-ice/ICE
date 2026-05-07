@@ -20,13 +20,18 @@ export default function Sidebar() {
           api.get("/approvals/pending-count"),
           api.get("/aging-summary"),
         ]);
-        const total = (aging.rfis_over_5d || 0) + (aging.submittals_over_14d || 0)
-                    + (aging.work_items_over_7d || 0) + (aging.approvals_over_3d || 0);
+        // Followup-fix 2 (2026-05-07): backend now returns working-day
+        // aware counts under _wd suffix. Read those first; fall back to
+        // legacy _d suffix until the next deploy where the backend
+        // drops the legacy keys.
+        const rfis = aging.rfis_over_5wd ?? aging.rfis_over_5d ?? 0;
+        const submittals = aging.submittals_over_14wd ?? aging.submittals_over_14d ?? 0;
+        const wis = aging.work_items_over_7wd ?? aging.work_items_over_7d ?? 0;
+        const apvs = aging.approvals_over_3wd ?? aging.approvals_over_3d ?? 0;
+        const total = rfis + submittals + wis + apvs;
         setBadges({
           approvals: pa.count || 0,
-          rfis: aging.rfis_over_5d || 0,
-          submittals: aging.submittals_over_14d || 0,
-          work_items: aging.work_items_over_7d || 0,
+          rfis, submittals, work_items: wis,
           aging: total,
         });
       } catch {}

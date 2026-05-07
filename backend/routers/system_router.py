@@ -46,9 +46,15 @@ async def list_approvals(status_filter: Optional[str] = "pending", ctx: dict = D
 
 @router.get("/approvals/pending-count")
 async def pending_count(ctx: dict = Depends(require_tenant)):
-    db = get_db()
-    n = await db.approvals.count_documents(tenant_filter(ctx["tenant_id"], {"status": "pending"}))
-    return {"count": n}
+    """Followup-fix 2 (2026-05-07): defensive try/except so a missing
+    approvals collection or transient DB hiccup returns {count: 0}
+    instead of a 500. Sidebar polls every 60s."""
+    try:
+        db = get_db()
+        n = await db.approvals.count_documents(tenant_filter(ctx["tenant_id"], {"status": "pending"}))
+        return {"count": n}
+    except Exception:
+        return {"count": 0}
 
 
 @router.post("/approvals/{approval_id}/decide", response_model=Approval)

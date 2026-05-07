@@ -64,16 +64,31 @@ export default function Lookahead() {
               {rows.map((t) => {
                 // Bucket C1 Phase 4 — at-risk highlighting. Red when blocker
                 // present, amber when behind or projected_finish > planned.
+                //
+                // Followup-fix 3 (2026-05-07): the row tint already
+                // amber-tinted on projShifted, but the status PILL still
+                // displayed "on track" with slate color when
+                // computed_status was on_track and only the projection
+                // had moved. PMs scanning the column missed at-risk
+                // tasks. Now the pill text/color reflects projShifted
+                // even when the underlying computed_status is on_track.
                 const cs = t.computed_status || "on_track";
                 const projShifted = t.projected_finish_date && t.planned_finish &&
                   t.projected_finish_date > t.planned_finish;
-                const tint = cs === "blocked" || t.has_open_blocker ? "bg-red-50/50"
+                const blocked = cs === "blocked" || t.has_open_blocker;
+                const atRisk = !blocked && cs !== "behind" && cs !== "complete" && projShifted;
+                const tint = blocked ? "bg-red-50/50"
                   : (cs === "behind" || projShifted) ? "bg-amber-50/50"
                   : "";
                 const csClass = cs === "complete" ? "pill-green"
-                  : cs === "blocked" ? "pill-red"
-                  : cs === "behind" ? "pill-amber"
+                  : blocked ? "pill-red"
+                  : cs === "behind" || atRisk ? "pill-amber"
                   : "pill-slate";
+                const pillLabel = blocked ? "blocked"
+                  : cs === "complete" ? "complete"
+                  : cs === "behind" ? "behind"
+                  : atRisk ? "at risk"
+                  : cs.replace(/_/g, " ");
                 return (
                   <tr key={t.id} data-testid={`lookahead-row-${t.activity_code}`} className={tint}>
                     <td className="font-mono text-xs">{t.activity_code}</td>
@@ -91,8 +106,10 @@ export default function Lookahead() {
                     </td>
                     <td>{t.pct_complete}%</td>
                     <td>
-                      <span data-testid={`lookahead-status-${t.activity_code}`} className={`pill ${csClass} inline-flex items-center gap-1`}>
-                        {cs.replace(/_/g, " ")}
+                      <span data-testid={`lookahead-status-${t.activity_code}`}
+                        className={`pill ${csClass} inline-flex items-center gap-1`}
+                        title={atRisk ? `Projected slip +${slipDays(t.planned_finish, t.projected_finish_date)}d` : undefined}>
+                        {pillLabel}
                         {t.has_open_blocker && t.open_blocker_count
                           ? <span className="text-[10px] text-red-700/80">({t.open_blocker_count})</span>
                           : null}

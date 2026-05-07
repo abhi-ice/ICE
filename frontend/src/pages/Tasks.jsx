@@ -262,18 +262,33 @@ export default function Tasks() {
 // Bucket C1 Phase 2 — Status pill driven by computed_status, with a small
 // blue dot when the latest sync was provisional (i.e. the daily report
 // that generated it hasn't been submitted yet).
+//
+// Followup-fix 3 (2026-05-07): also surface "at risk" when
+// projected_finish_date > planned_finish even if computed_status is
+// still on_track (mirrors the same fix on Lookahead.jsx so the two
+// surfaces agree).
 function ComputedStatusPill({ task }) {
   const cs = task.computed_status || "on_track";
+  const projShifted = task.projected_finish_date && task.planned_finish &&
+    task.projected_finish_date > task.planned_finish;
+  const blocked = cs === "blocked";
+  const atRisk = !blocked && cs !== "behind" && cs !== "complete" && projShifted;
   const klass = cs === "complete" ? "pill-green"
-    : cs === "blocked" ? "pill-red"
-    : cs === "behind" ? "pill-amber"
+    : blocked ? "pill-red"
+    : cs === "behind" || atRisk ? "pill-amber"
     : "pill-slate";
+  const label = blocked ? "blocked"
+    : cs === "complete" ? "complete"
+    : cs === "behind" ? "behind"
+    : atRisk ? "at risk"
+    : cs.replace(/_/g, " ");
   const isProvisional = task.last_synced_from_dr?.sync_state === "provisional";
   const lifecycle = task.status; // not_started / in_progress / complete / on_hold etc
-  const title = `Computed status (lifecycle: ${lifecycle || "—"})${isProvisional ? " · provisional from open daily report" : ""}`;
+  const projNote = atRisk ? ` · projected slip to ${task.projected_finish_date}` : "";
+  const title = `Computed status (lifecycle: ${lifecycle || "—"})${projNote}${isProvisional ? " · provisional from open daily report" : ""}`;
   return (
     <span title={title} data-testid={`task-computed-${task.activity_code}`} className={`pill ${klass} inline-flex items-center gap-1`}>
-      {cs.replace(/_/g, " ")}
+      {label}
       {isProvisional && <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />}
     </span>
   );

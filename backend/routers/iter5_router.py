@@ -84,12 +84,19 @@ async def list_notifications(unread_only: bool = False, limit: int = 50, ctx: di
 
 @router.get("/notifications/unread-count")
 async def unread_count(ctx: dict = Depends(require_tenant)):
-    db = get_db()
-    n = await db.notifications.count_documents(tenant_filter(ctx["tenant_id"], {
-        "$or": [{"user_id": ctx["user"]["id"]}, {"user_id": None}],
-        "read_at": None,
-    }))
-    return {"count": n}
+    """Followup-fix 2 (2026-05-07): explicit try/except so a missing
+    notifications collection or transient DB hiccup returns {count: 0}
+    instead of bubbling a 500. The sidebar polls this every 60s; one
+    hiccup shouldn't fill the user's console with errors."""
+    try:
+        db = get_db()
+        n = await db.notifications.count_documents(tenant_filter(ctx["tenant_id"], {
+            "$or": [{"user_id": ctx["user"]["id"]}, {"user_id": None}],
+            "read_at": None,
+        }))
+        return {"count": n}
+    except Exception:
+        return {"count": 0}
 
 
 @router.post("/notifications/{notification_id}/mark-read")
@@ -268,27 +275,92 @@ async def productivity_rates(project_id: Optional[str] = None, days: int = 90, c
 # ============================================================
 @router.get("/aging-summary")
 async def aging_summary(ctx: dict = Depends(require_tenant)):
+    """Followup-fix 2 (2026-05-07): now sources aging from
+    gating_entities.current_age_working_days (the C3a working-day-aware
+    aging clock) instead of calendar-day deltas against per-collection
+    timestamps. Emits both new (_wd suffix) and legacy (_d suffix)
+    field names so frontend can migrate at its own pace.
+
+    Working-day aging requires a per-row compute (the gating service
+    runs the project_calendar_days walk). For badge counts at sidebar
+    poll cadence we approximate: pull lightweight gating_entities rows
+    by status, run compute_age_fields only on rows that COULD be over
+    SLA based on calendar-day age first (cheap pre-filter), then count.
+
+    Approvals stay sourced from approvals collection -- they're not
+    yet wrapped in gating_entities."""
     db = get_db()
     f = tenant_filter(ctx["tenant_id"])
     now = datetime.now(timezone.utc)
 
-    rfi_cut = (now - timedelta(days=5)).isoformat()[:10]
-    rfis = await db.rfis.count_documents({**f, "status": {"$in": ["sent", "in_review"]}, "date_initiated": {"$lte": rfi_cut}})
+    # Fast path -- pull all open gating_entities once and bucket by type.
+    # Cap to 500 rows; if a tenant has more than 500 OPEN gates the badge
+    # just shows the lower-bound count, which is fine for a sidebar
+    # widget (the actual /aging page does the full enumeration).
+    OPEN = ("draft", "submitted", "open", "under_review", "awaiting_clarification")
+    ges = await db.gating_entities.find(
+        {**f, "status": {"$in": list(OPEN)}},
+        {"_id": 0, "id": 1, "tenant_id": 1, "project_id": 1,
+         "entity_type": 1, "submitted_at": 1, "sla_working_days": 1, "status": 1},
+    ).to_list(500)
 
-    sub_cut = (now - timedelta(days=14)).isoformat()
-    submittals = await db.submittals.count_documents({**f, "status": {"$in": ["submitted", "in_review"]}, "created_at": {"$lte": sub_cut}})
+    rfis_over = 0
+    submittals_over = 0
+    work_items_over = 0
+    if ges:
+        from services.gating_entities import compute_age_fields
+        for g in ges:
+            sla = int(g.get("sla_working_days") or 0)
+            if sla <= 0:
+                continue
+            # Cheap pre-filter: skip rows whose calendar-day age can't
+            # possibly exceed the SLA's working-day budget (working days
+            # <= calendar days). If cal_age <= sla_wd, the row is
+            # guaranteed under SLA and we can skip the calendar walk.
+            sub_iso = g.get("submitted_at")
+            if not sub_iso:
+                continue
+            try:
+                sd = date.fromisoformat(str(sub_iso)[:10])
+            except Exception:
+                continue
+            cal_age = (now.date() - sd).days
+            if cal_age <= sla:
+                continue
+            age = await compute_age_fields(g)
+            if not age.get("is_over_sla"):
+                continue
+            etype = g.get("entity_type") or ""
+            if etype == "rfi":
+                rfis_over += 1
+            elif etype == "submittal":
+                submittals_over += 1
+            elif etype in ("field_issue", "work_item"):
+                work_items_over += 1
 
-    wi_cut = (now - timedelta(days=7)).isoformat()
-    work_items = await db.work_items.count_documents({**f, "status": {"$nin": ["closed", "resolved"]}, "opened_at": {"$lte": wi_cut}})
-
+    # Approvals: kept on the approvals collection. 3-calendar-day SLA
+    # for badge purposes (matches legacy behavior).
     apv_cut = (now - timedelta(days=3)).isoformat()
-    approvals = await db.approvals.count_documents({**f, "status": "pending", "proposed_at": {"$lte": apv_cut}})
+    try:
+        approvals_over = await db.approvals.count_documents(
+            {**f, "status": "pending", "proposed_at": {"$lte": apv_cut}},
+        )
+    except Exception:
+        approvals_over = 0
 
     return {
-        "rfis_over_5d": rfis,
-        "submittals_over_14d": submittals,
-        "work_items_over_7d": work_items,
-        "approvals_over_3d": approvals,
+        # New, spec-aligned field names (working-day aware).
+        "rfis_over_5wd": rfis_over,
+        "submittals_over_14wd": submittals_over,
+        "work_items_over_7wd": work_items_over,
+        "approvals_over_3wd": approvals_over,
+        # Legacy field names kept for one-version backwards compat
+        # with the existing Sidebar.jsx + Aging.jsx readers. Drop in
+        # a future cleanup once both surfaces consume the _wd names.
+        "rfis_over_5d": rfis_over,
+        "submittals_over_14d": submittals_over,
+        "work_items_over_7d": work_items_over,
+        "approvals_over_3d": approvals_over,
     }
 
 
