@@ -1,9 +1,13 @@
 // Bucket C3c Phase 4 — TIA source document generator. One screen, three
 // outputs: structured JSON, Word doc, evidence-index PDF. Date range +
 // optional filters; a generation can take 30-60s on big projects.
-import { useEffect, useState } from "react";
+//
+// Followup-fix 2 (2026-05-07): backend now returns 202 + status=pending
+// for large jobs (>200 evidence items). Frontend polls every 5s until
+// status flips to complete/failed, then renders the artifacts.
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { FileText, Download, History, Sparkles, ShieldAlert } from "lucide-react";
+import { FileText, Download, History, Sparkles, ShieldAlert, Loader2 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
@@ -35,14 +39,45 @@ export default function TIAGenerator() {
 
   const [generating, setGenerating] = useState(false);
   const [latest, setLatest] = useState(null);
+  // Followup-fix 2 (2026-05-07): when the backend returns 202 with
+  // status pending/running, poll every 5s until status flips to
+  // complete or failed. The pollRef cleanup runs on unmount or when
+  // a new generation kicks off.
+  const pollRef = useRef(null);
 
   // Refresh start when project changes (NTP-driven default).
   useEffect(() => { if (proj) setStart(isoFromNTPOrYearAgo(proj)); }, [proj?.id]);
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const startPolling = (generationId) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await api.get(`/tia/generations/${generationId}`);
+        const row = r.data;
+        setLatest(row);
+        if (row?.status === "complete" || row?.status === "failed") {
+          clearInterval(pollRef.current); pollRef.current = null;
+          setGenerating(false);
+          if (row.status === "complete") {
+            toast.success(`TIA generated (${row.total_evidence_items || 0} evidence items)`);
+          } else {
+            toast.error(`TIA generation failed: ${row.failure_reason || row.error || "unknown"}`);
+          }
+        }
+      } catch (e) {
+        clearInterval(pollRef.current); pollRef.current = null;
+        setGenerating(false);
+        toast.error("TIA polling failed: " + (e.response?.data?.detail || e.message));
+      }
+    }, 5000);
+  };
 
   const generate = async () => {
     if (!activeId) return;
     setGenerating(true);
     setLatest(null);
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     try {
       const r = await api.post(`/projects/${activeId}/tia/generate`, {
         project_id: activeId,
@@ -52,11 +87,21 @@ export default function TIAGenerator() {
         zone_id: zoneId || null,
         gating_entity_id: gatingEntityId || null,
       });
-      setLatest(r.data);
-      toast.success(`TIA generated (${r.data?.total_evidence_items || 0} evidence items)`);
+      const row = r.data;
+      setLatest(row);
+      // 202 path -- backend handed off to BackgroundTask. Poll until done.
+      if (row?.status === "pending" || row?.status === "running") {
+        toast.info(`Generating TIA in background (~${row.estimated_evidence_count || "?"} items)…`);
+        startPolling(row.id);
+        return;
+      }
+      // Sync path -- complete inline.
+      setGenerating(false);
+      toast.success(`TIA generated (${row?.total_evidence_items || 0} evidence items)`);
     } catch (e) {
+      setGenerating(false);
       toast.error(e.response?.data?.detail || "TIA generation failed");
-    } finally { setGenerating(false); }
+    }
   };
 
   const download = async (kind) => {
@@ -140,7 +185,24 @@ export default function TIAGenerator() {
 
       {latest && (
         <div className="bg-white border border-slate-200 rounded p-4">
-          <h2 className="text-sm font-medium text-slate-700 mb-3">Latest generation</h2>
+          <h2 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+            Latest generation
+            {(latest.status === "pending" || latest.status === "running" || latest.status === "generating") && (
+              <span data-testid="tia-status-spinner" className="inline-flex items-center gap-1 text-xs text-blue-700">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> {latest.status}…
+              </span>
+            )}
+            {latest.status === "failed" && (
+              <span data-testid="tia-status-failed" className="text-xs text-rose-700 bg-rose-50 px-2 py-0.5 rounded">
+                failed
+              </span>
+            )}
+          </h2>
+          {latest.status === "failed" && (latest.failure_reason || latest.error) && (
+            <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded p-2 mb-3">
+              {latest.failure_reason || latest.error}
+            </div>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
             <Stat n={latest.delay_events_count} label="Delays" />
             <Stat n={latest.mitigations_count} label="Mitigations" />
@@ -151,21 +213,27 @@ export default function TIAGenerator() {
           </div>
           <div className="text-xs text-slate-500 mb-3">
             Generation ID: <span className="font-mono">{latest.id}</span> · Status: {latest.status}
+            {latest.estimated_evidence_count != null && latest.status !== "complete" && (
+              <span className="ml-2">· est. {latest.estimated_evidence_count} items</span>
+            )}
             {latest.counsel_privileged_work_product && (
               <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px]">PRIVILEGED</span>
             )}
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap" style={{ opacity: latest.status === "complete" ? 1 : 0.5 }}>
             <button data-testid="tia-download-json" onClick={() => download("json")}
-              className="h-9 px-3 rounded bg-slate-700 text-white text-sm hover:bg-slate-800 inline-flex items-center gap-1">
+              disabled={latest.status !== "complete"}
+              className="h-9 px-3 rounded bg-slate-700 text-white text-sm hover:bg-slate-800 inline-flex items-center gap-1 disabled:cursor-not-allowed">
               <Download className="h-3.5 w-3.5" /> Structured JSON
             </button>
             <button data-testid="tia-download-word" onClick={() => download("word")}
-              className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+              disabled={latest.status !== "complete"}
+              className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1 disabled:cursor-not-allowed">
               <Download className="h-3.5 w-3.5" /> Word document
             </button>
             <button data-testid="tia-download-pdf" onClick={() => download("pdf")}
-              className="h-9 px-3 rounded bg-rose-600 text-white text-sm hover:bg-rose-700 inline-flex items-center gap-1">
+              disabled={latest.status !== "complete"}
+              className="h-9 px-3 rounded bg-rose-600 text-white text-sm hover:bg-rose-700 inline-flex items-center gap-1 disabled:cursor-not-allowed">
               <Download className="h-3.5 w-3.5" /> Evidence index PDF
             </button>
           </div>

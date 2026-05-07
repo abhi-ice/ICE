@@ -1668,8 +1668,15 @@ class TIAGeneration(ReadModel):
     project_id: str
     generated_at: datetime
     generated_by_user_id: Optional[str] = None
-    status: str = "complete"  # generating | complete | failed
+    # Followup-fix 2 (2026-05-07): pending + running added for the
+    # BackgroundTask path. Sync path still goes generating -> complete.
+    status: str = "complete"  # pending | running | generating | complete | failed
     error: Optional[str] = None
+    failure_reason: Optional[str] = None
+    # Surfaces the cheap evidence-item pre-count the router used to
+    # decide between sync and BG paths -- helps the frontend show
+    # "generating large TIA (~N items)..." copy.
+    estimated_evidence_count: Optional[int] = None
 
     date_range_start: date
     date_range_end: date
