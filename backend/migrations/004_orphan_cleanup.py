@@ -86,9 +86,12 @@ async def run():
     from datetime import datetime, timezone
 
     # Existing daily_report ids -- single fetch reused across passes.
-    dr_ids: set[str] = set(
-        d["id"] async for d in db.daily_reports.find({}, {"_id": 0, "id": 1})
-    )
+    # Followup-fix (2026-05-07): set(<async generator>) doesn't work --
+    # set() reads from a sync iterable and the async generator never
+    # yields. Materialize via to_list(length=None) then build the set
+    # from the resulting list.
+    dr_docs = await db.daily_reports.find({}, {"_id": 0, "id": 1}).to_list(length=None)
+    dr_ids: set[str] = {d["id"] for d in dr_docs if d.get("id")}
     print(f"Loaded {len(dr_ids)} live daily_reports")
 
     # ----------------------------------------------------------
