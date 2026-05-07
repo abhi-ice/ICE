@@ -28,13 +28,16 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
+    # Followup-fix (2026-05-07): preserve user-supplied response_text
+    # (frontend "answer" field) instead of wiping it. Status is always
+    # forced to draft on create -- the state machine is unchanged
+    # pending Bucket B.
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "rfi_number": rfi_number,
         "date_initiated": utc_now().date().isoformat(),
         "date_responded": None,
-        "response_text": None,
         "status": "draft",
         "cost_impact_estimated_usd": None,
         "time_impact_estimated_days": None,
