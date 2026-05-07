@@ -101,6 +101,10 @@ class TokenResponse(ReadModel):
 # ---------- Projects ----------
 ProjectStatus = Literal["planning", "mobilization", "active", "closeout", "complete", "cancelled"]
 ContractType = Literal["lump_sum", "cost_plus", "gmp", "unit_price", "tm"]
+# Followup-fix 6 (2026-05-07): basis for the project schedule clock.
+# Picked once at project setup, surfaced in the TIA header (Section 11
+# Calendar Reconciliation already cross-references this).
+CalendarBasis = Literal["calendar_days", "working_days"]
 
 
 class ProjectCreate(StrictModel):
@@ -123,6 +127,14 @@ class ProjectCreate(StrictModel):
     buy_america_required: bool = False
     em_385_required: bool = False
     contract_type: ContractType = "lump_sum"
+    # Followup-fix 6 (2026-05-07): TIA header inputs. All optional --
+    # legacy projects render as null in TIA Section 1 until edited.
+    agency: Optional[str] = None
+    ntp_date: Optional[date] = None
+    original_substantial_completion: Optional[date] = None
+    current_substantial_completion: Optional[date] = None
+    contract_days: Optional[int] = None
+    calendar_basis: CalendarBasis = "calendar_days"
 
 
 class ProjectUpdate(StrictModel):
@@ -137,6 +149,13 @@ class ProjectUpdate(StrictModel):
     city: Optional[str] = None
     state: Optional[str] = None
     postal_code: Optional[str] = None
+    # Followup-fix 6 (2026-05-07): editable TIA header inputs.
+    agency: Optional[str] = None
+    ntp_date: Optional[date] = None
+    original_substantial_completion: Optional[date] = None
+    current_substantial_completion: Optional[date] = None
+    contract_days: Optional[int] = None
+    calendar_basis: Optional[CalendarBasis] = None
 
 
 class Project(ReadModel):
@@ -158,6 +177,13 @@ class Project(ReadModel):
     em_385_required: bool = False
     contract_type: ContractType = "lump_sum"
     created_at: datetime
+    # Followup-fix 6 (2026-05-07): TIA header fields surfaced on read.
+    agency: Optional[str] = None
+    ntp_date: Optional[date] = None
+    original_substantial_completion: Optional[date] = None
+    current_substantial_completion: Optional[date] = None
+    contract_days: Optional[int] = None
+    calendar_basis: Optional[str] = "calendar_days"
 
 
 # ---------- Locations / floors ----------
