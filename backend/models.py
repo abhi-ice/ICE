@@ -101,6 +101,10 @@ class TokenResponse(ReadModel):
 # ---------- Projects ----------
 ProjectStatus = Literal["planning", "mobilization", "active", "closeout", "complete", "cancelled"]
 ContractType = Literal["lump_sum", "cost_plus", "gmp", "unit_price", "tm"]
+# Followup-fix 6 (2026-05-07): basis for the project schedule clock.
+# Picked once at project setup, surfaced in the TIA header (Section 11
+# Calendar Reconciliation already cross-references this).
+CalendarBasis = Literal["calendar_days", "working_days"]
 
 
 class ProjectCreate(StrictModel):
@@ -123,6 +127,14 @@ class ProjectCreate(StrictModel):
     buy_america_required: bool = False
     em_385_required: bool = False
     contract_type: ContractType = "lump_sum"
+    # Followup-fix 6 (2026-05-07): TIA header inputs. All optional --
+    # legacy projects render as null in TIA Section 1 until edited.
+    agency: Optional[str] = None
+    ntp_date: Optional[date] = None
+    original_substantial_completion: Optional[date] = None
+    current_substantial_completion: Optional[date] = None
+    contract_days: Optional[int] = None
+    calendar_basis: CalendarBasis = "calendar_days"
 
 
 class ProjectUpdate(StrictModel):
@@ -137,6 +149,13 @@ class ProjectUpdate(StrictModel):
     city: Optional[str] = None
     state: Optional[str] = None
     postal_code: Optional[str] = None
+    # Followup-fix 6 (2026-05-07): editable TIA header inputs.
+    agency: Optional[str] = None
+    ntp_date: Optional[date] = None
+    original_substantial_completion: Optional[date] = None
+    current_substantial_completion: Optional[date] = None
+    contract_days: Optional[int] = None
+    calendar_basis: Optional[CalendarBasis] = None
 
 
 class Project(ReadModel):
@@ -158,6 +177,13 @@ class Project(ReadModel):
     em_385_required: bool = False
     contract_type: ContractType = "lump_sum"
     created_at: datetime
+    # Followup-fix 6 (2026-05-07): TIA header fields surfaced on read.
+    agency: Optional[str] = None
+    ntp_date: Optional[date] = None
+    original_substantial_completion: Optional[date] = None
+    current_substantial_completion: Optional[date] = None
+    contract_days: Optional[int] = None
+    calendar_basis: Optional[str] = "calendar_days"
 
 
 # ---------- Locations / floors ----------
@@ -833,6 +859,11 @@ class DelayCreate(StrictModel):
     linked_task_ids: List[str] = Field(default_factory=list)
     per_task_impacts: List[TaskImpactInput] = Field(default_factory=list)
     status: DelayStatus = "open"
+    # Followup-fix 7 (2026-05-07): owner attribution + cause class for
+    # TIA Section 4 (Owner Attribution Summary). Same vocabulary as
+    # GatingEntity so cross-entity rollups stay consistent.
+    owner_attribution: Optional[str] = "none"  # OwnerAttribution literal
+    cause_class: Optional[str] = "other"        # CauseClass literal
 
 
 class DelayUpdate(StrictModel):
@@ -847,6 +878,9 @@ class DelayUpdate(StrictModel):
     resolved_note: Optional[str] = None
     # AI report (set by /generate-ai-report endpoint, not the form)
     ai_report: Optional[str] = None
+    # Followup-fix 7 (2026-05-07): editable post-create via Delay detail.
+    owner_attribution: Optional[str] = None
+    cause_class: Optional[str] = None
 
 
 class Delay(ReadModel):
@@ -865,6 +899,12 @@ class Delay(ReadModel):
     status: DelayStatus = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
+    # Followup-fix 7 (2026-05-07): expose owner_attribution + cause_class
+    # so list reads + TIA generator can render them. Default to "none" /
+    # "other" so legacy rows that didn't carry these fields surface as
+    # "no attribution".
+    owner_attribution: Optional[str] = "none"
+    cause_class: Optional[str] = "other"
     # New (Phase A) fields. Default to empty/none so old records continue
     # to deserialize until the migration runs.
     linked_task_ids: List[str] = Field(default_factory=list)
@@ -1628,8 +1668,15 @@ class TIAGeneration(ReadModel):
     project_id: str
     generated_at: datetime
     generated_by_user_id: Optional[str] = None
-    status: str = "complete"  # generating | complete | failed
+    # Followup-fix 2 (2026-05-07): pending + running added for the
+    # BackgroundTask path. Sync path still goes generating -> complete.
+    status: str = "complete"  # pending | running | generating | complete | failed
     error: Optional[str] = None
+    failure_reason: Optional[str] = None
+    # Surfaces the cheap evidence-item pre-count the router used to
+    # decide between sync and BG paths -- helps the frontend show
+    # "generating large TIA (~N items)..." copy.
+    estimated_evidence_count: Optional[int] = None
 
     date_range_start: date
     date_range_end: date

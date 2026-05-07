@@ -551,43 +551,56 @@ async def generate_tia(
     filters: Optional[dict] = None,
     actor_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    existing_generation_id: Optional[str] = None,
 ) -> dict:
-    """End-to-end. Returns the persisted tia_generations row."""
+    """End-to-end. Returns the persisted tia_generations row.
+
+    Followup-fix 2 (2026-05-07): existing_generation_id supports the
+    BackgroundTask path -- the router pre-inserts a status='pending'
+    row so its 202 response carries an id, then schedules the BG
+    task with that id. generate_tia reuses the row instead of
+    inserting a duplicate. The status flips through running on first
+    write below."""
     db = get_db()
     filters = filters or {}
-    generation_id = gen_id()
+    generation_id = existing_generation_id or gen_id()
     now_iso = utc_now().isoformat()
 
-    # Insert a 'generating' placeholder row first so the API can return
-    # 202 + id while the heavy work runs (also lets a concurrent reader
-    # see the work-in-progress).
-    placeholder = {
-        "id": generation_id,
-        "tenant_id": tenant_id,
-        "project_id": project_id,
-        "generated_at": now_iso,
-        "generated_by_user_id": actor_id,
-        "status": "generating",
-        "error": None,
-        "date_range_start": start.isoformat(),
-        "date_range_end": end.isoformat(),
-        "filters_applied": filters,
-        "structured_json_artifact_id": None,
-        "word_doc_artifact_id": None,
-        "evidence_index_pdf_artifact_id": None,
-        "delay_events_count": 0,
-        "mitigations_count": 0,
-        "coordination_events_count": 0,
-        "photos_evidentiary_count": 0,
-        "schedule_diffs_count": 0,
-        "total_evidence_items": 0,
-        "counsel_privileged_work_product": TIA_DEFAULT_PRIVILEGE_FLAG,
-        "privilege_unflagged_at": None,
-        "privilege_unflagged_by": None,
-        "privilege_unflag_reason": None,
-        "download_log": [],
-    }
-    await db.tia_generations.insert_one(placeholder.copy())
+    if not existing_generation_id:
+        # Sync path -- insert a fresh placeholder row so concurrent
+        # readers see the work-in-progress.
+        placeholder = {
+            "id": generation_id,
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "generated_at": now_iso,
+            "generated_by_user_id": actor_id,
+            "status": "generating",
+            "error": None,
+            "failure_reason": None,
+            "date_range_start": start.isoformat(),
+            "date_range_end": end.isoformat(),
+            "filters_applied": filters,
+            "structured_json_artifact_id": None,
+            "word_doc_artifact_id": None,
+            "evidence_index_pdf_artifact_id": None,
+            "delay_events_count": 0,
+            "mitigations_count": 0,
+            "coordination_events_count": 0,
+            "photos_evidentiary_count": 0,
+            "schedule_diffs_count": 0,
+            "total_evidence_items": 0,
+            "counsel_privileged_work_product": TIA_DEFAULT_PRIVILEGE_FLAG,
+            "privilege_unflagged_at": None,
+            "privilege_unflagged_by": None,
+            "privilege_unflag_reason": None,
+            "download_log": [],
+        }
+        await db.tia_generations.insert_one(placeholder.copy())
+    else:
+        # BG path -- the router already inserted the row at status=pending
+        # and the BG wrapper flipped to status=running. Nothing to do here.
+        pass
 
     try:
         data = await _gather_data(tenant_id, project_id, start, end, filters)
@@ -668,7 +681,11 @@ async def generate_tia(
         # Mark generation failed; surface to caller via the row.
         await db.tia_generations.update_one(
             tenant_filter(tenant_id, {"id": generation_id}),
-            {"$set": {"status": "failed", "error": str(e)[:500]}},
+            # Followup-fix 2 (2026-05-07): write both `error` (legacy
+            # field readers) and `failure_reason` (the field the new BG
+            # path + frontend poll look for).
+            {"$set": {"status": "failed", "error": str(e)[:500],
+                      "failure_reason": str(e)[:500]}},
         )
         try:
             await write_audit(

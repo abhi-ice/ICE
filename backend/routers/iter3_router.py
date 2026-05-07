@@ -171,11 +171,15 @@ async def upload_photo(
     )
     server_now = utc_now()
 
-    # Evidentiary flag: only the discovery / damage / quality classes
-    # earn the flag, and only when a pin is present.
+    # Evidentiary flag: discovery / damage / quality OR has a pin.
+    # Followup-fix 8 (2026-05-07): the OR semantics match the C3b spec
+    # and the field_events_router._compute_evidentiary helper. The
+    # earlier AND meant a 'discovery' photo was non-evidentiary until
+    # the user also dropped a pin — federal evidence trail demands the
+    # class itself be enough.
     EVIDENTIARY_CLASSES = ("discovery", "damage", "quality")
     has_pin = (pin_x is not None and pin_y is not None) or bool(pin_drawing_id) or bool(drawing_pin_id)
-    evidentiary_flag = (photo_class in EVIDENTIARY_CLASSES) and has_pin
+    evidentiary_flag = (photo_class in EVIDENTIARY_CLASSES) or has_pin
 
     doc = {
         "id": gen_id(),

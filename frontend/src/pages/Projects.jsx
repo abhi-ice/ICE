@@ -7,6 +7,8 @@ import {
 } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 
+// Followup-fix 6 (2026-05-07): TIA header inputs added to project form
+// so TIA Section 1 (Project Header) renders real values instead of nulls.
 const EMPTY_FORM = {
   name: "",
   contract_number: "",
@@ -16,6 +18,12 @@ const EMPTY_FORM = {
   city: "",
   state: "",
   postal_code: "",
+  agency: "",
+  ntp_date: "",
+  original_substantial_completion: "",
+  current_substantial_completion: "",
+  contract_days: "",
+  calendar_basis: "calendar_days",
 };
 
 export default function Projects() {
@@ -44,13 +52,22 @@ export default function Projects() {
       city: p.city || "",
       state: p.state || "",
       postal_code: p.postal_code || "",
+      agency: p.agency || "",
+      ntp_date: p.ntp_date || "",
+      original_substantial_completion: p.original_substantial_completion || "",
+      current_substantial_completion: p.current_substantial_completion || "",
+      contract_days: p.contract_days != null ? String(p.contract_days) : "",
+      calendar_basis: p.calendar_basis || "calendar_days",
     });
     setOpen(true);
   };
 
   const submit = async () => {
     try {
-      const payload = { ...form, contract_value_usd: form.contract_value_usd ? Number(form.contract_value_usd) : null };
+      const payload = { ...form,
+        contract_value_usd: form.contract_value_usd ? Number(form.contract_value_usd) : null,
+        contract_days: form.contract_days ? Number(form.contract_days) : null,
+      };
       Object.keys(payload).forEach((k) => { if (payload[k] === "" || payload[k] === null) delete payload[k]; });
       if (editId) {
         await api.patch(`/projects/${editId}`, payload);
@@ -117,6 +134,62 @@ export default function Projects() {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">City and state are required for the daily-report weather auto-fill.</p>
+
+              {/* Followup-fix 6 (2026-05-07): TIA header fields. Optional --
+                  TIA Section 1 falls back to nulls until populated. */}
+              <details className="border-t border-border pt-3 mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-slate-700">
+                  TIA header (agency, NTP, contract days, calendar basis)
+                </summary>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className="field-label">Agency</label>
+                    <input data-testid="np-agency" placeholder="e.g. GSA, NYCHA, USMS"
+                      value={form.agency} onChange={(e) => setForm({ ...form, agency: e.target.value })}
+                      className="w-full h-9 px-3 rounded border border-input bg-background" />
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="field-label">NTP date</label>
+                      <input data-testid="np-ntp" type="date"
+                        value={form.ntp_date} onChange={(e) => setForm({ ...form, ntp_date: e.target.value })}
+                        className="w-full h-9 px-3 rounded border border-input bg-background" />
+                    </div>
+                    <div>
+                      <label className="field-label">Contract days</label>
+                      <input data-testid="np-contract-days" type="number" min="0"
+                        value={form.contract_days} onChange={(e) => setForm({ ...form, contract_days: e.target.value })}
+                        className="w-full h-9 px-3 rounded border border-input bg-background" />
+                    </div>
+                    <div>
+                      <label className="field-label">Calendar basis</label>
+                      <select data-testid="np-calendar-basis"
+                        value={form.calendar_basis} onChange={(e) => setForm({ ...form, calendar_basis: e.target.value })}
+                        className="w-full h-9 px-3 rounded border border-input bg-background">
+                        <option value="calendar_days">calendar days</option>
+                        <option value="working_days">working days</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="field-label">Original substantial completion</label>
+                      <input data-testid="np-osc" type="date"
+                        value={form.original_substantial_completion}
+                        onChange={(e) => setForm({ ...form, original_substantial_completion: e.target.value })}
+                        className="w-full h-9 px-3 rounded border border-input bg-background" />
+                    </div>
+                    <div>
+                      <label className="field-label">Current substantial completion</label>
+                      <input data-testid="np-csc" type="date"
+                        value={form.current_substantial_completion}
+                        onChange={(e) => setForm({ ...form, current_substantial_completion: e.target.value })}
+                        className="w-full h-9 px-3 rounded border border-input bg-background" />
+                    </div>
+                  </div>
+                </div>
+              </details>
+
               <Button data-testid="np-submit" onClick={submit} disabled={!form.name}>{editId ? "Save" : "Create"}</Button>
             </div>
           </DialogContent>

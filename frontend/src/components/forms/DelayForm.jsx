@@ -21,6 +21,24 @@ const REASON_OPTS = ["weather", "rfi_pending", "submittal_pending", "design_chan
                      "concealed_condition", "other"];
 const STATUS_OPTS = ["open", "in_progress", "resolved"];
 
+// Followup-fix 7 (2026-05-07): owner attribution + cause class -- same
+// vocabulary as gating_entities so TIA Section 4 (Owner Attribution
+// Summary) rolls up consistently across delays and gates.
+const OWNER_ATTRIBUTION_OPTS = [
+  { value: "none", label: "(no specific attribution)" },
+  { value: "gc", label: "General Contractor (GC)" },
+  { value: "a_e", label: "Architect / Engineer (A/E)" },
+  { value: "owner", label: "Owner / Government" },
+  { value: "sub", label: "Subcontractor" },
+  { value: "external_authority", label: "External Authority (utility, regulator)" },
+  { value: "tenant", label: "Tenant" },
+];
+const CAUSE_CLASS_OPTS = [
+  "design_clarification", "design_change", "differing_site_condition",
+  "concealed_condition", "tenant_coordination", "building_coordination",
+  "regulatory", "utility", "procurement", "other",
+];
+
 export default function DelayForm({ projectId, reportDate, dailyReportId, initial, onSaved, onCancel }) {
   const [tasks, setTasks] = useState([]);  // [{id, activity_code, description, total_float_days, is_critical_path}]
   const [tasksLoaded, setTasksLoaded] = useState(false);
@@ -32,6 +50,9 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     status: initial?.status || "open",
     resolved_date: initial?.resolved_date || "",
     resolved_note: initial?.resolved_note || "",
+    // Followup-fix 7 (2026-05-07): owner_attribution + cause_class.
+    owner_attribution: initial?.owner_attribution || "none",
+    cause_class: initial?.cause_class || "other",
     // impacts: array of {task_id, projected_impact_days, float_at_logging_days?, ...}
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
@@ -92,6 +113,11 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
         severity: form.severity,
         reason_category: form.reason_category,
         status: form.status,
+        // Followup-fix 7 (2026-05-07): owner attribution + cause class
+        // included on every save (create + edit). Backend accepts both
+        // on DelayCreate and DelayUpdate.
+        owner_attribution: form.owner_attribution,
+        cause_class: form.cause_class,
         linked_task_ids: form.impacts.map((i) => i.task_id),
         per_task_impacts: form.impacts.map((i) => ({
           task_id: i.task_id,
@@ -148,6 +174,37 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             onChange={(e) => setForm({ ...form, reason_category: e.target.value })}
             className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
             {REASON_OPTS.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Followup-fix 7 (2026-05-07): owner attribution + cause class.
+          Both default to permissive values ("none" / "other") so a hurried
+          user can still save a delay without a forced choice; TIA Section 4
+          surfaces "no attribution" when left at default. */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs uppercase tracking-wide text-slate-500" title="Who is responsible for the delay event">
+            Owner attribution
+          </label>
+          <select data-testid="delay-form-owner-attribution" value={form.owner_attribution}
+            onChange={(e) => setForm({ ...form, owner_attribution: e.target.value })}
+            className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
+            {OWNER_ATTRIBUTION_OPTS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs uppercase tracking-wide text-slate-500" title="Why the delay occurred (matches gating-entity vocabulary)">
+            Cause class
+          </label>
+          <select data-testid="delay-form-cause-class" value={form.cause_class}
+            onChange={(e) => setForm({ ...form, cause_class: e.target.value })}
+            className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
+            {CAUSE_CLASS_OPTS.map((c) => (
+              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+            ))}
           </select>
         </div>
       </div>

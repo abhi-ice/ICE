@@ -9,28 +9,113 @@ Phase 5 will add the privilege-flag endpoints + access-control checks
 on the download endpoints; Phase 4 stamps counsel_privileged_work_product
 =true on every generation but does not yet gate downloads.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, BackgroundTasks
 from datetime import date
 from typing import Optional
-import asyncio
 import logging
 
 from database import get_db, tenant_filter
 from auth import require_tenant
 from audit import write_audit
-from models import TIAGenerationCreate, TIAUnflagPayload, utc_now
+from models import TIAGenerationCreate, TIAUnflagPayload, utc_now, gen_id
 from services.tia_generator import generate_tia, fetch_artifact_bytes
 
 
-# Bucket C3c Phase 6 — TIA generation hard timeout. Empirically a 12-month
-# range over a busy project finishes in 30-60s; 5 minutes is the safety
-# valve. Hitting it almost certainly means the gather phase has a runaway
-# query, which Phase 6 surfaces as status='failed' rather than hanging.
-TIA_GENERATION_TIMEOUT_SECONDS = 300
+# Followup-fix 2 (2026-05-07): threshold for switching from inline
+# generation to BackgroundTasks. Cheap count of "evidence items"
+# (delays + gates + coordination + photos + diffs + presence rows
+# in range) -- if the estimate exceeds this, run async so the request
+# returns 202 immediately and the frontend polls.
+TIA_BG_TASK_THRESHOLD = 200
 
 
 def _is_admin(ctx: dict) -> bool:
     return (ctx.get("user", {}).get("role") or "").lower() == "admin"
+
+
+async def _estimate_evidence_count(
+    tenant_id: str, project_id: str,
+    start: date, end: date, filters: dict,
+) -> int:
+    """Cheap pre-count of evidence items the TIA gather will pull. Used
+    to decide between sync (small) and BackgroundTask (large) paths.
+    Each query is an indexed count_documents -- single round-trip per
+    collection, no doc fetch."""
+    db = get_db()
+    s_iso = start.isoformat()
+    e_iso = end.isoformat()
+    e_iso_end = e_iso + "T23:59:59Z"
+    cause = filters.get("cause_class")
+
+    delays_q: dict = {"project_id": project_id,
+                      "logged_date": {"$gte": s_iso, "$lte": e_iso},
+                      "status": {"$ne": "deleted"}}
+    if cause:
+        delays_q["cause_class"] = cause
+
+    coord_q = {"project_id": project_id,
+               "occurred_at": {"$gte": s_iso, "$lte": e_iso_end},
+               "deleted_at": None}
+
+    photos_q = {"project_id": project_id,
+                "photo_class": {"$in": ["discovery", "damage", "quality"]}}
+
+    gates_q: dict = {"project_id": project_id,
+                     "$or": [
+                         {"created_at": {"$gte": s_iso, "$lte": e_iso_end}},
+                         {"closed_at": {"$gte": s_iso, "$lte": e_iso_end}},
+                     ]}
+    if cause:
+        gates_q["cause_class"] = cause
+
+    diffs_q = {"project_id": project_id,
+               "computed_at": {"$gte": s_iso, "$lte": e_iso_end}}
+
+    try:
+        delays_n = await db.delays.count_documents(tenant_filter(tenant_id, delays_q))
+        coord_n = await db.coordination_events.count_documents(tenant_filter(tenant_id, coord_q))
+        photos_n = await db.photos.count_documents(tenant_filter(tenant_id, photos_q))
+        gates_n = await db.gating_entities.count_documents(tenant_filter(tenant_id, gates_q))
+        diffs_n = await db.schedule_update_diffs.count_documents(tenant_filter(tenant_id, diffs_q))
+    except Exception:
+        # If pre-count blows up (e.g. missing collection), fall back to
+        # the small-job path -- if it really were huge we'd notice.
+        return 0
+    return delays_n + coord_n + photos_n + gates_n + diffs_n
+
+
+async def _bg_run(tenant_id: str, project_id: str, generation_id: str,
+                   start: date, end: date, filters: dict,
+                   actor_id: Optional[str], request_id: Optional[str]):
+    """BackgroundTask wrapper. generate_tia inserts its own placeholder
+    row keyed by a fresh id; for the BG path we pass an existing
+    generation_id so we don't double-insert. The generator's failure
+    branch already flips status='failed' with the error."""
+    db = get_db()
+    try:
+        # Mark running so the polling frontend transitions
+        # pending -> running -> complete|failed.
+        await db.tia_generations.update_one(
+            tenant_filter(tenant_id, {"id": generation_id}),
+            {"$set": {"status": "running"}},
+        )
+        await generate_tia(
+            tenant_id=tenant_id, project_id=project_id,
+            start=start, end=end, filters=filters,
+            actor_id=actor_id, request_id=request_id,
+            existing_generation_id=generation_id,
+        )
+    except Exception as e:
+        logger.exception("TIA BG generation failed (id=%s)", generation_id)
+        try:
+            await db.tia_generations.update_one(
+                tenant_filter(tenant_id, {"id": generation_id}),
+                {"$set": {"status": "failed",
+                          "error": str(e)[:500],
+                          "failure_reason": str(e)[:500]}},
+            )
+        except Exception:
+            pass
 
 
 router = APIRouter(tags=["tia"])
@@ -48,16 +133,24 @@ def _parse_date(s: str, label: str) -> date:
 async def kick_off_generation(
     project_id: str,
     payload: TIAGenerationCreate,
+    bg: BackgroundTasks,
     ctx: dict = Depends(require_tenant),
 ):
-    """Synchronous generation -- typical TIA over a 6-12 month range
-    completes in well under a minute on the data sizes we're seeing.
-    Returns the persisted generation row (status=complete) on success.
+    """Followup-fix 2 (2026-05-07): split into sync (small) and async
+    (large) paths.
 
-    If we hit performance issues at scale, the generator's internal
-    placeholder-then-update pattern means we can flip this to
-    BackgroundTasks without changing the response contract; the
-    placeholder row already has status='generating'."""
+    Cheap pre-count of evidence items in range. If under
+    TIA_BG_TASK_THRESHOLD (200), generate inline -- typical 6-month
+    test data finishes in seconds and the user wants the artifacts
+    immediately. If at or above the threshold, insert a placeholder
+    row with status='pending', schedule a BackgroundTask, and return
+    202 Accepted with the row -- the frontend polls
+    GET /tia/generations/{id} every 5s until status flips to
+    complete/failed.
+
+    The hard 5-minute timeout from C3c Phase 6 is gone -- BG task path
+    has no request-thread limit, and the sync path's small-job
+    estimate makes a runaway sync gather very unlikely."""
     if payload.project_id != project_id:
         raise HTTPException(400, "project_id mismatch")
     db = get_db()
@@ -75,40 +168,66 @@ async def kick_off_generation(
         }.items() if v
     }
 
-    try:
-        row = await asyncio.wait_for(
-            generate_tia(
+    estimate = await _estimate_evidence_count(
+        ctx["tenant_id"], project_id,
+        payload.date_range_start, payload.date_range_end, filters,
+    )
+
+    if estimate < TIA_BG_TASK_THRESHOLD:
+        # Sync path -- inline generation, returns the complete row.
+        try:
+            row = await generate_tia(
                 tenant_id=ctx["tenant_id"], project_id=project_id,
                 start=payload.date_range_start, end=payload.date_range_end,
                 filters=filters,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
-            ),
-            timeout=TIA_GENERATION_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        # The generator's exception handler already marked the
-        # placeholder row failed if it got that far; if the timeout
-        # fired before the inner try/except, mark the latest 'generating'
-        # row for this user as failed so the UI doesn't lie.
-        try:
-            db = get_db()
-            await db.tia_generations.update_many(
-                tenant_filter(ctx["tenant_id"], {
-                    "project_id": project_id,
-                    "generated_by_user_id": ctx["user"]["id"],
-                    "status": "generating",
-                }),
-                {"$set": {"status": "failed",
-                            "error": f"Generation exceeded {TIA_GENERATION_TIMEOUT_SECONDS}s timeout"}},
             )
-        except Exception:
-            pass
-        logger.exception("TIA generation timed out for project %s", project_id)
-        raise HTTPException(504, "TIA generation timed out (>5 min). Try a narrower date range.")
-    except Exception as e:
-        logger.exception("TIA generation failed for project %s", project_id)
-        raise HTTPException(500, f"TIA generation failed: {str(e)[:300]}")
-    return row
+        except Exception as e:
+            logger.exception("TIA inline generation failed for project %s", project_id)
+            raise HTTPException(500, f"TIA generation failed: {str(e)[:300]}")
+        return row
+
+    # Async path -- pre-insert placeholder, hand off to BackgroundTask.
+    generation_id = gen_id()
+    placeholder = {
+        "id": generation_id,
+        "tenant_id": ctx["tenant_id"],
+        "project_id": project_id,
+        "generated_at": utc_now().isoformat(),
+        "generated_by_user_id": ctx["user"]["id"],
+        "status": "pending",
+        "error": None,
+        "failure_reason": None,
+        "estimated_evidence_count": estimate,
+        "date_range_start": payload.date_range_start.isoformat(),
+        "date_range_end": payload.date_range_end.isoformat(),
+        "filters_applied": filters,
+        "structured_json_artifact_id": None,
+        "word_doc_artifact_id": None,
+        "evidence_index_pdf_artifact_id": None,
+        "delay_events_count": 0,
+        "mitigations_count": 0,
+        "coordination_events_count": 0,
+        "photos_evidentiary_count": 0,
+        "schedule_diffs_count": 0,
+        "total_evidence_items": 0,
+        "counsel_privileged_work_product": True,
+        "privilege_unflagged_at": None,
+        "privilege_unflagged_by": None,
+        "privilege_unflag_reason": None,
+        "download_log": [],
+    }
+    await db.tia_generations.insert_one(placeholder.copy())
+    bg.add_task(
+        _bg_run,
+        ctx["tenant_id"], project_id, generation_id,
+        payload.date_range_start, payload.date_range_end, filters,
+        ctx["user"]["id"], ctx["request_id"],
+    )
+    return Response(
+        content=__import__("json").dumps(placeholder, default=str),
+        media_type="application/json", status_code=202,
+    )
 
 
 @router.get("/projects/{project_id}/tia/generations")
