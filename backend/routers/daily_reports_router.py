@@ -1107,6 +1107,30 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     return DailyPresence(**doc)
 
 
+# Followup-fix 5 (2026-05-07): URL alias under the /daily-presence
+# path to match the PATCH/DELETE convention. Also lets a top-level
+# POST /daily-presence (with daily_report_id in the body) work for
+# legacy/older frontend builds. Both routes delegate to create_presence
+# above so the audit + denormalization + total_hours derivation stay
+# in one place. User reported 404 on this surface; URL-source confusion
+# across deploy versions was the most likely cause.
+@router.post("/daily-reports/{daily_report_id}/daily-presence", response_model=DailyPresence)
+async def create_presence_alias(
+    daily_report_id: str, payload: DailyPresenceCreate,
+    ctx: dict = Depends(require_tenant),
+):
+    return await create_presence(daily_report_id, payload, ctx)
+
+
+@router.post("/daily-presence", response_model=DailyPresence)
+async def create_presence_toplevel(
+    payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant),
+):
+    if not payload.daily_report_id:
+        raise HTTPException(400, "daily_report_id required in body for top-level POST /daily-presence")
+    return await create_presence(payload.daily_report_id, payload, ctx)
+
+
 @router.patch("/daily-presence/{presence_id}", response_model=DailyPresence)
 async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
