@@ -762,27 +762,65 @@ const CONSTRAINT_TYPES = [
   { value: "other", label: "Other (free text)" },
 ];
 
+// Followup-fix 1 (2026-05-07): full set per backend ConstraintType validator.
+// The backend requires constraint_reference_entity_id for ANY type that's
+// not 'not_constrained' and not 'other'. The earlier subset of 6 types
+// dead-ended 7 types in the UI (user could pick the type, no Reference
+// dropdown rendered, save 422'd permanently with no recovery path).
 const CONSTRAINT_TYPES_NEEDING_REF = new Set([
   "awaiting_rfi_response", "awaiting_submittal_return",
   "awaiting_bulletin_proposal", "awaiting_bulletin_approval",
-  "awaiting_ae_direction", "awaiting_predecessor_completion",
+  "awaiting_ae_direction", "awaiting_shutdown_window",
+  "awaiting_tenant_access", "awaiting_clearance",
+  "awaiting_predecessor_completion",
+  "concealed_condition_under_investigation",
+  "weather_impact", "labor_unavailability", "material_not_on_site",
 ]);
 
 // Bucket C3a Phase 2 — Constraint cell on the activity grid. Stacks
 // type dropdown + (reference dropdown OR other-text) + impact-hours
-// vertically inside a single cell. Reference dropdown lazy-loads the
-// open gating entities for this row's task on focus.
+// vertically inside a single cell.
+//
+// Followup-fix 1 (2026-05-07): defer the save when the user changes
+// constraint_type to one that needs a follow-up (reference for the
+// awaiting_*/concealed_*/weather/labor/material types, description
+// for 'other') AND the row doesn't yet carry a valid follow-up. The
+// pending type lives in local state until the follow-up is provided;
+// then both fields are sent in one PATCH so backend cross-field
+// validation passes. Without this, the type-change PATCH 422'd before
+// the user could fill in the follow-up.
+//
+// Reference options eager-load on first render of a needs-ref state
+// so the dropdown is immediately usable instead of requiring focus.
 function ConstraintCell({ row, projectId, locked, updateRow }) {
   const taskId = row.schedule_activity_id;
-  const ct = row.constraint_type || "not_constrained";
+  const persistedType = row.constraint_type || "not_constrained";
+
+  const [pendingType, setPendingType] = useState(null);
+  const [pendingDesc, setPendingDesc] = useState(null);
+
+  // Reset pending state when the underlying row identity / persisted
+  // value changes (e.g., another tab edited, or we just reloaded after
+  // a successful save).
+  useEffect(() => {
+    setPendingType(null);
+    setPendingDesc(null);
+  }, [row.id, persistedType, row.constraint_reference_entity_id, row.constraint_other_description]);
+
+  const ct = pendingType || persistedType;
   const needsRef = CONSTRAINT_TYPES_NEEDING_REF.has(ct);
   const isOther = ct === "other";
+  const hasValidRef = !!row.constraint_reference_entity_id;
+  const hasValidDesc = !!(row.constraint_other_description && String(row.constraint_other_description).trim());
+  const pending = !!pendingType || pendingDesc !== null;
 
   const [refOptions, setRefOptions] = useState([]);
   const [refLoaded, setRefLoaded] = useState(false);
+  const [refLoading, setRefLoading] = useState(false);
 
   const ensureRefs = async () => {
-    if (refLoaded || !needsRef || !projectId || !taskId) return;
+    if (refLoaded || refLoading || !projectId || !taskId) return;
+    setRefLoading(true);
     try {
       const { data } = await api.get(`/projects/${projectId}/gating-entities`, {
         params: { task_id: taskId, open_only: true },
@@ -790,20 +828,95 @@ function ConstraintCell({ row, projectId, locked, updateRow }) {
       setRefOptions(Array.isArray(data) ? data : []);
     } catch (e) {
       setRefOptions([]);
-    } finally { setRefLoaded(true); }
+    } finally { setRefLoaded(true); setRefLoading(false); }
   };
 
+  // Eager-load gating options the moment the user picks a needs-ref
+  // type so the dropdown is ready without requiring a second focus.
+  useEffect(() => { if (needsRef) ensureRefs(); /* eslint-disable-next-line */ }, [needsRef, taskId, projectId]);
+
   const setType = (newType) => {
-    const fields = { constraint_type: newType };
-    // Clearing chains so backend validation doesn't fight us on the
-    // next save — backend also nulls these but explicit is friendlier.
-    if (newType === "not_constrained" || newType === "other") {
-      fields.constraint_reference_entity_id = null;
+    // Path A — clearing the constraint. Always saves immediately;
+    // backend nulls the dependents.
+    if (newType === "not_constrained") {
+      setPendingType(null);
+      setPendingDesc(null);
+      updateRow(row.id, {
+        constraint_type: "not_constrained",
+        constraint_reference_entity_id: null,
+        constraint_other_description: null,
+      });
+      return;
     }
-    if (!isOther && newType !== "other") {
-      fields.constraint_other_description = null;
+    // Path B — switching to 'other'. Save now if the row already has
+    // a non-empty description (e.g., user is just re-confirming the
+    // type); else hold pending until the description blur.
+    if (newType === "other") {
+      if (hasValidDesc) {
+        setPendingType(null);
+        updateRow(row.id, {
+          constraint_type: "other",
+          constraint_reference_entity_id: null,
+        });
+      } else {
+        setPendingType("other");
+      }
+      return;
     }
-    updateRow(row.id, fields);
+    // Path C — switching to a needs-ref type. Save now if the row
+    // already has a reference (re-confirm); else hold pending until
+    // the user picks a reference.
+    if (CONSTRAINT_TYPES_NEEDING_REF.has(newType)) {
+      if (hasValidRef) {
+        setPendingType(null);
+        updateRow(row.id, {
+          constraint_type: newType,
+          constraint_other_description: null,
+        });
+      } else {
+        setPendingType(newType);
+      }
+      return;
+    }
+    // Fallthrough (shouldn't happen given the enum) — save raw.
+    setPendingType(null);
+    updateRow(row.id, { constraint_type: newType });
+  };
+
+  const setRef = (refId) => {
+    if (!refId) return;
+    const typeToSend = pendingType || persistedType;
+    setPendingType(null);
+    updateRow(row.id, {
+      constraint_type: typeToSend,
+      constraint_reference_entity_id: refId,
+      constraint_other_description: null,
+    });
+  };
+
+  const commitDesc = (raw) => {
+    const desc = (raw || "").trim();
+    setPendingDesc(null);
+    if (!desc && pendingType !== "other") {
+      // Description cleared on an already-persisted 'other' row; fall
+      // back to backend validation path by sending null + current type
+      // -- backend will 422 if type stays 'other'. That's the right
+      // signal since the row would be invalid.
+      updateRow(row.id, { constraint_other_description: null });
+      return;
+    }
+    if (!desc) {
+      // 'other' with empty desc -- don't fire a save, surface inline
+      // hint instead. Restore pending so the input renders.
+      setPendingType("other");
+      return;
+    }
+    setPendingType(null);
+    updateRow(row.id, {
+      constraint_type: "other",
+      constraint_other_description: desc,
+      constraint_reference_entity_id: null,
+    });
   };
 
   return (
@@ -814,8 +927,11 @@ function ConstraintCell({ row, projectId, locked, updateRow }) {
         onChange={(e) => setType(e.target.value)}
         onFocus={ensureRefs}
         disabled={locked}
-        className={`h-7 text-[11px] px-1 border rounded ${row.constraint_auto_filled ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white"}`}
-        title={row.constraint_auto_filled ? "Auto-filled from open gating entity. Override to take ownership." : undefined}
+        className={`h-7 text-[11px] px-1 border rounded ${row.constraint_auto_filled ? "border-blue-300 bg-blue-50" : pending ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}
+        title={row.constraint_auto_filled
+          ? "Auto-filled from open gating entity. Override to take ownership."
+          : pending ? "Pending — pick reference or fill description to save."
+          : undefined}
       >
         {CONSTRAINT_TYPES.map((c) => (
           <option key={c.value} value={c.value}>{c.label}</option>
@@ -826,15 +942,23 @@ function ConstraintCell({ row, projectId, locked, updateRow }) {
         <select
           data-testid={`dr-constraint-ref-${row.activity_code}`}
           value={row.constraint_reference_entity_id || ""}
-          onChange={(e) => updateRow(row.id, { constraint_reference_entity_id: e.target.value || null })}
+          onChange={(e) => setRef(e.target.value)}
           onFocus={ensureRefs}
           disabled={locked}
-          className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+          className={`h-7 text-[11px] px-1 border rounded bg-white ${pending && !hasValidRef ? "border-amber-400" : "border-slate-200"}`}
         >
-          <option value="">{refLoaded ? `— pick (${refOptions.length} open) —` : "— focus to load —"}</option>
+          <option value="" disabled={refLoaded && refOptions.length === 0}>
+            {refLoading ? "— loading… —"
+              : refLoaded
+                ? (refOptions.length === 0
+                    ? "No open gating entities for this task"
+                    : `— pick (${refOptions.length} open) —`)
+                : "— loading… —"}
+          </option>
           {refOptions.map((o) => (
             <option key={o.id} value={o.id}>
               {o.entity_number ? `${o.entity_number}: ` : ""}{(o.display_label || "").slice(0, 60)}
+              {typeof o.current_age_working_days === "number" ? ` · ${o.current_age_working_days}wd` : ""}
               {o.is_over_sla ? " · OVER SLA" : ""}
             </option>
           ))}
@@ -846,11 +970,20 @@ function ConstraintCell({ row, projectId, locked, updateRow }) {
           data-testid={`dr-constraint-other-${row.activity_code}`}
           type="text"
           defaultValue={row.constraint_other_description || ""}
-          onBlur={(e) => updateRow(row.id, { constraint_other_description: e.target.value || null })}
+          onChange={(e) => setPendingDesc(e.target.value)}
+          onBlur={(e) => commitDesc(e.target.value)}
           disabled={locked}
           placeholder="Describe the constraint"
-          className="h-7 text-[11px] px-1 border border-slate-200 rounded"
+          className={`h-7 text-[11px] px-1 border rounded ${pending && !hasValidDesc ? "border-amber-400 bg-amber-50" : "border-slate-200"}`}
         />
+      )}
+
+      {pending && (
+        <div className="text-[10px] text-amber-700" data-testid={`dr-constraint-pending-${row.activity_code}`}>
+          {needsRef && !hasValidRef ? "Pick reference to save"
+            : isOther && !hasValidDesc ? "Type description to save"
+            : "Pending…"}
+        </div>
       )}
 
       {ct !== "not_constrained" && (
