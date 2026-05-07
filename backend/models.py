@@ -833,6 +833,11 @@ class DelayCreate(StrictModel):
     linked_task_ids: List[str] = Field(default_factory=list)
     per_task_impacts: List[TaskImpactInput] = Field(default_factory=list)
     status: DelayStatus = "open"
+    # Followup-fix 7 (2026-05-07): owner attribution + cause class for
+    # TIA Section 4 (Owner Attribution Summary). Same vocabulary as
+    # GatingEntity so cross-entity rollups stay consistent.
+    owner_attribution: Optional[str] = "none"  # OwnerAttribution literal
+    cause_class: Optional[str] = "other"        # CauseClass literal
 
 
 class DelayUpdate(StrictModel):
@@ -847,6 +852,9 @@ class DelayUpdate(StrictModel):
     resolved_note: Optional[str] = None
     # AI report (set by /generate-ai-report endpoint, not the form)
     ai_report: Optional[str] = None
+    # Followup-fix 7 (2026-05-07): editable post-create via Delay detail.
+    owner_attribution: Optional[str] = None
+    cause_class: Optional[str] = None
 
 
 class Delay(ReadModel):
@@ -865,6 +873,12 @@ class Delay(ReadModel):
     status: DelayStatus = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
+    # Followup-fix 7 (2026-05-07): expose owner_attribution + cause_class
+    # so list reads + TIA generator can render them. Default to "none" /
+    # "other" so legacy rows that didn't carry these fields surface as
+    # "no attribution".
+    owner_attribution: Optional[str] = "none"
+    cause_class: Optional[str] = "other"
     # New (Phase A) fields. Default to empty/none so old records continue
     # to deserialize until the migration runs.
     linked_task_ids: List[str] = Field(default_factory=list)
