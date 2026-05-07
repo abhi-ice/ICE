@@ -60,6 +60,15 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
     }
     setBusy(true);
     try {
+      // Followup-fix 9 (2026-05-07): the linkedDailyReportId prop wins
+      // over form state on create. Quick-log on a daily report passes
+      // the DR id explicitly; nothing in abbreviated mode lets the user
+      // change it, so prop > form state matches user intent and avoids
+      // any stale-state edge case where the dialog rendered before the
+      // prop hydrated and the form initialized to "".
+      const effectiveLinkedDr = (!initial?.id && linkedDailyReportId)
+        ? linkedDailyReportId
+        : (form.linked_daily_report_id || null);
       const payload = {
         ...form,
         project_id: projectId,
@@ -73,7 +82,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         topic_other_description: form.topic === "other" ? form.topic_other_description : null,
         detail_text: form.detail_text || null,
         outcome_notes: form.outcome_notes || null,
-        linked_daily_report_id: form.linked_daily_report_id || null,
+        linked_daily_report_id: effectiveLinkedDr,
       };
       let res;
       if (initial?.id) {
