@@ -38,9 +38,16 @@ export default function AcceptInvite() {
   };
 
   return (
+    // Followup-fix (2026-05-07): the .login-bg utility paints a dark
+    // gradient via ::before { position:absolute; inset:0 } -- without
+    // a positioned, z-indexed inner wrapper that gradient renders ON
+    // TOP of the form and captures every click/keystroke (page looks
+    // greyed out, all inputs dead). Login.jsx and Signup.jsx fix this
+    // with `relative z-10` on the inner content; AcceptInvite was
+    // missing it, which blocked Sid from accepting his invite.
     <div className="min-h-screen grid place-items-center login-bg p-6">
       <Toaster />
-      <div className="w-full max-w-md surface p-7">
+      <div className="w-full max-w-md surface p-7 relative z-10">
         <div className="flex items-center gap-2 mb-4">
           <Layers className="h-5 w-5 text-blue-600" strokeWidth={1.6} />
           <div className="font-semibold tracking-tight">ICE Schedule Ops</div>
