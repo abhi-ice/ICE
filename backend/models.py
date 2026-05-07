@@ -685,9 +685,29 @@ Priority = Literal["low", "normal", "high", "urgent"]
 
 
 class RfiCreate(StrictModel):
+    """Followup-fix (2026-05-07) — the frontend RFI create form sends
+    `question` / `trade_code` / `answer` / `status`, but the backend
+    schema only had `description` and rejected the rest as extras
+    (StrictModel = extra=forbid). Result: every Create returned a
+    generic 422 'Field required' the user couldn't recover from.
+
+    Accept the frontend's field names via Pydantic aliases (so either
+    `description` or `question` works, either `response_text` or
+    `answer` works) and persist `trade_code`. `status` is accepted but
+    ignored on create -- the backend continues to force initial status
+    to 'draft' per the existing state-machine contract; Bucket B will
+    revisit the state machine."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True,
+                                populate_by_name=True)
+
     project_id: str
     subject: str
-    description: str
+    description: str = Field(alias="question")
+    trade_code: Optional[str] = None
+    response_text: Optional[str] = Field(default=None, alias="answer")
+    # Accepted-but-ignored on create (kept so frontend forms can submit
+    # without a 422). The router force-sets status='draft' regardless.
+    status: Optional[str] = None
     to_party: Optional[str] = None
     from_party: Optional[str] = None
     schedule_activity_id: Optional[str] = None
@@ -716,6 +736,11 @@ class Rfi(ReadModel):
     rfi_number: str
     subject: str
     description: str
+    # Followup-fix (2026-05-07) -- surfaces the trade_code now persisted
+    # by RfiCreate. The list view's "Trade" column was always pointed
+    # at this key but the read model didn't expose it (extra=ignore
+    # silently dropped it).
+    trade_code: Optional[str] = None
     to_party: Optional[str] = None
     from_party: Optional[str] = None
     schedule_activity_id: Optional[str] = None

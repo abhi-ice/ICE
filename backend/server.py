@@ -14,8 +14,10 @@ Emergent runtime):
 import os
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -162,6 +164,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ICE Schedule Ops", lifespan=lifespan)
+
+
+# Followup-fix (2026-05-07): friendlier 422 error responses. Default
+# FastAPI returns a list of {loc, msg, type} dicts; the frontend toast
+# (CrudList.jsx) reads detail[0].msg which is just "Field required" --
+# the user has no way to know WHICH field. Convert to a human-readable
+# string naming the offending field while keeping the structured list
+# alongside under `errors` for clients that want it.
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    msgs: list[str] = []
+    for e in errors:
+        loc = e.get("loc") or ()
+        # Strip the conventional 'body' prefix on body-validation errors.
+        path_parts = [str(p) for p in loc if p not in ("body", "query", "path")]
+        path = ".".join(path_parts) if path_parts else "(root)"
+        msg = e.get("msg") or "invalid"
+        msgs.append(f"{path}: {msg}")
+    detail = "; ".join(msgs) if msgs else "Validation failed"
+    return JSONResponse(
+        status_code=422,
+        content={"detail": detail, "errors": errors},
+    )
+
 
 api_router = APIRouter(prefix="/api")
 
