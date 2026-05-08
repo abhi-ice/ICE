@@ -1679,13 +1679,25 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   );
 }
 
-function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ vendor: "", description: "", po_number: "" });
+function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
+  // Bucket D Task 1d -- linked_dr_activity_ids picker. REQUIRED min-1
+  // (deliveries gate the activities consuming them per Phase 1 spec).
+  const [draft, setDraft] = useState({
+    vendor: "", description: "", po_number: "",
+    linked_dr_activity_ids: [],
+  });
   const create = async () => {
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
+    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one activity consuming this delivery");
     try {
-      await api.post(`/deliveries`, { ...draft, project_id: projectId, delivery_date: reportDate });
-      setDraft({ vendor: "", description: "", po_number: "" });
+      await api.post(`/deliveries`, {
+        project_id: projectId, delivery_date: reportDate,
+        daily_report_id: dailyReportId,
+        vendor: draft.vendor, description: draft.description,
+        po_number: draft.po_number || null,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      });
+      setDraft({ vendor: "", description: "", po_number: "", linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Log delivery")); }
   };
@@ -1697,15 +1709,23 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
           <span className="text-slate-700">{r.description}</span>
           {r.po_number && <span className="text-slate-400 ml-2 font-mono">{r.po_number}</span>}
           <span className={`pill ml-2 ${r.status === "received" ? "pill-green" : "pill-slate"}`}>{r.status}</span>
+          <SupplementBadge row={r} />
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No deliveries scheduled for {reportDate}.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-3 gap-2">
-          <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <button data-testid="delivery-add" onClick={create} className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Log delivery</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+          <div className="grid grid-cols-3 gap-2">
+            <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+            <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
+            <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+            <button data-testid="delivery-add" onClick={create} className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Log delivery</button>
+          </div>
+          <DrActivityPicker grid={grid}
+            value={draft.linked_dr_activity_ids}
+            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
+            required={true} label="Activities consuming this delivery"
+            testidPrefix="delivery-activity" compact />
         </div>
       )}
     </PanelShell>
