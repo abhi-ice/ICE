@@ -50,16 +50,33 @@ MIGRATIONS = [
     "migrations.005_dr_as_parent",
 ]
 
+# Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
+# NOT auto-run. The discovery check below treats them like "registered"
+# so an operator's `run_all_pending` invocation doesn't fail loudly,
+# but the runner never imports them. These are operational, one-shot
+# scripts (data wipes, repair tools) that must always be invoked
+# manually with explicit flags.
+MANUAL_ONLY = {
+    # Bucket D follow-up (2026-05-08) -- test-data wipe. Refuses to run
+    # without --confirm-wipe + --tenant-id + --project-id, prompts for
+    # an interactive WIPE-CONFIRMED-<tenant> confirmation, and writes a
+    # RESET_BOUNDARY audit entry preserving the SHA-256 chain.
+    "006_test_data_reset",
+}
+
 
 def _discover() -> list[str]:
     """Verify the hard-coded list matches what's on disk. If a new
     migration file landed without being added here, fail loudly so the
-    operator knows the runner is stale."""
+    operator knows the runner is stale.
+
+    Files in MANUAL_ONLY are recognized but skipped -- they exist on
+    disk for manual invocation only and must NOT be auto-run."""
     on_disk = sorted(
         f.stem for f in Path(__file__).parent.glob("[0-9][0-9][0-9]_*.py")
     )
     declared = sorted(m.split(".", 1)[1] for m in MIGRATIONS)
-    extra = set(on_disk) - set(declared)
+    extra = set(on_disk) - set(declared) - MANUAL_ONLY
     if extra:
         print(
             f"ERROR: migration file(s) not registered in run_all_pending: {sorted(extra)}",

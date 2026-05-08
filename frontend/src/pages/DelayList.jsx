@@ -15,6 +15,11 @@ import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 
 export default function DelayList() {
+  // ALL hooks must come before any conditional return per the Rules
+  // of Hooks. Earlier code put `useNavigate` + the routing/deleting
+  // useStates after the `if (!activeId) return` guard, which broke
+  // the bundler with "React Hook called conditionally" errors and
+  // wedged the entire app behind a compiled-with-problems overlay.
   const { activeId } = useProjects();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -24,6 +29,14 @@ export default function DelayList() {
   const [urlFilters, setUrlFilters] = useUrlState({ affected_activity_id: "" });
   const affectedActivityId = urlFilters.affected_activity_id;
   const setAffectedActivityId = (v) => setUrlFilters({ affected_activity_id: v || "" });
+  // Bucket D Fix G [2/4] -- "+ Add" routes to today's DR's delay
+  // creation (or supplement flow on locked DR). useNavigate +
+  // `routing` state must be declared at the top of the component,
+  // never after the `if (!activeId)` early return below.
+  const navigate = useNavigate();
+  const [routing, setRouting] = useState(false);
+  // Bucket D Fix E -- per-row delete guard (Set tracks which rows are mid-delete).
+  const [deleting, setDeleting] = useState(new Set());
 
   const refresh = async () => {
     if (!activeId) return;
@@ -42,12 +55,8 @@ export default function DelayList() {
     return <div className="text-sm text-slate-500">Select a project from the top bar to view Delays.</div>;
   }
 
-  // Bucket D Fix G [2/4] -- "+ Add" routes to today's DR's delay
-  // creation (or supplement flow on locked DR). The legacy
-  // startCreate inline-modal path stays for the row-edit Pencil
-  // button so editing existing delays still works inline.
-  const navigate = useNavigate();
-  const [routing, setRouting] = useState(false);
+  // The legacy startCreate inline-modal path stays for the row-edit
+  // Pencil button so editing existing delays still works inline.
   const startCreate = async () => {
     if (routing) return;
     if (!activeId) return toast.error("Pick a project first");
@@ -65,8 +74,6 @@ export default function DelayList() {
     } finally { setRouting(false); }
   };
   const startEdit = (r) => { setEditing(r); setOpen(true); };
-  // Bucket D Fix E -- per-row delete guard (Set tracks which rows are mid-delete).
-  const [deleting, setDeleting] = useState(new Set());
   const remove = async (r) => {
     if (deleting.has(r.id)) return;
     if (!window.confirm(`Delete this delay? This is permanent and the audit log will record it.`)) return;
