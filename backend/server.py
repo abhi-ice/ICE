@@ -199,6 +199,26 @@ async def _ensure_indexes():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _ensure_indexes()
+    # Followup-fix (2026-05-08): bcrypt runtime self-test. Hashes + verifies
+    # a known string at boot. If this fails, EVERY user is about to be
+    # locked out -- the deploy log will scream about it instead of the
+    # operator finding out via "Invalid email or password" reports the
+    # next morning. We log + proceed (don't crash) so the operator can
+    # still hit the CLI reset path; the loud WARN is what we want.
+    try:
+        from auth import validate_bcrypt_runtime
+        result = validate_bcrypt_runtime()
+        if result.get("ok"):
+            logger.info("bcrypt runtime self-test: PASS (version=%s)", result.get("version"))
+        else:
+            logger.warning(
+                "bcrypt runtime self-test: FAIL (version=%s, error=%s). "
+                "Existing password hashes may not validate. Investigate before "
+                "trusting login attempts.",
+                result.get("version"), result.get("error"),
+            )
+    except Exception as e:
+        logger.warning("bcrypt runtime self-test: errored out: %s", e)
     # Init Emergent object storage (best-effort — voice/upload work even if it fails)
     try:
         from services.storage import init_storage
