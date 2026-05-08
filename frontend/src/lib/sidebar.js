@@ -23,6 +23,8 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Daily reports", path: "/daily-reports", icon: ClipboardList, testid: "sidebar-daily-reports" },
       { label: "Photos", path: "/photos", icon: Camera, testid: "sidebar-photos" },
+      // Bucket D Phase 2 — staging area before tagging.
+      { label: "Photo tray", path: "/photo-tray", icon: Camera, testid: "sidebar-photo-tray" },
       { label: "Delays", path: "/delays", icon: AlertTriangle, testid: "sidebar-delays" },
       { label: "Safety", path: "/safety-events", icon: ShieldAlert, testid: "sidebar-safety" },
       { label: "QC issues", path: "/qc-issues", icon: ClipboardCheck, testid: "sidebar-qc" },

@@ -1559,8 +1559,11 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
 
 function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [busy, setBusy] = useState(false);
-  const [caption, setCaption] = useState("");
-  const [photoClass, setPhotoClass] = useState("progress");
+  // Bucket D Phase 2 -- DR upload now lands in the photo_tray
+  // (status=untagged) instead of going straight to the legacy
+  // /photos/upload endpoint. The tray page (sidebar) is where the
+  // user opens the 3-step tagging wizard. Caption + class moved to
+  // the wizard since both are tag-time decisions, not capture-time.
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1569,18 +1572,16 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("project_id", projectId);
-      fd.append("daily_report_id", dailyReportId);
-      if (caption) fd.append("caption", caption);
-      fd.append("photo_class", photoClass);
-      await api.post(`/photos/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-      setCaption("");
-      setPhotoClass("progress");
+      fd.append("capture_source", "manual_upload");
+      const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
       reload();
-      toast.success("Photo uploaded");
+      if (r.data?.status === "untagged") {
+        toast.success("Uploaded to photo tray. Tag it from the Photo tray page.");
+      } else {
+        toast.info(`Same photo already in tray (status=${r.data?.status})`);
+      }
     } catch (err) {
-      const detail = err.response?.data?.detail;
-      if (err.response?.status === 409) toast.error("Duplicate photo — same image already uploaded.");
-      else toast.error(detail || "Upload failed");
+      toast.error(err.response?.data?.detail || "Upload failed");
     }
     finally { setBusy(false); e.target.value = ""; }
   };
@@ -1593,13 +1594,13 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       </div>
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-          <input data-testid="photo-caption" placeholder="Caption (optional)" value={caption} onChange={(e) => setCaption(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="photo-class" value={photoClass} onChange={(e) => setPhotoClass(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm bg-white">
-            {PHOTO_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
+          <div className="text-[11px] text-slate-500">
+            Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
+            Tag them to specific events from there.
+          </div>
           <label data-testid="photo-upload-label" className="block">
             <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
-              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload photo"}
+              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload to tray"}
             </span>
             <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
           </label>

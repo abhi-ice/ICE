@@ -32,6 +32,7 @@ import TIAGenerationDetail from "./pages/TIAGenerationDetail";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
+import PhotoTray from "./pages/PhotoTray";
 import Spatial3D from "./pages/Spatial3D";
 import PolygonEditor from "./pages/PolygonEditor";
 import Submittals from "./pages/Submittals";
@@ -72,6 +73,7 @@ export default function App() {
             {/* Daily ops */}
             <Route path="daily-reports" element={<DailyReports />} />
             <Route path="photos" element={<Photos />} />
+            <Route path="photo-tray" element={<PhotoTray />} />
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />
             <Route path="delays/:id" element={<DelayDetail />} />
             <Route path="gating-entities/:id" element={<GatingEntityDetail />} />
