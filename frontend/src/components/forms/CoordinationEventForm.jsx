@@ -13,6 +13,7 @@
 import { useState } from "react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
+import DrActivityPicker from "./DrActivityPicker";
 
 const CHANNELS = ["email", "phone", "in_person", "formal_letter",
                    "text_message", "meeting", "system_notification"];
@@ -40,6 +41,9 @@ function defaultsFromInitial(initial, linkedDailyReportId) {
     outcome: initial?.outcome || "informational",
     outcome_notes: initial?.outcome_notes || "",
     linked_daily_report_id: initial?.linked_daily_report_id || linkedDailyReportId || "",
+    // Bucket D Task 1e -- linked_dr_activity_ids (per-DR WBS rows).
+    // OPTIONAL for coordination events (some are project-wide).
+    linked_dr_activity_ids: initial?.linked_dr_activity_ids || [],
   };
 }
 
@@ -83,6 +87,8 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         detail_text: form.detail_text || null,
         outcome_notes: form.outcome_notes || null,
         linked_daily_report_id: effectiveLinkedDr,
+        // Bucket D Task 1e -- carry the linked DR-activity ids.
+        linked_dr_activity_ids: form.linked_dr_activity_ids || [],
       };
       let res;
       if (initial?.id) {
@@ -221,6 +227,20 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             placeholder="What was decided / what's still pending."
             className="mt-1 w-full p-2 border border-slate-200 rounded text-sm" />
         </div>
+      )}
+
+      {/* Bucket D Task 1e -- DR-activity multi-select. OPTIONAL for
+          coordination events. Source mode: if a linked DR is in scope
+          (form.linked_daily_report_id), the picker auto-fetches that
+          DR's grid; otherwise it renders an empty state telling the
+          user to pick a DR first. */}
+      {(form.linked_daily_report_id || linkedDailyReportId) && (
+        <DrActivityPicker
+          dailyReportId={form.linked_daily_report_id || linkedDailyReportId}
+          value={form.linked_dr_activity_ids}
+          onChange={(v) => set("linked_dr_activity_ids", v)}
+          required={false} label="Affected activities (optional)"
+          testidPrefix="coord-activity" compact />
       )}
 
       <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
