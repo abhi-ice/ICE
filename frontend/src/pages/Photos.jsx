@@ -185,7 +185,10 @@ function PhotoCard({ photo, projectId }) {
           <GalleryActivityChips projectId={projectId} activityIds={[photo.daily_report_activity_id]} max={1} />
         )}
         {photo.is_supplement && (
-          <div className="text-[10px] text-amber-700">[supplement]</div>
+          <div data-testid={`photo-gallery-supp-${photo.id}`}
+            className="text-[9px] inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-mono uppercase">
+            SUPP→{photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || "?"}
+          </div>
         )}
       </div>
     </Link>

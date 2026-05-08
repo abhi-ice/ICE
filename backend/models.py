@@ -540,6 +540,10 @@ class DailyReportActivity(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 class DailyReportUpdate(StrictModel):
@@ -839,6 +843,10 @@ class Rfi(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 class ChangeOrderCreate(StrictModel):
@@ -983,6 +991,10 @@ class Delay(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
     # New (Phase A) fields. Default to empty/none so old records continue
     # to deserialize until the migration runs.
     linked_task_ids: List[str] = Field(default_factory=list)
@@ -1059,6 +1071,10 @@ class SafetyEvent(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 class QcIssueCreate(StrictModel):
@@ -1134,6 +1150,10 @@ class QcIssue(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
     # Bucket D Phase 5 -- rework cascade fields.
     rework_duration_hours: Optional[float] = None
     rework_duration_basis: Optional[str] = None
@@ -1244,6 +1264,10 @@ class Photo(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 # ============================================================
@@ -1818,6 +1842,10 @@ class CoordinationEvent(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 # ============================================================

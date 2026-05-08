@@ -1296,6 +1296,7 @@ function DelayRowInline({ delay, reload }) {
         {delay.reason_category && <span className="text-slate-400">{delay.reason_category}</span>}
         {linkedCount > 0 && <span className="text-slate-500">· {linkedCount} task{linkedCount === 1 ? "" : "s"}</span>}
         {delay.duration_days != null && <span className="text-slate-500">· {delay.duration_days}d open</span>}
+        <SupplementBadge row={delay} />
         {delay.status !== "resolved" && (
           <button data-testid={`delay-resolve-open-${delay.id}`} onClick={() => setResolving((v) => !v)}
             className="ml-auto text-blue-600 hover:underline">
@@ -1834,6 +1835,15 @@ function AuthPhoto({ photo }) {
         {photo.timestamp_mismatch_flag && (
           <span data-testid={`photo-tsmismatch-${photo.id}`} title="Device vs. server timestamp mismatch" className="bg-amber-500 text-white rounded p-0.5">
             <AlertTriangle className="h-2.5 w-2.5" />
+          </span>
+        )}
+        {/* Bucket D Task 2 -- supplement marker overlaid on the
+            photo card. Saffron pill matches SupplementBadge style. */}
+        {photo.is_supplement && (
+          <span data-testid={`photo-supplement-${photo.id}`}
+            title={`Supplement to DR ${photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || ""}`}
+            className="bg-amber-200 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            SUPP
           </span>
         )}
       </div>

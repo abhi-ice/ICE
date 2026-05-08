@@ -1538,6 +1538,28 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
         ]}), {"_id": 0},
     ).sort("created_at", -1).limit(100).to_list(100)
 
+    # Bucket D Task 2 -- enrich every supplement row with its parent
+    # DR's report_date so the panel SupplementBadge can render
+    # "SUPP→YYYY-MM-DD" without a per-row fetch. Single $in query
+    # across all event collections.
+    parent_dr_ids: set[str] = set()
+    for coll_rows in (delays, safety, qc, rfis, deliveries, photos, presence, grid):
+        for r in coll_rows:
+            if r.get("is_supplement") and r.get("parent_daily_report_id"):
+                parent_dr_ids.add(r["parent_daily_report_id"])
+    parent_dr_dates: dict[str, str] = {}
+    if parent_dr_ids:
+        parent_drs = await db.daily_reports.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": list(parent_dr_ids)}}),
+            {"_id": 0, "id": 1, "report_date": 1},
+        ).to_list(length=None)
+        parent_dr_dates = {d["id"]: d["report_date"] for d in parent_drs}
+    for coll_rows in (delays, safety, qc, rfis, deliveries, photos, presence, grid):
+        for r in coll_rows:
+            pid = r.get("parent_daily_report_id")
+            if pid and pid in parent_dr_dates:
+                r["parent_daily_report_date"] = parent_dr_dates[pid]
+
     user_ids = [dr.get("prepared_by"), dr.get("submitted_by"), dr.get("approved_by")]
     user_labels = await _user_label_map(db, ctx["tenant_id"], user_ids)
 

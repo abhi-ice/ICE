@@ -846,4 +846,17 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
         if ref_field:
             f[ref_field] = {"$type": "string"}
     docs = await db.photos.find(f, {"_id": 0}).sort("captured_at", -1).to_list(500)
+    # Bucket D Task 2 -- enrich supplement rows with parent DR date.
+    parent_dr_ids = list({d["parent_daily_report_id"] for d in docs
+                          if d.get("is_supplement") and d.get("parent_daily_report_id")})
+    if parent_dr_ids:
+        parent_drs = await db.daily_reports.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": parent_dr_ids}}),
+            {"_id": 0, "id": 1, "report_date": 1},
+        ).to_list(length=None)
+        date_map = {d["id"]: d["report_date"] for d in parent_drs}
+        for d in docs:
+            pid = d.get("parent_daily_report_id")
+            if pid and pid in date_map:
+                d["parent_daily_report_date"] = date_map[pid]
     return [Photo(**d) for d in docs]
