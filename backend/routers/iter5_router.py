@@ -874,6 +874,16 @@ async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_t
         )
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="delivery")
     await db.deliveries.insert_one(doc.copy())
+    # Bucket D verification fix -- always write the INSERT audit, not
+    # only on supplement. The earlier code only fired SUPPLEMENT_FILED
+    # for supplement deliveries, leaving normal deliveries unaudited.
+    # TIA defense + audit-chain integrity require every mutation in the
+    # log.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="deliveries", op="INSERT",
+        record_id=doc["id"], before=None, after=doc,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     if sup_audit:
         await write_audit(
             tenant_id=ctx["tenant_id"], table_name="deliveries", op="SUPPLEMENT_FILED",

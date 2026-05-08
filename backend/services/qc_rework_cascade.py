@@ -45,7 +45,12 @@ async def create_synthetic_delay_for_qc(
     owner_attribution: str = "gc",
 ) -> Optional[dict]:
     """Phase 5 entrypoint. Returns the synthetic delay doc on success;
-    None if QC isn't rework_required or rework_duration_hours not set."""
+    None if QC isn't rework_required or rework_duration_hours not set.
+
+    Idempotent: if the QC issue already carries linked_synthetic_delay_id,
+    this is a no-op (returns the existing delay doc). Prevents duplicate
+    synthetic delays if the cascade is triggered twice (e.g. retry after
+    network blip, or future PATCH-severity-to-rework_required flows)."""
     if qc_issue.get("severity") != "rework_required":
         return None
     hours = qc_issue.get("rework_duration_hours")
@@ -53,6 +58,18 @@ async def create_synthetic_delay_for_qc(
         return None
 
     db = get_db()
+    # Bucket D verification fix -- skip when the cascade has already
+    # been run for this QC issue. Returns the existing delay doc so
+    # callers can rely on the back-pointer being set.
+    existing_delay_id = qc_issue.get("linked_synthetic_delay_id")
+    if existing_delay_id:
+        existing = await db.delays.find_one(
+            tenant_filter(tenant_id, {"id": existing_delay_id}), {"_id": 0},
+        )
+        if existing:
+            return existing
+        # Back-pointer set but the delay row is gone -- fall through
+        # and recreate (fix the orphan back-pointer).
     delay_days = _hours_to_days(float(hours))
     now_iso = utc_now().isoformat()
     delay_doc = {

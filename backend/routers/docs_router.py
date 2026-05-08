@@ -118,10 +118,25 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None,
 @router.patch("/rfis/{rfi_id}", response_model=Rfi)
 async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    updates = {k: v for k, v in raw.items() if v is not None}
     before = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "RFI not found")
+    # Bucket D verification fix -- re-validate linked_dr_activity_ids
+    # when the patch attempts to replace it, otherwise a client could
+    # write ids that don't exist or belong to a different DR/project
+    # (linkage is required min-1 on POST so the patch must keep that
+    # invariant).
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
     await db.rfis.update_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"$set": updates})
     after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     await write_audit(tenant_id=ctx["tenant_id"], table_name="rfis", op="UPDATE",

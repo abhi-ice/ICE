@@ -191,6 +191,21 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates: dict = {k: v for k, v in raw.items() if v is not None}
 
+    # Bucket D verification fix -- re-validate linked_dr_activity_ids
+    # when the patch attempts to replace it, otherwise a client could
+    # write ids that don't exist or belong to a different DR/project
+    # (linkage is required min-1 on POST so the patch must keep that
+    # invariant).
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+
     # If linked_task_ids OR per_task_impacts is in the patch, recompute the
     # snapshot — keep logic in one place rather than two slightly-different
     # branches.

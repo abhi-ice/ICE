@@ -181,6 +181,22 @@ async def update_coordination_event(
     updates = {k: v for k, v in raw.items() if v is not None}
     if not updates:
         return CoordinationEvent(**before)
+    # Bucket D verification fix -- re-validate linked_dr_activity_ids
+    # when the patch attempts to replace it. Linkage is OPTIONAL for
+    # coordination per spec, so required=False (empty list is allowed
+    # to clear the linkage), but anything that IS present must resolve
+    # to real rows on the parent DR.
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        # Coordination uses linked_daily_report_id (different field name).
+        scope_dr = updates.get("linked_daily_report_id") or before.get("linked_daily_report_id")
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=scope_dr,
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=False,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
     updates["updated_at"] = utc_now().isoformat()
     await db.coordination_events.update_one(
         tenant_filter(ctx["tenant_id"], {"id": event_id}), {"$set": updates},
