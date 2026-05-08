@@ -2,7 +2,7 @@
 // the shared DelayForm for create/edit and shows status + linked-task counts
 // + days open in the table. Each row is clickable to /delays/:id (detail).
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -12,6 +12,7 @@ import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { useUrlState } from "../lib/useUrlState";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 
 export default function DelayList() {
   const { activeId } = useProjects();
@@ -41,7 +42,28 @@ export default function DelayList() {
     return <div className="text-sm text-slate-500">Select a project from the top bar to view Delays.</div>;
   }
 
-  const startCreate = () => { setEditing(null); setOpen(true); };
+  // Bucket D Fix G [2/4] -- "+ Add" routes to today's DR's delay
+  // creation (or supplement flow on locked DR). The legacy
+  // startCreate inline-modal path stays for the row-edit Pencil
+  // button so editing existing delays still works inline.
+  const navigate = useNavigate();
+  const [routing, setRouting] = useState(false);
+  const startCreate = async () => {
+    if (routing) return;
+    if (!activeId) return toast.error("Pick a project first");
+    setRouting(true);
+    try {
+      const { url, locked, dr } = await navigateToTodaysDrForCreate(activeId, "delay");
+      if (locked) {
+        toast.info(`Today's DR is locked. Use Supplements panel on the parent DR to add a delay.`);
+        navigate(`/daily-reports?openId=${dr.id}`);
+      } else {
+        navigate(url);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't resolve today's DR");
+    } finally { setRouting(false); }
+  };
   const startEdit = (r) => { setEditing(r); setOpen(true); };
   // Bucket D Fix E -- per-row delete guard (Set tracks which rows are mid-delete).
   const [deleting, setDeleting] = useState(new Set());
@@ -67,8 +89,9 @@ export default function DelayList() {
           <h1 className="text-2xl font-semibold tracking-tight">Delays</h1>
           <p className="text-sm text-slate-500">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
-        <Button data-testid="delays-add" onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 gap-1">
-          <Plus className="h-4 w-4" /> Add
+        <Button data-testid="delays-add" onClick={startCreate} disabled={routing}
+          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
+          <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
         </Button>
       </div>
 
