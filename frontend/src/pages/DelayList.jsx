@@ -40,14 +40,20 @@ export default function DelayList() {
 
   const startCreate = () => { setEditing(null); setOpen(true); };
   const startEdit = (r) => { setEditing(r); setOpen(true); };
+  // Bucket D Fix E -- per-row delete guard (Set tracks which rows are mid-delete).
+  const [deleting, setDeleting] = useState(new Set());
   const remove = async (r) => {
+    if (deleting.has(r.id)) return;
     if (!window.confirm(`Delete this delay? This is permanent and the audit log will record it.`)) return;
+    setDeleting((prev) => new Set(prev).add(r.id));
     try {
       await api.delete(`/delays/${r.id}`);
       toast.success("Delay deleted");
       refresh();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Delete failed");
+    } finally {
+      setDeleting((prev) => { const n = new Set(prev); n.delete(r.id); return n; });
     }
   };
 
@@ -128,7 +134,8 @@ export default function DelayList() {
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     <button data-testid={`delays-delete-${r.id}`} onClick={() => remove(r)}
-                      className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500"
+                      disabled={deleting.has(r.id)}
+                      className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500 disabled:opacity-50"
                       title="Delete">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

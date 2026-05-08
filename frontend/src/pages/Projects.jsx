@@ -31,6 +31,8 @@ export default function Projects() {
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
 
   const load = () => api.get("/projects").then(({ data }) => setProjects(data));
   useEffect(() => { load(); }, []);
@@ -63,6 +65,8 @@ export default function Projects() {
   };
 
   const submit = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       const payload = { ...form,
         contract_value_usd: form.contract_value_usd ? Number(form.contract_value_usd) : null,
@@ -82,7 +86,7 @@ export default function Projects() {
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail?.[0]?.msg || e.response?.data?.detail || "Failed to save");
-    }
+    } finally { setBusy(false); }
   };
 
   return (
@@ -190,7 +194,7 @@ export default function Projects() {
                 </div>
               </details>
 
-              <Button data-testid="np-submit" onClick={submit} disabled={!form.name}>{editId ? "Save" : "Create"}</Button>
+              <Button data-testid="np-submit" onClick={submit} disabled={!form.name || busy}>{busy ? "Saving…" : (editId ? "Save" : "Create")}</Button>
             </div>
           </DialogContent>
         </Dialog>

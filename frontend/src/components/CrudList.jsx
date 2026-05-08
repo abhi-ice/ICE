@@ -57,7 +57,12 @@ export default function CrudList({
     formFields.forEach((f) => { def[f.key] = row[f.key] ?? (f.type === "checkbox" ? false : ""); });
     setForm(def); setEditing(row); setOpen(true);
   };
+  // Bucket D Fix E -- double-click guards: one for save, one for
+  // per-row delete (Set tracks in-flight delete row ids).
+  const [saving, setSaving] = useState(false);
+  const [deletingIds, setDeletingIds] = useState(new Set());
   const submit = async () => {
+    if (saving) return;
     const payload = buildPayload ? buildPayload(form, editing) : { ...form };
     // strip empty strings → null for non-required text
     formFields.forEach((f) => {
@@ -66,6 +71,7 @@ export default function CrudList({
         payload[f.key] = Number(payload[f.key]);
       }
     });
+    setSaving(true);
     try {
       if (editing) {
         await api.patch(patchEndpoint(editing), payload);
@@ -78,16 +84,20 @@ export default function CrudList({
       refresh();
     } catch (e) {
       toast.error(e.response?.data?.detail?.[0]?.msg || e.response?.data?.detail || "Save failed");
-    }
+    } finally { setSaving(false); }
   };
   const remove = async (row) => {
+    if (deletingIds.has(row.id)) return;
     if (!window.confirm(`Delete ${title.toLowerCase().replace(/s$/, "")}?`)) return;
+    setDeletingIds((prev) => new Set(prev).add(row.id));
     try {
       await api.delete(deleteEndpoint(row));
       toast.success("Deleted");
       refresh();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Delete failed");
+    } finally {
+      setDeletingIds((prev) => { const n = new Set(prev); n.delete(row.id); return n; });
     }
   };
 
@@ -130,7 +140,9 @@ export default function CrudList({
                       <button data-testid={`${testidPrefix}-edit-${r.id}`} onClick={() => startEdit(r)} className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500"><Pencil className="h-3.5 w-3.5" /></button>
                     )}
                     {deleteEndpoint && (
-                      <button data-testid={`${testidPrefix}-delete-${r.id}`} onClick={() => remove(r)} className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                      <button data-testid={`${testidPrefix}-delete-${r.id}`} onClick={() => remove(r)}
+                        disabled={deletingIds.has(r.id)}
+                        className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /></button>
                     )}
                   </td>
                 )}
@@ -153,7 +165,7 @@ export default function CrudList({
             {formFields.map((f) => (
               <FormField key={f.key} f={f} value={form[f.key]} onChange={(v) => setForm({ ...form, [f.key]: v })} testidPrefix={testidPrefix} />
             ))}
-            <Button data-testid={`${testidPrefix}-save`} onClick={submit} className="bg-blue-600 hover:bg-blue-700 w-full">{editing ? "Save changes" : "Create"}</Button>
+            <Button data-testid={`${testidPrefix}-save`} onClick={submit} disabled={saving} className="bg-blue-600 hover:bg-blue-700 w-full disabled:opacity-50">{saving ? "Saving…" : (editing ? "Save changes" : "Create")}</Button>
           </div>
         </DialogContent>
       </Dialog>

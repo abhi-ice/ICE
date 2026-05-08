@@ -558,14 +558,19 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   const total = rows.reduce((s, r) => s + (r.headcount || 0), 0);
   const totalHours = rows.reduce((s, r) => s + (r.headcount || 0) * (r.hours_per_person || 0), 0);
 
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   const add = async () => {
+    if (busy) return;
     if (!draft.trade) return toast.error("Trade is required");
+    setBusy(true);
     try {
       await api.post(`/daily-reports/${dailyReportId}/presence`, { ...draft, daily_report_id: dailyReportId });
       setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "",
                  zone_id: undefined, zone_name: undefined, shift: "first", schedule_activity_id: undefined });
       reload();
     } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
+    finally { setBusy(false); }
   };
   const patch = async (rid, fields) => {
     try { await api.patch(`/daily-presence/${rid}`, fields); reload(); }
@@ -701,7 +706,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               </label>
             </>
           )}
-          <button data-testid="presence-add" onClick={add} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
+          <button data-testid="presence-add" onClick={add} disabled={busy} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
             <Plus className="h-3.5 w-3.5" /> Add trade
           </button>
         </div>
@@ -1086,14 +1091,19 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
       setPicking(""); reload();
     } catch (e) { toast.error(formatErr(e, "Add planned activity")); }
   };
+  // Bucket D Fix E -- double-click guard for unplanned-activity create.
+  const [creatingUnplanned, setCreatingUnplanned] = useState(false);
   const createUnplanned = async () => {
+    if (creatingUnplanned) return;
     if (!unplanned.description) return toast.error("Describe the unplanned activity first");
+    setCreatingUnplanned(true);
     try {
       await api.post(`/daily-reports/${dailyReportId}/unplanned-activity`, unplanned);
       setUnplanned({ description: "", trade_code: "", duration_days: 1 });
       toast.success("Unplanned activity created — flagged for PM review.");
       reload();
     } catch (e) { toast.error(formatErr(e, "Create unplanned")); }
+    finally { setCreatingUnplanned(false); }
   };
 
   const STATUS_OPTS = ["not_started", "in_progress", "blocked", "complete"];
@@ -1206,8 +1216,9 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
               <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             </div>
-            <button data-testid="unplanned-add" onClick={createUnplanned} className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 flex items-center gap-1">
-              <Plus className="h-3 w-3" /> Create unplanned activity
+            <button data-testid="unplanned-add" onClick={createUnplanned} disabled={creatingUnplanned}
+              className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 flex items-center gap-1">
+              <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : "Create unplanned activity"}
             </button>
           </div>
         </div>
@@ -1402,13 +1413,17 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
     description: "", severity: "minor", event_type: "near_miss",
     linked_dr_activity_ids: [],
   });
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "safety" || !text) return;
     setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
   }), []);
   const create = async () => {
+    if (busy) return;
     if (!draft.description) return toast.error("Description required");
+    setBusy(true);
     try {
       await api.post(`/safety-events`, {
         project_id: projectId, daily_report_id: dailyReportId, date: reportDate,
@@ -1419,6 +1434,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
                   linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create safety event")); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={ShieldAlert} title="Safety events" testid="dr-safety-panel" count={rows.length}>
@@ -1449,8 +1465,9 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
               {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <button data-testid="safety-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
-            <Plus className="h-3.5 w-3.5" /> Add
+          <button data-testid="safety-add" onClick={create} disabled={busy}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+            <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Add"}
           </button>
         </div>
       )}
@@ -1483,8 +1500,11 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   }, [draft.severity, projectId]);
 
   const isRework = draft.severity === "rework_required";
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
 
   const create = async () => {
+    if (busy) return;
     if (!draft.description) return toast.error("Description required");
     if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
     if (isRework) {
@@ -1495,6 +1515,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         return toast.error("Rework basis (short note) required");
       }
     }
+    setBusy(true);
     try {
       const payload = {
         project_id: projectId,
@@ -1517,6 +1538,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         ? "QC rework filed -- synthetic delay created and CPM cascade running."
         : "QC issue logged.");
     } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
+    finally { setBusy(false); }
   };
 
   const togglePicked = (id) => {
@@ -1621,9 +1643,9 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
           )}
 
           <div className="flex justify-end">
-            <button data-testid="qc-add" onClick={create}
-              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
-              <Plus className="h-3.5 w-3.5" /> Add QC issue
+            <button data-testid="qc-add" onClick={create} disabled={busy}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+              <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Add QC issue"}
             </button>
           </div>
         </div>
@@ -1639,9 +1661,13 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
     subject: "", description: "", priority: "normal",
     linked_dr_activity_ids: [],
   });
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   const create = async () => {
+    if (busy) return;
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
     if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
+    setBusy(true);
     try {
       await api.post(`/rfis`, {
         project_id: projectId, daily_report_id: dailyReportId,
@@ -1653,6 +1679,7 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
       setDraft({ subject: "", description: "", priority: "normal", linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Open RFI")); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={MessageSquare} title="RFIs" testid="dr-rfis-panel" count={rows.length}>
@@ -1678,7 +1705,8 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
             <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
               {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
-            <button data-testid="rfi-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Open RFI</button>
+            <button data-testid="rfi-add" onClick={create} disabled={busy}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Open RFI"}</button>
           </div>
         </div>
       )}
@@ -1693,9 +1721,13 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
     vendor: "", description: "", po_number: "",
     linked_dr_activity_ids: [],
   });
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   const create = async () => {
+    if (busy) return;
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
     if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one activity consuming this delivery");
+    setBusy(true);
     try {
       await api.post(`/deliveries`, {
         project_id: projectId, delivery_date: reportDate,
@@ -1707,6 +1739,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
       setDraft({ vendor: "", description: "", po_number: "", linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Log delivery")); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={Truck} title="Deliveries today" testid="dr-deliveries-panel" count={rows.length}>
@@ -1726,7 +1759,8 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
             <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
             <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
             <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-            <button data-testid="delivery-add" onClick={create} className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Log delivery</button>
+            <button data-testid="delivery-add" onClick={create} disabled={busy}
+              className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Log delivery"}</button>
           </div>
           <DrActivityPicker grid={grid}
             value={draft.linked_dr_activity_ids}
@@ -1741,10 +1775,15 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
 
 function NotesPanel({ report, dailyReportId, locked, reload }) {
   const [text, setText] = useState(report.notes || "");
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   useEffect(() => { setText(report.notes || ""); }, [report.notes]);
   const save = async () => {
+    if (busy) return;
+    setBusy(true);
     try { await api.patch(`/daily-reports/${dailyReportId}`, { notes: text }); reload(); toast.success("Notes saved"); }
     catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={ClipboardList} title="Daily notes / narrative" testid="dr-notes-panel">
@@ -1754,7 +1793,10 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
         className="w-full h-28 px-3 py-2 rounded border border-slate-200 text-sm" />
       {!locked && (
         <div className="flex justify-end mt-2">
-          <button data-testid="dr-notes-save" onClick={save} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Save notes</button>
+          <button data-testid="dr-notes-save" onClick={save} disabled={busy}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+            {busy ? "Saving…" : "Save notes"}
+          </button>
         </div>
       )}
     </PanelShell>
