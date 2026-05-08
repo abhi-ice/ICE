@@ -8,7 +8,7 @@ Per master prompt section 3:
 from __future__ import annotations
 from datetime import datetime, date, timezone
 from typing import Optional, List, Literal, Any
-from pydantic import BaseModel, ConfigDict, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr, field_validator
 from uuid import uuid4
 
 
@@ -408,6 +408,23 @@ class DailyReportCreate(StrictModel):
     weather_conditions: Optional[str] = None
     weather_precipitation_in: Optional[float] = None
     notes: Optional[str] = None
+
+    # Addition 1 -- future-date guard. Pre-staging tomorrow's DR the
+    # night before is a real super workflow, so we allow today + 1
+    # day. Anything beyond that corrupts calendar reconciliation,
+    # TIA chronology, and CPM projections (a DR dated 30 days out
+    # would tag itself as "yesterday's DR" once the calendar caught
+    # up, breaking idempotent today-resolver logic).
+    @field_validator("report_date")
+    @classmethod
+    def _no_future_date(cls, v: date) -> date:
+        from datetime import date as _date, timedelta as _td
+        max_allowed = _date.today() + _td(days=1)
+        if v > max_allowed:
+            raise ValueError(
+                "Daily report date cannot be more than 1 day in the future."
+            )
+        return v
 
 
 class DailyReport(ReadModel):
