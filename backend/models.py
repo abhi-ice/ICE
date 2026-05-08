@@ -427,6 +427,20 @@ class DailyReportCreate(StrictModel):
         return v
 
 
+# Addition 3 -- no-work-day acknowledgment vocabulary. Empty DR submit
+# requires is_no_work_day + a typed reason so legal sees explicit
+# "this was a planned no-work day" rather than "looks like the super
+# forgot to log anything." Reasons map 1-1 to the modal dropdown.
+NoWorkReason = Literal[
+    "weather",                # storm / extreme cold / snow / etc.
+    "holiday",                # observed holiday
+    "scheduled_non_work",     # planned non-work day (e.g. Sunday)
+    "crew_unavailable",       # crew didn't show
+    "tenant_restriction",     # tenant or owner blocked access
+    "other",                  # free-form, requires no_work_note
+]
+
+
 class DailyReport(ReadModel):
     id: str
     tenant_id: str
@@ -453,6 +467,13 @@ class DailyReport(ReadModel):
     dust_violations_count: int = 0
     after_hours_work: Optional[bool] = None
     created_at: datetime
+    # Addition 3 -- no-work-day metadata. Set on submit when the DR has
+    # no activities AND no events; the backend enforces a typed reason
+    # so legal review sees an explicit acknowledgment rather than an
+    # empty record.
+    is_no_work_day: bool = False
+    no_work_reason: Optional[NoWorkReason] = None
+    no_work_note: Optional[str] = None
 
 
 ConstraintType = Literal[

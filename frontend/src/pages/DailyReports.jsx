@@ -199,6 +199,10 @@ function DailyReportDetail({ id, onBack }) {
   const [submitRowErrors, setSubmitRowErrors] = useState({});
   // Bucket C3b Phase 1 — quick-log coordination event dialog.
   const [coordOpen, setCoordOpen] = useState(false);
+  // Addition 3 -- no-work-day modal state. Opened when the server rejects
+  // a submit with error="empty_dr_requires_no_work_day". On confirm we
+  // resubmit with is_no_work_day=true + the reason/note.
+  const [noWorkModal, setNoWorkModal] = useState(null); // null | {reason, note}
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
@@ -298,24 +302,41 @@ function DailyReportDetail({ id, onBack }) {
     return { ok: errors.length === 0, errors };
   };
 
-  const submit = async () => {
-    const { ok, errors } = validate();
-    if (!ok) {
-      toast.error("Cannot submit: " + errors[0]);
-      return;
-    }
+  // Addition 3 -- shared submit core; payload defaults to {} (normal
+  // submit) but the no-work-day modal calls it with is_no_work_day +
+  // reason + note populated. Returns true on success.
+  const _submitWith = async (payload) => {
     setBusy(true);
     setSubmitRowErrors({});
     try {
-      await api.post(`/daily-reports/${id}/submit`, {});
-      toast.success("Daily report submitted and locked.");
+      await api.post(`/daily-reports/${id}/submit`, payload);
+      toast.success(payload.is_no_work_day
+        ? "Daily report submitted as a no-work day."
+        : "Daily report submitted and locked.");
+      setNoWorkModal(null);
       reload();
+      return true;
     } catch (e) {
-      // Bucket C3a Phase 3 — server returns structured per-row errors as
-      // 422 detail.row_errors. Render them inline next to each offending
-      // row instead of as a single toast.
       const detail = e.response?.data?.detail;
-      if (e.response?.status === 422 && detail && typeof detail === "object" && Array.isArray(detail.row_errors)) {
+      // Addition 3 -- empty DR -> open the no-work-day modal so the user
+      // can acknowledge the blank day with an explicit reason.
+      if (
+        e.response?.status === 422
+        && detail && typeof detail === "object"
+        && detail.error === "empty_dr_requires_no_work_day"
+      ) {
+        setNoWorkModal({ reason: "", note: "" });
+        toast.info(
+          "This DR has no activities or events. Pick a no-work-day reason to submit.",
+        );
+        return false;
+      }
+      // Bucket C3a Phase 3 — structured per-row errors render inline.
+      if (
+        e.response?.status === 422
+        && detail && typeof detail === "object"
+        && Array.isArray(detail.row_errors)
+      ) {
         const byRow = {};
         for (const err of detail.row_errors) {
           if (!byRow[err.row_id]) byRow[err.row_id] = [];
@@ -324,9 +345,45 @@ function DailyReportDetail({ id, onBack }) {
         setSubmitRowErrors(byRow);
         toast.error(detail.message || "Submit blocked — fix the rows highlighted in red.");
       } else {
-        toast.error(e.response?.data?.detail?.message || e.response?.data?.detail || e.message || "Submit failed");
+        toast.error(detail?.message || detail || e.message || "Submit failed");
       }
+      return false;
     } finally { setBusy(false); }
+  };
+
+  const submit = async () => {
+    // Addition 3 -- the legacy validator hard-blocked empty grids. We
+    // now defer to the server, which lets the user submit blank days
+    // explicitly via the no-work-day modal. Only block on errors that
+    // can't be a no-work day (e.g. partially-filled grids with row
+    // errors).
+    const { ok, errors } = validate();
+    const onlyEmptyGridError = (
+      !ok && errors.length === 1 && errors[0].includes("Activity grid is empty")
+    );
+    if (!ok && !onlyEmptyGridError) {
+      toast.error("Cannot submit: " + errors[0]);
+      return;
+    }
+    await _submitWith({});
+  };
+
+  // Addition 3 -- modal confirm: resubmit with is_no_work_day=true.
+  const submitNoWorkDay = async () => {
+    if (!noWorkModal) return;
+    if (!noWorkModal.reason) {
+      toast.error("Pick a reason.");
+      return;
+    }
+    if (noWorkModal.reason === "other" && !(noWorkModal.note || "").trim()) {
+      toast.error("Note is required when reason is 'other'.");
+      return;
+    }
+    await _submitWith({
+      is_no_work_day: true,
+      no_work_reason: noWorkModal.reason,
+      no_work_note: (noWorkModal.note || "").trim() || null,
+    });
   };
 
   const approve = async () => {
@@ -379,6 +436,70 @@ function DailyReportDetail({ id, onBack }) {
             onSaved={() => { setCoordOpen(false); toast.success("Coordination event logged"); }}
             onCancel={() => setCoordOpen(false)}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* Addition 3 -- no-work-day acknowledgment modal. Triggered when
+          the server rejects an empty-DR submit; user picks a reason and
+          confirms, modal calls submitNoWorkDay() which re-submits with
+          is_no_work_day=true. */}
+      <Dialog open={!!noWorkModal} onOpenChange={(o) => !o && setNoWorkModal(null)}>
+        <DialogContent className="max-w-md" data-testid="no-work-day-modal">
+          <DialogHeader>
+            <DialogTitle>This Daily Report has no activities or events</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-600">
+              Submitting a blank DR without explanation looks sloppy in
+              claim defense. File this as a no-work day so the record
+              shows you knew it was blank and why.
+            </p>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" checked readOnly disabled
+                data-testid="no-work-ack" className="mt-0.5" />
+              <span><strong>File as a no-work day</strong> (required to submit a blank DR)</span>
+            </label>
+            <div>
+              <label className="field-label">Reason *</label>
+              <select data-testid="no-work-reason"
+                value={noWorkModal?.reason ?? ""}
+                onChange={(e) => setNoWorkModal({ ...noWorkModal, reason: e.target.value })}
+                className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
+                <option value="">— pick a reason —</option>
+                <option value="weather">Weather (storm, extreme cold, snow, etc.)</option>
+                <option value="holiday">Holiday</option>
+                <option value="scheduled_non_work">Scheduled non-work day</option>
+                <option value="crew_unavailable">Crew unavailable</option>
+                <option value="tenant_restriction">Tenant or owner access restricted</option>
+                <option value="other">Other (note required)</option>
+              </select>
+            </div>
+            <div>
+              <label className="field-label">
+                Note {noWorkModal?.reason === "other" && <span className="text-red-600">*</span>}
+              </label>
+              <textarea data-testid="no-work-note"
+                value={noWorkModal?.note ?? ""}
+                onChange={(e) => setNoWorkModal({ ...noWorkModal, note: e.target.value })}
+                placeholder={
+                  noWorkModal?.reason === "other"
+                    ? "Required: describe the reason."
+                    : "Optional context."
+                }
+                className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button data-testid="no-work-cancel" onClick={() => setNoWorkModal(null)}
+                className="h-9 px-3 rounded border border-slate-200 text-sm">
+                Cancel
+              </button>
+              <button data-testid="no-work-confirm" onClick={submitNoWorkDay}
+                disabled={busy}
+                className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                {busy ? "Submitting…" : "Submit as no-work day"}
+              </button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -473,6 +594,13 @@ function Header({ report, project, userLabels, ppc, totalHours,
             <StatusPill status={report.status} />
             {locked && <Lock className="h-3.5 w-3.5 text-slate-500" />}
           </div>
+          {report.is_no_work_day && (
+            <div data-testid="dr-no-work-pill"
+              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] uppercase tracking-wide"
+              title={report.no_work_note || "No-work day"}>
+              No-work day · {(report.no_work_reason || "").replace(/_/g, " ")}
+            </div>
+          )}
         </div>
         <div className="hidden md:block min-w-[180px]">
           <div className="text-xs text-slate-500 uppercase tracking-wide">Trail</div>
