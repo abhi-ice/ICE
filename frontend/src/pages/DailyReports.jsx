@@ -1625,13 +1625,25 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   );
 }
 
-function RfisPanel({ rows, dailyReportId, projectId, locked, reload }) {
-  const [draft, setDraft] = useState({ subject: "", description: "", priority: "normal" });
+function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
+  // Bucket D Task 1c -- linked_dr_activity_ids picker. RFIs are
+  // REQUIRED to link >=1 activity per Phase 1 (gates a task).
+  const [draft, setDraft] = useState({
+    subject: "", description: "", priority: "normal",
+    linked_dr_activity_ids: [],
+  });
   const create = async () => {
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
+    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
     try {
-      await api.post(`/rfis`, { ...draft, project_id: projectId, daily_report_id: dailyReportId });
-      setDraft({ subject: "", description: "", priority: "normal" });
+      await api.post(`/rfis`, {
+        project_id: projectId, daily_report_id: dailyReportId,
+        subject: draft.subject,
+        question: draft.description,  // backend alias -> description
+        priority: draft.priority,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      });
+      setDraft({ subject: "", description: "", priority: "normal", linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Open RFI")); }
   };
@@ -1642,17 +1654,25 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload }) {
           <span className="font-mono mr-2 text-blue-700">{r.rfi_number}</span>
           <span className="pill pill-slate mr-2">{r.priority}</span>
           <span className="text-slate-700">{r.subject}</span>
+          <SupplementBadge row={r} />
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No RFIs raised today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
-          <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <button data-testid="rfi-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Open RFI</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+          <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
+          <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="w-full px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
+          <DrActivityPicker grid={grid}
+            value={draft.linked_dr_activity_ids}
+            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
+            required={true} label="Affected activities"
+            testidPrefix="rfi-activity" compact />
+          <div className="flex items-center gap-2">
+            <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button data-testid="rfi-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Open RFI</button>
+          </div>
         </div>
       )}
     </PanelShell>
