@@ -4,10 +4,11 @@
 // tagged-to event type, affected activity. Click a card -> opens the
 // parent DR with the relevant event highlighted.
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { useUrlState } from "../lib/useUrlState";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -91,11 +92,19 @@ export default function Photos() {
           </div>
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
-        <Link to="/photo-tray"
-          data-testid="photos-go-to-tray"
-          className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
-          <Upload className="h-3.5 w-3.5" /> Upload + tag (Photo tray)
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* Bucket D Fix G [3/4] -- "+ New" routes to today's DR's
+              photos panel (consistent with all other galleries). The
+              upload+tag flow lives on the Photo Tray page; the link
+              below is preserved for users who want to go straight
+              to the tray. */}
+          <PhotoNewButton projectId={activeId} />
+          <Link to="/photo-tray"
+            data-testid="photos-go-to-tray"
+            className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300 inline-flex items-center gap-1">
+            <Upload className="h-3.5 w-3.5" /> Photo tray
+          </Link>
+        </div>
       </header>
 
       <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 mb-4">
@@ -194,6 +203,34 @@ function PhotoCard({ photo, projectId }) {
         )}
       </div>
     </Link>
+  );
+}
+
+// Bucket D Fix G [3/4] -- + New button that routes to today's DR with
+// PhotosPanel scrolled into view + pulsed.
+function PhotoNewButton({ projectId }) {
+  const navigate = useNavigate();
+  const [routing, setRouting] = useState(false);
+  const click = async () => {
+    if (routing || !projectId) return;
+    setRouting(true);
+    try {
+      const { url, locked, dr } = await navigateToTodaysDrForCreate(projectId, "photo");
+      if (locked) {
+        toast.info(`Today's DR is locked. Upload + tag photos via the Photo tray instead.`);
+        navigate(`/daily-reports?openId=${dr.id}`);
+      } else {
+        navigate(url);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't resolve today's DR");
+    } finally { setRouting(false); }
+  };
+  return (
+    <button data-testid="photos-add-via-dr" onClick={click} disabled={routing}
+      className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+      <Plus className="h-3.5 w-3.5" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+    </button>
   );
 }
 
