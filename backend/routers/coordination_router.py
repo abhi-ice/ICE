@@ -37,6 +37,18 @@ async def create_coordination_event(
         raise HTTPException(404, "Project not found")
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage OPTIONAL for coordination
+    # (some events are project-wide). Validation just confirms ids are
+    # real if provided. linked_daily_report_id (existing field) is the
+    # scope DR for the activity-id check.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("linked_daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=False,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],

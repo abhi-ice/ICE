@@ -95,6 +95,18 @@ def _enrich_delay_for_read(d: dict) -> dict:
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage. Required min-1 unless this
+    # is a supplement (Phase 4); supplement_reason path validates against
+    # parent_daily_report_id instead. Validation early so the cascade
+    # below doesn't run for an invalid payload.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     linked_ids, impacts = await _resolve_task_impacts(db, ctx["tenant_id"], doc)
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
@@ -450,6 +462,17 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage OPTIONAL for safety (some
+    # events are area-wide with no specific WBS row). Validation just
+    # confirms ids are real if provided.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=False,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
@@ -480,6 +503,16 @@ async def list_safety(project_id: str, ctx: dict = Depends(require_tenant)):
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage required (QC drives the
+    # rework cascade in Phase 5; the linkage is the cascade's seed).
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),

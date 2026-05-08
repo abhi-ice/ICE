@@ -28,6 +28,17 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage required min-1. Coexists
+    # with the C3a gating_entities back-pointer (still set below by
+    # create_for_entity).
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     # Followup-fix (2026-05-07): preserve user-supplied response_text
     # (frontend "answer" field) instead of wiping it. Status is always
     # forced to draft on create -- the state machine is unchanged

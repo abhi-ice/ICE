@@ -834,12 +834,29 @@ class DeliveryCreate(StrictModel):
     po_number: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    # Bucket D Phase 1 — DR-activity linkage. Required min-1; copilot/
+    # voice paths bypass via direct insert_one. daily_report_id is also
+    # added so the linkage can be scoped to a specific DR.
+    daily_report_id: Optional[str] = None
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
 
 
 @router.post("/deliveries")
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage required.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "scheduled",
         "received_by": None, "photos": [],
