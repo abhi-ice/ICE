@@ -5,7 +5,8 @@ from typing import Optional
 from database import get_db, tenant_filter
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate,
-    QcIssue, QcIssueCreate, Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
+    QcIssue, QcIssueCreate, QcReworkOutcome,
+    Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
 from auth import require_tenant
@@ -542,6 +543,19 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
         "resolved_at": None, "resolution_notes": None,
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 5 -- if severity=rework_required, super-entered
+    # rework_duration_hours is required. Stamp the estimate metadata.
+    if doc.get("severity") == "rework_required":
+        if not doc.get("rework_duration_hours") or float(doc.get("rework_duration_hours") or 0) <= 0:
+            raise HTTPException(
+                422, "rework_duration_hours required when severity='rework_required'",
+            )
+        if not (doc.get("rework_duration_basis") or "").strip():
+            raise HTTPException(
+                422, "rework_duration_basis required when severity='rework_required'",
+            )
+        doc["rework_estimated_at"] = utc_now().isoformat()
+        doc["rework_estimated_by"] = ctx["user"]["id"]
     # Bucket D Phase 4 -- supplement metadata + audit.
     from services.dr_activity_linkage import stamp_supplement_metadata
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="qc_issue")
@@ -555,7 +569,61 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
             record_id=doc["id"], before=None, after=sup_audit,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
         )
+    # Bucket D Phase 5 -- trigger the rework cascade if severity asks
+    # for it. The synthetic delay write + CPM cascade run inside the
+    # service; this endpoint just kicks it off.
+    if doc.get("severity") == "rework_required":
+        from services.qc_rework_cascade import create_synthetic_delay_for_qc
+        try:
+            synthetic = await create_synthetic_delay_for_qc(
+                tenant_id=ctx["tenant_id"], qc_issue=doc,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+            if synthetic:
+                doc["linked_synthetic_delay_id"] = synthetic["id"]
+        except Exception as e:
+            # Don't fail the QC create if the cascade hiccups; the QC
+            # row exists and a follow-up trigger can re-run the cascade.
+            await write_audit(
+                tenant_id=ctx["tenant_id"], table_name="qc_issues",
+                op="QC_REWORK_CASCADE_FAILED",
+                record_id=doc["id"], before=None,
+                after={"error": str(e)[:500]},
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return QcIssue(**doc)
+
+
+# Bucket D Phase 5 -- AI benchmark suggestion + outcome capture.
+@router.get("/projects/{project_id}/qc-issues/rework-benchmark")
+async def qc_rework_benchmark(project_id: str, ctx: dict = Depends(require_tenant)):
+    """Returns a calibration RAG suggestion for rework hours based on
+    prior outcomes recorded on this project. Pure advisory -- super's
+    estimate stays authoritative."""
+    from services.qc_rework_cascade import suggest_ai_benchmark
+    return await suggest_ai_benchmark(ctx["tenant_id"], project_id)
+
+
+@router.post("/qc-issues/{qc_id}/record-rework-outcome")
+async def record_qc_rework_outcome(
+    qc_id: str, payload: QcReworkOutcome,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    qc = await db.qc_issues.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+    )
+    if not qc:
+        raise HTTPException(404, "QC issue not found")
+    if qc.get("severity") != "rework_required":
+        raise HTTPException(409, "QC issue is not flagged rework_required")
+    from services.qc_rework_cascade import record_rework_outcome
+    return await record_rework_outcome(
+        tenant_id=ctx["tenant_id"], qc_issue=qc,
+        actual_hours=payload.rework_actual_hours,
+        notes=payload.rework_outcome_notes,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
 
 
 @router.get("/projects/{project_id}/qc-issues", response_model=list[QcIssue])

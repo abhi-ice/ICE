@@ -344,7 +344,8 @@ function DailyReportDetail({ id, onBack }) {
         <SafetyPanel rows={safety_events} dailyReportId={id} projectId={project.id}
                      reportDate={report.report_date} locked={locked} reload={reload} />
         <QcPanel rows={qc_issues} dailyReportId={id} projectId={project.id}
-                 reportDate={report.report_date} locked={locked} reload={reload} />
+                 reportDate={report.report_date} locked={locked} reload={reload}
+                 grid={grid} />
         <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
                    locked={locked} reload={reload} />
         <DeliveriesPanel rows={deliveries} dailyReportId={id} projectId={project.id}
@@ -1437,42 +1438,165 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   );
 }
 
-function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  // Phase C — simplified: description + severity only. Spec section
-  // reference removed per spec.
-  const [draft, setDraft] = useState({ description: "", severity: "minor" });
+function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
+  // Bucket D Phase 5 -- QC severity gets the rework_required tier.
+  // When picked, super enters rework_duration_hours + basis;
+  // calibration RAG suggests a benchmark from prior outcomes (advisory).
+  // Submit -> backend creates synthetic delay + runs CPM cascade.
+  const [draft, setDraft] = useState({
+    description: "", severity: "minor",
+    rework_duration_hours: "", rework_duration_basis: "",
+    linked_dr_activity_ids: [],
+  });
+  const [benchmark, setBenchmark] = useState(null);
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "qc" || !text) return;
     setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
   }), []);
+
+  useEffect(() => {
+    if (draft.severity !== "rework_required" || !projectId) { setBenchmark(null); return; }
+    api.get(`/projects/${projectId}/qc-issues/rework-benchmark`)
+      .then(({ data }) => setBenchmark(data))
+      .catch(() => setBenchmark(null));
+  }, [draft.severity, projectId]);
+
+  const isRework = draft.severity === "rework_required";
+
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
+    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
+    if (isRework) {
+      if (!draft.rework_duration_hours || Number(draft.rework_duration_hours) <= 0) {
+        return toast.error("Rework hours required when severity=rework_required");
+      }
+      if (!draft.rework_duration_basis.trim()) {
+        return toast.error("Rework basis (short note) required");
+      }
+    }
     try {
-      await api.post(`/qc-issues`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor" });
+      const payload = {
+        project_id: projectId,
+        daily_report_id: dailyReportId,
+        date: reportDate,
+        description: draft.description,
+        severity: draft.severity,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      };
+      if (isRework) {
+        payload.rework_duration_hours = Number(draft.rework_duration_hours);
+        payload.rework_duration_basis = draft.rework_duration_basis.trim();
+      }
+      await api.post(`/qc-issues`, payload);
+      setDraft({ description: "", severity: "minor",
+                  rework_duration_hours: "", rework_duration_basis: "",
+                  linked_dr_activity_ids: [] });
       reload();
+      toast.success(isRework
+        ? "QC rework filed -- synthetic delay created and CPM cascade running."
+        : "QC issue logged.");
     } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
   };
+
+  const togglePicked = (id) => {
+    setDraft((d) => ({
+      ...d,
+      linked_dr_activity_ids: d.linked_dr_activity_ids.includes(id)
+        ? d.linked_dr_activity_ids.filter((x) => x !== id)
+        : [...d.linked_dr_activity_ids, id],
+    }));
+  };
+  const activitiesAvailable = (grid || []).filter((a) => a.id);
+
   return (
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
       {rows.map((r) => (
         <div key={r.id} data-testid={`qc-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
+          <span className={`pill mr-2 ${
+            r.severity === "rework_required" || r.severity === "stop_work" ? "pill-red"
+            : r.severity === "critical" || r.severity === "major" ? "pill-red"
+            : "pill-slate"
+          }`}>{r.severity}</span>
           <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
+          {r.linked_synthetic_delay_id && (
+            <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
+              rework {r.rework_duration_hours}h
+              {r.rework_actual_hours != null && ` (actual ${r.rework_actual_hours}h)`}
+            </span>
+          )}
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
-          <textarea data-testid="qc-new-desc" rows={6} placeholder="Describe the issue"
+          <textarea data-testid="qc-new-desc" rows={4} placeholder="Describe the issue"
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
+
+          {/* Bucket D Phase 1 -- affected-activity multi-select. */}
+          <div>
+            <div className="text-[10px] uppercase text-slate-500 mb-1">Affected activities (required)</div>
+            <div className="max-h-24 overflow-auto border border-slate-200 rounded">
+              {activitiesAvailable.length ? activitiesAvailable.map((a) => (
+                <label key={a.id} className="flex items-center gap-2 px-2 py-1 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-xs">
+                  <input type="checkbox" data-testid={`qc-activity-${a.activity_code}`}
+                    checked={draft.linked_dr_activity_ids.includes(a.id)}
+                    onChange={() => togglePicked(a.id)} />
+                  <span className="font-mono text-blue-700">{a.activity_code}</span>
+                  <span className="text-slate-700 truncate">{a.activity_description}</span>
+                </label>
+              )) : (
+                <div className="p-2 text-xs text-slate-400">No activities on this DR yet</div>
+              )}
+            </div>
+          </div>
+
           <div className="flex items-center gap-2">
-            <select data-testid="qc-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+            <select data-testid="qc-new-severity" value={draft.severity}
+              onChange={(e) => setDraft({ ...draft, severity: e.target.value })}
+              className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["observation", "minor", "moderate", "major", "critical", "rework_required", "stop_work"]
+                .map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
             </select>
-            <button data-testid="qc-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+          </div>
+
+          {/* Bucket D Phase 5 -- rework block. */}
+          {isRework && (
+            <div className="bg-rose-50 border border-rose-200 rounded p-2 space-y-2" data-testid="qc-rework-block">
+              <div className="text-[11px] font-semibold text-rose-900">Rework duration estimate (super)</div>
+              {benchmark?.benchmark_hours != null && (
+                <div className="text-[10px] text-slate-600 italic" data-testid="qc-rework-benchmark">
+                  {benchmark.basis}
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase">Hours *</label>
+                  <input data-testid="qc-rework-hours" type="number" step="0.5" min="0"
+                    value={draft.rework_duration_hours}
+                    onChange={(e) => setDraft({ ...draft, rework_duration_hours: e.target.value })}
+                    className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-[10px] text-slate-500 uppercase">Basis * (short note)</label>
+                  <input data-testid="qc-rework-basis" type="text"
+                    value={draft.rework_duration_basis}
+                    onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
+                    placeholder="e.g. 2 plumbers re-rough 11A south wall, 4hrs each"
+                    className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
+                </div>
+              </div>
+              <div className="text-[10px] text-rose-800">
+                On save, a synthetic delay (cause=quality_rework) will be created and the
+                CPM cascade run for the affected activities.
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button data-testid="qc-add" onClick={create}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
               <Plus className="h-3.5 w-3.5" /> Add QC issue
             </button>
           </div>

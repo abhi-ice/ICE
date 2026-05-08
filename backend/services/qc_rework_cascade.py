@@ -1,0 +1,286 @@
+"""Bucket D Phase 5 -- QC -> rework -> CPM cascade.
+
+When a QC issue is logged with severity='rework_required' and the
+super enters rework_duration_hours, the platform:
+  1. Creates a synthetic Delay record (cause_class=quality_rework)
+     with delay_days = ceil(hours/8 * 2) / 2  (round up to nearest
+     half-day; matches Bucket C1's day-granularity cascade).
+  2. Cross-links: qc_issue.linked_synthetic_delay_id ->
+     delay.id; delay.linked_qc_issue_id -> qc.id.
+  3. Triggers the existing C1 CPM cascade
+     (services.task_status.compute_projected_finish_dates) so
+     downstream activities pick up the projected slip.
+  4. Audits QC_REWORK_DELAY_CREATED with both ids + super estimate.
+
+Outcome capture (separate endpoint, mirrors C2 mitigation pattern):
+  * Updates qc.rework_actual_hours + outcome notes.
+  * Recomputes synthetic delay's delay_days from actual.
+  * Re-runs cascade.
+  * Audits QC_REWORK_OUTCOME_RECORDED.
+  * Calibration RAG ingests (estimate, actual, basis) -- the Phase
+    C2 mitigation_outcomes table can carry these tuples too with
+    source='qc_rework' for cross-domain training data.
+"""
+from __future__ import annotations
+import math
+from typing import Optional
+
+from database import get_db, tenant_filter
+from models import gen_id, utc_now
+
+
+def _hours_to_days(hours: float) -> float:
+    """Convert hours -> working days, rounded up to nearest 0.5. Matches
+    the precision of CPM cascade math (which works in half-day increments
+    via Bucket C1's projected_finish recalc)."""
+    if hours is None or hours <= 0:
+        return 0.0
+    raw = hours / 8.0
+    # Round up to nearest 0.5
+    return math.ceil(raw * 2) / 2.0
+
+
+async def create_synthetic_delay_for_qc(
+    *, tenant_id: str, qc_issue: dict, actor_id: str, request_id: Optional[str] = None,
+    owner_attribution: str = "gc",
+) -> Optional[dict]:
+    """Phase 5 entrypoint. Returns the synthetic delay doc on success;
+    None if QC isn't rework_required or rework_duration_hours not set."""
+    if qc_issue.get("severity") != "rework_required":
+        return None
+    hours = qc_issue.get("rework_duration_hours")
+    if not hours or float(hours) <= 0:
+        return None
+
+    db = get_db()
+    delay_days = _hours_to_days(float(hours))
+    now_iso = utc_now().isoformat()
+    delay_doc = {
+        "id": gen_id(),
+        "tenant_id": tenant_id,
+        "project_id": qc_issue["project_id"],
+        "daily_report_id": qc_issue.get("daily_report_id"),
+        "date": qc_issue.get("date"),
+        "description": (
+            f"Rework caused by QC issue: {(qc_issue.get('description') or '').strip()[:300]}"
+        ),
+        "severity": "moderate",
+        "status": "open",
+        "delay_days": delay_days,
+        "logged_date": qc_issue.get("date"),
+        "reason_category": "other",
+        "owner_attribution": owner_attribution,
+        "cause_class": "quality_rework",
+        "linked_dr_activity_ids": list(qc_issue.get("linked_dr_activity_ids") or []),
+        # Cross-link to the source QC issue.
+        "linked_qc_issue_id": qc_issue["id"],
+        # Linked tasks: try to resolve from the DR-activity rows so the
+        # C1 cascade has master schedule_activity_ids to walk.
+        "linked_task_ids": [],
+        "per_task_impacts": [],
+        "is_supplement": False,
+        "reported_by": actor_id,
+        "reported_at": now_iso,
+        "created_at": now_iso,
+    }
+
+    # Resolve master task ids for the C1 cascade.
+    if delay_doc["linked_dr_activity_ids"]:
+        dra_rows = await db.daily_report_activities.find(
+            {"id": {"$in": delay_doc["linked_dr_activity_ids"]}},
+            {"_id": 0, "id": 1, "schedule_activity_id": 1},
+        ).to_list(length=None)
+        seen: set[str] = set()
+        for r in dra_rows:
+            sid = r.get("schedule_activity_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                delay_doc["linked_task_ids"].append(sid)
+                delay_doc["per_task_impacts"].append({
+                    "task_id": sid, "projected_impact_days": delay_days,
+                })
+
+    await db.delays.insert_one(delay_doc.copy())
+
+    # Reverse-link on the QC row.
+    await db.qc_issues.update_one(
+        tenant_filter(tenant_id, {"id": qc_issue["id"]}),
+        {"$set": {"linked_synthetic_delay_id": delay_doc["id"]}},
+    )
+
+    # Audit the cascade event.
+    from audit import write_audit
+    await write_audit(
+        tenant_id=tenant_id, table_name="delays",
+        op="QC_REWORK_DELAY_CREATED",
+        record_id=delay_doc["id"], before=None, after={
+            "qc_issue_id": qc_issue["id"],
+            "delay_days": delay_days,
+            "rework_duration_hours": hours,
+            "linked_task_ids": delay_doc["linked_task_ids"],
+            "owner_attribution": owner_attribution,
+        },
+        actor_id=actor_id, request_id=request_id,
+    )
+
+    # Run the existing C1 CPM cascade for the affected tasks.
+    if delay_doc["linked_task_ids"]:
+        try:
+            from services.task_status import (
+                compute_and_persist_status, compute_projected_finish_dates,
+            )
+            for tid in delay_doc["linked_task_ids"]:
+                await compute_and_persist_status(
+                    db, tenant_id, tid, actor_id=actor_id, request_id=request_id,
+                )
+            await compute_projected_finish_dates(
+                db, tenant_id, qc_issue["project_id"],
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception:
+            # Cascade hiccup shouldn't undo the delay write -- caller
+            # can re-run cascade via the existing endpoints.
+            pass
+
+    return delay_doc
+
+
+async def record_rework_outcome(
+    *, tenant_id: str, qc_issue: dict, actual_hours: float,
+    notes: Optional[str], actor_id: str, request_id: Optional[str] = None,
+) -> dict:
+    """Phase 5 outcome capture. Updates qc + synthetic delay,
+    re-runs cascade, audits, returns the updated qc + delay docs."""
+    db = get_db()
+    delay_id = qc_issue.get("linked_synthetic_delay_id")
+    now_iso = utc_now().isoformat()
+
+    actual_days = _hours_to_days(float(actual_hours))
+
+    qc_updates = {
+        "rework_actual_hours": float(actual_hours),
+        "rework_outcome_notes": notes,
+        "rework_completed_at": now_iso,
+        "rework_outcome_recorded_by": actor_id,
+        "status": "closed",
+        "resolved_at": now_iso,
+    }
+    await db.qc_issues.update_one(
+        tenant_filter(tenant_id, {"id": qc_issue["id"]}), {"$set": qc_updates},
+    )
+
+    delay_updates: dict = {}
+    if delay_id:
+        delay_updates = {
+            # Match the C1 resolved-delay shape -- delay_days stays as
+            # the projected impact; actual_days_open / cpm_impact_summary
+            # are computed by the cascade resolver. For Phase 5 we just
+            # update delay_days to reflect actuals AND status=resolved
+            # so the cascade can release float per the C1 Phase 5 logic.
+            "delay_days": actual_days,
+            "status": "resolved",
+            "resolved_date": now_iso[:10],
+            "resolved_note": (
+                f"Rework completed; actual {actual_hours}h ({actual_days}d). "
+                + (notes or "")
+            ).strip()[:500],
+            "resolved_by_user_id": actor_id,
+        }
+        await db.delays.update_one(
+            tenant_filter(tenant_id, {"id": delay_id}), {"$set": delay_updates},
+        )
+
+    from audit import write_audit
+    await write_audit(
+        tenant_id=tenant_id, table_name="qc_issues",
+        op="QC_REWORK_OUTCOME_RECORDED",
+        record_id=qc_issue["id"], before=None, after={
+            "rework_actual_hours": float(actual_hours),
+            "rework_actual_days": actual_days,
+            "linked_synthetic_delay_id": delay_id,
+            "notes": notes,
+        },
+        actor_id=actor_id, request_id=request_id,
+    )
+
+    # Calibration RAG ingest (Phase C2 pattern). One row per outcome
+    # tuple, keyed by source='qc_rework' so Phase C2 mitigation
+    # generator can pull cross-domain training data later.
+    try:
+        await db.mitigation_outcomes.insert_one({
+            "id": gen_id(),
+            "tenant_id": tenant_id,
+            "project_id": qc_issue.get("project_id"),
+            "source": "qc_rework",
+            "source_id": qc_issue["id"],
+            "predicted_hours": qc_issue.get("rework_duration_hours"),
+            "predicted_days": _hours_to_days(qc_issue.get("rework_duration_hours") or 0),
+            "actual_hours": float(actual_hours),
+            "actual_days": actual_days,
+            "estimate_basis": qc_issue.get("rework_duration_basis"),
+            "outcome_notes": notes,
+            "recorded_at": now_iso,
+            "recorded_by": actor_id,
+        })
+    except Exception:
+        pass
+
+    # Re-run cascade (delay status changed -> may release float).
+    try:
+        from services.task_status import (
+            compute_and_persist_status, compute_projected_finish_dates,
+        )
+        for tid in (qc_issue.get("linked_dr_activity_ids") or []):
+            # Map DR-activity id -> master task id.
+            dra = await db.daily_report_activities.find_one(
+                {"id": tid}, {"_id": 0, "schedule_activity_id": 1},
+            )
+            if dra and dra.get("schedule_activity_id"):
+                await compute_and_persist_status(
+                    db, tenant_id, dra["schedule_activity_id"],
+                    actor_id=actor_id, request_id=request_id,
+                )
+        await compute_projected_finish_dates(
+            db, tenant_id, qc_issue["project_id"],
+            actor_id=actor_id, request_id=request_id,
+        )
+    except Exception:
+        pass
+
+    after_qc = await db.qc_issues.find_one(
+        tenant_filter(tenant_id, {"id": qc_issue["id"]}), {"_id": 0},
+    )
+    after_delay = (await db.delays.find_one(
+        tenant_filter(tenant_id, {"id": delay_id}), {"_id": 0},
+    )) if delay_id else None
+    return {"qc_issue": after_qc, "synthetic_delay": after_delay}
+
+
+async def suggest_ai_benchmark(tenant_id: str, project_id: str) -> dict:
+    """Phase 5 -- calibration RAG suggestion for rework hours. Pulls
+    prior qc_rework outcomes and returns a {benchmark_hours, basis}
+    dict. Currently uses simple mean; future iteration can plug a
+    similarity model (TF-IDF on QC description) per the C2 calibration
+    pattern. Returns {benchmark_hours: None, basis: ...} when no
+    history exists."""
+    db = get_db()
+    rows = await db.mitigation_outcomes.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id, "source": "qc_rework",
+            "actual_hours": {"$type": "number", "$gt": 0},
+        }),
+        {"_id": 0, "actual_hours": 1},
+    ).to_list(length=200)
+    if not rows:
+        return {"benchmark_hours": None,
+                "basis": "No prior QC rework outcomes recorded; super judgment only."}
+    actuals = [float(r["actual_hours"]) for r in rows]
+    avg = sum(actuals) / len(actuals)
+    return {
+        "benchmark_hours": round(avg, 1),
+        "basis": (
+            f"Calibration RAG: similar QC issues averaged "
+            f"~{round(avg, 1)}h based on {len(actuals)} prior outcomes "
+            f"on this project."
+        ),
+    }

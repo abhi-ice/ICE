@@ -872,6 +872,13 @@ class ChangeOrder(ReadModel):
 
 # ---------- Field events ----------
 Severity = Literal["minor", "moderate", "major", "critical"]
+# Bucket D Phase 5 -- QC severity superset. observation/minor/major are
+# scored gradations, rework_required triggers the synthetic-delay
+# cascade, stop_work pauses the affected activities. Severity stays
+# the canonical type for delays/safety; QC rows can carry either
+# (legacy Severity values) or one of the QC-specific ones below.
+QcSeverity = Literal["observation", "minor", "moderate", "major",
+                       "critical", "rework_required", "stop_work"]
 
 
 DelayStatus = Literal["open", "in_progress", "resolved"]
@@ -1062,24 +1069,48 @@ class QcIssueCreate(StrictModel):
     daily_report_id: Optional[str] = None
     date: date
     description: str
-    severity: Severity = "minor"
+    severity: str = "minor"  # see QcSeverity for Phase 5 vocabulary
     # Bucket D Phase 1 — DR-activity M2M. Router enforces min-1 on
     # POST /qc-issues; copilot/voice paths bypass via insert_one.
     linked_dr_activity_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Phase 5 -- super-entered rework duration estimate when
+    # severity=rework_required. Required by router-side validation in
+    # that case. Basis is free text explaining the estimate; persisted
+    # for calibration RAG (Phase C2 pattern).
+    rework_duration_hours: Optional[float] = None
+    rework_duration_basis: Optional[str] = None
 
 
 class QcIssueUpdate(StrictModel):
     """Bucket D Phase 1 — added so PATCH paths can flow through Pydantic
     instead of raw dict updates. All fields optional, including the
-    new linkage list and resolution fields used by C2/C3 cascade flows."""
+    new linkage list and resolution fields used by C2/C3 cascade flows.
+    Phase 5 -- adds rework outcome fields used by /qc-issues/{id}/
+    record-rework-outcome to capture actuals."""
     description: Optional[str] = None
-    severity: Optional[Severity] = None
+    severity: Optional[str] = None
     status: Optional[str] = None
     resolution_notes: Optional[str] = None
     linked_dr_activity_ids: Optional[List[str]] = None
+    # Phase 5 -- rework estimate fields (editable post-create until
+    # outcome is recorded).
+    rework_duration_hours: Optional[float] = None
+    rework_duration_basis: Optional[str] = None
+    # Phase 5 -- outcome fields (separate endpoint preferred, but
+    # PATCH is allowed too for admin corrections).
+    rework_actual_hours: Optional[float] = None
+    rework_outcome_notes: Optional[str] = None
+
+
+class QcReworkOutcome(StrictModel):
+    """Bucket D Phase 5 -- outcome capture when rework finishes. Mirrors
+    the C2 mitigation outcome pattern; the synthetic delay's actual_days
+    is updated to match and the cascade is re-run."""
+    rework_actual_hours: float = Field(..., ge=0)
+    rework_outcome_notes: Optional[str] = None
 
 
 class QcIssue(ReadModel):
@@ -1089,7 +1120,7 @@ class QcIssue(ReadModel):
     daily_report_id: Optional[str] = None
     date: date
     description: str
-    severity: Severity
+    severity: str
     status: str = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
@@ -1103,6 +1134,18 @@ class QcIssue(ReadModel):
     supplement_filed_at: Optional[datetime] = None
     supplement_filed_by: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Phase 5 -- rework cascade fields.
+    rework_duration_hours: Optional[float] = None
+    rework_duration_basis: Optional[str] = None
+    rework_estimated_at: Optional[datetime] = None
+    rework_estimated_by: Optional[str] = None
+    ai_benchmark_hours: Optional[float] = None
+    ai_benchmark_basis: Optional[str] = None
+    rework_actual_hours: Optional[float] = None
+    rework_outcome_notes: Optional[str] = None
+    rework_completed_at: Optional[datetime] = None
+    rework_outcome_recorded_by: Optional[str] = None
+    linked_synthetic_delay_id: Optional[str] = None
 
 
 # ---------- Photos ----------
@@ -1574,7 +1617,12 @@ OwnerAttribution = Literal["gc", "a_e", "owner", "sub", "external_authority",
 CauseClass = Literal["design_clarification", "design_change",
                       "differing_site_condition", "concealed_condition",
                       "tenant_coordination", "building_coordination",
-                      "regulatory", "utility", "procurement", "other"]
+                      "regulatory", "utility", "procurement",
+                      # Bucket D Phase 5 -- synthetic delays from QC
+                      # rework cascade. TIA Section 2 surfaces these
+                      # as a discrete bucket.
+                      "quality_rework",
+                      "other"]
 
 
 class GatingEntity(ReadModel):
