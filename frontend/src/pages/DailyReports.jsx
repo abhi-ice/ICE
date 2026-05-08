@@ -17,6 +17,7 @@ import { localTodayISO } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+import SupplementWizard from "../components/forms/SupplementWizard";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
@@ -357,6 +358,11 @@ function DailyReportDetail({ id, onBack }) {
                      locked={locked} reload={reload} />
         <VoicePanel rows={voice_annotations} dailyReportId={id} reload={reload} />
       </div>
+
+      {/* Bucket D Phase 4 -- supplements appendix. Lists every event
+          filed against THIS DR after it was submitted (i.e., events
+          whose parent_daily_report_id == this DR's id). */}
+      <SupplementsAppendix dailyReportId={id} projectId={project.id} />
 
       {/* AUDIT LOG */}
       <AuditPanel rows={audit_log} userLabels={user_labels} />
@@ -1688,6 +1694,127 @@ function AuditPanel({ rows, userLabels }) {
         ))}
         {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
       </div>
+    </PanelShell>
+  );
+}
+
+// ------------------------------------------------------------
+// Bucket D Phase 4 -- supplements appendix on the parent DR.
+// Lists every event with parent_daily_report_id == this DR.
+// ------------------------------------------------------------
+function SupplementsAppendix({ dailyReportId, projectId }) {
+  const [data, setData] = useState(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [parentDr, setParentDr] = useState(null);
+  const reload = useCallback(() => {
+    if (!dailyReportId) return;
+    api.get(`/daily-reports/${dailyReportId}/supplements`)
+      .then(({ data }) => {
+        setData(data);
+        setParentDr({ id: data.daily_report_id, report_date: data.report_date });
+      })
+      .catch(() => setData(null));
+  }, [dailyReportId]);
+  useEffect(() => { reload(); }, [reload]);
+
+  // Bucket D Phase 4 -- only render the appendix if there are
+  // supplements OR the user is viewing a locked DR (so they can
+  // file one). For draft DRs we hide the appendix entirely.
+  const [parentLocked, setParentLocked] = useState(false);
+  useEffect(() => {
+    if (!dailyReportId) return;
+    api.get(`/daily-reports/${dailyReportId}`)
+      .then(({ data }) => setParentLocked(data?.status === "submitted" || data?.status === "approved"))
+      .catch(() => setParentLocked(false));
+  }, [dailyReportId]);
+
+  const fileSupplement = async () => {
+    if (!projectId) return;
+    try {
+      // Idempotent on (project, date) -- returns existing today's DR or creates one.
+      const today = localTodayISO();
+      const { data: container } = await api.post("/daily-reports", {
+        project_id: projectId, report_date: today,
+      });
+      // Container must NOT be the same as parent (filing supplement to today's DR is nonsense).
+      if (container.id === dailyReportId) {
+        toast.error("Cannot file a supplement to today's DR -- edit it directly.");
+        return;
+      }
+      // Set window state so the wizard knows the container DR id.
+      window.__supplementContainerId = container.id;
+      setWizardOpen(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't open today's DR");
+    }
+  };
+
+  if (!data) return null;
+  const buckets = [
+    ["delays", "Delays", AlertTriangle],
+    ["rfis", "RFIs", MessageSquare],
+    ["qc_issues", "QC issues", ClipboardCheck],
+    ["safety_events", "Safety events", ShieldAlert],
+    ["coordination_events", "Coordination", MessageSquare],
+    ["deliveries", "Deliveries", Truck],
+    ["photos", "Photos", ImageIcon],
+    ["daily_report_activities", "Activity rows", ClipboardList],
+  ];
+  const total = buckets.reduce((s, [k]) => s + (data[k]?.length || 0), 0);
+  // If no supplements AND parent is unlocked, hide entirely.
+  if (!total && !parentLocked) return null;
+  return (
+    <PanelShell icon={ClipboardList} title={`Supplements (${total})`} testid="dr-supplements-panel" count={total}>
+      <div className="text-xs text-slate-500 mb-2 flex items-center justify-between gap-2">
+        <span>
+          Facts filed AFTER this report was submitted. Each supplement is linked to its container
+          DR (today's, where it was filed) and renders here to keep the parent DR's record honest.
+        </span>
+        {parentLocked && (
+          <button data-testid="file-supplement-button" onClick={fileSupplement}
+            className="h-7 px-2 rounded bg-amber-600 text-white text-xs hover:bg-amber-700 inline-flex items-center gap-1 flex-shrink-0">
+            <Plus className="h-3 w-3" /> File supplement
+          </button>
+        )}
+      </div>
+      <SupplementWizard open={wizardOpen} onOpenChange={setWizardOpen}
+        parentDailyReport={parentDr} projectId={projectId}
+        containerDailyReportId={typeof window !== "undefined" ? window.__supplementContainerId : null}
+        onSaved={reload} />
+      {buckets.map(([key, label, Icon]) => {
+        const rows = data[key] || [];
+        if (!rows.length) return null;
+        return (
+          <div key={key} className="mb-3">
+            <div className="text-[11px] uppercase font-semibold text-slate-700 flex items-center gap-1 mb-1">
+              <Icon className="h-3.5 w-3.5" /> {label} ({rows.length})
+            </div>
+            <ul className="space-y-1 text-xs">
+              {rows.map((r) => (
+                <li key={r.id} data-testid={`supplement-${key}-${r.id}`}
+                  className="bg-amber-50 border-l-2 border-amber-400 px-2 py-1 rounded-r">
+                  <span className="text-amber-800 font-mono text-[10px] mr-1">[SUPP]</span>
+                  <span className="text-slate-700">{r.description || r.subject || r.summary || r.vendor || (r.tag_caption || r.id.slice(0, 8))}</span>
+                  {r.supplement_filed_at && (
+                    <span className="text-slate-400 ml-2">
+                      filed {new Date(r.supplement_filed_at).toLocaleDateString()}
+                    </span>
+                  )}
+                  {r.supplement_reason && (
+                    <span className="text-slate-500 italic ml-2">— "{r.supplement_reason}"</span>
+                  )}
+                  {r.daily_report_id && r.daily_report_id !== dailyReportId && (
+                    <a href={`/daily-reports?openId=${r.daily_report_id}`}
+                      className="text-blue-600 underline ml-2 text-[10px]">
+                      [container DR]
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
     </PanelShell>
   );
 }

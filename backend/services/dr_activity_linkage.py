@@ -1,4 +1,5 @@
-"""Bucket D Phase 1 — DR-activity linkage validation helper.
+"""Bucket D Phase 1 + Phase 4 -- DR-activity linkage validation helper
++ supplement stamping helper.
 
 Every event create endpoint that requires per-DR WBS linkage
 (delays / rfis / qc-issues / deliveries -- safety + coordination
@@ -14,15 +15,42 @@ Two checks:
      Monday's WBS row except via the supplement flow in Phase 4,
      where the parent_daily_report_id explicitly opts in).
 
-The supplement flow in Phase 4 will reuse this helper but pass
-parent_daily_report_id as the lookup target instead of the container
-DR. For Phase 1 we only enforce against daily_report_id.
+Phase 4 adds `stamp_supplement_metadata`: validates supplement payload
+shape and stamps supplement_filed_at/by, ready for insert. Returns
+the audit-payload dict for the caller to write a SUPPLEMENT_FILED
+audit entry alongside the entity's normal INSERT audit.
 """
 from typing import Iterable, Optional
+from datetime import datetime, timezone
 from fastapi import HTTPException
 
 from database import get_db, tenant_filter
 from models import LINKAGE_MIN_ERR
+
+
+def stamp_supplement_metadata(doc: dict, *, actor_id: str, fact_type: str) -> Optional[dict]:
+    """If doc carries is_supplement=True, validate the supplement
+    payload (parent_daily_report_id + supplement_reason both required),
+    stamp supplement_filed_at/by, and return the audit payload for
+    the caller to fire SUPPLEMENT_FILED. Returns None on non-supplement
+    docs so the caller can skip the audit.
+
+    Used by every event create handler in Phase 4 so the supplement
+    contract lives in one place."""
+    if not doc.get("is_supplement"):
+        return None
+    if not doc.get("parent_daily_report_id"):
+        raise HTTPException(422, "parent_daily_report_id required when is_supplement=true")
+    if not (doc.get("supplement_reason") or "").strip():
+        raise HTTPException(422, "supplement_reason required when is_supplement=true")
+    doc["supplement_filed_at"] = datetime.now(timezone.utc).isoformat()
+    doc["supplement_filed_by"] = actor_id
+    return {
+        "parent_daily_report_id": doc.get("parent_daily_report_id"),
+        "container_daily_report_id": doc.get("daily_report_id"),
+        "fact_type": fact_type,
+        "reason": doc.get("supplement_reason"),
+    }
 
 
 async def validate_linked_dr_activity_ids(

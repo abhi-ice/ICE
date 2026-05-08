@@ -18,6 +18,37 @@ from audit import write_audit
 router = APIRouter(tags=["daily-reports"])
 
 
+# Bucket D Phase 4 -- supplements appendix. Returns every event with
+# parent_daily_report_id == this DR, grouped by collection. The DR
+# detail view renders this below the main panels so the parent shows
+# its supplement trail.
+@router.get("/daily-reports/{daily_report_id}/supplements")
+async def list_supplements_for_dr(
+    daily_report_id: str, ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+        {"_id": 0, "id": 1, "report_date": 1, "status": 1},
+    )
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    out: dict = {"daily_report_id": daily_report_id, "report_date": dr.get("report_date")}
+    coll_map = {
+        "delays": "delays", "rfis": "rfis", "qc_issues": "qc_issues",
+        "safety_events": "safety_events", "deliveries": "deliveries",
+        "coordination_events": "coordination_events", "photos": "photos",
+        "daily_report_activities": "daily_report_activities",
+    }
+    for key, coll in coll_map.items():
+        rows = await db[coll].find(
+            {"parent_daily_report_id": daily_report_id},
+            {"_id": 0},
+        ).sort("supplement_filed_at", -1).to_list(length=200)
+        out[key] = rows
+    return out
+
+
 # Bucket D Phase 3 -- gallery views show "affected activity" chips. The
 # event collections store linked_dr_activity_ids (UUIDs); the UI needs
 # {id, code, description, dr_date} to render the chip text. This batch

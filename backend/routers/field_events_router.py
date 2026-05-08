@@ -122,10 +122,20 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit (no-op for normal
+    # creates; raises 422 + writes SUPPLEMENT_FILED for supplements).
+    from services.dr_activity_linkage import stamp_supplement_metadata
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="delay")
     await db.delays.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="delays", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     # Bucket C1 Phase 2 — opening a delay flips has_open_blocker on every
     # linked task and may shift its computed_status to 'blocked'.
     # Bucket C1 Phase 4 — and pushes downstream projected_finish dates.
@@ -480,10 +490,19 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import stamp_supplement_metadata
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="safety_event")
     await db.safety_events.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="safety_events", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="safety_events", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return SafetyEvent(**doc)
 
 
@@ -523,7 +542,19 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
         "resolved_at": None, "resolution_notes": None,
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import stamp_supplement_metadata
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="qc_issue")
     await db.qc_issues.insert_one(doc.copy())
+    await write_audit(tenant_id=ctx["tenant_id"], table_name="qc_issues", op="INSERT",
+                      record_id=doc["id"], before=None, after=doc,
+                      actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="qc_issues", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return QcIssue(**doc)
 
 

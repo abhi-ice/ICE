@@ -55,10 +55,19 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
         "created_by": ctx["user"]["id"],
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import stamp_supplement_metadata
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="rfi")
     await db.rfis.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="rfis", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="rfis", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     # Bucket C3a Phase 1 — auto-create the gating_entities CPM-node row
     # and write its id back onto the RFI. Schedule_activity_id (if set)
     # populates gates_task_ids; a one-task RFI is the common case.
