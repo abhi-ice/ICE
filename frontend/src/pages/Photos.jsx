@@ -158,7 +158,7 @@ function PhotoCard({ photo, projectId }) {
   const tone = PHOTO_CLASS_TONES[photo.photo_class] || PHOTO_CLASS_TONES.progress;
   const { type: eventType } = eventLabelForRow(photo);
   return (
-    <Link to={`/daily-reports?openId=${photo.daily_report_id}`}
+    <Link to={`/daily-reports?openId=${photo.daily_report_id}&openEvent=${photo.id}&openEventType=photo`}
       data-testid={`photos-card-${photo.id}`}
       className="block bg-white border border-slate-200 rounded overflow-hidden hover:border-blue-400 hover:shadow-sm transition">
       <div className="relative aspect-square bg-slate-100">

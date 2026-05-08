@@ -51,6 +51,10 @@ export default function DailyReports() {
 
   // Bucket D Phase 3 -- gallery chips + date links route here with
   // ?openId=<dr-id>; honor it on first mount so the DR opens directly.
+  // Bucket D Fix F -- ALSO honor ?openEvent + ?openEventType so the
+  // gallery click-through scrolls to and pulse-highlights the specific
+  // event row. Stripped from the URL after first mount so refresh
+  // doesn't re-trigger.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const target = params.get("openId");
@@ -208,6 +212,44 @@ function DailyReportDetail({ id, onBack }) {
     setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
+
+  // Bucket D Fix F -- gallery click-through highlight. After the bundle
+  // renders, find the matching event row by data-testid, scroll into
+  // view, add the saffron pulse class. Strip the URL params so refresh
+  // doesn't re-trigger.
+  useEffect(() => {
+    if (!bundle) return;
+    const params = new URLSearchParams(window.location.search);
+    const eventId = params.get("openEvent");
+    const eventType = params.get("openEventType");
+    if (!eventId || !eventType) return;
+    const t = setTimeout(() => {
+      // Try the canonical row-testid pattern first; fall back to the
+      // photo-specific data-event-row-* attributes (PhotosPanel uses
+      // photo-${id} as its testid, not photo-row-${id}, so it carries
+      // a dedicated marker).
+      const candidates = [
+        `[data-testid="${eventType}-row-${eventId}"]`,
+        `[data-event-row-type="${eventType}"][data-event-row-id="${eventId}"]`,
+      ];
+      let el = null;
+      for (const sel of candidates) {
+        el = document.querySelector(sel);
+        if (el) break;
+      }
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("dr-event-highlight");
+        setTimeout(() => el.classList.remove("dr-event-highlight"), 2200);
+      }
+    }, 250);
+    // Strip params so refresh doesn't re-trigger.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("openEvent");
+    url.searchParams.delete("openEventType");
+    window.history.replaceState({}, "", url.toString());
+    return () => clearTimeout(t);
+  }, [bundle]);
 
   if (!bundle) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
@@ -1868,7 +1910,8 @@ function AuthPhoto({ photo }) {
   }, [photo.id]);
   const cls = PHOTO_CLASS_BY_VALUE[photo.photo_class] || PHOTO_CLASS_BY_VALUE.progress;
   return (
-    <div data-testid={`photo-${photo.id}`} className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200">
+    <div data-testid={`photo-${photo.id}`} data-event-row-id={photo.id} data-event-row-type="photo"
+      className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200">
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">

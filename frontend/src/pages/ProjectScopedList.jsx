@@ -293,10 +293,18 @@ export default function ProjectScopedList({ kind }) {
       };
     }
     if (c.key === "date" && cfg.galleryEventKind) {
+      // Bucket D Fix F -- include openEvent + openEventType so the
+      // parent DR scrolls to + pulse-highlights this row. Map the
+      // sidebar `kind` to the row-testid prefix used inside the DR.
+      const eventTypeMap = {
+        "qc-issues": "qc", "safety-events": "safety",
+        "rfis": "rfi", "deliveries": "delivery",
+      };
+      const eventType = eventTypeMap[kind] || kind;
       return {
         ...c,
         render: (r) => r.daily_report_id ? (
-          <Link to={`/daily-reports?openId=${r.daily_report_id}`}
+          <Link to={`/daily-reports?openId=${r.daily_report_id}&openEvent=${r.id}&openEventType=${eventType}`}
             className="text-blue-700 hover:underline font-mono text-xs">
             {r.date}
           </Link>

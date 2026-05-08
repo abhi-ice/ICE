@@ -158,3 +158,16 @@ code, pre, .font-mono {
     position: absolute; inset: 0;
     background: linear-gradient(135deg, rgba(2,6,23,0.85) 0%, rgba(15,23,42,0.78) 50%, rgba(30,58,138,0.70) 100%);
 }
+
+/* Bucket D Fix F -- gallery click-through highlight. Triggered by
+   useEventHighlight() once per page load when ?openEvent + openEventType
+   are present in the URL. Saffron pulse fades over 2s then transparent. */
+.dr-event-highlight {
+    animation: dr-event-pulse 2s ease-out;
+    border-radius: 4px;
+}
+@keyframes dr-event-pulse {
+    0%   { background-color: rgba(217, 119, 87, 0.45); box-shadow: 0 0 0 4px rgba(217, 119, 87, 0.20); }
+    60%  { background-color: rgba(217, 119, 87, 0.30); box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.10); }
+    100% { background-color: transparent; box-shadow: 0 0 0 0 transparent; }
+}

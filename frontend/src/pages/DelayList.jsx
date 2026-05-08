@@ -115,7 +115,7 @@ export default function DelayList() {
                 <tr key={r.id} data-testid={`delay-row-${r.id}`}>
                   <td className="font-mono text-xs">
                     {r.daily_report_id ? (
-                      <Link to={`/daily-reports?openId=${r.daily_report_id}`} className="text-blue-700 hover:underline">
+                      <Link to={`/daily-reports?openId=${r.daily_report_id}&openEvent=${r.id}&openEventType=delay`} className="text-blue-700 hover:underline">
                         {r.date}
                       </Link>
                     ) : r.date}
