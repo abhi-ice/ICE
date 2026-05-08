@@ -18,6 +18,7 @@ import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
 import SupplementWizard from "../components/forms/SupplementWizard";
+import DrActivityPicker from "../components/forms/DrActivityPicker";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
@@ -342,14 +343,16 @@ function DailyReportDetail({ id, onBack }) {
         <DelaysPanel rows={delays} dailyReportId={id} projectId={project.id}
                      reportDate={report.report_date} locked={locked} reload={reload} />
         <SafetyPanel rows={safety_events} dailyReportId={id} projectId={project.id}
-                     reportDate={report.report_date} locked={locked} reload={reload} />
+                     reportDate={report.report_date} locked={locked} reload={reload}
+                     grid={grid} />
         <QcPanel rows={qc_issues} dailyReportId={id} projectId={project.id}
                  reportDate={report.report_date} locked={locked} reload={reload}
                  grid={grid} />
         <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
-                   locked={locked} reload={reload} />
+                   locked={locked} reload={reload} grid={grid} />
         <DeliveriesPanel rows={deliveries} dailyReportId={id} projectId={project.id}
-                         reportDate={report.report_date} locked={locked} reload={reload} />
+                         reportDate={report.report_date} locked={locked} reload={reload}
+                         grid={grid} />
         <NotesPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       </div>
 
@@ -1389,10 +1392,15 @@ function ReminderCard({ delay, reload }) {
   );
 }
 
-function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
+function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
   // Phase C — simplified: description + type + severity. OSHA recordable
   // checkbox removed per spec.
-  const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss" });
+  // Bucket D Task 1 -- linked_dr_activity_ids picker. OPTIONAL for
+  // safety per spec (some events area-wide); empty list still saves.
+  const [draft, setDraft] = useState({
+    description: "", severity: "minor", event_type: "near_miss",
+    linked_dr_activity_ids: [],
+  });
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "safety" || !text) return;
@@ -1401,8 +1409,13 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const create = async () => {
     if (!draft.description) return toast.error("Description required");
     try {
-      await api.post(`/safety-events`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor", event_type: "near_miss" });
+      await api.post(`/safety-events`, {
+        project_id: projectId, daily_report_id: dailyReportId, date: reportDate,
+        description: draft.description, severity: draft.severity, event_type: draft.event_type,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      });
+      setDraft({ description: "", severity: "minor", event_type: "near_miss",
+                  linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create safety event")); }
   };
@@ -1413,14 +1426,20 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           <span className="pill pill-slate mr-2">{r.event_type}</span>
           <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
           <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
+          <SupplementBadge row={r} />
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
-          <textarea data-testid="safety-new-desc" rows={6} placeholder="Describe the event"
+          <textarea data-testid="safety-new-desc" rows={4} placeholder="Describe the event"
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
+          <DrActivityPicker grid={grid}
+            value={draft.linked_dr_activity_ids}
+            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
+            required={false} label="Affected activities (optional)"
+            testidPrefix="safety-activity" compact />
           <div className="grid grid-cols-2 gap-2">
             <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
               {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
@@ -1819,6 +1838,26 @@ function AuditPanel({ rows, userLabels }) {
         {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
       </div>
     </PanelShell>
+  );
+}
+
+// ------------------------------------------------------------
+// Bucket D Task 2 -- per-row supplement badge. Container DR panels
+// display this next to event-row titles when the row is is_supplement
+// =true, so the user can tell at a glance which rows are filed back
+// against an older locked DR. Backend enriches parent_daily_report_
+// date in the /context bundle (Task 2) so this renders without an
+// extra fetch.
+// ------------------------------------------------------------
+function SupplementBadge({ row }) {
+  if (!row?.is_supplement) return null;
+  const parentDate = row.parent_daily_report_date || row.parent_daily_report_id?.slice(0, 8);
+  return (
+    <span data-testid={`supplement-badge-${row.id}`}
+      title="Filed after the parent daily report was submitted"
+      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-[9px] font-mono uppercase tracking-wide">
+      SUPP→{parentDate || "?"}
+    </span>
   );
 }
 
