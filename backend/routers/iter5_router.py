@@ -844,6 +844,21 @@ class DeliveryCreate(StrictModel):
     supplement_reason: Optional[str] = None
 
 
+class DeliveryUpdate(StrictModel):
+    """Addition 4 -- supports edit-in-place on locked DRs and the
+    received-by/photos workflow on draft DRs."""
+    delivery_date: Optional[str] = None
+    vendor: Optional[str] = None
+    description: Optional[str] = None
+    po_number: Optional[str] = None
+    schedule_activity_id: Optional[str] = None
+    location_id: Optional[str] = None
+    status: Optional[str] = None
+    received_by: Optional[str] = None
+    linked_dr_activity_ids: Optional[List[str]] = None
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
+
+
 @router.post("/deliveries")
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -905,6 +920,63 @@ async def list_deliveries(project_id: str,
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("delivery_date", -1).to_list(500)
     return docs
+
+
+# Addition 4 -- post-submit edit endpoint for deliveries.
+@router.patch("/deliveries/{delivery_id}")
+async def update_delivery(
+    delivery_id: str, payload: DeliveryUpdate,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    before = await db.deliveries.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Delivery not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
+        return before
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="delivery", event_id=delivery_id,
+    )
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+    await db.deliveries.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"$set": updates},
+    )
+    after = await db.deliveries.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="deliveries", op="UPDATE",
+        record_id=delivery_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if is_locked_edit:
+        after = await db.deliveries.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="deliveries", record_id=delivery_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
+    return after
 
 
 # ============================================================

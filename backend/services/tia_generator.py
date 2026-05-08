@@ -199,6 +199,26 @@ async def _gather_data(
         # below (no current TIA section pulls qc/safety as a list, but
         # the data structure includes them under section_13/etc.).
 
+    # Addition 4 -- annotate each row that has been edited post-submit
+    # with an `edits_summary` cell that the renderers print as
+    # "edited N times, last YYYY-MM-DD". Counsel sees the original
+    # contemporaneous record + a clear flag that it was edited later.
+    def _annotate_edits(rows: list[dict]) -> None:
+        for r in rows:
+            if r.get("post_submit_edited"):
+                cnt = int(r.get("edit_count") or 0)
+                last = (r.get("last_edited_at") or "")[:10]
+                r["edits_summary"] = (
+                    f"edited {cnt} time(s) post-submit, last {last}"
+                    if last else f"edited {cnt} time(s) post-submit"
+                )
+            else:
+                r["edits_summary"] = ""
+    _annotate_edits(delays)
+    _annotate_edits(photos)
+    _annotate_edits(coord)
+    _annotate_edits(gating_entities)
+
     # ---- Audit log: filtered to delay-driving entities in range ----
     relevant_tables = [
         "delays", "mitigations", "gating_entities", "coordination_events",
@@ -207,7 +227,11 @@ async def _gather_data(
         # Bucket D Phase 4 -- include qc_issues + safety_events + deliveries
         # so SUPPLEMENT_FILED entries on those collections show in the
         # TIA Section 12 audit extract.
-        "qc_issues", "safety_events", "deliveries",
+        "qc_issues", "safety_events", "deliveries", "rfis",
+        # Addition 4 -- surface EDIT_REQUEST_FILED / APPROVED / DENIED
+        # ops in the audit extract so counsel can see the approval
+        # workflow alongside the EVENT_EDITED_POST_SUBMIT entries.
+        "edit_requests",
     ]
     audit_entries = await db.audit_log.find(
         {"tenant_id": tenant_id,
@@ -356,6 +380,7 @@ def _render_docx(data: dict) -> bytes:
         ("id", "ID"), ("logged_date", "Date"), ("cause_class", "Type"),
         ("delay_days", "Days"), ("owner_attribution", "Owner"),
         ("linked_task_ids", "Gated activities"), ("status", "Status"),
+        ("edits_summary", "Post-submit edits"),
     ])
 
     # SECTION 3
@@ -418,6 +443,7 @@ def _render_docx(data: dict) -> bytes:
         ("server_received_timestamp", "Server ts"),
         ("timestamp_mismatch_flag", "TS mismatch"),
         ("sha256_hash", "SHA-256"),
+        ("edits_summary", "Post-submit edits"),
     ])
 
     # SECTION 9
@@ -427,6 +453,7 @@ def _render_docx(data: dict) -> bytes:
         ("display_label", "Label"), ("submitted_at", "Submitted"),
         ("status", "Status"), ("owner_attribution", "Owner"),
         ("is_over_sla", "Over SLA"),
+        ("edits_summary", "Post-submit edits"),
     ])
 
     # SECTION 10
@@ -447,6 +474,11 @@ def _render_docx(data: dict) -> bytes:
         ("weather_impact_hours", "Weather (h)"),
         ("production_hours", "Production (h)"),
         ("headcount_total", "Headcount"),
+        # Addition 3 -- explicit no-work-day acknowledgments surface
+        # here so legal sees "this was a planned blank day" rather
+        # than "looks like the super forgot to log anything."
+        ("no_work_reason", "No-work reason"),
+        ("no_work_note", "No-work note"),
     ])
 
     # SECTION 12

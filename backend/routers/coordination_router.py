@@ -178,9 +178,19 @@ async def update_coordination_event(
     if not _can_edit(ctx, before):
         raise HTTPException(403, "Only the event creator or admin can edit this event.")
     raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
-    if not updates:
+    if not updates and not edit_reason:
         return CoordinationEvent(**before)
+    # Addition 4 -- locked-DR edit policy. Coordination uses
+    # linked_daily_report_id (different field name).
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("linked_daily_report_id"),
+        edit_reason=edit_reason, event_type="coordination", event_id=event_id,
+    )
     # Bucket D verification fix -- re-validate linked_dr_activity_ids
     # when the patch attempts to replace it. Linkage is OPTIONAL for
     # coordination per spec, so required=False (empty list is allowed
@@ -210,6 +220,17 @@ async def update_coordination_event(
         before=before, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Addition 4 -- post-submit edit audit + metadata stamp.
+    if is_locked_edit:
+        after = await db.coordination_events.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="coordination_events", record_id=event_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
     return CoordinationEvent(**after)
 
 

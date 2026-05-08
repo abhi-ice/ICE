@@ -119,10 +119,19 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None,
 async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
     before = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "RFI not found")
+    # Addition 4 -- locked-DR edit policy.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="rfi", event_id=rfi_id,
+    )
     # Bucket D verification fix -- re-validate linked_dr_activity_ids
     # when the patch attempts to replace it, otherwise a client could
     # write ids that don't exist or belong to a different DR/project
@@ -162,6 +171,15 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
             actual_responded_at=responded_at,
             new_display_label=new_label,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    # Addition 4 -- post-submit edit audit + metadata stamp.
+    if is_locked_edit:
+        after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
+        await stamp_edit_metadata(
+            db=db, collection="rfis", record_id=rfi_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
         )
     return Rfi(**after)
 

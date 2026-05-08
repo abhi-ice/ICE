@@ -526,6 +526,8 @@ class DailyReportActivityUpdate(StrictModel):
     constraint_reference_entity_id: Optional[str] = None
     constraint_other_description: Optional[str] = None
     production_impact_hours: Optional[float] = Field(default=None, ge=0)
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class DailyReportActivity(ReadModel):
@@ -840,6 +842,9 @@ class RfiUpdate(StrictModel):
     time_impact_estimated_days: Optional[int] = None
     # Bucket D Phase 1 — re-pickable post-create.
     linked_dr_activity_ids: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked. Server
+    # rejects locked-DR patches with a missing or short reason.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class Rfi(ReadModel):
@@ -998,6 +1003,8 @@ class DelayUpdate(StrictModel):
     # Bucket D Phase 1 — let the user re-pick affected activities post-
     # create. Router validates min-1 if the field is present in the patch.
     linked_dr_activity_ids: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class Delay(ReadModel):
@@ -1089,6 +1096,16 @@ class SafetyEventCreate(StrictModel):
     supplement_reason: Optional[str] = None
 
 
+class SafetyEventUpdate(StrictModel):
+    """Addition 4 -- supports edit-in-place on locked DRs (and
+    correction edits on draft DRs). Required-on-locked: edit_reason."""
+    description: Optional[str] = None
+    severity: Optional[Severity] = None
+    event_type: Optional[SafetyEventType] = None
+    linked_dr_activity_ids: Optional[List[str]] = None
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
+
+
 class SafetyEvent(ReadModel):
     id: str
     tenant_id: str
@@ -1157,6 +1174,8 @@ class QcIssueUpdate(StrictModel):
     # PATCH is allowed too for admin corrections).
     rework_actual_hours: Optional[float] = None
     rework_outcome_notes: Optional[str] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class QcReworkOutcome(StrictModel):
@@ -1235,6 +1254,8 @@ class PhotoUpdate(StrictModel):
     caption: Optional[str] = None
     photo_class: Optional[PhotoClass] = None
     tags: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class PhotoPinPayload(StrictModel):
@@ -1837,6 +1858,8 @@ class CoordinationEventUpdate(StrictModel):
     voice_extracted: Optional[bool] = None
     # Bucket D Phase 1 — re-pickable post-create.
     linked_dr_activity_ids: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class CoordinationEvent(ReadModel):
@@ -2024,3 +2047,82 @@ class TIAGeneration(ReadModel):
 
 class TIAUnflagPayload(StrictModel):
     reason: str = Field(..., min_length=3, max_length=500)
+
+
+# ============================================================
+# Addition 4 -- Edit-in-place on locked DRs (with tiered permissions
+# + edit_requests approval queue + per-event audit trail).
+# ============================================================
+EditableEventType = Literal[
+    "delay", "rfi", "qc", "safety", "photo", "coordination",
+    "delivery", "activity",
+]
+EditRequestStatus = Literal["pending", "approved", "denied", "expired"]
+
+# Required min length for the user-supplied edit reason. The 10-char
+# floor exists so legal sees substantive justification ("forgot to
+# log discovery") rather than empty or single-letter strings.
+EDIT_REASON_MIN_LEN = 10
+
+
+class EditRequestCreate(StrictModel):
+    """Filed by a super who needs edit access to an event on a locked
+    DR they originally submitted, AFTER the 24-hour self-edit window
+    has closed. Admin or PM reviews + approves/denies."""
+    daily_report_id: str
+    event_type: EditableEventType
+    event_id: str
+    reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
+
+
+class EditRequestReview(StrictModel):
+    """Admin/PM review payload. review_note is optional on approve,
+    encouraged on deny."""
+    review_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class EditRequest(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    daily_report_id: str
+    event_type: EditableEventType
+    event_id: str
+    requested_by: str
+    requested_at: datetime
+    reason: str
+    status: EditRequestStatus = "pending"
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None
+    # Set on approve: now + 1 hour. After this point the request is
+    # treated as expired even if status hasn't been auto-flipped.
+    edit_window_expires_at: Optional[datetime] = None
+
+
+# ---------- Edit metadata mixin (additive defaults on every event row) ----------
+# Schema additions on delays / rfis / qc_issues / safety_events / photos /
+# coordination_events / deliveries / daily_report_activities. Defaults
+# preserve legacy behavior (edit_count=0, post_submit_edited=false) so no
+# migration is required -- only newly-edited rows ever set these fields.
+#
+# We don't bake these into every model class to avoid a 100-line diff;
+# the read endpoints surface them via the underlying mongo doc and the
+# ReadModel base ignores extras. The PATCH endpoints stamp them on
+# write. For documentation, the shape is:
+#
+#   last_edited_at: datetime | null
+#   last_edited_by: user_id | null
+#   last_edit_reason: str | null
+#   edit_count: int (default 0)
+#   post_submit_edited: bool (default false)
+
+
+class PostSubmitEditPayload(StrictModel):
+    """The patch payload accepted by every event PATCH endpoint when
+    the parent DR is locked. The shape is intentionally minimal to keep
+    the audit chain readable; the caller posts whichever fields they
+    want to change as part of `updates` and the server merges them into
+    the underlying record after permission/reason checks."""
+    edit_reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
+    updates: dict = Field(..., description="Field name -> new value")

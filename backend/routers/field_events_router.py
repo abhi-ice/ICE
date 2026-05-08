@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
 from models import (
-    Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate,
-    QcIssue, QcIssueCreate, QcReworkOutcome,
+    Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate, SafetyEventUpdate,
+    QcIssue, QcIssueCreate, QcIssueUpdate, QcReworkOutcome,
     Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
@@ -189,7 +189,19 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     if not before:
         raise HTTPException(404, "Delay not found")
     raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)  # not a record field
     updates: dict = {k: v for k, v in raw.items() if v is not None}
+
+    # Addition 4 -- locked-DR edit policy (tiered permissions + reason
+    # + post-submit audit). On draft DRs returns is_locked_edit=False
+    # and we skip the audit ceremony.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="delay", event_id=delay_id,
+    )
 
     # Bucket D verification fix -- re-validate linked_dr_activity_ids
     # when the patch attempts to replace it, otherwise a client could
@@ -262,6 +274,18 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+
+    # Addition 4 -- if this was a locked-DR edit, stamp edit metadata +
+    # write the EVENT_EDITED_POST_SUBMIT audit entry alongside the
+    # regular UPDATE audit so TIA Section 12 surfaces edits prominently.
+    if is_locked_edit:
+        after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+        await stamp_edit_metadata(
+            db=db, collection="delays", record_id=delay_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
 
     # Bucket C1 Phase 2 + 4 — recompute status for the union of OLD and
     # NEW linked tasks (in case linkage changed) AND walk projected_finish
@@ -551,6 +575,64 @@ async def list_safety(project_id: str,
     return [SafetyEvent(**d) for d in docs]
 
 
+# Addition 4 -- post-submit edit endpoint for safety_events. Same
+# locked-DR edit policy + audit pattern as delays/rfis/photos.
+@router.patch("/safety-events/{event_id}", response_model=SafetyEvent)
+async def update_safety_event(
+    event_id: str, payload: SafetyEventUpdate,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    before = await db.safety_events.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Safety event not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
+        return SafetyEvent(**before)
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="safety", event_id=event_id,
+    )
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=False,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+    await db.safety_events.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": event_id}), {"$set": updates},
+    )
+    after = await db.safety_events.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="safety_events", op="UPDATE",
+        record_id=event_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if is_locked_edit:
+        after = await db.safety_events.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="safety_events", record_id=event_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
+    return SafetyEvent(**after)
+
+
 # --- QC ---
 @router.post("/qc-issues", response_model=QcIssue)
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
@@ -677,6 +759,67 @@ async def list_qc(project_id: str,
     return [QcIssue(**d) for d in docs]
 
 
+# Addition 4 -- post-submit edit endpoint for qc_issues. Note: the
+# Phase 5 cascade is one-shot at create time (severity=rework_required
+# triggers synthetic delay), so this endpoint does NOT re-trigger the
+# cascade if severity is patched after create. Admin-only severity
+# flips that need a fresh cascade should delete the issue and recreate.
+@router.patch("/qc-issues/{qc_id}", response_model=QcIssue)
+async def update_qc_issue(
+    qc_id: str, payload: QcIssueUpdate,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    before = await db.qc_issues.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "QC issue not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
+        return QcIssue(**before)
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="qc", event_id=qc_id,
+    )
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+    await db.qc_issues.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"$set": updates},
+    )
+    after = await db.qc_issues.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="qc_issues", op="UPDATE",
+        record_id=qc_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if is_locked_edit:
+        after = await db.qc_issues.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="qc_issues", record_id=qc_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
+    return QcIssue(**after)
+
+
 # --- Photos ---
 def _compute_evidentiary(photo_class: str, pin_x, pin_y, drawing_id) -> bool:
     """Bucket C3b Phase 4 — evidentiary if EITHER:
@@ -779,10 +922,19 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     )
     if not before:
         raise HTTPException(404, "Photo not found")
-    updates = {k: v for k, v in payload.model_dump(mode="json", exclude_unset=True).items()
-                if v is not None}
-    if not updates:
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
         return Photo(**before)
+    # Addition 4 -- locked-DR edit policy.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="photo", event_id=photo_id,
+    )
     # Recompute evidentiary_flag if class changed.
     if "photo_class" in updates:
         updates["evidentiary_flag"] = _compute_evidentiary(
@@ -801,6 +953,17 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
         before=before, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Addition 4 -- post-submit edit audit + metadata stamp.
+    if is_locked_edit:
+        after = await db.photos.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="photos", record_id=photo_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
     return Photo(**after)
 
 
