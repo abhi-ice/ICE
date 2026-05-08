@@ -10,6 +10,7 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+import { useUrlState } from "../lib/useUrlState";
 
 const TOPIC_LABELS = {
   tenant_access: "Tenant access",
@@ -40,7 +41,8 @@ export default function CoordinationEvents() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const [filters, setFilters] = useState({ topic: "", channel: "", direction: "", date_from: "", date_to: "" });
+  // Bucket D Fix H -- filters mirrored to URL.
+  const [filters, setFilters] = useUrlState({ topic: "", channel: "", direction: "", date_from: "", date_to: "" });
 
   const params = useMemo(() => {
     const p = {};

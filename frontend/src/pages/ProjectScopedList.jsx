@@ -253,11 +253,15 @@ const KIND_CONFIG = {
   },
 };
 
-import { useState } from "react";
+import { useUrlState } from "../lib/useUrlState";
 
 export default function ProjectScopedList({ kind }) {
   const { activeId } = useProjects();
-  const [affectedActivityId, setAffectedActivityId] = useState("");
+  // Bucket D Fix H -- gallery filter mirrored to URL so refresh /
+  // back-button preserves the filter state.
+  const [urlFilters, setUrlFilters] = useUrlState({ affected_activity_id: "" });
+  const affectedActivityId = urlFilters.affected_activity_id;
+  const setAffectedActivityId = (v) => setUrlFilters({ affected_activity_id: v || "" });
   if (kind === "delays") return <DelayList />;
   const cfg = KIND_CONFIG[kind];
   if (!cfg) {

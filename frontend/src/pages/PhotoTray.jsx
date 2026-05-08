@@ -8,6 +8,7 @@ import { useProjects } from "../lib/projects";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import TagWizard from "../components/photos/TagWizard";
+import { useUrlState } from "../lib/useUrlState";
 
 const STATUS_LABELS = {
   untagged:           { label: "Untagged",           tone: "bg-slate-100 text-slate-700" },
@@ -31,7 +32,8 @@ export default function PhotoTray() {
   const { activeId } = useProjects();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState({
+  // Bucket D Fix H -- filter state mirrored to URL.
+  const [filters, setFilters] = useUrlState({
     status: "", capture_source: "", date_from: isoDaysAgo(30),
     date_to: "", untagged_only: false,
   });

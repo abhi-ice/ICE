@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
+import { useUrlState } from "../lib/useUrlState";
 import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -54,7 +55,8 @@ export default function Photos() {
   const { activeId, projects } = useProjects();
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState({
+  // Bucket D Fix H -- filter state mirrored to URL.
+  const [filters, setFilters] = useUrlState({
     photo_class: "", evidentiary_only: false, tagged_to: "",
     affected_activity_id: "",
   });

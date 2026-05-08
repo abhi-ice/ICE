@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
+import { useUrlState } from "../lib/useUrlState";
 
 export default function DelayList() {
   const { activeId } = useProjects();
@@ -18,8 +19,10 @@ export default function DelayList() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  // Bucket D Phase 3 -- gallery filter on linked_dr_activity_ids.
-  const [affectedActivityId, setAffectedActivityId] = useState("");
+  // Bucket D Phase 3 + Fix H -- gallery filter mirrored to URL.
+  const [urlFilters, setUrlFilters] = useUrlState({ affected_activity_id: "" });
+  const affectedActivityId = urlFilters.affected_activity_id;
+  const setAffectedActivityId = (v) => setUrlFilters({ affected_activity_id: v || "" });
 
   const refresh = async () => {
     if (!activeId) return;
