@@ -17,6 +17,8 @@ import { localTodayISO } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+// Addition 4 -- locked-DR edit modal (reusable across event types).
+import LockedEventEditModal from "../components/forms/LockedEventEditModal";
 import SupplementWizard from "../components/forms/SupplementWizard";
 import DrActivityPicker from "../components/forms/DrActivityPicker";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -1446,7 +1448,8 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
       {rows.map((r) => (
-        <DelayRowInline key={r.id} delay={r} reload={reload} />
+        <DelayRowInline key={r.id} delay={r} reload={reload}
+          locked={locked} dailyReportId={dailyReportId} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No delays today.</div>}
       {!locked && (
@@ -1471,10 +1474,12 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   );
 }
 
-function DelayRowInline({ delay, reload }) {
+function DelayRowInline({ delay, reload, locked, dailyReportId }) {
   const [resolving, setResolving] = useState(false);
   const [resolveDate, setResolveDate] = useState(localTodayISO());
   const [resolveNote, setResolveNote] = useState("");
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
 
   const resolve = async () => {
     try {
@@ -1507,8 +1512,47 @@ function DelayRowInline({ delay, reload }) {
             {resolving ? "cancel" : "mark resolved"}
           </button>
         )}
+        {locked && (
+          <button data-testid={`delay-edit-locked-${delay.id}`} onClick={() => setEditOpen(true)}
+            className={`${delay.status !== "resolved" ? "ml-2" : "ml-auto"} text-amber-700 hover:underline`}>
+            edit
+          </button>
+        )}
+        {delay.post_submit_edited && (
+          <span className="text-[10px] text-amber-700"
+            title={`Last edit: ${(delay.last_edit_reason || "").slice(0, 80)}`}>
+            (edited {delay.edit_count || 0}× post-submit)
+          </span>
+        )}
       </div>
       <div className="text-slate-700 whitespace-pre-wrap">{delay.description}</div>
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="delay" eventId={delay.id} dailyReportId={dailyReportId}
+          patchUrl={`/delays/${delay.id}`}
+          fields={[
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "severity", label: "Severity", type: "select",
+              options: [
+                { value: "minor", label: "minor" }, { value: "moderate", label: "moderate" },
+                { value: "major", label: "major" }, { value: "critical", label: "critical" },
+              ] },
+            { key: "reason_category", label: "Reason category" },
+            { key: "owner_attribution", label: "Owner attribution", type: "select",
+              options: [
+                { value: "none", label: "none" }, { value: "owner", label: "owner" },
+                { value: "gc", label: "gc" }, { value: "design", label: "design" },
+                { value: "force_majeure", label: "force majeure" },
+              ] },
+          ]}
+          currentValues={{
+            description: delay.description, severity: delay.severity,
+            reason_category: delay.reason_category, owner_attribution: delay.owner_attribution,
+          }}
+          onSaved={reload}
+        />
+      )}
       {resolving && (
         <div className="mt-2 p-2 bg-slate-50 rounded grid grid-cols-2 gap-2">
           <input type="date" value={resolveDate} onChange={(e) => setResolveDate(e.target.value)}
@@ -1632,12 +1676,8 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   return (
     <PanelShell icon={ShieldAlert} title="Safety events" testid="dr-safety-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`safety-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="pill pill-slate mr-2">{r.event_type}</span>
-          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
-          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
-          <SupplementBadge row={r} />
-        </div>
+        <SafetyRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
       {!locked && (
@@ -1665,6 +1705,46 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         </div>
       )}
     </PanelShell>
+  );
+}
+
+function SafetyRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`safety-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className="pill pill-slate mr-2">{row.event_type}</span>
+      <span className={`pill mr-2 ${row.severity === "critical" || row.severity === "major" ? "pill-red" : "pill-slate"}`}>{row.severity}</span>
+      <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`safety-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="safety" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/safety-events/${row.id}`}
+          fields={[
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "severity", label: "Severity", type: "select",
+              options: ["minor", "moderate", "major", "critical"].map((s) => ({ value: s, label: s })) },
+            { key: "event_type", label: "Event type", type: "select",
+              options: ["near_miss", "first_aid", "recordable", "lost_time", "fatality"].map((s) => ({ value: s, label: s.replace(/_/g, " ") })) },
+          ]}
+          currentValues={{
+            description: row.description, severity: row.severity, event_type: row.event_type,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1747,26 +1827,8 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   return (
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`qc-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className={`pill mr-2 ${
-            r.severity === "rework_required" || r.severity === "stop_work" ? "pill-red"
-            : r.severity === "critical" || r.severity === "major" ? "pill-red"
-            : "pill-slate"
-          }`}>{r.severity}</span>
-          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
-          {r.linked_synthetic_delay_id && (
-            <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
-              rework {r.rework_duration_hours}h
-              {r.rework_actual_hours != null && ` (actual ${r.rework_actual_hours}h)`}
-            </span>
-          )}
-          {/* Task 3 fix D -- outcome capture button. Visible when QC has
-              a synthetic delay AND no actual hours yet recorded. */}
-          {r.linked_synthetic_delay_id && r.rework_actual_hours == null && (
-            <ReworkOutcomeButton qcIssue={r} reload={reload} />
-          )}
-          <SupplementBadge row={r} />
-        </div>
+        <QcRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
       {!locked && (
@@ -1847,6 +1909,64 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   );
 }
 
+function QcRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`qc-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className={`pill mr-2 ${
+        row.severity === "rework_required" || row.severity === "stop_work" ? "pill-red"
+        : row.severity === "critical" || row.severity === "major" ? "pill-red"
+        : "pill-slate"
+      }`}>{row.severity}</span>
+      <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
+      {row.linked_synthetic_delay_id && (
+        <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
+          rework {row.rework_duration_hours}h
+          {row.rework_actual_hours != null && ` (actual ${row.rework_actual_hours}h)`}
+        </span>
+      )}
+      {/* Task 3 fix D -- outcome capture button. Visible when QC has
+          a synthetic delay AND no actual hours yet recorded. */}
+      {row.linked_synthetic_delay_id && row.rework_actual_hours == null && (
+        <ReworkOutcomeButton qcIssue={row} reload={reload} />
+      )}
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`qc-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="qc" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/qc-issues/${row.id}`}
+          fields={[
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "severity", label: "Severity", type: "select",
+              options: ["observation", "minor", "moderate", "major", "critical", "rework_required", "stop_work"]
+                .map((s) => ({ value: s, label: s.replace(/_/g, " ") })) },
+            { key: "status", label: "Status", type: "select",
+              options: ["open", "in_progress", "resolved", "closed"].map((s) => ({ value: s, label: s.replace(/_/g, " ") })) },
+            { key: "resolution_notes", label: "Resolution notes", type: "textarea" },
+          ]}
+          currentValues={{
+            description: row.description, severity: row.severity,
+            status: row.status, resolution_notes: row.resolution_notes,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+
 function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   // Bucket D Task 1c -- linked_dr_activity_ids picker. RFIs are
   // REQUIRED to link >=1 activity per Phase 1 (gates a task).
@@ -1877,12 +1997,8 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   return (
     <PanelShell icon={MessageSquare} title="RFIs" testid="dr-rfis-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`rfi-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="font-mono mr-2 text-blue-700">{r.rfi_number}</span>
-          <span className="pill pill-slate mr-2">{r.priority}</span>
-          <span className="text-slate-700">{r.subject}</span>
-          <SupplementBadge row={r} />
-        </div>
+        <RfiRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No RFIs raised today.</div>}
       {!locked && (
@@ -1906,6 +2022,48 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
     </PanelShell>
   );
 }
+
+function RfiRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`rfi-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className="font-mono mr-2 text-blue-700">{row.rfi_number}</span>
+      <span className="pill pill-slate mr-2">{row.priority}</span>
+      <span className="text-slate-700">{row.subject}</span>
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`rfi-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="rfi" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/rfis/${row.id}`}
+          fields={[
+            { key: "subject", label: "Subject" },
+            { key: "description", label: "Question / context", type: "textarea" },
+            { key: "status", label: "Status", type: "select",
+              options: ["draft", "open", "responded", "closed"].map((s) => ({ value: s, label: s })) },
+            { key: "response_text", label: "Response (when status=responded)", type: "textarea" },
+          ]}
+          currentValues={{
+            subject: row.subject, description: row.description,
+            status: row.status, response_text: row.response_text,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
 
 function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
   // Bucket D Task 1d -- linked_dr_activity_ids picker. REQUIRED min-1
@@ -1937,13 +2095,8 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
   return (
     <PanelShell icon={Truck} title="Deliveries today" testid="dr-deliveries-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`delivery-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="font-medium mr-2">{r.vendor}</span>
-          <span className="text-slate-700">{r.description}</span>
-          {r.po_number && <span className="text-slate-400 ml-2 font-mono">{r.po_number}</span>}
-          <span className={`pill ml-2 ${r.status === "received" ? "pill-green" : "pill-slate"}`}>{r.status}</span>
-          <SupplementBadge row={r} />
-        </div>
+        <DeliveryRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No deliveries scheduled for {reportDate}.</div>}
       {!locked && (
@@ -2134,6 +2287,51 @@ function AuditPanel({ rows, userLabels }) {
 }
 
 // ------------------------------------------------------------
+function DeliveryRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`delivery-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className="font-medium mr-2">{row.vendor}</span>
+      <span className="text-slate-700">{row.description}</span>
+      {row.po_number && <span className="text-slate-400 ml-2 font-mono">{row.po_number}</span>}
+      <span className={`pill ml-2 ${row.status === "received" ? "pill-green" : "pill-slate"}`}>{row.status}</span>
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`delivery-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="delivery" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/deliveries/${row.id}`}
+          fields={[
+            { key: "vendor", label: "Vendor" },
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "po_number", label: "PO number" },
+            { key: "delivery_date", label: "Delivery date", type: "text" },
+            { key: "status", label: "Status", type: "select",
+              options: ["scheduled", "received", "delayed", "cancelled"].map((s) => ({ value: s, label: s })) },
+          ]}
+          currentValues={{
+            vendor: row.vendor, description: row.description,
+            po_number: row.po_number, delivery_date: row.delivery_date,
+            status: row.status,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+
 // Bucket D Task 3 fix D -- outcome capture button on QC rows that
 // triggered a rework cascade. Modal collects actual hours + notes,
 // POSTs /qc-issues/{id}/record-rework-outcome which updates the QC,

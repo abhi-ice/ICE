@@ -94,6 +94,10 @@ export const SIDEBAR_SECTIONS = [
       { label: "Voice PINs", path: "/voice-pins", icon: KeyRound, testid: "sidebar-voice-pins" },
       { label: "Compliance", path: "/compliance", icon: ShieldCheck, testid: "sidebar-compliance" },
       { label: "Audit log", path: "/audit-log", icon: History, testid: "sidebar-audit" },
+      // Addition 4 -- edit-request approval queue. Visible to all
+      // (non-admin/PM users see filtered to their own requests, read-
+      // only). The badgeKey="edit_requests" maps to a server count.
+      { label: "Edit requests", path: "/edit-requests", icon: ListChecks, badgeKey: "edit_requests", testid: "sidebar-edit-requests" },
       { label: "Settings", path: "/settings", icon: Settings, testid: "sidebar-settings" },
     ],
   },
