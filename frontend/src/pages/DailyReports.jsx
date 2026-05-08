@@ -1545,6 +1545,12 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               {r.rework_actual_hours != null && ` (actual ${r.rework_actual_hours}h)`}
             </span>
           )}
+          {/* Task 3 fix D -- outcome capture button. Visible when QC has
+              a synthetic delay AND no actual hours yet recorded. */}
+          {r.linked_synthetic_delay_id && r.rework_actual_hours == null && (
+            <ReworkOutcomeButton qcIssue={r} reload={reload} />
+          )}
+          <SupplementBadge row={r} />
         </div>
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
@@ -1888,6 +1894,77 @@ function AuditPanel({ rows, userLabels }) {
         {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
       </div>
     </PanelShell>
+  );
+}
+
+// ------------------------------------------------------------
+// Bucket D Task 3 fix D -- outcome capture button on QC rows that
+// triggered a rework cascade. Modal collects actual hours + notes,
+// POSTs /qc-issues/{id}/record-rework-outcome which updates the QC,
+// flips the synthetic delay to resolved, re-runs cascade + RAG.
+// ------------------------------------------------------------
+function ReworkOutcomeButton({ qcIssue, reload }) {
+  const [open, setOpen] = useState(false);
+  const [hours, setHours] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!hours || Number(hours) < 0) {
+      toast.error("Actual hours required (>=0)"); return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/qc-issues/${qcIssue.id}/record-rework-outcome`, {
+        rework_actual_hours: Number(hours),
+        rework_outcome_notes: notes || null,
+      });
+      toast.success("Rework outcome recorded -- cascade re-running");
+      setOpen(false);
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Outcome capture failed");
+    } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <button data-testid={`qc-rework-outcome-${qcIssue.id}`} onClick={() => setOpen(true)}
+        className="ml-2 text-[10px] px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
+        Record outcome
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Record rework outcome</DialogTitle></DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="text-xs text-slate-500">
+              QC: "{(qcIssue.description || "").slice(0, 80)}…"
+              <br />
+              Estimated: {qcIssue.rework_duration_hours}h.
+              Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 uppercase">Actual hours *</label>
+              <input data-testid="qc-rework-actual-hours" type="number" step="0.5" min="0"
+                value={hours} onChange={(e) => setHours(e.target.value)}
+                className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 uppercase">Notes</label>
+              <textarea data-testid="qc-rework-outcome-notes" rows={3}
+                value={notes} onChange={(e) => setNotes(e.target.value)}
+                placeholder="What went better or worse than expected?"
+                className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setOpen(false)} className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300">Cancel</button>
+              <button data-testid="qc-rework-outcome-submit" onClick={submit} disabled={busy}
+                className="h-9 px-3 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50">
+                {busy ? "Recording…" : "Record outcome"}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
