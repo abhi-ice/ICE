@@ -217,25 +217,47 @@ function DailyReportDetail({ id, onBack }) {
   // renders, find the matching event row by data-testid, scroll into
   // view, add the saffron pulse class. Strip the URL params so refresh
   // doesn't re-trigger.
+  // Bucket D Fix G -- ALSO honor ?createEvent=<panel-id> by scrolling
+  // the named panel into view + pulsing it so the user can immediately
+  // hit the panel's "+ Add" button. Panel ids: dr-safety-panel,
+  // dr-qc-panel, dr-rfis-panel, dr-deliveries-panel, dr-photos-panel,
+  // dr-coordination (handled via quick-log dialog instead, see below).
   useEffect(() => {
     if (!bundle) return;
     const params = new URLSearchParams(window.location.search);
     const eventId = params.get("openEvent");
     const eventType = params.get("openEventType");
-    if (!eventId || !eventType) return;
+    const createEvent = params.get("createEvent");
+    if (!eventId && !createEvent) return;
     const t = setTimeout(() => {
-      // Try the canonical row-testid pattern first; fall back to the
-      // photo-specific data-event-row-* attributes (PhotosPanel uses
-      // photo-${id} as its testid, not photo-row-${id}, so it carries
-      // a dedicated marker).
-      const candidates = [
-        `[data-testid="${eventType}-row-${eventId}"]`,
-        `[data-event-row-type="${eventType}"][data-event-row-id="${eventId}"]`,
-      ];
       let el = null;
-      for (const sel of candidates) {
-        el = document.querySelector(sel);
-        if (el) break;
+      if (eventId && eventType) {
+        const candidates = [
+          `[data-testid="${eventType}-row-${eventId}"]`,
+          `[data-event-row-type="${eventType}"][data-event-row-id="${eventId}"]`,
+        ];
+        for (const sel of candidates) {
+          el = document.querySelector(sel);
+          if (el) break;
+        }
+      } else if (createEvent) {
+        // Coordination uses the quick-log dialog rather than an inline panel.
+        if (createEvent === "coordination") {
+          setCoordOpen(true);
+          return;
+        }
+        const panelMap = {
+          delay: "dr-reminder-banner",
+          safety: "dr-safety-panel",
+          qc: "dr-qc-panel",
+          rfi: "dr-rfis-panel",
+          delivery: "dr-deliveries-panel",
+          photo: "dr-photos-panel",
+        };
+        const panelTestId = panelMap[createEvent];
+        if (panelTestId) {
+          el = document.querySelector(`[data-testid="${panelTestId}"]`);
+        }
       }
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -243,10 +265,11 @@ function DailyReportDetail({ id, onBack }) {
         setTimeout(() => el.classList.remove("dr-event-highlight"), 2200);
       }
     }, 250);
-    // Strip params so refresh doesn't re-trigger.
+    // Strip the navigation params so refresh doesn't re-trigger.
     const url = new URL(window.location.href);
     url.searchParams.delete("openEvent");
     url.searchParams.delete("openEventType");
+    url.searchParams.delete("createEvent");
     window.history.replaceState({}, "", url.toString());
     return () => clearTimeout(t);
   }, [bundle]);

@@ -7,11 +7,17 @@
 // affected_activity_id query param. Click-through goes to the parent
 // Daily Report (via daily_report_id) so users land where the event
 // was logged.
+import { useState } from "react";
 import CrudList from "../components/CrudList";
 import DelayList from "./DelayList";
 import { useProjects } from "../lib/projects";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
+import { Button } from "../components/ui/button";
+import { toast } from "../components/ui/sonner";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
+import { useUrlState } from "../lib/useUrlState";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 
 const TRADE_OPTIONS = [
   "general", "concrete", "masonry", "steel", "framing", "drywall",
@@ -253,14 +259,6 @@ const KIND_CONFIG = {
   },
 };
 
-import { useUrlState } from "../lib/useUrlState";
-import { useNavigate } from "react-router-dom";
-import { Plus } from "lucide-react";
-import { Button } from "../components/ui/button";
-import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
-import { toast } from "../components/ui/sonner";
-import { useState as useReactState } from "react";
-
 // Bucket D Fix G -- map sidebar `kind` to the createEvent param the DR
 // page understands (which it uses to pick the panel to scroll to).
 const KIND_TO_CREATE_EVENT = {
@@ -277,7 +275,7 @@ export default function ProjectScopedList({ kind }) {
   const affectedActivityId = urlFilters.affected_activity_id;
   const setAffectedActivityId = (v) => setUrlFilters({ affected_activity_id: v || "" });
   // Bucket D Fix G -- "+ New" button busy guard while resolving today's DR.
-  const [routing, setRouting] = useReactState(false);
+  const [routing, setRouting] = useState(false);
   const routeToTodaysDr = async () => {
     if (routing) return;
     const createEvent = KIND_TO_CREATE_EVENT[kind];
