@@ -36,7 +36,11 @@ def stamp_supplement_metadata(doc: dict, *, actor_id: str, fact_type: str) -> Op
     docs so the caller can skip the audit.
 
     Used by every event create handler in Phase 4 so the supplement
-    contract lives in one place."""
+    contract lives in one place.
+
+    Pure function -- does NOT validate parent DR lock state (that
+    requires DB access). Async wrapper validate_supplement_against_db
+    below handles that check."""
     if not doc.get("is_supplement"):
         return None
     if not doc.get("parent_daily_report_id"):
@@ -51,6 +55,30 @@ def stamp_supplement_metadata(doc: dict, *, actor_id: str, fact_type: str) -> Op
         "fact_type": fact_type,
         "reason": doc.get("supplement_reason"),
     }
+
+
+async def validate_supplement_parent_locked(
+    *, tenant_id: str, parent_daily_report_id: str,
+) -> None:
+    """Task 3 fix C: a supplement is only allowed against a SUBMITTED
+    or APPROVED parent DR. Filing a supplement against a draft DR is
+    nonsense -- the user should edit the draft directly. Raises 422
+    when the parent is unlocked, 404 when missing."""
+    db = get_db()
+    parent = await db.daily_reports.find_one(
+        tenant_filter(tenant_id, {"id": parent_daily_report_id}),
+        {"_id": 0, "id": 1, "status": 1},
+    )
+    if not parent:
+        raise HTTPException(
+            404, f"parent_daily_report_id {parent_daily_report_id} not found",
+        )
+    if parent.get("status") not in ("submitted", "approved"):
+        raise HTTPException(
+            422,
+            f"Cannot file a supplement against a daily report in status="
+            f"{parent.get('status')!r}. Edit the draft DR directly.",
+        )
 
 
 async def validate_linked_dr_activity_ids(

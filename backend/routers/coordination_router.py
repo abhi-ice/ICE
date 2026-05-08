@@ -59,7 +59,14 @@ async def create_coordination_event(
         "deleted_by_user_id": None,
     })
     # Bucket D Phase 4 -- supplement metadata + audit.
-    from services.dr_activity_linkage import stamp_supplement_metadata
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="coordination_event")
     await db.coordination_events.insert_one(doc.copy())
     if sup_audit:

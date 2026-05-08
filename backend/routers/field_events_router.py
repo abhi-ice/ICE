@@ -125,7 +125,14 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     })
     # Bucket D Phase 4 -- supplement metadata + audit (no-op for normal
     # creates; raises 422 + writes SUPPLEMENT_FILED for supplements).
-    from services.dr_activity_linkage import stamp_supplement_metadata
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="delay")
     await db.delays.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
@@ -492,7 +499,14 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
         "created_at": utc_now().isoformat(),
     })
     # Bucket D Phase 4 -- supplement metadata + audit.
-    from services.dr_activity_linkage import stamp_supplement_metadata
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="safety_event")
     await db.safety_events.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="safety_events", op="INSERT",
@@ -557,7 +571,14 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
         doc["rework_estimated_at"] = utc_now().isoformat()
         doc["rework_estimated_by"] = ctx["user"]["id"]
     # Bucket D Phase 4 -- supplement metadata + audit.
-    from services.dr_activity_linkage import stamp_supplement_metadata
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="qc_issue")
     await db.qc_issues.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="qc_issues", op="INSERT",
