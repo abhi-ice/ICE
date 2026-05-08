@@ -254,14 +254,47 @@ const KIND_CONFIG = {
 };
 
 import { useUrlState } from "../lib/useUrlState";
+import { useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
+import { Button } from "../components/ui/button";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
+import { toast } from "../components/ui/sonner";
+import { useState as useReactState } from "react";
+
+// Bucket D Fix G -- map sidebar `kind` to the createEvent param the DR
+// page understands (which it uses to pick the panel to scroll to).
+const KIND_TO_CREATE_EVENT = {
+  rfis: "rfi", "qc-issues": "qc", "safety-events": "safety",
+  deliveries: "delivery",
+};
 
 export default function ProjectScopedList({ kind }) {
   const { activeId } = useProjects();
+  const navigate = useNavigate();
   // Bucket D Fix H -- gallery filter mirrored to URL so refresh /
   // back-button preserves the filter state.
   const [urlFilters, setUrlFilters] = useUrlState({ affected_activity_id: "" });
   const affectedActivityId = urlFilters.affected_activity_id;
   const setAffectedActivityId = (v) => setUrlFilters({ affected_activity_id: v || "" });
+  // Bucket D Fix G -- "+ New" button busy guard while resolving today's DR.
+  const [routing, setRouting] = useReactState(false);
+  const routeToTodaysDr = async () => {
+    if (routing) return;
+    const createEvent = KIND_TO_CREATE_EVENT[kind];
+    if (!createEvent) return;
+    setRouting(true);
+    try {
+      const { url, locked, dr } = await navigateToTodaysDrForCreate(activeId, createEvent);
+      if (locked) {
+        toast.info(`Today's DR (${dr.report_date}) is locked. Use Supplements panel on the parent DR to add ${createEvent}.`);
+        navigate(`/daily-reports?openId=${dr.id}`);
+      } else {
+        navigate(url);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't resolve today's DR");
+    } finally { setRouting(false); }
+  };
   if (kind === "delays") return <DelayList />;
   const cfg = KIND_CONFIG[kind];
   if (!cfg) {
@@ -354,6 +387,12 @@ export default function ProjectScopedList({ kind }) {
         columns={decoratedColumns}
         formFields={cfg.form}
         buildPayload={cfg.buildPayload ? (form, ed) => cfg.buildPayload(form, activeId) : null}
+        customAddButton={cfg.galleryEventKind && KIND_TO_CREATE_EVENT[kind] ? (
+          <Button data-testid={`${kind}-add-via-dr`} onClick={routeToTodaysDr}
+            disabled={routing} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
+            <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+          </Button>
+        ) : undefined}
       />
     </div>
   );

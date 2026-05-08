@@ -27,6 +27,10 @@ export default function CrudList({
   title, subtitle, listEndpoint, createEndpoint, patchEndpoint, deleteEndpoint,
   columns, formFields, buildPayload, testidPrefix = "crud", help, extraActions,
   emptyHint,
+  // Bucket D Fix G -- when set, the "+ Add" button is replaced with
+  // this custom node (gallery pages route to today's DR instead of
+  // opening an inline modal).
+  customAddButton,
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -110,7 +114,7 @@ export default function CrudList({
         </div>
         <div className="flex items-center gap-2">
           {extraActions}
-          {createEndpoint && (
+          {customAddButton ? customAddButton : createEndpoint && (
             <Button data-testid={`${testidPrefix}-add`} onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 gap-1">
               <Plus className="h-4 w-4" /> Add
             </Button>
