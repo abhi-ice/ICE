@@ -10,6 +10,7 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
+import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 
 export default function DelayList() {
   const { activeId } = useProjects();
@@ -17,17 +18,21 @@ export default function DelayList() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  // Bucket D Phase 3 -- gallery filter on linked_dr_activity_ids.
+  const [affectedActivityId, setAffectedActivityId] = useState("");
 
   const refresh = async () => {
     if (!activeId) return;
     setLoading(true);
     try {
-      const { data } = await api.get(`/projects/${activeId}/delays`);
+      const params = {};
+      if (affectedActivityId) params.affected_activity_id = affectedActivityId;
+      const { data } = await api.get(`/projects/${activeId}/delays`, { params });
       setRows(Array.isArray(data) ? data : []);
     } catch (e) { toast.error("Load failed"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
+  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId, affectedActivityId]);
 
   if (!activeId) {
     return <div className="text-sm text-slate-500">Select a project from the top bar to view Delays.</div>;
@@ -62,6 +67,23 @@ export default function DelayList() {
         Each delay can link multiple schedule tasks and capture per-task projected impact in days. Open delays whose tasks are scheduled today appear as reminder cards on the daily report.
       </div>
 
+      {/* Bucket D Phase 3 -- gallery filter. */}
+      <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900 flex items-center gap-2">
+        <span><strong>Gallery view.</strong> Click a date or chip to jump to the parent DR.</span>
+        <label className="uppercase tracking-wide text-[10px]">Filter by activity id</label>
+        <input data-testid="delays-affected-activity-filter"
+          value={affectedActivityId}
+          onChange={(e) => setAffectedActivityId(e.target.value)}
+          placeholder="paste a daily_report_activity.id"
+          className="h-7 px-2 rounded border border-amber-300 bg-white text-xs flex-1" />
+        {affectedActivityId && (
+          <button onClick={() => setAffectedActivityId("")}
+            className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">
+            Clear
+          </button>
+        )}
+      </div>
+
       <div className="surface overflow-hidden">
         <table className="dense-table">
           <thead>
@@ -71,6 +93,7 @@ export default function DelayList() {
               <th>Status</th>
               <th>Description</th>
               <th>Linked tasks</th>
+              <th>Affected activities</th>
               <th>Days open</th>
               <th className="w-20 text-right">Actions</th>
             </tr>
@@ -81,7 +104,13 @@ export default function DelayList() {
               const stat = r.status === "resolved" ? "pill-green" : r.status === "in_progress" ? "pill-amber" : "pill-slate";
               return (
                 <tr key={r.id} data-testid={`delay-row-${r.id}`}>
-                  <td className="font-mono text-xs">{r.date}</td>
+                  <td className="font-mono text-xs">
+                    {r.daily_report_id ? (
+                      <Link to={`/daily-reports?openId=${r.daily_report_id}`} className="text-blue-700 hover:underline">
+                        {r.date}
+                      </Link>
+                    ) : r.date}
+                  </td>
                   <td><span className={`pill ${sev}`}>{r.severity}</span></td>
                   <td><span className={`pill ${stat}`}>{(r.status || "open").replace(/_/g, " ")}</span></td>
                   <td className="text-sm max-w-[420px] truncate">
@@ -90,6 +119,7 @@ export default function DelayList() {
                     </Link>
                   </td>
                   <td className="text-xs">{(r.linked_task_ids || []).length}</td>
+                  <td><GalleryActivityChips projectId={activeId} activityIds={r.linked_dr_activity_ids || []} /></td>
                   <td className="text-xs">{r.duration_days ?? "—"}</td>
                   <td className="text-right">
                     <button data-testid={`delays-edit-${r.id}`} onClick={() => startEdit(r)}

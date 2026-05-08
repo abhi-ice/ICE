@@ -1,10 +1,17 @@
 // ProjectScopedList — generic list page for entities scoped to the active
 // project. Now full CRUD via CrudList component. Delays use a custom page
 // (DelayList) because the Phase A multi-task picker doesn't fit CrudList.
+//
+// Bucket D Phase 3 -- entities now carry linked_dr_activity_ids; the
+// gallery view renders affected-activity chips and accepts an
+// affected_activity_id query param. Click-through goes to the parent
+// Daily Report (via daily_report_id) so users land where the event
+// was logged.
 import CrudList from "../components/CrudList";
 import DelayList from "./DelayList";
 import { useProjects } from "../lib/projects";
 import { Link } from "react-router-dom";
+import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 
 const TRADE_OPTIONS = [
   "general", "concrete", "masonry", "steel", "framing", "drywall",
@@ -36,6 +43,10 @@ const SAFETY_TYPES = [
   { value: "other", label: "Other" },
 ];
 
+// Bucket D Phase 3 -- gallery rework. Event kinds get an "Affected
+// activities" chip column AND an affected_activity_id filter. The
+// galleryEventKind flag tells ProjectScopedList to surface the
+// activity-id filter input + chip column rendering.
 const KIND_CONFIG = {
   rfis: {
     title: "RFIs",
@@ -43,6 +54,7 @@ const KIND_CONFIG = {
     help: "Open an RFI when a drawing or spec is unclear, conflicting, or missing detail. Each RFI gets a unique number, links to spec sections / drawings affected, and is tracked through draft → sent → answered → closed. The aging dashboard surfaces RFIs open more than 5 days.",
     list: (p) => `/projects/${p}/rfis`,
     create: "/rfis",
+    galleryEventKind: true,
     columns: [
       // Bucket C3a Phase 4 — number cell links to the gating-entity
       // detail page (schedule + SLA + affected daily reports). Falls
@@ -54,6 +66,10 @@ const KIND_CONFIG = {
       { key: "trade_code", label: "Trade" },
       { key: "status", label: "Status", render: (r) => <span className="pill pill-blue capitalize">{r.status}</span> },
       { key: "date_initiated", label: "Initiated" },
+      // Bucket D Phase 3 -- chip column. Rendered via the page wrapper
+      // since Tile/CrudList knows nothing about projectId; we inject a
+      // closure over projectId at mount time below.
+      { key: "linked_dr_activity_ids", label: "Affected activities", _isChips: true },
     ],
     form: [
       { key: "subject", label: "Subject", required: true },
@@ -70,12 +86,14 @@ const KIND_CONFIG = {
     help: "Track inbound deliveries so you know what shows up and when. Deliveries can be linked to procurement submittals + tasks.",
     list: (p) => `/projects/${p}/deliveries`,
     create: "/deliveries",
+    galleryEventKind: true,
     columns: [
       { key: "vendor", label: "Vendor" },
       { key: "description", label: "Description" },
       { key: "delivery_date", label: "Date" },
       { key: "po_number", label: "PO" },
       { key: "status", label: "Status" },
+      { key: "linked_dr_activity_ids", label: "Activities consuming", _isChips: true },
     ],
     form: [
       { key: "vendor", label: "Vendor", required: true },
@@ -160,12 +178,14 @@ const KIND_CONFIG = {
     help: "Log every safety event — even near misses — so we can spot patterns. Investigation status moves the event from open to closed.",
     list: (p) => `/projects/${p}/safety-events`,
     create: "/safety-events",
+    galleryEventKind: true,
     columns: [
       { key: "date", label: "Date" },
       { key: "event_type", label: "Type" },
       { key: "description", label: "Description" },
       { key: "severity", label: "Severity" },
       { key: "status", label: "Status" },
+      { key: "linked_dr_activity_ids", label: "Affected activities", _isChips: true },
     ],
     form: [
       { key: "date", label: "Date", type: "date" },
@@ -182,11 +202,13 @@ const KIND_CONFIG = {
     help: "Quality-control issues are deviations from spec. Status moves from open to closed when remediated.",
     list: (p) => `/projects/${p}/qc-issues`,
     create: "/qc-issues",
+    galleryEventKind: true,
     columns: [
       { key: "date", label: "Date" },
       { key: "description", label: "Description" },
       { key: "severity", label: "Severity" },
       { key: "status", label: "Status" },
+      { key: "linked_dr_activity_ids", label: "Affected activities", _isChips: true },
     ],
     form: [
       { key: "date", label: "Date", type: "date" },
@@ -231,8 +253,11 @@ const KIND_CONFIG = {
   },
 };
 
+import { useState } from "react";
+
 export default function ProjectScopedList({ kind }) {
   const { activeId } = useProjects();
+  const [affectedActivityId, setAffectedActivityId] = useState("");
   if (kind === "delays") return <DelayList />;
   const cfg = KIND_CONFIG[kind];
   if (!cfg) {
@@ -248,19 +273,76 @@ export default function ProjectScopedList({ kind }) {
     "safety-events": "safety-events", "qc-issues": "qc-issues",
     locations: "locations",
   }[kind];
+
+  // Bucket D Phase 3 -- decorate gallery columns with chip render + DR
+  // click-through. The _isChips marker on a column means render via
+  // GalleryActivityChips against linked_dr_activity_ids on the row.
+  // Date column gets a click-through to the parent DR.
+  const decoratedColumns = cfg.columns.map((c) => {
+    if (c._isChips) {
+      return {
+        ...c,
+        render: (r) => (
+          <GalleryActivityChips projectId={activeId}
+            activityIds={r.linked_dr_activity_ids || []} />
+        ),
+      };
+    }
+    if (c.key === "date" && cfg.galleryEventKind) {
+      return {
+        ...c,
+        render: (r) => r.daily_report_id ? (
+          <Link to={`/daily-reports?openId=${r.daily_report_id}`}
+            className="text-blue-700 hover:underline font-mono text-xs">
+            {r.date}
+          </Link>
+        ) : <span className="font-mono text-xs">{r.date || "—"}</span>,
+      };
+    }
+    return c;
+  });
+
+  // Append the affected-activity query param when set so the backend
+  // does the filter (avoids loading all rows then filtering client-side).
+  const listUrl = cfg.list(activeId)
+    + (affectedActivityId ? `?affected_activity_id=${encodeURIComponent(affectedActivityId)}` : "");
+
   return (
-    <CrudList
-      title={cfg.title}
-      subtitle={cfg.subtitle}
-      help={cfg.help}
-      listEndpoint={cfg.list(activeId)}
-      createEndpoint={cfg.create}
-      patchEndpoint={cfg.create && entityName ? (r) => `/crud/${entityName}/${r.id}` : null}
-      deleteEndpoint={cfg.create && entityName ? (r) => `/crud/${entityName}/${r.id}` : null}
-      testidPrefix={kind}
-      columns={cfg.columns}
-      formFields={cfg.form}
-      buildPayload={cfg.buildPayload ? (form, ed) => cfg.buildPayload(form, activeId) : null}
-    />
+    <div className="space-y-3">
+      {cfg.galleryEventKind && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900">
+          <strong>Gallery view.</strong> {cfg.title} live on their parent daily report; this page
+          aggregates across all DRs in the project. Click a date or affected-activity chip to
+          jump to the parent DR.
+          <div className="mt-2 flex items-center gap-2">
+            <label className="uppercase tracking-wide text-[10px]">Filter by activity id</label>
+            <input data-testid={`${kind}-affected-activity-filter`}
+              value={affectedActivityId}
+              onChange={(e) => setAffectedActivityId(e.target.value)}
+              placeholder="paste a daily_report_activity.id"
+              className="h-7 px-2 rounded border border-amber-300 bg-white text-xs flex-1" />
+            {affectedActivityId && (
+              <button onClick={() => setAffectedActivityId("")}
+                className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      <CrudList
+        title={cfg.title}
+        subtitle={cfg.subtitle}
+        help={cfg.help}
+        listEndpoint={listUrl}
+        createEndpoint={cfg.create}
+        patchEndpoint={cfg.create && entityName ? (r) => `/crud/${entityName}/${r.id}` : null}
+        deleteEndpoint={cfg.create && entityName ? (r) => `/crud/${entityName}/${r.id}` : null}
+        testidPrefix={kind}
+        columns={decoratedColumns}
+        formFields={cfg.form}
+        buildPayload={cfg.buildPayload ? (form, ed) => cfg.buildPayload(form, activeId) : null}
+      />
+    </div>
   );
 }

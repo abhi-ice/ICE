@@ -77,7 +77,9 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
 
 
 @router.get("/projects/{project_id}/rfis", response_model=list[Rfi])
-async def list_rfis(project_id: str, status_filter: Optional[str] = None, ctx: dict = Depends(require_tenant)):
+async def list_rfis(project_id: str, status_filter: Optional[str] = None,
+                     affected_activity_id: Optional[str] = None,
+                     ctx: dict = Depends(require_tenant)):
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
     if status_filter:
@@ -90,6 +92,9 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None, ctx: d
         # this filter deleted RFIs would keep appearing in the sidebar
         # list and the daily-report panel.
         f["status"] = {"$ne": "deleted"}
+    # Bucket D Phase 3 -- gallery filter.
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.rfis.find(f, {"_id": 0}).sort("date_initiated", -1).to_list(500)
     return [Rfi(**d) for d in docs]
 

@@ -867,10 +867,15 @@ async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_t
 
 
 @router.get("/projects/{project_id}/deliveries")
-async def list_deliveries(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_deliveries(project_id: str,
+                            affected_activity_id: Optional[str] = None,
+                            ctx: dict = Depends(require_tenant)):
     db = get_db()
+    f = {"project_id": project_id}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.deliveries.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("delivery_date", -1).to_list(500)
     return docs
 

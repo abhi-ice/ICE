@@ -47,6 +47,14 @@ export default function DailyReports() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerDate, setPickerDate] = useState(localTodayISO());
 
+  // Bucket D Phase 3 -- gallery chips + date links route here with
+  // ?openId=<dr-id>; honor it on first mount so the DR opens directly.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const target = params.get("openId");
+    if (target) setOpenId(target);
+  }, []);
+
   const load = useCallback(() => {
     if (!activeId) return;
     api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => setReports(data));

@@ -18,6 +18,55 @@ from audit import write_audit
 router = APIRouter(tags=["daily-reports"])
 
 
+# Bucket D Phase 3 -- gallery views show "affected activity" chips. The
+# event collections store linked_dr_activity_ids (UUIDs); the UI needs
+# {id, code, description, dr_date} to render the chip text. This batch
+# endpoint takes the union of ids visible on a gallery page and returns
+# the chip data in one round-trip (no N+1).
+@router.get("/projects/{project_id}/dr-activity-chips")
+async def dr_activity_chips(
+    project_id: str, ids: str = "", ctx: dict = Depends(require_tenant),
+):
+    """ids is a comma-separated list of daily_report_activities.id values.
+    Returns [{id, daily_report_id, dr_date, activity_code,
+    activity_description, schedule_activity_id}]. Capped at 500 ids per
+    call -- the frontend pages cap at <100 visible rows so this is
+    well within range."""
+    db = get_db()
+    parts = [s.strip() for s in (ids or "").split(",") if s.strip()][:500]
+    if not parts:
+        return []
+    rows = await db.daily_report_activities.find(
+        {"id": {"$in": parts}},
+        {"_id": 0, "id": 1, "daily_report_id": 1, "schedule_activity_id": 1,
+         "activity_code": 1, "activity_description": 1},
+    ).to_list(length=None)
+    # Tenant-guard via parent DR + denormalize report_date.
+    dr_ids = list({r.get("daily_report_id") for r in rows if r.get("daily_report_id")})
+    drs: dict[str, dict] = {}
+    if dr_ids:
+        dr_docs = await db.daily_reports.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": dr_ids}}),
+            {"_id": 0, "id": 1, "report_date": 1},
+        ).to_list(length=None)
+        drs = {d["id"]: d for d in dr_docs}
+    out: list[dict] = []
+    for r in rows:
+        dr = drs.get(r.get("daily_report_id"))
+        if not dr:
+            # Cross-tenant or orphan -- skip.
+            continue
+        out.append({
+            "id": r["id"],
+            "daily_report_id": r["daily_report_id"],
+            "dr_date": dr.get("report_date"),
+            "activity_code": r.get("activity_code"),
+            "activity_description": r.get("activity_description"),
+            "schedule_activity_id": r.get("schedule_activity_id"),
+        })
+    return out
+
+
 async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: str, report_date: date):
     """Find activities planned for the day → create grid rows. A task is
     'planned for this day' iff `planned_start <= report_date <= planned_finish`.

@@ -140,15 +140,17 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
 
 
 @router.get("/projects/{project_id}/delays", response_model=list[Delay])
-async def list_delays(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_delays(project_id: str,
+                      affected_activity_id: Optional[str] = None,
+                      ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Filter soft-deleted leftovers from before the hard-delete fix
     # (status='deleted' was set by the old /crud/delays/{id} DELETE path).
+    f = {"project_id": project_id, "status": {"$ne": "deleted"}}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.delays.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-        }), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [Delay(**_enrich_delay_for_read(d)) for d in docs]
 
@@ -486,14 +488,16 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
 
 
 @router.get("/projects/{project_id}/safety-events", response_model=list[SafetyEvent])
-async def list_safety(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_safety(project_id: str,
+                       affected_activity_id: Optional[str] = None,
+                       ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Filter soft-deleted leftovers from the old /crud/ DELETE path.
+    f = {"project_id": project_id, "status": {"$ne": "deleted"}}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.safety_events.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-        }), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [SafetyEvent(**d) for d in docs]
 
@@ -524,14 +528,16 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
 
 
 @router.get("/projects/{project_id}/qc-issues", response_model=list[QcIssue])
-async def list_qc(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_qc(project_id: str,
+                   affected_activity_id: Optional[str] = None,
+                   ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Filter soft-deleted leftovers from the old /crud/ DELETE path.
+    f = {"project_id": project_id, "status": {"$ne": "deleted"}}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.qc_issues.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-        }), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [QcIssue(**d) for d in docs]
 
@@ -703,7 +709,17 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
                       schedule_activity_id: Optional[str] = None,
                       photo_class: Optional[str] = None,
                       evidentiary_only: bool = False,
+                      affected_activity_id: Optional[str] = None,
+                      tagged_to: Optional[str] = None,
                       ctx: dict = Depends(require_tenant)):
+    """Bucket D Phase 3 -- gallery filters added:
+       affected_activity_id  filter to rows where the daily-report
+                             activity (or any indirect-link via tagged
+                             event) matches.
+       tagged_to             one of activity|delay|rfi|qc|safety|
+                             coordination|delivery|drawing -- filters
+                             to photos whose XOR event-ref is set in
+                             that bucket."""
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
     if location_id:
@@ -714,5 +730,21 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
         f["photo_class"] = photo_class
     if evidentiary_only:
         f["evidentiary_flag"] = True
+    if affected_activity_id:
+        # Either tagged DIRECTLY to that DR-activity row, OR linked via
+        # an event whose linked_dr_activity_ids contains the id.
+        # Cheap path first: direct tag. Indirect requires a lookup --
+        # done after the initial fetch to avoid an expensive aggregation.
+        f["daily_report_activity_id"] = affected_activity_id
+    if tagged_to:
+        ref_map = {
+            "activity": "daily_report_activity_id", "delay": "delay_id",
+            "rfi": "rfi_id", "qc": "qc_issue_id", "safety": "safety_event_id",
+            "coordination": "coordination_event_id",
+            "delivery": "delivery_id", "drawing": "drawing_pin_id",
+        }
+        ref_field = ref_map.get(tagged_to)
+        if ref_field:
+            f[ref_field] = {"$type": "string"}
     docs = await db.photos.find(f, {"_id": 0}).sort("captured_at", -1).to_list(500)
     return [Photo(**d) for d in docs]

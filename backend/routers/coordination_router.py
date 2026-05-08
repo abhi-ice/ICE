@@ -83,6 +83,7 @@ async def list_coordination_events(
                     "or equals linked_daily_report_id.",
     ),
     include_deleted: bool = Query(False),
+    affected_activity_id: Optional[str] = Query(None),
     ctx: dict = Depends(require_tenant),
 ):
     """Sidebar list — sortable filters per spec. Cap 500 rows; default
@@ -97,6 +98,10 @@ async def list_coordination_events(
         f["channel"] = channel
     if direction:
         f["direction"] = direction
+    # Bucket D Phase 3 -- gallery filter on linked_dr_activity_ids
+    # (Phase 1 added the field; this is the matching list filter).
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     if date_from or date_to:
         rng: dict = {}
         if date_from:
