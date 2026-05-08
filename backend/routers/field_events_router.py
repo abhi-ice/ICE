@@ -829,12 +829,37 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
         f["photo_class"] = photo_class
     if evidentiary_only:
         f["evidentiary_flag"] = True
+    indirect_event_ids: dict[str, list[str]] = {}
     if affected_activity_id:
-        # Either tagged DIRECTLY to that DR-activity row, OR linked via
-        # an event whose linked_dr_activity_ids contains the id.
-        # Cheap path first: direct tag. Indirect requires a lookup --
-        # done after the initial fetch to avoid an expensive aggregation.
-        f["daily_report_activity_id"] = affected_activity_id
+        # Direct tag OR indirect via a tagged event whose
+        # linked_dr_activity_ids contains the activity id. Pre-collect
+        # event ids for each indirect collection so the photo query
+        # can $or-match in one shot.
+        for coll, ref_field in [("delays", "delay_id"),
+                                  ("rfis", "rfi_id"),
+                                  ("qc_issues", "qc_issue_id"),
+                                  ("safety_events", "safety_event_id"),
+                                  ("coordination_events", "coordination_event_id"),
+                                  ("deliveries", "delivery_id")]:
+            ids = await db[coll].find(
+                tenant_filter(ctx["tenant_id"], {
+                    "project_id": project_id,
+                    "linked_dr_activity_ids": affected_activity_id,
+                }),
+                {"_id": 0, "id": 1},
+            ).to_list(length=None)
+            if ids:
+                indirect_event_ids[ref_field] = [r["id"] for r in ids]
+        # Build $or branches: direct + each indirect FK match.
+        or_branches: list[dict] = [{"daily_report_activity_id": affected_activity_id}]
+        for ref_field, id_list in indirect_event_ids.items():
+            or_branches.append({ref_field: {"$in": id_list}})
+        # If only one branch, $or with a single elem is wasteful; use
+        # the branch directly.
+        if len(or_branches) == 1:
+            f.update(or_branches[0])
+        else:
+            f["$or"] = or_branches
     if tagged_to:
         ref_map = {
             "activity": "daily_report_activity_id", "delay": "delay_id",
