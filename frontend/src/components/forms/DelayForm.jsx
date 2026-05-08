@@ -14,6 +14,7 @@ import { Plus, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import api from "../../lib/api";
 import { localTodayISO } from "../../lib/dateUtil";
 import { toast } from "../ui/sonner";
+import DrActivityPicker from "./DrActivityPicker";
 
 const SEVERITY_OPTS = ["minor", "moderate", "major", "critical"];
 const REASON_OPTS = ["weather", "rfi_pending", "submittal_pending", "design_change",
@@ -55,6 +56,11 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     cause_class: initial?.cause_class || "other",
     // impacts: array of {task_id, projected_impact_days, float_at_logging_days?, ...}
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
+    // Bucket D Task 1f -- linked_dr_activity_ids (per-DR WBS row IDs).
+    // REQUIRED min-1 per Phase 1 contract; coexists with the existing
+    // linked_task_ids (master schedule_activity_ids) which the form
+    // already collects via the per-task impact picker.
+    linked_dr_activity_ids: initial?.linked_dr_activity_ids || [],
   }));
   const [busy, setBusy] = useState(false);
 
@@ -106,6 +112,13 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   const submit = async () => {
     if (!form.description.trim()) { toast.error("What happened? is required"); return; }
     if (!form.impacts.length) { toast.error("Link at least one task"); return; }
+    // Bucket D Task 1f -- linked_dr_activity_ids required min-1.
+    // Only enforced when we have a DR scope (dailyReportId set);
+    // gallery-add path on DelayList currently has no DR -- the
+    // SupplementWizard / DR-side "+ Delay" should be used instead.
+    if (dailyReportId && !form.linked_dr_activity_ids.length) {
+      toast.error("Pick at least one affected daily-report activity"); return;
+    }
     setBusy(true);
     try {
       const payload = {
@@ -123,6 +136,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           task_id: i.task_id,
           projected_impact_days: Number(i.projected_impact_days || 0),
         })),
+        // Bucket D Task 1f -- per-DR WBS row linkage carried alongside
+        // the existing master-task linkage. Backend strict-validates
+        // when dailyReportId is set on POST.
+        linked_dr_activity_ids: form.linked_dr_activity_ids,
       };
       if (form.status === "resolved") {
         payload.resolved_date = form.resolved_date || localTodayISO();
@@ -271,6 +288,18 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           </div>
         </div>
       </div>
+
+      {/* Bucket D Task 1f -- DR-activity multi-select. Required when
+          dailyReportId is set (DR-side create); otherwise hidden
+          (gallery-side adds without DR scope are deprecated; the
+          spec routes those through SupplementWizard). */}
+      {dailyReportId && (
+        <DrActivityPicker dailyReportId={dailyReportId}
+          value={form.linked_dr_activity_ids}
+          onChange={(v) => setForm({ ...form, linked_dr_activity_ids: v })}
+          required={true} label="Affected daily-report activities (per-DR WBS)"
+          testidPrefix="delay-dr-activity" />
+      )}
 
       <div>
         <label className="text-xs uppercase tracking-wide text-slate-500">Status</label>
