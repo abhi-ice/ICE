@@ -238,6 +238,11 @@ async def list_tray(
         wanted = [s.strip() for s in status.split(",") if s.strip()]
         if wanted:
             f["status"] = {"$in": wanted}
+    else:
+        # Task 3 verification fix: archived rows hide by default. The
+        # tray UI default view should show actionable photos only;
+        # archived ones still resolvable via explicit status=archived.
+        f["status"] = {"$ne": "archived"}
     if capture_source:
         f["capture_source"] = capture_source
     if date_from or date_to:
