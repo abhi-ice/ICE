@@ -3,7 +3,19 @@
 Order of resolution per request:
   1. session_token cookie  → look up in `user_sessions`
   2. Authorization: Bearer <JWT> → decode HS256
+
+Followup-fix (2026-05-08): verify_password used to swallow every
+exception as `return False`, so a malformed hash, encoding bug, or
+bcrypt-library breakage all surfaced to the user as the same generic
+"Invalid email or password" — and nothing was logged. That made the
+"my password drifted after a restart" incident impossible to root-
+cause from logs. The new verify_password logs the actual failure
+reason at WARN level (with a redacted hash prefix), and validate_
+bcrypt_runtime() runs a self-test the lifespan hook calls at server
+startup so any runtime-level bcrypt break fails loud instead of
+silently locking everyone out.
 """
+import logging
 import os
 import bcrypt
 import jwt as pyjwt
@@ -17,21 +29,98 @@ from models import gen_id
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret")
 JWT_ALG = os.environ.get("JWT_ALG", "HS256")
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))
+BCRYPT_ROUNDS = int(os.environ.get("BCRYPT_ROUNDS", "12"))
 
 bearer = HTTPBearer(auto_error=False)
 
+log = logging.getLogger("auth")
+
+# bcrypt 4.x dropped __about__; tolerate either layout.
+try:
+    _BCRYPT_VERSION = bcrypt.__version__  # type: ignore[attr-defined]
+except AttributeError:
+    try:
+        _BCRYPT_VERSION = bcrypt.__about__.__version__  # type: ignore[attr-defined]
+    except AttributeError:
+        _BCRYPT_VERSION = "unknown"
+log.info("bcrypt runtime: version=%s rounds=%d", _BCRYPT_VERSION, BCRYPT_ROUNDS)
+
+# Bcrypt prefixes we recognize. Anything else is treated as malformed.
+_VALID_HASH_PREFIXES = ("$2a$", "$2b$", "$2x$", "$2y$")
+
+
+def _looks_like_bcrypt_hash(s: str) -> bool:
+    return isinstance(s, str) and len(s) >= 60 and s.startswith(_VALID_HASH_PREFIXES)
+
 
 def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str | None) -> bool:
+    """Returns True iff `plain` matches the stored hash. Logs the actual
+    reason on every failure path so a future "I can't log in" incident
+    is debuggable from server logs without DB access."""
     if not hashed:
+        log.warning("verify_password: stored hash is empty/None -- caller cannot authenticate")
+        return False
+    if not _looks_like_bcrypt_hash(hashed):
+        # Truncated, plaintext, base64'd by mistake, etc. Log the
+        # prefix (first 4 chars) only; never the full hash.
+        log.warning(
+            "verify_password: stored hash format unrecognized (prefix=%r, len=%d). "
+            "Treating as auth failure.",
+            (hashed[:4] if isinstance(hashed, str) else type(hashed).__name__),
+            len(hashed) if isinstance(hashed, str) else -1,
+        )
         return False
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
+        ok = bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        if not ok:
+            # Genuine wrong-password case; INFO not WARN to avoid log spam
+            # from normal failed-login attempts.
+            log.info("verify_password: bcrypt mismatch (hash_prefix=%r)", hashed[:7])
+        return ok
+    except Exception as e:
+        # Library breakage, encoding bug, hash truncation that snuck past
+        # the format check. Log enough context to diagnose without
+        # leaking the hash itself.
+        log.warning(
+            "verify_password: bcrypt.checkpw raised %s: %s (hash_prefix=%r, len=%d, plain_len=%d)",
+            type(e).__name__, str(e)[:200], hashed[:7], len(hashed), len(plain),
+        )
         return False
+
+
+def validate_bcrypt_runtime() -> dict:
+    """Self-test: hash a known string, verify it round-trips. Run from
+    the lifespan startup hook so any bcrypt-runtime breakage fails the
+    deploy loudly instead of locking users out at first login.
+
+    Returns a dict {ok, version, error?}. Caller decides whether to
+    raise -- typically the lifespan hook logs WARN and proceeds (so the
+    server still boots and the operator can patch via the CLI reset
+    script), but the WARN will appear in Railway's log stream.
+    """
+    sample = "smoketest-Ice-bcrypt-runtime"
+    try:
+        h = hash_password(sample)
+        if not _looks_like_bcrypt_hash(h):
+            return {"ok": False, "version": _BCRYPT_VERSION,
+                    "error": f"hash_password produced non-bcrypt output (prefix={h[:4]!r})"}
+        ok = bcrypt.checkpw(sample.encode("utf-8"), h.encode("utf-8"))
+        if not ok:
+            return {"ok": False, "version": _BCRYPT_VERSION,
+                    "error": "bcrypt.checkpw returned False on a freshly-generated hash"}
+        # Round-trip verify with verify_password too so the format-check
+        # path is exercised.
+        if not verify_password(sample, h):
+            return {"ok": False, "version": _BCRYPT_VERSION,
+                    "error": "verify_password rejected a freshly-generated hash"}
+        return {"ok": True, "version": _BCRYPT_VERSION}
+    except Exception as e:
+        return {"ok": False, "version": _BCRYPT_VERSION,
+                "error": f"{type(e).__name__}: {e}"}
 
 
 def create_token(user_id: str, tenant_id: str, email: str) -> str:

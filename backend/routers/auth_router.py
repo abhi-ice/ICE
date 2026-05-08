@@ -1,13 +1,15 @@
-"""Auth router: register (creates org/tenant), login, me, team invites."""
+"""Auth router: register (creates org/tenant), login, me, team invites,
+admin password reset."""
 import os
 import re
 import secrets
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import Field
 from database import get_db
 from models import (
     UserRegister, UserLogin, User, Tenant, TokenResponse,
-    InviteCreate, InviteAccept,
+    InviteCreate, InviteAccept, StrictModel,
     gen_id, utc_now,
 )
 from auth import hash_password, verify_password, create_token, require_tenant
@@ -262,3 +264,69 @@ async def remove_member(user_id: str, ctx: dict = Depends(require_tenant)):
                                       {"$set": {"status": "revoked"}})
     await db.users.delete_one({"id": user_id, "tenant_id": ctx["tenant_id"]})
     return {"ok": True}
+
+
+# ============================================================
+# Admin password reset (followup-fix 2026-05-08)
+# ============================================================
+# When a user gets locked out (e.g. password hash drift), the previous
+# code had no recovery path -- accept-invite refuses if the email is
+# already registered, and login refuses on hash mismatch. The only fix
+# was direct DB intervention. Adding a tenant-admin endpoint so the
+# operator can recover any teammate (including themselves, via another
+# admin) without DB access. CLI fallback (scripts/reset_password.py)
+# exists for the case where every admin is locked out.
+
+class PasswordResetPayload(StrictModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+@team_router.post("/members/{user_id}/reset-password")
+async def admin_reset_password(
+    user_id: str, payload: PasswordResetPayload,
+    ctx: dict = Depends(require_tenant),
+):
+    """Tenant-admin only. Sets a user's password_hash to a freshly-
+    bcrypt'd version of the provided plaintext. Audit-logged."""
+    if (ctx["user"].get("role") or "").lower() != "admin":
+        raise HTTPException(403, "Only tenant admins can reset member passwords")
+    db = get_db()
+    user = await db.users.find_one(
+        {"id": user_id, "tenant_id": ctx["tenant_id"]},
+        {"_id": 0, "id": 1, "email": 1, "tenant_id": 1, "password_hash": 1},
+    )
+    if not user:
+        raise HTTPException(404, "Member not found in this tenant")
+
+    new_hash = hash_password(payload.new_password)
+    # Capture the BEFORE-prefix so the audit log shows the old hash got
+    # rotated without storing the plaintext or the full hash.
+    before_prefix = (user.get("password_hash") or "")[:7] if user.get("password_hash") else None
+    await db.users.update_one(
+        {"id": user_id, "tenant_id": ctx["tenant_id"]},
+        {"$set": {"password_hash": new_hash,
+                   "password_reset_at": utc_now().isoformat(),
+                   "password_reset_by": ctx["user"]["id"]}},
+    )
+    # Invalidate any active session_tokens so the reset takes effect
+    # immediately on cookie-auth paths (Bearer JWTs are stateless and
+    # will expire naturally; document that in the response).
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="users",
+        op="ADMIN_PASSWORD_RESET",
+        record_id=user_id,
+        before={"hash_prefix": before_prefix},
+        after={"hash_prefix": new_hash[:7],
+                "reset_by": ctx["user"]["id"],
+                "reset_user_email": user.get("email")},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "email": user.get("email"),
+        "sessions_invalidated": True,
+        "note": "User must re-login with the new password. Active JWTs "
+                "remain valid until expiry; cookie sessions were cleared.",
+    }
