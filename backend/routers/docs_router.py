@@ -28,6 +28,17 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage required min-1. Coexists
+    # with the C3a gating_entities back-pointer (still set below by
+    # create_for_entity).
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     # Followup-fix (2026-05-07): preserve user-supplied response_text
     # (frontend "answer" field) instead of wiping it. Status is always
     # forced to draft on create -- the state machine is unchanged
@@ -44,10 +55,26 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
         "created_by": ctx["user"]["id"],
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="rfi")
     await db.rfis.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="rfis", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="rfis", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     # Bucket C3a Phase 1 — auto-create the gating_entities CPM-node row
     # and write its id back onto the RFI. Schedule_activity_id (if set)
     # populates gates_task_ids; a one-task RFI is the common case.
@@ -66,7 +93,9 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
 
 
 @router.get("/projects/{project_id}/rfis", response_model=list[Rfi])
-async def list_rfis(project_id: str, status_filter: Optional[str] = None, ctx: dict = Depends(require_tenant)):
+async def list_rfis(project_id: str, status_filter: Optional[str] = None,
+                     affected_activity_id: Optional[str] = None,
+                     ctx: dict = Depends(require_tenant)):
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
     if status_filter:
@@ -79,6 +108,9 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None, ctx: d
         # this filter deleted RFIs would keep appearing in the sidebar
         # list and the daily-report panel.
         f["status"] = {"$ne": "deleted"}
+    # Bucket D Phase 3 -- gallery filter.
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.rfis.find(f, {"_id": 0}).sort("date_initiated", -1).to_list(500)
     return [Rfi(**d) for d in docs]
 
@@ -86,10 +118,34 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None, ctx: d
 @router.patch("/rfis/{rfi_id}", response_model=Rfi)
 async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
     before = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "RFI not found")
+    # Addition 4 -- locked-DR edit policy.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="rfi", event_id=rfi_id,
+    )
+    # Bucket D verification fix -- re-validate linked_dr_activity_ids
+    # when the patch attempts to replace it, otherwise a client could
+    # write ids that don't exist or belong to a different DR/project
+    # (linkage is required min-1 on POST so the patch must keep that
+    # invariant).
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
     await db.rfis.update_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"$set": updates})
     after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     await write_audit(tenant_id=ctx["tenant_id"], table_name="rfis", op="UPDATE",
@@ -115,6 +171,15 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
             actual_responded_at=responded_at,
             new_display_label=new_label,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    # Addition 4 -- post-submit edit audit + metadata stamp.
+    if is_locked_edit:
+        after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
+        await stamp_edit_metadata(
+            db=db, collection="rfis", record_id=rfi_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
         )
     return Rfi(**after)
 

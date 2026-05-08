@@ -8,7 +8,7 @@ Per master prompt section 3:
 from __future__ import annotations
 from datetime import datetime, date, timezone
 from typing import Optional, List, Literal, Any
-from pydantic import BaseModel, ConfigDict, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr, field_validator
 from uuid import uuid4
 
 
@@ -28,6 +28,31 @@ class StrictModel(BaseModel):
 class ReadModel(BaseModel):
     """Base for response models. Ignores extras (e.g. mongo _id)."""
     model_config = ConfigDict(extra="ignore")
+
+
+# ============================================================
+# Bucket D Phase 1 — DR-activity linkage + supplement fields
+# ============================================================
+# `linked_dr_activity_ids` is a list of daily_report_activities.id
+# (the per-DR WBS row), NOT the master schedule task id. The cascade
+# walks DR-row -> daily_report_activities.schedule_activity_id ->
+# master task -> CPM successors. Every event collection (delays, rfis,
+# qc_issues, safety_events, coordination_events, deliveries, photos)
+# carries this field; the per-endpoint require-min-1 check lives in the
+# router so AI/voice/copilot creation paths (which bypass the HTTP
+# layer via direct db.X.insert_one) aren't broken by Pydantic-level
+# enforcement.
+#
+# Supplement fields: when a DR is locked (status=submitted) and a new
+# fact arrives, the platform files the new event with is_supplement=
+# true, daily_report_id=<today's container DR>, parent_daily_report_id
+# =<the locked DR being supplemented>, and linked_dr_activity_ids
+# pointing at the PARENT DR's activities. This preserves chronological
+# truth in the TIA timeline while making the audit trail honest.
+LINKAGE_MIN_ERR = (
+    "At least one linked daily-report activity is required. "
+    "Pick the WBS row(s) on the daily report that this event affects."
+)
 
 
 # ---------- Tenants & users ----------
@@ -384,6 +409,37 @@ class DailyReportCreate(StrictModel):
     weather_precipitation_in: Optional[float] = None
     notes: Optional[str] = None
 
+    # Addition 1 -- future-date guard. Pre-staging tomorrow's DR the
+    # night before is a real super workflow, so we allow today + 1
+    # day. Anything beyond that corrupts calendar reconciliation,
+    # TIA chronology, and CPM projections (a DR dated 30 days out
+    # would tag itself as "yesterday's DR" once the calendar caught
+    # up, breaking idempotent today-resolver logic).
+    @field_validator("report_date")
+    @classmethod
+    def _no_future_date(cls, v: date) -> date:
+        from datetime import date as _date, timedelta as _td
+        max_allowed = _date.today() + _td(days=1)
+        if v > max_allowed:
+            raise ValueError(
+                "Daily report date cannot be more than 1 day in the future."
+            )
+        return v
+
+
+# Addition 3 -- no-work-day acknowledgment vocabulary. Empty DR submit
+# requires is_no_work_day + a typed reason so legal sees explicit
+# "this was a planned no-work day" rather than "looks like the super
+# forgot to log anything." Reasons map 1-1 to the modal dropdown.
+NoWorkReason = Literal[
+    "weather",                # storm / extreme cold / snow / etc.
+    "holiday",                # observed holiday
+    "scheduled_non_work",     # planned non-work day (e.g. Sunday)
+    "crew_unavailable",       # crew didn't show
+    "tenant_restriction",     # tenant or owner blocked access
+    "other",                  # free-form, requires no_work_note
+]
+
 
 class DailyReport(ReadModel):
     id: str
@@ -411,6 +467,13 @@ class DailyReport(ReadModel):
     dust_violations_count: int = 0
     after_hours_work: Optional[bool] = None
     created_at: datetime
+    # Addition 3 -- no-work-day metadata. Set on submit when the DR has
+    # no activities AND no events; the backend enforces a typed reason
+    # so legal review sees an explicit acknowledgment rather than an
+    # empty record.
+    is_no_work_day: bool = False
+    no_work_reason: Optional[NoWorkReason] = None
+    no_work_note: Optional[str] = None
 
 
 ConstraintType = Literal[
@@ -463,6 +526,8 @@ class DailyReportActivityUpdate(StrictModel):
     constraint_reference_entity_id: Optional[str] = None
     constraint_other_description: Optional[str] = None
     production_impact_hours: Optional[float] = Field(default=None, ge=0)
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class DailyReportActivity(ReadModel):
@@ -507,6 +572,18 @@ class DailyReportActivity(ReadModel):
     constraint_other_description: Optional[str] = None
     production_impact_hours: Optional[float] = None
     constraint_auto_filled: bool = False
+    # Bucket D Phase 1 — supplement metadata. Lets a supplement DR add
+    # an activity row keyed to the parent DR's WBS, then surface it on
+    # the parent's "Supplements" appendix in Phase 4.
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 class DailyReportUpdate(StrictModel):
@@ -743,6 +820,16 @@ class RfiCreate(StrictModel):
     drawing_refs: List[dict] = Field(default_factory=list)
     date_required: Optional[date] = None
     priority: Priority = "normal"
+    # Bucket D Phase 1 — DR-activity M2M. Required min-1 enforced in
+    # the router (POST /rfis); copilot/voice paths bypass via insert_one.
+    # Coexists with the C3a gating_entities back-pointer (gating_entity_
+    # id is set after RFI insert by the create_for_entity hook) -- the
+    # gating row drives the cascade dashboard, this list drives TIA
+    # rollup + gallery filtering + form validation.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
 
 
 class RfiUpdate(StrictModel):
@@ -753,6 +840,11 @@ class RfiUpdate(StrictModel):
     date_responded: Optional[date] = None
     cost_impact_estimated_usd: Optional[float] = None
     time_impact_estimated_days: Optional[int] = None
+    # Bucket D Phase 1 — re-pickable post-create.
+    linked_dr_activity_ids: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked. Server
+    # rejects locked-DR patches with a missing or short reason.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class Rfi(ReadModel):
@@ -787,6 +879,17 @@ class Rfi(ReadModel):
     # represents this RFI as a scheduleable CPM node. Auto-populated on
     # POST /rfis. Older records get this via the 002 backfill.
     gating_entity_id: Optional[str] = None
+    # Bucket D Phase 1 — DR-activity M2M + supplement metadata.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 class ChangeOrderCreate(StrictModel):
@@ -820,6 +923,13 @@ class ChangeOrder(ReadModel):
 
 # ---------- Field events ----------
 Severity = Literal["minor", "moderate", "major", "critical"]
+# Bucket D Phase 5 -- QC severity superset. observation/minor/major are
+# scored gradations, rework_required triggers the synthetic-delay
+# cascade, stop_work pauses the affected activities. Severity stays
+# the canonical type for delays/safety; QC rows can carry either
+# (legacy Severity values) or one of the QC-specific ones below.
+QcSeverity = Literal["observation", "minor", "moderate", "major",
+                       "critical", "rework_required", "stop_work"]
 
 
 DelayStatus = Literal["open", "in_progress", "resolved"]
@@ -864,6 +974,15 @@ class DelayCreate(StrictModel):
     # GatingEntity so cross-entity rollups stay consistent.
     owner_attribution: Optional[str] = "none"  # OwnerAttribution literal
     cause_class: Optional[str] = "other"        # CauseClass literal
+    # Bucket D Phase 1 — DR-activity linkage. List of
+    # daily_report_activities.id rows (per-DR WBS rows) this delay
+    # affects. Router enforces min-1 on POST /delays; AI/voice/copilot
+    # paths can post empty (they go through db.delays.insert_one).
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Supplement fields (set true when filing against a locked parent DR).
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
 
 
 class DelayUpdate(StrictModel):
@@ -881,6 +1000,11 @@ class DelayUpdate(StrictModel):
     # Followup-fix 7 (2026-05-07): editable post-create via Delay detail.
     owner_attribution: Optional[str] = None
     cause_class: Optional[str] = None
+    # Bucket D Phase 1 — let the user re-pick affected activities post-
+    # create. Router validates min-1 if the field is present in the patch.
+    linked_dr_activity_ids: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class Delay(ReadModel):
@@ -905,6 +1029,17 @@ class Delay(ReadModel):
     # "no attribution".
     owner_attribution: Optional[str] = "none"
     cause_class: Optional[str] = "other"
+    # Bucket D Phase 1 — DR-activity linkage + supplement metadata.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
     # New (Phase A) fields. Default to empty/none so old records continue
     # to deserialize until the migration runs.
     linked_task_ids: List[str] = Field(default_factory=list)
@@ -953,6 +1088,22 @@ class SafetyEventCreate(StrictModel):
     description: str
     severity: Severity = "minor"
     event_type: SafetyEventType = "near_miss"
+    # Bucket D Phase 1 — DR-activity linkage. OPTIONAL (some safety
+    # events are area-wide and don't tie to a specific WBS row).
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
+
+
+class SafetyEventUpdate(StrictModel):
+    """Addition 4 -- supports edit-in-place on locked DRs (and
+    correction edits on draft DRs). Required-on-locked: edit_reason."""
+    description: Optional[str] = None
+    severity: Optional[Severity] = None
+    event_type: Optional[SafetyEventType] = None
+    linked_dr_activity_ids: Optional[List[str]] = None
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class SafetyEvent(ReadModel):
@@ -968,6 +1119,17 @@ class SafetyEvent(ReadModel):
     reported_by: Optional[str] = None
     reported_at: datetime
     created_at: datetime
+    # Bucket D Phase 1 — DR-activity linkage + supplement metadata.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 class QcIssueCreate(StrictModel):
@@ -978,7 +1140,50 @@ class QcIssueCreate(StrictModel):
     daily_report_id: Optional[str] = None
     date: date
     description: str
-    severity: Severity = "minor"
+    severity: str = "minor"  # see QcSeverity for Phase 5 vocabulary
+    # Bucket D Phase 1 — DR-activity M2M. Router enforces min-1 on
+    # POST /qc-issues; copilot/voice paths bypass via insert_one.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Phase 5 -- super-entered rework duration estimate when
+    # severity=rework_required. Required by router-side validation in
+    # that case. Basis is free text explaining the estimate; persisted
+    # for calibration RAG (Phase C2 pattern).
+    rework_duration_hours: Optional[float] = None
+    rework_duration_basis: Optional[str] = None
+
+
+class QcIssueUpdate(StrictModel):
+    """Bucket D Phase 1 — added so PATCH paths can flow through Pydantic
+    instead of raw dict updates. All fields optional, including the
+    new linkage list and resolution fields used by C2/C3 cascade flows.
+    Phase 5 -- adds rework outcome fields used by /qc-issues/{id}/
+    record-rework-outcome to capture actuals."""
+    description: Optional[str] = None
+    severity: Optional[str] = None
+    status: Optional[str] = None
+    resolution_notes: Optional[str] = None
+    linked_dr_activity_ids: Optional[List[str]] = None
+    # Phase 5 -- rework estimate fields (editable post-create until
+    # outcome is recorded).
+    rework_duration_hours: Optional[float] = None
+    rework_duration_basis: Optional[str] = None
+    # Phase 5 -- outcome fields (separate endpoint preferred, but
+    # PATCH is allowed too for admin corrections).
+    rework_actual_hours: Optional[float] = None
+    rework_outcome_notes: Optional[str] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class QcReworkOutcome(StrictModel):
+    """Bucket D Phase 5 -- outcome capture when rework finishes. Mirrors
+    the C2 mitigation outcome pattern; the synthetic delay's actual_days
+    is updated to match and the cascade is re-run."""
+    rework_actual_hours: float = Field(..., ge=0)
+    rework_outcome_notes: Optional[str] = None
 
 
 class QcIssue(ReadModel):
@@ -988,13 +1193,36 @@ class QcIssue(ReadModel):
     daily_report_id: Optional[str] = None
     date: date
     description: str
-    severity: Severity
+    severity: str
     status: str = "open"
     reported_by: Optional[str] = None
     reported_at: datetime
     resolved_at: Optional[datetime] = None
     resolution_notes: Optional[str] = None
     created_at: datetime
+    # Bucket D Phase 1 — DR-activity M2M + supplement metadata.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
+    # Bucket D Phase 5 -- rework cascade fields.
+    rework_duration_hours: Optional[float] = None
+    rework_duration_basis: Optional[str] = None
+    rework_estimated_at: Optional[datetime] = None
+    rework_estimated_by: Optional[str] = None
+    ai_benchmark_hours: Optional[float] = None
+    ai_benchmark_basis: Optional[str] = None
+    rework_actual_hours: Optional[float] = None
+    rework_outcome_notes: Optional[str] = None
+    rework_completed_at: Optional[datetime] = None
+    rework_outcome_recorded_by: Optional[str] = None
+    linked_synthetic_delay_id: Optional[str] = None
 
 
 # ---------- Photos ----------
@@ -1026,6 +1254,8 @@ class PhotoUpdate(StrictModel):
     caption: Optional[str] = None
     photo_class: Optional[PhotoClass] = None
     tags: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class PhotoPinPayload(StrictModel):
@@ -1073,6 +1303,92 @@ class Photo(ReadModel):
     pin_drawing_id: Optional[str] = None
     pin_x: Optional[float] = None
     pin_y: Optional[float] = None
+    # Bucket D Phase 1 — Photo reframed as the tagging junction. Each
+    # row is now ONE tag connecting a tray photo to ONE event (XOR rule
+    # enforced at the Phase 2 tagging endpoint, not here -- legacy rows
+    # carry no event-ref and the migration backfills tray_photo_id only).
+    tray_photo_id: Optional[str] = None
+    daily_report_activity_id: Optional[str] = None  # tag to a DR row
+    delay_id: Optional[str] = None
+    rfi_id: Optional[str] = None
+    qc_issue_id: Optional[str] = None
+    safety_event_id: Optional[str] = None
+    coordination_event_id: Optional[str] = None
+    delivery_id: Optional[str] = None
+    tagged_at: Optional[datetime] = None
+    tagged_by: Optional[str] = None
+    tag_caption: Optional[str] = None
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
+
+
+# ============================================================
+# Bucket D Phase 1 — Photo tray (staging area before tagging)
+# ============================================================
+PhotoCaptureSource = Literal["mobile_camera", "manual_upload", "drawing_pin"]
+PhotoTrayStatus = Literal["untagged", "partially_tagged", "fully_tagged", "archived"]
+
+
+class PhotoTrayCreate(StrictModel):
+    """Phase 2 will own the upload endpoint that produces these rows;
+    Phase 1 just defines the shape so the migration can backfill from
+    existing photos."""
+    project_id: str
+    capture_source: PhotoCaptureSource = "manual_upload"
+    source_path: Optional[str] = None
+    storage_key: str
+    phash: Optional[str] = None
+    sha256: Optional[str] = None
+    exif_taken_at: Optional[datetime] = None
+    exif_gps_lat: Optional[float] = None
+    exif_gps_lng: Optional[float] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    file_size_bytes: Optional[int] = None
+
+
+class PhotoTray(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    uploaded_by: Optional[str] = None
+    uploaded_at: datetime
+    capture_source: PhotoCaptureSource = "manual_upload"
+    source_path: Optional[str] = None
+    storage_key: str
+    phash: Optional[str] = None
+    sha256: Optional[str] = None
+    exif_taken_at: Optional[datetime] = None
+    exif_gps_lat: Optional[float] = None
+    exif_gps_lng: Optional[float] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    file_size_bytes: Optional[int] = None
+    status: PhotoTrayStatus = "untagged"
+
+
+class PhotoTagCreate(StrictModel):
+    """Phase 2 endpoint payload. Exactly one of the event-ref fields
+    must be non-null; XOR enforced router-side."""
+    tray_photo_id: str
+    daily_report_id: str
+    daily_report_activity_id: Optional[str] = None
+    delay_id: Optional[str] = None
+    rfi_id: Optional[str] = None
+    qc_issue_id: Optional[str] = None
+    safety_event_id: Optional[str] = None
+    coordination_event_id: Optional[str] = None
+    delivery_id: Optional[str] = None
+    drawing_pin_id: Optional[str] = None
+    photo_class: PhotoClass = "progress"
+    tag_caption: Optional[str] = None
 
 
 # ---------- Work items / field issues ----------
@@ -1384,7 +1700,12 @@ OwnerAttribution = Literal["gc", "a_e", "owner", "sub", "external_authority",
 CauseClass = Literal["design_clarification", "design_change",
                       "differing_site_condition", "concealed_condition",
                       "tenant_coordination", "building_coordination",
-                      "regulatory", "utility", "procurement", "other"]
+                      "regulatory", "utility", "procurement",
+                      # Bucket D Phase 5 -- synthetic delays from QC
+                      # rework cascade. TIA Section 2 surfaces these
+                      # as a discrete bucket.
+                      "quality_rework",
+                      "other"]
 
 
 class GatingEntity(ReadModel):
@@ -1498,6 +1819,14 @@ class CoordinationEventCreate(StrictModel):
     # Phase 2 marks events created by the voice extractor — UI shows them
     # as a "voice draft" so the user can review before treating as final.
     voice_extracted: bool = False
+    # Bucket D Phase 1 — DR-activity linkage. OPTIONAL (some
+    # coordination events are project-wide). Note: existing
+    # `linked_activity_ids` holds master-task IDs; this list is the
+    # per-DR WBS row IDs.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
 
 
 class CoordinationEventUpdate(StrictModel):
@@ -1527,6 +1856,10 @@ class CoordinationEventUpdate(StrictModel):
     linked_gating_entity_ids: Optional[List[str]] = None
     linked_daily_report_id: Optional[str] = None
     voice_extracted: Optional[bool] = None
+    # Bucket D Phase 1 — re-pickable post-create.
+    linked_dr_activity_ids: Optional[List[str]] = None
+    # Addition 4 -- required when the parent DR is locked.
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class CoordinationEvent(ReadModel):
@@ -1563,6 +1896,17 @@ class CoordinationEvent(ReadModel):
     # Soft-delete marker — list endpoints filter where this is None.
     deleted_at: Optional[datetime] = None
     deleted_by_user_id: Optional[str] = None
+    # Bucket D Phase 1 — DR-activity linkage + supplement metadata.
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_filed_at: Optional[datetime] = None
+    supplement_filed_by: Optional[str] = None
+    supplement_reason: Optional[str] = None
+    # Bucket D Task 2 -- denormalized parent DR date so the per-row
+    # supplement badge renders without a per-row fetch. Server-enriched
+    # in /context bundle and /photos list (extend other lists if needed).
+    parent_daily_report_date: Optional[str] = None
 
 
 # ============================================================
@@ -1703,3 +2047,82 @@ class TIAGeneration(ReadModel):
 
 class TIAUnflagPayload(StrictModel):
     reason: str = Field(..., min_length=3, max_length=500)
+
+
+# ============================================================
+# Addition 4 -- Edit-in-place on locked DRs (with tiered permissions
+# + edit_requests approval queue + per-event audit trail).
+# ============================================================
+EditableEventType = Literal[
+    "delay", "rfi", "qc", "safety", "photo", "coordination",
+    "delivery", "activity",
+]
+EditRequestStatus = Literal["pending", "approved", "denied", "expired"]
+
+# Required min length for the user-supplied edit reason. The 10-char
+# floor exists so legal sees substantive justification ("forgot to
+# log discovery") rather than empty or single-letter strings.
+EDIT_REASON_MIN_LEN = 10
+
+
+class EditRequestCreate(StrictModel):
+    """Filed by a super who needs edit access to an event on a locked
+    DR they originally submitted, AFTER the 24-hour self-edit window
+    has closed. Admin or PM reviews + approves/denies."""
+    daily_report_id: str
+    event_type: EditableEventType
+    event_id: str
+    reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
+
+
+class EditRequestReview(StrictModel):
+    """Admin/PM review payload. review_note is optional on approve,
+    encouraged on deny."""
+    review_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class EditRequest(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    daily_report_id: str
+    event_type: EditableEventType
+    event_id: str
+    requested_by: str
+    requested_at: datetime
+    reason: str
+    status: EditRequestStatus = "pending"
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None
+    # Set on approve: now + 1 hour. After this point the request is
+    # treated as expired even if status hasn't been auto-flipped.
+    edit_window_expires_at: Optional[datetime] = None
+
+
+# ---------- Edit metadata mixin (additive defaults on every event row) ----------
+# Schema additions on delays / rfis / qc_issues / safety_events / photos /
+# coordination_events / deliveries / daily_report_activities. Defaults
+# preserve legacy behavior (edit_count=0, post_submit_edited=false) so no
+# migration is required -- only newly-edited rows ever set these fields.
+#
+# We don't bake these into every model class to avoid a 100-line diff;
+# the read endpoints surface them via the underlying mongo doc and the
+# ReadModel base ignores extras. The PATCH endpoints stamp them on
+# write. For documentation, the shape is:
+#
+#   last_edited_at: datetime | null
+#   last_edited_by: user_id | null
+#   last_edit_reason: str | null
+#   edit_count: int (default 0)
+#   post_submit_edited: bool (default false)
+
+
+class PostSubmitEditPayload(StrictModel):
+    """The patch payload accepted by every event PATCH endpoint when
+    the parent DR is locked. The shape is intentionally minimal to keep
+    the audit chain readable; the caller posts whichever fields they
+    want to change as part of `updates` and the server merges them into
+    the underlying record after permission/reason checks."""
+    edit_reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
+    updates: dict = Field(..., description="Field name -> new value")

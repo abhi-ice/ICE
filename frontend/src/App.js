@@ -32,6 +32,7 @@ import TIAGenerationDetail from "./pages/TIAGenerationDetail";
 import Drawings from "./pages/Drawings";
 import Specs from "./pages/Specs";
 import Photos from "./pages/Photos";
+import PhotoTray from "./pages/PhotoTray";
 import Spatial3D from "./pages/Spatial3D";
 import PolygonEditor from "./pages/PolygonEditor";
 import Submittals from "./pages/Submittals";
@@ -45,6 +46,7 @@ import VoicePinAdmin from "./pages/VoicePinAdmin";
 import VoiceLogin from "./pages/VoiceLogin";
 import MobileForeman from "./pages/MobileForeman";
 import { AuditLog, AiAgentsPage, Settings, WeeklyReports } from "./pages/SystemPages";
+import EditRequestsQueue from "./pages/EditRequestsQueue";
 import "./App.css";
 
 function Guard({ children }) {
@@ -72,6 +74,7 @@ export default function App() {
             {/* Daily ops */}
             <Route path="daily-reports" element={<DailyReports />} />
             <Route path="photos" element={<Photos />} />
+            <Route path="photo-tray" element={<PhotoTray />} />
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />
             <Route path="delays/:id" element={<DelayDetail />} />
             <Route path="gating-entities/:id" element={<GatingEntityDetail />} />
@@ -127,6 +130,7 @@ export default function App() {
             <Route path="voice-pins" element={<VoicePinAdmin />} />
             <Route path="compliance" element={<ComplianceFull />} />
             <Route path="audit-log" element={<AuditLog />} />
+            <Route path="edit-requests" element={<EditRequestsQueue />} />
             <Route path="settings" element={<Settings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

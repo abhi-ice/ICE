@@ -170,11 +170,68 @@ async def _gather_data(
     from routers.calendar_reconciliation_router import _build_rows
     calendar_rows = await _build_rows(tenant_id, project_id, start, end)
 
+    # ---- Bucket D Phase 4 -- supplements pointing at DRs in range ----
+    # Events filed AFTER a DR's submit (with parent_daily_report_id set
+    # to one of the in-range DRs) belong to the DR's date in the TIA
+    # timeline, even though they live in a later container DR. Pull
+    # them now and merge into each per-collection list with a `_supp`
+    # marker that the renderers use to print [SUPPLEMENT].
+    if dr_ids:
+        async def _pull_sup(coll: str) -> list[dict]:
+            rows = await db[coll].find(
+                tenant_filter(tenant_id, {
+                    "parent_daily_report_id": {"$in": dr_ids},
+                    "is_supplement": True,
+                }),
+                {"_id": 0},
+            ).to_list(length=5000)
+            for r in rows:
+                r["_supp"] = True
+                # Pin the row to its parent DR's date for chronological
+                # placement in the TIA timeline.
+                r["_supp_parent_date"] = dr_dates.get(r.get("parent_daily_report_id"))
+            return rows
+        delays.extend(await _pull_sup("delays"))
+        coord.extend(await _pull_sup("coordination_events"))
+        mitigations.extend(await _pull_sup("mitigations"))
+        photos.extend(await _pull_sup("photos"))
+        # gating_entities / qc / safety supplements go into their own keys
+        # below (no current TIA section pulls qc/safety as a list, but
+        # the data structure includes them under section_13/etc.).
+
+    # Addition 4 -- annotate each row that has been edited post-submit
+    # with an `edits_summary` cell that the renderers print as
+    # "edited N times, last YYYY-MM-DD". Counsel sees the original
+    # contemporaneous record + a clear flag that it was edited later.
+    def _annotate_edits(rows: list[dict]) -> None:
+        for r in rows:
+            if r.get("post_submit_edited"):
+                cnt = int(r.get("edit_count") or 0)
+                last = (r.get("last_edited_at") or "")[:10]
+                r["edits_summary"] = (
+                    f"edited {cnt} time(s) post-submit, last {last}"
+                    if last else f"edited {cnt} time(s) post-submit"
+                )
+            else:
+                r["edits_summary"] = ""
+    _annotate_edits(delays)
+    _annotate_edits(photos)
+    _annotate_edits(coord)
+    _annotate_edits(gating_entities)
+
     # ---- Audit log: filtered to delay-driving entities in range ----
     relevant_tables = [
         "delays", "mitigations", "gating_entities", "coordination_events",
         "schedule_update_diffs", "cascade_snapshots", "photos",
         "daily_reports", "daily_presence", "daily_report_activities",
+        # Bucket D Phase 4 -- include qc_issues + safety_events + deliveries
+        # so SUPPLEMENT_FILED entries on those collections show in the
+        # TIA Section 12 audit extract.
+        "qc_issues", "safety_events", "deliveries", "rfis",
+        # Addition 4 -- surface EDIT_REQUEST_FILED / APPROVED / DENIED
+        # ops in the audit extract so counsel can see the approval
+        # workflow alongside the EVENT_EDITED_POST_SUBMIT entries.
+        "edit_requests",
     ]
     audit_entries = await db.audit_log.find(
         {"tenant_id": tenant_id,
@@ -280,6 +337,13 @@ def _render_docx(data: dict) -> bytes:
     def table(rows: list[dict], cols: list[tuple[str, str]]):
         if not rows:
             empty(); return
+        # Bucket D Phase 4 -- supplements show first column annotated
+        # with [SUPP] so the chronological ledger stays honest.
+        # Sort: parent date if supplement, else native date field.
+        def _sort_key(r):
+            return (r.get("_supp_parent_date") or r.get("logged_date")
+                    or r.get("date") or r.get("occurred_at") or r.get("created_at") or "")
+        rows = sorted(rows, key=_sort_key)
         t = doc.add_table(rows=1 + min(len(rows), 200), cols=len(cols))
         t.style = "Light Grid Accent 1"
         hdr = t.rows[0].cells
@@ -293,7 +357,10 @@ def _render_docx(data: dict) -> bytes:
                     v = ", ".join(str(x) for x in v[:10])
                 elif isinstance(v, dict):
                     v = json.dumps(v, default=str)[:200]
-                cells[cidx].text = str(v) if v is not None else ""
+                cell_text = str(v) if v is not None else ""
+                if cidx == 0 and row.get("_supp"):
+                    cell_text = "[SUPP] " + cell_text
+                cells[cidx].text = cell_text
         if len(rows) > 200:
             P(f"... and {len(rows) - 200} more (full set in JSON artifact).")
 
@@ -313,6 +380,7 @@ def _render_docx(data: dict) -> bytes:
         ("id", "ID"), ("logged_date", "Date"), ("cause_class", "Type"),
         ("delay_days", "Days"), ("owner_attribution", "Owner"),
         ("linked_task_ids", "Gated activities"), ("status", "Status"),
+        ("edits_summary", "Post-submit edits"),
     ])
 
     # SECTION 3
@@ -375,6 +443,7 @@ def _render_docx(data: dict) -> bytes:
         ("server_received_timestamp", "Server ts"),
         ("timestamp_mismatch_flag", "TS mismatch"),
         ("sha256_hash", "SHA-256"),
+        ("edits_summary", "Post-submit edits"),
     ])
 
     # SECTION 9
@@ -384,6 +453,7 @@ def _render_docx(data: dict) -> bytes:
         ("display_label", "Label"), ("submitted_at", "Submitted"),
         ("status", "Status"), ("owner_attribution", "Owner"),
         ("is_over_sla", "Over SLA"),
+        ("edits_summary", "Post-submit edits"),
     ])
 
     # SECTION 10
@@ -404,6 +474,11 @@ def _render_docx(data: dict) -> bytes:
         ("weather_impact_hours", "Weather (h)"),
         ("production_hours", "Production (h)"),
         ("headcount_total", "Headcount"),
+        # Addition 3 -- explicit no-work-day acknowledgments surface
+        # here so legal sees "this was a planned blank day" rather
+        # than "looks like the super forgot to log anything."
+        ("no_work_reason", "No-work reason"),
+        ("no_work_note", "No-work note"),
     ])
 
     # SECTION 12

@@ -834,28 +834,149 @@ class DeliveryCreate(StrictModel):
     po_number: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
+    # Bucket D Phase 1 — DR-activity linkage. Required min-1; copilot/
+    # voice paths bypass via direct insert_one. daily_report_id is also
+    # added so the linkage can be scoped to a specific DR.
+    daily_report_id: Optional[str] = None
+    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    is_supplement: bool = False
+    parent_daily_report_id: Optional[str] = None
+    supplement_reason: Optional[str] = None
+
+
+class DeliveryUpdate(StrictModel):
+    """Addition 4 -- supports edit-in-place on locked DRs and the
+    received-by/photos workflow on draft DRs."""
+    delivery_date: Optional[str] = None
+    vendor: Optional[str] = None
+    description: Optional[str] = None
+    po_number: Optional[str] = None
+    schedule_activity_id: Optional[str] = None
+    location_id: Optional[str] = None
+    status: Optional[str] = None
+    received_by: Optional[str] = None
+    linked_dr_activity_ids: Optional[List[str]] = None
+    edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 @router.post("/deliveries")
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage required.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "scheduled",
         "received_by": None, "photos": [],
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 + Task 3 fix C -- supplement metadata + lock check + audit.
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    from audit import write_audit
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="delivery")
     await db.deliveries.insert_one(doc.copy())
+    # Bucket D verification fix -- always write the INSERT audit, not
+    # only on supplement. The earlier code only fired SUPPLEMENT_FILED
+    # for supplement deliveries, leaving normal deliveries unaudited.
+    # TIA defense + audit-chain integrity require every mutation in the
+    # log.
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="deliveries", op="INSERT",
+        record_id=doc["id"], before=None, after=doc,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="deliveries", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return doc
 
 
 @router.get("/projects/{project_id}/deliveries")
-async def list_deliveries(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_deliveries(project_id: str,
+                            affected_activity_id: Optional[str] = None,
+                            ctx: dict = Depends(require_tenant)):
     db = get_db()
+    f = {"project_id": project_id}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.deliveries.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("delivery_date", -1).to_list(500)
     return docs
+
+
+# Addition 4 -- post-submit edit endpoint for deliveries.
+@router.patch("/deliveries/{delivery_id}")
+async def update_delivery(
+    delivery_id: str, payload: DeliveryUpdate,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    before = await db.deliveries.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Delivery not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
+        return before
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="delivery", event_id=delivery_id,
+    )
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+    await db.deliveries.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"$set": updates},
+    )
+    after = await db.deliveries.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="deliveries", op="UPDATE",
+        record_id=delivery_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if is_locked_edit:
+        after = await db.deliveries.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="deliveries", record_id=delivery_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
+    return after
 
 
 # ============================================================

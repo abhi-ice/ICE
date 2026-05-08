@@ -17,11 +17,15 @@ import { localTodayISO } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+// Addition 4 -- locked-DR edit modal (reusable across event types).
+import LockedEventEditModal from "../components/forms/LockedEventEditModal";
+import SupplementWizard from "../components/forms/SupplementWizard";
+import DrActivityPicker from "../components/forms/DrActivityPicker";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
-  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2,
+  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil,
 } from "lucide-react";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
@@ -46,6 +50,18 @@ export default function DailyReports() {
   const [openId, setOpenId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerDate, setPickerDate] = useState(localTodayISO());
+
+  // Bucket D Phase 3 -- gallery chips + date links route here with
+  // ?openId=<dr-id>; honor it on first mount so the DR opens directly.
+  // Bucket D Fix F -- ALSO honor ?openEvent + ?openEventType so the
+  // gallery click-through scrolls to and pulse-highlights the specific
+  // event row. Stripped from the URL after first mount so refresh
+  // doesn't re-trigger.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const target = params.get("openId");
+    if (target) setOpenId(target);
+  }, []);
 
   const load = useCallback(() => {
     if (!activeId) return;
@@ -185,6 +201,10 @@ function DailyReportDetail({ id, onBack }) {
   const [submitRowErrors, setSubmitRowErrors] = useState({});
   // Bucket C3b Phase 1 — quick-log coordination event dialog.
   const [coordOpen, setCoordOpen] = useState(false);
+  // Addition 3 -- no-work-day modal state. Opened when the server rejects
+  // a submit with error="empty_dr_requires_no_work_day". On confirm we
+  // resubmit with is_no_work_day=true + the reason/note.
+  const [noWorkModal, setNoWorkModal] = useState(null); // null | {reason, note}
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
@@ -198,6 +218,67 @@ function DailyReportDetail({ id, onBack }) {
     setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
+
+  // Bucket D Fix F -- gallery click-through highlight. After the bundle
+  // renders, find the matching event row by data-testid, scroll into
+  // view, add the saffron pulse class. Strip the URL params so refresh
+  // doesn't re-trigger.
+  // Bucket D Fix G -- ALSO honor ?createEvent=<panel-id> by scrolling
+  // the named panel into view + pulsing it so the user can immediately
+  // hit the panel's "+ Add" button. Panel ids: dr-safety-panel,
+  // dr-qc-panel, dr-rfis-panel, dr-deliveries-panel, dr-photos-panel,
+  // dr-coordination (handled via quick-log dialog instead, see below).
+  useEffect(() => {
+    if (!bundle) return;
+    const params = new URLSearchParams(window.location.search);
+    const eventId = params.get("openEvent");
+    const eventType = params.get("openEventType");
+    const createEvent = params.get("createEvent");
+    if (!eventId && !createEvent) return;
+    const t = setTimeout(() => {
+      let el = null;
+      if (eventId && eventType) {
+        const candidates = [
+          `[data-testid="${eventType}-row-${eventId}"]`,
+          `[data-event-row-type="${eventType}"][data-event-row-id="${eventId}"]`,
+        ];
+        for (const sel of candidates) {
+          el = document.querySelector(sel);
+          if (el) break;
+        }
+      } else if (createEvent) {
+        // Coordination uses the quick-log dialog rather than an inline panel.
+        if (createEvent === "coordination") {
+          setCoordOpen(true);
+          return;
+        }
+        const panelMap = {
+          delay: "dr-reminder-banner",
+          safety: "dr-safety-panel",
+          qc: "dr-qc-panel",
+          rfi: "dr-rfis-panel",
+          delivery: "dr-deliveries-panel",
+          photo: "dr-photos-panel",
+        };
+        const panelTestId = panelMap[createEvent];
+        if (panelTestId) {
+          el = document.querySelector(`[data-testid="${panelTestId}"]`);
+        }
+      }
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("dr-event-highlight");
+        setTimeout(() => el.classList.remove("dr-event-highlight"), 2200);
+      }
+    }, 250);
+    // Strip the navigation params so refresh doesn't re-trigger.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("openEvent");
+    url.searchParams.delete("openEventType");
+    url.searchParams.delete("createEvent");
+    window.history.replaceState({}, "", url.toString());
+    return () => clearTimeout(t);
+  }, [bundle]);
 
   if (!bundle) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
@@ -223,24 +304,41 @@ function DailyReportDetail({ id, onBack }) {
     return { ok: errors.length === 0, errors };
   };
 
-  const submit = async () => {
-    const { ok, errors } = validate();
-    if (!ok) {
-      toast.error("Cannot submit: " + errors[0]);
-      return;
-    }
+  // Addition 3 -- shared submit core; payload defaults to {} (normal
+  // submit) but the no-work-day modal calls it with is_no_work_day +
+  // reason + note populated. Returns true on success.
+  const _submitWith = async (payload) => {
     setBusy(true);
     setSubmitRowErrors({});
     try {
-      await api.post(`/daily-reports/${id}/submit`, {});
-      toast.success("Daily report submitted and locked.");
+      await api.post(`/daily-reports/${id}/submit`, payload);
+      toast.success(payload.is_no_work_day
+        ? "Daily report submitted as a no-work day."
+        : "Daily report submitted and locked.");
+      setNoWorkModal(null);
       reload();
+      return true;
     } catch (e) {
-      // Bucket C3a Phase 3 — server returns structured per-row errors as
-      // 422 detail.row_errors. Render them inline next to each offending
-      // row instead of as a single toast.
       const detail = e.response?.data?.detail;
-      if (e.response?.status === 422 && detail && typeof detail === "object" && Array.isArray(detail.row_errors)) {
+      // Addition 3 -- empty DR -> open the no-work-day modal so the user
+      // can acknowledge the blank day with an explicit reason.
+      if (
+        e.response?.status === 422
+        && detail && typeof detail === "object"
+        && detail.error === "empty_dr_requires_no_work_day"
+      ) {
+        setNoWorkModal({ reason: "", note: "" });
+        toast.info(
+          "This DR has no activities or events. Pick a no-work-day reason to submit.",
+        );
+        return false;
+      }
+      // Bucket C3a Phase 3 — structured per-row errors render inline.
+      if (
+        e.response?.status === 422
+        && detail && typeof detail === "object"
+        && Array.isArray(detail.row_errors)
+      ) {
         const byRow = {};
         for (const err of detail.row_errors) {
           if (!byRow[err.row_id]) byRow[err.row_id] = [];
@@ -249,9 +347,45 @@ function DailyReportDetail({ id, onBack }) {
         setSubmitRowErrors(byRow);
         toast.error(detail.message || "Submit blocked — fix the rows highlighted in red.");
       } else {
-        toast.error(e.response?.data?.detail?.message || e.response?.data?.detail || e.message || "Submit failed");
+        toast.error(detail?.message || detail || e.message || "Submit failed");
       }
+      return false;
     } finally { setBusy(false); }
+  };
+
+  const submit = async () => {
+    // Addition 3 -- the legacy validator hard-blocked empty grids. We
+    // now defer to the server, which lets the user submit blank days
+    // explicitly via the no-work-day modal. Only block on errors that
+    // can't be a no-work day (e.g. partially-filled grids with row
+    // errors).
+    const { ok, errors } = validate();
+    const onlyEmptyGridError = (
+      !ok && errors.length === 1 && errors[0].includes("Activity grid is empty")
+    );
+    if (!ok && !onlyEmptyGridError) {
+      toast.error("Cannot submit: " + errors[0]);
+      return;
+    }
+    await _submitWith({});
+  };
+
+  // Addition 3 -- modal confirm: resubmit with is_no_work_day=true.
+  const submitNoWorkDay = async () => {
+    if (!noWorkModal) return;
+    if (!noWorkModal.reason) {
+      toast.error("Pick a reason.");
+      return;
+    }
+    if (noWorkModal.reason === "other" && !(noWorkModal.note || "").trim()) {
+      toast.error("Note is required when reason is 'other'.");
+      return;
+    }
+    await _submitWith({
+      is_no_work_day: true,
+      no_work_reason: noWorkModal.reason,
+      no_work_note: (noWorkModal.note || "").trim() || null,
+    });
   };
 
   const approve = async () => {
@@ -307,6 +441,70 @@ function DailyReportDetail({ id, onBack }) {
         </DialogContent>
       </Dialog>
 
+      {/* Addition 3 -- no-work-day acknowledgment modal. Triggered when
+          the server rejects an empty-DR submit; user picks a reason and
+          confirms, modal calls submitNoWorkDay() which re-submits with
+          is_no_work_day=true. */}
+      <Dialog open={!!noWorkModal} onOpenChange={(o) => !o && setNoWorkModal(null)}>
+        <DialogContent className="max-w-md" data-testid="no-work-day-modal">
+          <DialogHeader>
+            <DialogTitle>This Daily Report has no activities or events</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-600">
+              Submitting a blank DR without explanation looks sloppy in
+              claim defense. File this as a no-work day so the record
+              shows you knew it was blank and why.
+            </p>
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" checked readOnly disabled
+                data-testid="no-work-ack" className="mt-0.5" />
+              <span><strong>File as a no-work day</strong> (required to submit a blank DR)</span>
+            </label>
+            <div>
+              <label className="field-label">Reason *</label>
+              <select data-testid="no-work-reason"
+                value={noWorkModal?.reason ?? ""}
+                onChange={(e) => setNoWorkModal({ ...noWorkModal, reason: e.target.value })}
+                className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
+                <option value="">— pick a reason —</option>
+                <option value="weather">Weather (storm, extreme cold, snow, etc.)</option>
+                <option value="holiday">Holiday</option>
+                <option value="scheduled_non_work">Scheduled non-work day</option>
+                <option value="crew_unavailable">Crew unavailable</option>
+                <option value="tenant_restriction">Tenant or owner access restricted</option>
+                <option value="other">Other (note required)</option>
+              </select>
+            </div>
+            <div>
+              <label className="field-label">
+                Note {noWorkModal?.reason === "other" && <span className="text-red-600">*</span>}
+              </label>
+              <textarea data-testid="no-work-note"
+                value={noWorkModal?.note ?? ""}
+                onChange={(e) => setNoWorkModal({ ...noWorkModal, note: e.target.value })}
+                placeholder={
+                  noWorkModal?.reason === "other"
+                    ? "Required: describe the reason."
+                    : "Optional context."
+                }
+                className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button data-testid="no-work-cancel" onClick={() => setNoWorkModal(null)}
+                className="h-9 px-3 rounded border border-slate-200 text-sm">
+                Cancel
+              </button>
+              <button data-testid="no-work-confirm" onClick={submitNoWorkDay}
+                disabled={busy}
+                className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                {busy ? "Submitting…" : "Submit as no-work day"}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* WEATHER */}
       <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
 
@@ -333,13 +531,16 @@ function DailyReportDetail({ id, onBack }) {
         <DelaysPanel rows={delays} dailyReportId={id} projectId={project.id}
                      reportDate={report.report_date} locked={locked} reload={reload} />
         <SafetyPanel rows={safety_events} dailyReportId={id} projectId={project.id}
-                     reportDate={report.report_date} locked={locked} reload={reload} />
+                     reportDate={report.report_date} locked={locked} reload={reload}
+                     grid={grid} />
         <QcPanel rows={qc_issues} dailyReportId={id} projectId={project.id}
-                 reportDate={report.report_date} locked={locked} reload={reload} />
+                 reportDate={report.report_date} locked={locked} reload={reload}
+                 grid={grid} />
         <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
-                   locked={locked} reload={reload} />
+                   locked={locked} reload={reload} grid={grid} />
         <DeliveriesPanel rows={deliveries} dailyReportId={id} projectId={project.id}
-                         reportDate={report.report_date} locked={locked} reload={reload} />
+                         reportDate={report.report_date} locked={locked} reload={reload}
+                         grid={grid} />
         <NotesPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       </div>
 
@@ -349,6 +550,11 @@ function DailyReportDetail({ id, onBack }) {
                      locked={locked} reload={reload} />
         <VoicePanel rows={voice_annotations} dailyReportId={id} reload={reload} />
       </div>
+
+      {/* Bucket D Phase 4 -- supplements appendix. Lists every event
+          filed against THIS DR after it was submitted (i.e., events
+          whose parent_daily_report_id == this DR's id). */}
+      <SupplementsAppendix dailyReportId={id} projectId={project.id} />
 
       {/* AUDIT LOG */}
       <AuditPanel rows={audit_log} userLabels={user_labels} />
@@ -390,6 +596,13 @@ function Header({ report, project, userLabels, ppc, totalHours,
             <StatusPill status={report.status} />
             {locked && <Lock className="h-3.5 w-3.5 text-slate-500" />}
           </div>
+          {report.is_no_work_day && (
+            <div data-testid="dr-no-work-pill"
+              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] uppercase tracking-wide"
+              title={report.no_work_note || "No-work day"}>
+              No-work day · {(report.no_work_reason || "").replace(/_/g, " ")}
+            </div>
+          )}
         </div>
         <div className="hidden md:block min-w-[180px]">
           <div className="text-xs text-slate-500 uppercase tracking-wide">Trail</div>
@@ -540,14 +753,19 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   const total = rows.reduce((s, r) => s + (r.headcount || 0), 0);
   const totalHours = rows.reduce((s, r) => s + (r.headcount || 0) * (r.hours_per_person || 0), 0);
 
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   const add = async () => {
+    if (busy) return;
     if (!draft.trade) return toast.error("Trade is required");
+    setBusy(true);
     try {
       await api.post(`/daily-reports/${dailyReportId}/presence`, { ...draft, daily_report_id: dailyReportId });
       setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "",
                  zone_id: undefined, zone_name: undefined, shift: "first", schedule_activity_id: undefined });
       reload();
     } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
+    finally { setBusy(false); }
   };
   const patch = async (rid, fields) => {
     try { await api.patch(`/daily-presence/${rid}`, fields); reload(); }
@@ -683,7 +901,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               </label>
             </>
           )}
-          <button data-testid="presence-add" onClick={add} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
+          <button data-testid="presence-add" onClick={add} disabled={busy} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
             <Plus className="h-3.5 w-3.5" /> Add trade
           </button>
         </div>
@@ -1068,14 +1286,19 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
       setPicking(""); reload();
     } catch (e) { toast.error(formatErr(e, "Add planned activity")); }
   };
+  // Bucket D Fix E -- double-click guard for unplanned-activity create.
+  const [creatingUnplanned, setCreatingUnplanned] = useState(false);
   const createUnplanned = async () => {
+    if (creatingUnplanned) return;
     if (!unplanned.description) return toast.error("Describe the unplanned activity first");
+    setCreatingUnplanned(true);
     try {
       await api.post(`/daily-reports/${dailyReportId}/unplanned-activity`, unplanned);
       setUnplanned({ description: "", trade_code: "", duration_days: 1 });
       toast.success("Unplanned activity created — flagged for PM review.");
       reload();
     } catch (e) { toast.error(formatErr(e, "Create unplanned")); }
+    finally { setCreatingUnplanned(false); }
   };
 
   const STATUS_OPTS = ["not_started", "in_progress", "blocked", "complete"];
@@ -1188,8 +1411,9 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
               <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             </div>
-            <button data-testid="unplanned-add" onClick={createUnplanned} className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 flex items-center gap-1">
-              <Plus className="h-3 w-3" /> Create unplanned activity
+            <button data-testid="unplanned-add" onClick={createUnplanned} disabled={creatingUnplanned}
+              className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 flex items-center gap-1">
+              <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : "Create unplanned activity"}
             </button>
           </div>
         </div>
@@ -1224,7 +1448,8 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
       {rows.map((r) => (
-        <DelayRowInline key={r.id} delay={r} reload={reload} />
+        <DelayRowInline key={r.id} delay={r} reload={reload}
+          locked={locked} dailyReportId={dailyReportId} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No delays today.</div>}
       {!locked && (
@@ -1249,10 +1474,12 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   );
 }
 
-function DelayRowInline({ delay, reload }) {
+function DelayRowInline({ delay, reload, locked, dailyReportId }) {
   const [resolving, setResolving] = useState(false);
   const [resolveDate, setResolveDate] = useState(localTodayISO());
   const [resolveNote, setResolveNote] = useState("");
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
 
   const resolve = async () => {
     try {
@@ -1278,14 +1505,54 @@ function DelayRowInline({ delay, reload }) {
         {delay.reason_category && <span className="text-slate-400">{delay.reason_category}</span>}
         {linkedCount > 0 && <span className="text-slate-500">· {linkedCount} task{linkedCount === 1 ? "" : "s"}</span>}
         {delay.duration_days != null && <span className="text-slate-500">· {delay.duration_days}d open</span>}
+        <SupplementBadge row={delay} />
         {delay.status !== "resolved" && (
           <button data-testid={`delay-resolve-open-${delay.id}`} onClick={() => setResolving((v) => !v)}
             className="ml-auto text-blue-600 hover:underline">
             {resolving ? "cancel" : "mark resolved"}
           </button>
         )}
+        {locked && (
+          <button data-testid={`delay-edit-locked-${delay.id}`} onClick={() => setEditOpen(true)}
+            className={`${delay.status !== "resolved" ? "ml-2" : "ml-auto"} text-amber-700 hover:underline`}>
+            edit
+          </button>
+        )}
+        {delay.post_submit_edited && (
+          <span className="text-[10px] text-amber-700"
+            title={`Last edit: ${(delay.last_edit_reason || "").slice(0, 80)}`}>
+            (edited {delay.edit_count || 0}× post-submit)
+          </span>
+        )}
       </div>
       <div className="text-slate-700 whitespace-pre-wrap">{delay.description}</div>
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="delay" eventId={delay.id} dailyReportId={dailyReportId}
+          patchUrl={`/delays/${delay.id}`}
+          fields={[
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "severity", label: "Severity", type: "select",
+              options: [
+                { value: "minor", label: "minor" }, { value: "moderate", label: "moderate" },
+                { value: "major", label: "major" }, { value: "critical", label: "critical" },
+              ] },
+            { key: "reason_category", label: "Reason category" },
+            { key: "owner_attribution", label: "Owner attribution", type: "select",
+              options: [
+                { value: "none", label: "none" }, { value: "owner", label: "owner" },
+                { value: "gc", label: "gc" }, { value: "design", label: "design" },
+                { value: "force_majeure", label: "force majeure" },
+              ] },
+          ]}
+          currentValues={{
+            description: delay.description, severity: delay.severity,
+            reason_category: delay.reason_category, owner_attribution: delay.owner_attribution,
+          }}
+          onSaved={reload}
+        />
+      )}
       {resolving && (
         <div className="mt-2 p-2 bg-slate-50 rounded grid grid-cols-2 gap-2">
           <input type="date" value={resolveDate} onChange={(e) => setResolveDate(e.target.value)}
@@ -1374,38 +1641,55 @@ function ReminderCard({ delay, reload }) {
   );
 }
 
-function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
+function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
   // Phase C — simplified: description + type + severity. OSHA recordable
   // checkbox removed per spec.
-  const [draft, setDraft] = useState({ description: "", severity: "minor", event_type: "near_miss" });
+  // Bucket D Task 1 -- linked_dr_activity_ids picker. OPTIONAL for
+  // safety per spec (some events area-wide); empty list still saves.
+  const [draft, setDraft] = useState({
+    description: "", severity: "minor", event_type: "near_miss",
+    linked_dr_activity_ids: [],
+  });
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "safety" || !text) return;
     setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
   }), []);
   const create = async () => {
+    if (busy) return;
     if (!draft.description) return toast.error("Description required");
+    setBusy(true);
     try {
-      await api.post(`/safety-events`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor", event_type: "near_miss" });
+      await api.post(`/safety-events`, {
+        project_id: projectId, daily_report_id: dailyReportId, date: reportDate,
+        description: draft.description, severity: draft.severity, event_type: draft.event_type,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      });
+      setDraft({ description: "", severity: "minor", event_type: "near_miss",
+                  linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create safety event")); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={ShieldAlert} title="Safety events" testid="dr-safety-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`safety-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="pill pill-slate mr-2">{r.event_type}</span>
-          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
-          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
-        </div>
+        <SafetyRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
-          <textarea data-testid="safety-new-desc" rows={6} placeholder="Describe the event"
+          <textarea data-testid="safety-new-desc" rows={4} placeholder="Describe the event"
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
+          <DrActivityPicker grid={grid}
+            value={draft.linked_dr_activity_ids}
+            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
+            required={false} label="Affected activities (optional)"
+            testidPrefix="safety-activity" compact />
           <div className="grid grid-cols-2 gap-2">
             <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
               {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
@@ -1414,8 +1698,9 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
               {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <button data-testid="safety-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
-            <Plus className="h-3.5 w-3.5" /> Add
+          <button data-testid="safety-add" onClick={create} disabled={busy}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+            <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Add"}
           </button>
         </div>
       )}
@@ -1423,43 +1708,199 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   );
 }
 
-function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  // Phase C — simplified: description + severity only. Spec section
-  // reference removed per spec.
-  const [draft, setDraft] = useState({ description: "", severity: "minor" });
+function SafetyRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`safety-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className="pill pill-slate mr-2">{row.event_type}</span>
+      <span className={`pill mr-2 ${row.severity === "critical" || row.severity === "major" ? "pill-red" : "pill-slate"}`}>{row.severity}</span>
+      <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`safety-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="safety" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/safety-events/${row.id}`}
+          fields={[
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "severity", label: "Severity", type: "select",
+              options: ["minor", "moderate", "major", "critical"].map((s) => ({ value: s, label: s })) },
+            { key: "event_type", label: "Event type", type: "select",
+              options: ["near_miss", "first_aid", "recordable", "lost_time", "fatality"].map((s) => ({ value: s, label: s.replace(/_/g, " ") })) },
+          ]}
+          currentValues={{
+            description: row.description, severity: row.severity, event_type: row.event_type,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
+  // Bucket D Phase 5 -- QC severity gets the rework_required tier.
+  // When picked, super enters rework_duration_hours + basis;
+  // calibration RAG suggests a benchmark from prior outcomes (advisory).
+  // Submit -> backend creates synthetic delay + runs CPM cascade.
+  const [draft, setDraft] = useState({
+    description: "", severity: "minor",
+    rework_duration_hours: "", rework_duration_basis: "",
+    linked_dr_activity_ids: [],
+  });
+  const [benchmark, setBenchmark] = useState(null);
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "qc" || !text) return;
     setDraft((d) => ({ ...d, description: d.description ? `${d.description}\n\n${text}` : text }));
   }), []);
+
+  useEffect(() => {
+    if (draft.severity !== "rework_required" || !projectId) { setBenchmark(null); return; }
+    api.get(`/projects/${projectId}/qc-issues/rework-benchmark`)
+      .then(({ data }) => setBenchmark(data))
+      .catch(() => setBenchmark(null));
+  }, [draft.severity, projectId]);
+
+  const isRework = draft.severity === "rework_required";
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
+
   const create = async () => {
+    if (busy) return;
     if (!draft.description) return toast.error("Description required");
+    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
+    if (isRework) {
+      if (!draft.rework_duration_hours || Number(draft.rework_duration_hours) <= 0) {
+        return toast.error("Rework hours required when severity=rework_required");
+      }
+      if (!draft.rework_duration_basis.trim()) {
+        return toast.error("Rework basis (short note) required");
+      }
+    }
+    setBusy(true);
     try {
-      await api.post(`/qc-issues`, { ...draft, project_id: projectId, daily_report_id: dailyReportId, date: reportDate });
-      setDraft({ description: "", severity: "minor" });
+      const payload = {
+        project_id: projectId,
+        daily_report_id: dailyReportId,
+        date: reportDate,
+        description: draft.description,
+        severity: draft.severity,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      };
+      if (isRework) {
+        payload.rework_duration_hours = Number(draft.rework_duration_hours);
+        payload.rework_duration_basis = draft.rework_duration_basis.trim();
+      }
+      await api.post(`/qc-issues`, payload);
+      setDraft({ description: "", severity: "minor",
+                  rework_duration_hours: "", rework_duration_basis: "",
+                  linked_dr_activity_ids: [] });
       reload();
+      toast.success(isRework
+        ? "QC rework filed -- synthetic delay created and CPM cascade running."
+        : "QC issue logged.");
     } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
+    finally { setBusy(false); }
   };
+
+  const togglePicked = (id) => {
+    setDraft((d) => ({
+      ...d,
+      linked_dr_activity_ids: d.linked_dr_activity_ids.includes(id)
+        ? d.linked_dr_activity_ids.filter((x) => x !== id)
+        : [...d.linked_dr_activity_ids, id],
+    }));
+  };
+  const activitiesAvailable = (grid || []).filter((a) => a.id);
+
   return (
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`qc-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className={`pill mr-2 ${r.severity === "critical" || r.severity === "major" ? "pill-red" : "pill-slate"}`}>{r.severity}</span>
-          <span className="text-slate-700 whitespace-pre-wrap">{r.description}</span>
-        </div>
+        <QcRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
-          <textarea data-testid="qc-new-desc" rows={6} placeholder="Describe the issue"
+          <textarea data-testid="qc-new-desc" rows={4} placeholder="Describe the issue"
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
+
+          {/* Bucket D Phase 1 -- affected-activity multi-select. */}
+          <div>
+            <div className="text-[10px] uppercase text-slate-500 mb-1">Affected activities (required)</div>
+            <div className="max-h-24 overflow-auto border border-slate-200 rounded">
+              {activitiesAvailable.length ? activitiesAvailable.map((a) => (
+                <label key={a.id} className="flex items-center gap-2 px-2 py-1 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-xs">
+                  <input type="checkbox" data-testid={`qc-activity-${a.activity_code}`}
+                    checked={draft.linked_dr_activity_ids.includes(a.id)}
+                    onChange={() => togglePicked(a.id)} />
+                  <span className="font-mono text-blue-700">{a.activity_code}</span>
+                  <span className="text-slate-700 truncate">{a.activity_description}</span>
+                </label>
+              )) : (
+                <div className="p-2 text-xs text-slate-400">No activities on this DR yet</div>
+              )}
+            </div>
+          </div>
+
           <div className="flex items-center gap-2">
-            <select data-testid="qc-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+            <select data-testid="qc-new-severity" value={draft.severity}
+              onChange={(e) => setDraft({ ...draft, severity: e.target.value })}
+              className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["observation", "minor", "moderate", "major", "critical", "rework_required", "stop_work"]
+                .map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
             </select>
-            <button data-testid="qc-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
-              <Plus className="h-3.5 w-3.5" /> Add QC issue
+          </div>
+
+          {/* Bucket D Phase 5 -- rework block. */}
+          {isRework && (
+            <div className="bg-rose-50 border border-rose-200 rounded p-2 space-y-2" data-testid="qc-rework-block">
+              <div className="text-[11px] font-semibold text-rose-900">Rework duration estimate (super)</div>
+              {benchmark?.benchmark_hours != null && (
+                <div className="text-[10px] text-slate-600 italic" data-testid="qc-rework-benchmark">
+                  {benchmark.basis}
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase">Hours *</label>
+                  <input data-testid="qc-rework-hours" type="number" step="0.5" min="0"
+                    value={draft.rework_duration_hours}
+                    onChange={(e) => setDraft({ ...draft, rework_duration_hours: e.target.value })}
+                    className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-[10px] text-slate-500 uppercase">Basis * (short note)</label>
+                  <input data-testid="qc-rework-basis" type="text"
+                    value={draft.rework_duration_basis}
+                    onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
+                    placeholder="e.g. 2 plumbers re-rough 11A south wall, 4hrs each"
+                    className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
+                </div>
+              </div>
+              <div className="text-[10px] text-rose-800">
+                On save, a synthetic delay (cause=quality_rework) will be created and the
+                CPM cascade run for the affected activities.
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button data-testid="qc-add" onClick={create} disabled={busy}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+              <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Add QC issue"}
             </button>
           </div>
         </div>
@@ -1468,67 +1909,210 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload })
   );
 }
 
-function RfisPanel({ rows, dailyReportId, projectId, locked, reload }) {
-  const [draft, setDraft] = useState({ subject: "", description: "", priority: "normal" });
+function QcRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`qc-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className={`pill mr-2 ${
+        row.severity === "rework_required" || row.severity === "stop_work" ? "pill-red"
+        : row.severity === "critical" || row.severity === "major" ? "pill-red"
+        : "pill-slate"
+      }`}>{row.severity}</span>
+      <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
+      {row.linked_synthetic_delay_id && (
+        <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
+          rework {row.rework_duration_hours}h
+          {row.rework_actual_hours != null && ` (actual ${row.rework_actual_hours}h)`}
+        </span>
+      )}
+      {/* Task 3 fix D -- outcome capture button. Visible when QC has
+          a synthetic delay AND no actual hours yet recorded. */}
+      {row.linked_synthetic_delay_id && row.rework_actual_hours == null && (
+        <ReworkOutcomeButton qcIssue={row} reload={reload} />
+      )}
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`qc-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="qc" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/qc-issues/${row.id}`}
+          fields={[
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "severity", label: "Severity", type: "select",
+              options: ["observation", "minor", "moderate", "major", "critical", "rework_required", "stop_work"]
+                .map((s) => ({ value: s, label: s.replace(/_/g, " ") })) },
+            { key: "status", label: "Status", type: "select",
+              options: ["open", "in_progress", "resolved", "closed"].map((s) => ({ value: s, label: s.replace(/_/g, " ") })) },
+            { key: "resolution_notes", label: "Resolution notes", type: "textarea" },
+          ]}
+          currentValues={{
+            description: row.description, severity: row.severity,
+            status: row.status, resolution_notes: row.resolution_notes,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
+  // Bucket D Task 1c -- linked_dr_activity_ids picker. RFIs are
+  // REQUIRED to link >=1 activity per Phase 1 (gates a task).
+  const [draft, setDraft] = useState({
+    subject: "", description: "", priority: "normal",
+    linked_dr_activity_ids: [],
+  });
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   const create = async () => {
+    if (busy) return;
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
+    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
+    setBusy(true);
     try {
-      await api.post(`/rfis`, { ...draft, project_id: projectId, daily_report_id: dailyReportId });
-      setDraft({ subject: "", description: "", priority: "normal" });
+      await api.post(`/rfis`, {
+        project_id: projectId, daily_report_id: dailyReportId,
+        subject: draft.subject,
+        question: draft.description,  // backend alias -> description
+        priority: draft.priority,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      });
+      setDraft({ subject: "", description: "", priority: "normal", linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Open RFI")); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={MessageSquare} title="RFIs" testid="dr-rfis-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`rfi-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="font-mono mr-2 text-blue-700">{r.rfi_number}</span>
-          <span className="pill pill-slate mr-2">{r.priority}</span>
-          <span className="text-slate-700">{r.subject}</span>
-        </div>
+        <RfiRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No RFIs raised today.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-          <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
-          <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <button data-testid="rfi-add" onClick={create} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Open RFI</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+          <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
+          <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="w-full px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
+          <DrActivityPicker grid={grid}
+            value={draft.linked_dr_activity_ids}
+            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
+            required={true} label="Affected activities"
+            testidPrefix="rfi-activity" compact />
+          <div className="flex items-center gap-2">
+            <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+              {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button data-testid="rfi-add" onClick={create} disabled={busy}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Open RFI"}</button>
+          </div>
         </div>
       )}
     </PanelShell>
   );
 }
 
-function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [draft, setDraft] = useState({ vendor: "", description: "", po_number: "" });
+function RfiRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`rfi-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className="font-mono mr-2 text-blue-700">{row.rfi_number}</span>
+      <span className="pill pill-slate mr-2">{row.priority}</span>
+      <span className="text-slate-700">{row.subject}</span>
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`rfi-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="rfi" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/rfis/${row.id}`}
+          fields={[
+            { key: "subject", label: "Subject" },
+            { key: "description", label: "Question / context", type: "textarea" },
+            { key: "status", label: "Status", type: "select",
+              options: ["draft", "open", "responded", "closed"].map((s) => ({ value: s, label: s })) },
+            { key: "response_text", label: "Response (when status=responded)", type: "textarea" },
+          ]}
+          currentValues={{
+            subject: row.subject, description: row.description,
+            status: row.status, response_text: row.response_text,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
+  // Bucket D Task 1d -- linked_dr_activity_ids picker. REQUIRED min-1
+  // (deliveries gate the activities consuming them per Phase 1 spec).
+  const [draft, setDraft] = useState({
+    vendor: "", description: "", po_number: "",
+    linked_dr_activity_ids: [],
+  });
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   const create = async () => {
+    if (busy) return;
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
+    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one activity consuming this delivery");
+    setBusy(true);
     try {
-      await api.post(`/deliveries`, { ...draft, project_id: projectId, delivery_date: reportDate });
-      setDraft({ vendor: "", description: "", po_number: "" });
+      await api.post(`/deliveries`, {
+        project_id: projectId, delivery_date: reportDate,
+        daily_report_id: dailyReportId,
+        vendor: draft.vendor, description: draft.description,
+        po_number: draft.po_number || null,
+        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+      });
+      setDraft({ vendor: "", description: "", po_number: "", linked_dr_activity_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Log delivery")); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={Truck} title="Deliveries today" testid="dr-deliveries-panel" count={rows.length}>
       {rows.map((r) => (
-        <div key={r.id} data-testid={`delivery-row-${r.id}`} className="border-b border-slate-100 py-1.5 text-xs">
-          <span className="font-medium mr-2">{r.vendor}</span>
-          <span className="text-slate-700">{r.description}</span>
-          {r.po_number && <span className="text-slate-400 ml-2 font-mono">{r.po_number}</span>}
-          <span className={`pill ml-2 ${r.status === "received" ? "pill-green" : "pill-slate"}`}>{r.status}</span>
-        </div>
+        <DeliveryRowInline key={r.id} row={r} locked={locked}
+          dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No deliveries scheduled for {reportDate}.</div>}
       {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-3 gap-2">
-          <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-          <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <button data-testid="delivery-add" onClick={create} className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> Log delivery</button>
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+          <div className="grid grid-cols-3 gap-2">
+            <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+            <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
+            <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+            <button data-testid="delivery-add" onClick={create} disabled={busy}
+              className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Log delivery"}</button>
+          </div>
+          <DrActivityPicker grid={grid}
+            value={draft.linked_dr_activity_ids}
+            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
+            required={true} label="Activities consuming this delivery"
+            testidPrefix="delivery-activity" compact />
         </div>
       )}
     </PanelShell>
@@ -1537,10 +2121,15 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
 
 function NotesPanel({ report, dailyReportId, locked, reload }) {
   const [text, setText] = useState(report.notes || "");
+  // Bucket D Fix E -- double-click guard.
+  const [busy, setBusy] = useState(false);
   useEffect(() => { setText(report.notes || ""); }, [report.notes]);
   const save = async () => {
+    if (busy) return;
+    setBusy(true);
     try { await api.patch(`/daily-reports/${dailyReportId}`, { notes: text }); reload(); toast.success("Notes saved"); }
     catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
+    finally { setBusy(false); }
   };
   return (
     <PanelShell icon={ClipboardList} title="Daily notes / narrative" testid="dr-notes-panel">
@@ -1550,7 +2139,10 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
         className="w-full h-28 px-3 py-2 rounded border border-slate-200 text-sm" />
       {!locked && (
         <div className="flex justify-end mt-2">
-          <button data-testid="dr-notes-save" onClick={save} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">Save notes</button>
+          <button data-testid="dr-notes-save" onClick={save} disabled={busy}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+            {busy ? "Saving…" : "Save notes"}
+          </button>
         </div>
       )}
     </PanelShell>
@@ -1559,8 +2151,11 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
 
 function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [busy, setBusy] = useState(false);
-  const [caption, setCaption] = useState("");
-  const [photoClass, setPhotoClass] = useState("progress");
+  // Bucket D Phase 2 -- DR upload now lands in the photo_tray
+  // (status=untagged) instead of going straight to the legacy
+  // /photos/upload endpoint. The tray page (sidebar) is where the
+  // user opens the 3-step tagging wizard. Caption + class moved to
+  // the wizard since both are tag-time decisions, not capture-time.
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1569,18 +2164,16 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("project_id", projectId);
-      fd.append("daily_report_id", dailyReportId);
-      if (caption) fd.append("caption", caption);
-      fd.append("photo_class", photoClass);
-      await api.post(`/photos/upload`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-      setCaption("");
-      setPhotoClass("progress");
+      fd.append("capture_source", "manual_upload");
+      const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
       reload();
-      toast.success("Photo uploaded");
+      if (r.data?.status === "untagged") {
+        toast.success("Uploaded to photo tray. Tag it from the Photo tray page.");
+      } else {
+        toast.info(`Same photo already in tray (status=${r.data?.status})`);
+      }
     } catch (err) {
-      const detail = err.response?.data?.detail;
-      if (err.response?.status === 409) toast.error("Duplicate photo — same image already uploaded.");
-      else toast.error(detail || "Upload failed");
+      toast.error(err.response?.data?.detail || "Upload failed");
     }
     finally { setBusy(false); e.target.value = ""; }
   };
@@ -1588,18 +2181,21 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   return (
     <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length}>
       <div className="grid grid-cols-3 gap-2">
-        {rows.map((p) => <AuthPhoto key={p.id} photo={p} />)}
+        {rows.map((p) => (
+          <AuthPhoto key={p.id} photo={p}
+            locked={locked} dailyReportId={dailyReportId} reload={reload} />
+        ))}
         {!rows.length && <div className="col-span-3 text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
       </div>
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-          <input data-testid="photo-caption" placeholder="Caption (optional)" value={caption} onChange={(e) => setCaption(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
-          <select data-testid="photo-class" value={photoClass} onChange={(e) => setPhotoClass(e.target.value)} className="w-full h-8 px-2 rounded border border-slate-200 text-sm bg-white">
-            {PHOTO_CLASSES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
+          <div className="text-[11px] text-slate-500">
+            Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
+            Tag them to specific events from there.
+          </div>
           <label data-testid="photo-upload-label" className="block">
             <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
-              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload photo"}
+              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload to tray"}
             </span>
             <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
           </label>
@@ -1609,8 +2205,12 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   );
 }
 
-function AuthPhoto({ photo }) {
+function AuthPhoto({ photo, locked, dailyReportId, reload }) {
   const [src, setSrc] = useState(null);
+  // Addition 4 follow-up -- locked-DR edit modal toggle for the photo
+  // card. Pencil icon overlays in the top-right when locked; opens
+  // LockedEventEditModal pre-filled with caption + photo_class.
+  const [editOpen, setEditOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     let blobUrl = null;
@@ -1621,7 +2221,8 @@ function AuthPhoto({ photo }) {
   }, [photo.id]);
   const cls = PHOTO_CLASS_BY_VALUE[photo.photo_class] || PHOTO_CLASS_BY_VALUE.progress;
   return (
-    <div data-testid={`photo-${photo.id}`} className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200">
+    <div data-testid={`photo-${photo.id}`} data-event-row-id={photo.id} data-event-row-type="photo"
+      className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200 group">
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">
@@ -1638,8 +2239,52 @@ function AuthPhoto({ photo }) {
             <AlertTriangle className="h-2.5 w-2.5" />
           </span>
         )}
+        {/* Bucket D Task 2 -- supplement marker overlaid on the
+            photo card. Saffron pill matches SupplementBadge style. */}
+        {photo.is_supplement && (
+          <span data-testid={`photo-supplement-${photo.id}`}
+            title={`Supplement to DR ${photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || ""}`}
+            className="bg-amber-200 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            SUPP
+          </span>
+        )}
+        {/* Addition 4 follow-up -- post-submit-edited annotation.
+            Saffron square stays visible; the edit-pencil only shows
+            on hover when the parent DR is locked. */}
+        {photo.post_submit_edited && (
+          <span data-testid={`photo-edited-${photo.id}`}
+            title={`Edited ${photo.edit_count || 0}x post-submit. ${photo.last_edit_reason ? `Last reason: ${photo.last_edit_reason}` : ""}`}
+            className="bg-amber-300 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            EDITED {photo.edit_count || 0}x
+          </span>
+        )}
       </div>
+      {locked && (
+        <button data-testid={`photo-edit-locked-${photo.id}`}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditOpen(true); }}
+          title="Edit photo (post-submit -- captures audit trail)"
+          className="absolute top-1 right-1 bg-amber-600/90 hover:bg-amber-700 text-white rounded p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Pencil className="h-2.5 w-2.5" />
+        </button>
+      )}
       {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">{photo.caption}</div>}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="photo" eventId={photo.id} dailyReportId={dailyReportId}
+          patchUrl={`/photos/${photo.id}`}
+          fields={[
+            { key: "caption", label: "Caption", type: "textarea" },
+            { key: "photo_class", label: "Photo class", type: "select",
+              options: ["progress", "discovery", "damage", "quality", "safety", "coordination", "closeout"]
+                .map((c) => ({ value: c, label: c })) },
+          ]}
+          currentValues={{
+            caption: photo.caption || "", photo_class: photo.photo_class || "progress",
+          }}
+          onSaved={reload}
+        />
+      )}
     </div>
   );
 }
@@ -1679,6 +2324,263 @@ function AuditPanel({ rows, userLabels }) {
         ))}
         {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
       </div>
+    </PanelShell>
+  );
+}
+
+// ------------------------------------------------------------
+function DeliveryRowInline({ row, locked, dailyReportId, reload }) {
+  // Addition 4 -- locked-DR edit modal toggle.
+  const [editOpen, setEditOpen] = useState(false);
+  return (
+    <div data-testid={`delivery-row-${row.id}`} className="border-b border-slate-100 py-1.5 text-xs">
+      <span className="font-medium mr-2">{row.vendor}</span>
+      <span className="text-slate-700">{row.description}</span>
+      {row.po_number && <span className="text-slate-400 ml-2 font-mono">{row.po_number}</span>}
+      <span className={`pill ml-2 ${row.status === "received" ? "pill-green" : "pill-slate"}`}>{row.status}</span>
+      <SupplementBadge row={row} />
+      {locked && (
+        <button data-testid={`delivery-edit-locked-${row.id}`} onClick={() => setEditOpen(true)}
+          className="ml-2 text-amber-700 hover:underline">edit</button>
+      )}
+      {row.post_submit_edited && (
+        <span className="ml-2 text-[10px] text-amber-700">
+          (edited {row.edit_count || 0}× post-submit)
+        </span>
+      )}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="delivery" eventId={row.id} dailyReportId={dailyReportId}
+          patchUrl={`/deliveries/${row.id}`}
+          fields={[
+            { key: "vendor", label: "Vendor" },
+            { key: "description", label: "Description", type: "textarea" },
+            { key: "po_number", label: "PO number" },
+            { key: "delivery_date", label: "Delivery date", type: "text" },
+            { key: "status", label: "Status", type: "select",
+              options: ["scheduled", "received", "delayed", "cancelled"].map((s) => ({ value: s, label: s })) },
+          ]}
+          currentValues={{
+            vendor: row.vendor, description: row.description,
+            po_number: row.po_number, delivery_date: row.delivery_date,
+            status: row.status,
+          }}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// Bucket D Task 3 fix D -- outcome capture button on QC rows that
+// triggered a rework cascade. Modal collects actual hours + notes,
+// POSTs /qc-issues/{id}/record-rework-outcome which updates the QC,
+// flips the synthetic delay to resolved, re-runs cascade + RAG.
+// ------------------------------------------------------------
+function ReworkOutcomeButton({ qcIssue, reload }) {
+  const [open, setOpen] = useState(false);
+  const [hours, setHours] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!hours || Number(hours) < 0) {
+      toast.error("Actual hours required (>=0)"); return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/qc-issues/${qcIssue.id}/record-rework-outcome`, {
+        rework_actual_hours: Number(hours),
+        rework_outcome_notes: notes || null,
+      });
+      toast.success("Rework outcome recorded -- cascade re-running");
+      setOpen(false);
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Outcome capture failed");
+    } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <button data-testid={`qc-rework-outcome-${qcIssue.id}`} onClick={() => setOpen(true)}
+        className="ml-2 text-[10px] px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
+        Record outcome
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Record rework outcome</DialogTitle></DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="text-xs text-slate-500">
+              QC: "{(qcIssue.description || "").slice(0, 80)}…"
+              <br />
+              Estimated: {qcIssue.rework_duration_hours}h.
+              Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 uppercase">Actual hours *</label>
+              <input data-testid="qc-rework-actual-hours" type="number" step="0.5" min="0"
+                value={hours} onChange={(e) => setHours(e.target.value)}
+                className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 uppercase">Notes</label>
+              <textarea data-testid="qc-rework-outcome-notes" rows={3}
+                value={notes} onChange={(e) => setNotes(e.target.value)}
+                placeholder="What went better or worse than expected?"
+                className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setOpen(false)} className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300">Cancel</button>
+              <button data-testid="qc-rework-outcome-submit" onClick={submit} disabled={busy}
+                className="h-9 px-3 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50">
+                {busy ? "Recording…" : "Record outcome"}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// ------------------------------------------------------------
+// Bucket D Task 2 -- per-row supplement badge. Container DR panels
+// display this next to event-row titles when the row is is_supplement
+// =true, so the user can tell at a glance which rows are filed back
+// against an older locked DR. Backend enriches parent_daily_report_
+// date in the /context bundle (Task 2) so this renders without an
+// extra fetch.
+// ------------------------------------------------------------
+function SupplementBadge({ row }) {
+  if (!row?.is_supplement) return null;
+  const parentDate = row.parent_daily_report_date || row.parent_daily_report_id?.slice(0, 8);
+  return (
+    <span data-testid={`supplement-badge-${row.id}`}
+      title="Filed after the parent daily report was submitted"
+      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-[9px] font-mono uppercase tracking-wide">
+      SUPP→{parentDate || "?"}
+    </span>
+  );
+}
+
+// ------------------------------------------------------------
+// Bucket D Phase 4 -- supplements appendix on the parent DR.
+// Lists every event with parent_daily_report_id == this DR.
+// ------------------------------------------------------------
+function SupplementsAppendix({ dailyReportId, projectId }) {
+  const [data, setData] = useState(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [parentDr, setParentDr] = useState(null);
+  const reload = useCallback(() => {
+    if (!dailyReportId) return;
+    api.get(`/daily-reports/${dailyReportId}/supplements`)
+      .then(({ data }) => {
+        setData(data);
+        setParentDr({ id: data.daily_report_id, report_date: data.report_date });
+      })
+      .catch(() => setData(null));
+  }, [dailyReportId]);
+  useEffect(() => { reload(); }, [reload]);
+
+  // Bucket D Phase 4 -- only render the appendix if there are
+  // supplements OR the user is viewing a locked DR (so they can
+  // file one). For draft DRs we hide the appendix entirely.
+  const [parentLocked, setParentLocked] = useState(false);
+  useEffect(() => {
+    if (!dailyReportId) return;
+    api.get(`/daily-reports/${dailyReportId}`)
+      .then(({ data }) => setParentLocked(data?.status === "submitted" || data?.status === "approved"))
+      .catch(() => setParentLocked(false));
+  }, [dailyReportId]);
+
+  const fileSupplement = async () => {
+    if (!projectId) return;
+    try {
+      // Idempotent on (project, date) -- returns existing today's DR or creates one.
+      const today = localTodayISO();
+      const { data: container } = await api.post("/daily-reports", {
+        project_id: projectId, report_date: today,
+      });
+      // Container must NOT be the same as parent (filing supplement to today's DR is nonsense).
+      if (container.id === dailyReportId) {
+        toast.error("Cannot file a supplement to today's DR -- edit it directly.");
+        return;
+      }
+      // Set window state so the wizard knows the container DR id.
+      window.__supplementContainerId = container.id;
+      setWizardOpen(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't open today's DR");
+    }
+  };
+
+  if (!data) return null;
+  const buckets = [
+    ["delays", "Delays", AlertTriangle],
+    ["rfis", "RFIs", MessageSquare],
+    ["qc_issues", "QC issues", ClipboardCheck],
+    ["safety_events", "Safety events", ShieldAlert],
+    ["coordination_events", "Coordination", MessageSquare],
+    ["deliveries", "Deliveries", Truck],
+    ["photos", "Photos", ImageIcon],
+    ["daily_report_activities", "Activity rows", ClipboardList],
+  ];
+  const total = buckets.reduce((s, [k]) => s + (data[k]?.length || 0), 0);
+  // If no supplements AND parent is unlocked, hide entirely.
+  if (!total && !parentLocked) return null;
+  return (
+    <PanelShell icon={ClipboardList} title={`Supplements (${total})`} testid="dr-supplements-panel" count={total}>
+      <div className="text-xs text-slate-500 mb-2 flex items-center justify-between gap-2">
+        <span>
+          Facts filed AFTER this report was submitted. Each supplement is linked to its container
+          DR (today's, where it was filed) and renders here to keep the parent DR's record honest.
+        </span>
+        {parentLocked && (
+          <button data-testid="file-supplement-button" onClick={fileSupplement}
+            className="h-7 px-2 rounded bg-amber-600 text-white text-xs hover:bg-amber-700 inline-flex items-center gap-1 flex-shrink-0">
+            <Plus className="h-3 w-3" /> File supplement
+          </button>
+        )}
+      </div>
+      <SupplementWizard open={wizardOpen} onOpenChange={setWizardOpen}
+        parentDailyReport={parentDr} projectId={projectId}
+        containerDailyReportId={typeof window !== "undefined" ? window.__supplementContainerId : null}
+        onSaved={reload} />
+      {buckets.map(([key, label, Icon]) => {
+        const rows = data[key] || [];
+        if (!rows.length) return null;
+        return (
+          <div key={key} className="mb-3">
+            <div className="text-[11px] uppercase font-semibold text-slate-700 flex items-center gap-1 mb-1">
+              <Icon className="h-3.5 w-3.5" /> {label} ({rows.length})
+            </div>
+            <ul className="space-y-1 text-xs">
+              {rows.map((r) => (
+                <li key={r.id} data-testid={`supplement-${key}-${r.id}`}
+                  className="bg-amber-50 border-l-2 border-amber-400 px-2 py-1 rounded-r">
+                  <span className="text-amber-800 font-mono text-[10px] mr-1">[SUPP]</span>
+                  <span className="text-slate-700">{r.description || r.subject || r.summary || r.vendor || (r.tag_caption || r.id.slice(0, 8))}</span>
+                  {r.supplement_filed_at && (
+                    <span className="text-slate-400 ml-2">
+                      filed {new Date(r.supplement_filed_at).toLocaleDateString()}
+                    </span>
+                  )}
+                  {r.supplement_reason && (
+                    <span className="text-slate-500 italic ml-2">— "{r.supplement_reason}"</span>
+                  )}
+                  {r.daily_report_id && r.daily_report_id !== dailyReportId && (
+                    <a href={`/daily-reports?openId=${r.daily_report_id}`}
+                      className="text-blue-600 underline ml-2 text-[10px]">
+                      [container DR]
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
     </PanelShell>
   );
 }

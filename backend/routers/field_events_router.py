@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
 from models import (
-    Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate,
-    QcIssue, QcIssueCreate, Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
+    Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate, SafetyEventUpdate,
+    QcIssue, QcIssueCreate, QcIssueUpdate, QcReworkOutcome,
+    Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
 from auth import require_tenant
@@ -95,6 +96,18 @@ def _enrich_delay_for_read(d: dict) -> dict:
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage. Required min-1 unless this
+    # is a supplement (Phase 4); supplement_reason path validates against
+    # parent_daily_report_id instead. Validation early so the cascade
+    # below doesn't run for an invalid payload.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     linked_ids, impacts = await _resolve_task_impacts(db, ctx["tenant_id"], doc)
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
@@ -110,10 +123,27 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit (no-op for normal
+    # creates; raises 422 + writes SUPPLEMENT_FILED for supplements).
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="delay")
     await db.delays.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="delays", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     # Bucket C1 Phase 2 — opening a delay flips has_open_blocker on every
     # linked task and may shift its computed_status to 'blocked'.
     # Bucket C1 Phase 4 — and pushes downstream projected_finish dates.
@@ -128,15 +158,17 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
 
 
 @router.get("/projects/{project_id}/delays", response_model=list[Delay])
-async def list_delays(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_delays(project_id: str,
+                      affected_activity_id: Optional[str] = None,
+                      ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Filter soft-deleted leftovers from before the hard-delete fix
     # (status='deleted' was set by the old /crud/delays/{id} DELETE path).
+    f = {"project_id": project_id, "status": {"$ne": "deleted"}}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.delays.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-        }), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [Delay(**_enrich_delay_for_read(d)) for d in docs]
 
@@ -157,7 +189,34 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     if not before:
         raise HTTPException(404, "Delay not found")
     raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)  # not a record field
     updates: dict = {k: v for k, v in raw.items() if v is not None}
+
+    # Addition 4 -- locked-DR edit policy (tiered permissions + reason
+    # + post-submit audit). On draft DRs returns is_locked_edit=False
+    # and we skip the audit ceremony.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="delay", event_id=delay_id,
+    )
+
+    # Bucket D verification fix -- re-validate linked_dr_activity_ids
+    # when the patch attempts to replace it, otherwise a client could
+    # write ids that don't exist or belong to a different DR/project
+    # (linkage is required min-1 on POST so the patch must keep that
+    # invariant).
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
 
     # If linked_task_ids OR per_task_impacts is in the patch, recompute the
     # snapshot — keep logic in one place rather than two slightly-different
@@ -215,6 +274,18 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+
+    # Addition 4 -- if this was a locked-DR edit, stamp edit metadata +
+    # write the EVENT_EDITED_POST_SUBMIT audit entry alongside the
+    # regular UPDATE audit so TIA Section 12 surfaces edits prominently.
+    if is_locked_edit:
+        after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+        await stamp_edit_metadata(
+            db=db, collection="delays", record_id=delay_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
 
     # Bucket C1 Phase 2 + 4 — recompute status for the union of OLD and
     # NEW linked tasks (in case linkage changed) AND walk projected_finish
@@ -450,29 +521,116 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage OPTIONAL for safety (some
+    # events are area-wide with no specific WBS row). Validation just
+    # confirms ids are real if provided.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=False,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="safety_event")
     await db.safety_events.insert_one(doc.copy())
     await write_audit(tenant_id=ctx["tenant_id"], table_name="safety_events", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="safety_events", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return SafetyEvent(**doc)
 
 
 @router.get("/projects/{project_id}/safety-events", response_model=list[SafetyEvent])
-async def list_safety(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_safety(project_id: str,
+                       affected_activity_id: Optional[str] = None,
+                       ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Filter soft-deleted leftovers from the old /crud/ DELETE path.
+    f = {"project_id": project_id, "status": {"$ne": "deleted"}}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.safety_events.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-        }), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [SafetyEvent(**d) for d in docs]
+
+
+# Addition 4 -- post-submit edit endpoint for safety_events. Same
+# locked-DR edit policy + audit pattern as delays/rfis/photos.
+@router.patch("/safety-events/{event_id}", response_model=SafetyEvent)
+async def update_safety_event(
+    event_id: str, payload: SafetyEventUpdate,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    before = await db.safety_events.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Safety event not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
+        return SafetyEvent(**before)
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="safety", event_id=event_id,
+    )
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=False,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+    await db.safety_events.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": event_id}), {"$set": updates},
+    )
+    after = await db.safety_events.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="safety_events", op="UPDATE",
+        record_id=event_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if is_locked_edit:
+        after = await db.safety_events.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="safety_events", record_id=event_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
+    return SafetyEvent(**after)
 
 
 # --- QC ---
@@ -480,27 +638,186 @@ async def list_safety(project_id: str, ctx: dict = Depends(require_tenant)):
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage required (QC drives the
+    # rework cascade in Phase 5; the linkage is the cascade's seed).
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=True,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "resolved_at": None, "resolution_notes": None,
         "created_at": utc_now().isoformat(),
     })
+    # Bucket D Phase 5 -- if severity=rework_required, super-entered
+    # rework_duration_hours is required. Stamp the estimate metadata.
+    if doc.get("severity") == "rework_required":
+        if not doc.get("rework_duration_hours") or float(doc.get("rework_duration_hours") or 0) <= 0:
+            raise HTTPException(
+                422, "rework_duration_hours required when severity='rework_required'",
+            )
+        if not (doc.get("rework_duration_basis") or "").strip():
+            raise HTTPException(
+                422, "rework_duration_basis required when severity='rework_required'",
+            )
+        doc["rework_estimated_at"] = utc_now().isoformat()
+        doc["rework_estimated_by"] = ctx["user"]["id"]
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="qc_issue")
     await db.qc_issues.insert_one(doc.copy())
+    await write_audit(tenant_id=ctx["tenant_id"], table_name="qc_issues", op="INSERT",
+                      record_id=doc["id"], before=None, after=doc,
+                      actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="qc_issues", op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    # Bucket D Phase 5 -- trigger the rework cascade if severity asks
+    # for it. The synthetic delay write + CPM cascade run inside the
+    # service; this endpoint just kicks it off.
+    if doc.get("severity") == "rework_required":
+        from services.qc_rework_cascade import create_synthetic_delay_for_qc
+        try:
+            synthetic = await create_synthetic_delay_for_qc(
+                tenant_id=ctx["tenant_id"], qc_issue=doc,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+            if synthetic:
+                doc["linked_synthetic_delay_id"] = synthetic["id"]
+        except Exception as e:
+            # Don't fail the QC create if the cascade hiccups; the QC
+            # row exists and a follow-up trigger can re-run the cascade.
+            await write_audit(
+                tenant_id=ctx["tenant_id"], table_name="qc_issues",
+                op="QC_REWORK_CASCADE_FAILED",
+                record_id=doc["id"], before=None,
+                after={"error": str(e)[:500]},
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return QcIssue(**doc)
 
 
+# Bucket D Phase 5 -- AI benchmark suggestion + outcome capture.
+@router.get("/projects/{project_id}/qc-issues/rework-benchmark")
+async def qc_rework_benchmark(project_id: str, ctx: dict = Depends(require_tenant)):
+    """Returns a calibration RAG suggestion for rework hours based on
+    prior outcomes recorded on this project. Pure advisory -- super's
+    estimate stays authoritative."""
+    from services.qc_rework_cascade import suggest_ai_benchmark
+    return await suggest_ai_benchmark(ctx["tenant_id"], project_id)
+
+
+@router.post("/qc-issues/{qc_id}/record-rework-outcome")
+async def record_qc_rework_outcome(
+    qc_id: str, payload: QcReworkOutcome,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    qc = await db.qc_issues.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+    )
+    if not qc:
+        raise HTTPException(404, "QC issue not found")
+    if qc.get("severity") != "rework_required":
+        raise HTTPException(409, "QC issue is not flagged rework_required")
+    from services.qc_rework_cascade import record_rework_outcome
+    return await record_rework_outcome(
+        tenant_id=ctx["tenant_id"], qc_issue=qc,
+        actual_hours=payload.rework_actual_hours,
+        notes=payload.rework_outcome_notes,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+
+
 @router.get("/projects/{project_id}/qc-issues", response_model=list[QcIssue])
-async def list_qc(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_qc(project_id: str,
+                   affected_activity_id: Optional[str] = None,
+                   ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Filter soft-deleted leftovers from the old /crud/ DELETE path.
+    f = {"project_id": project_id, "status": {"$ne": "deleted"}}
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     docs = await db.qc_issues.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-        }), {"_id": 0},
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
     return [QcIssue(**d) for d in docs]
+
+
+# Addition 4 -- post-submit edit endpoint for qc_issues. Note: the
+# Phase 5 cascade is one-shot at create time (severity=rework_required
+# triggers synthetic delay), so this endpoint does NOT re-trigger the
+# cascade if severity is patched after create. Admin-only severity
+# flips that need a fresh cascade should delete the issue and recreate.
+@router.patch("/qc-issues/{qc_id}", response_model=QcIssue)
+async def update_qc_issue(
+    qc_id: str, payload: QcIssueUpdate,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    before = await db.qc_issues.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "QC issue not found")
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
+        return QcIssue(**before)
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="qc", event_id=qc_id,
+    )
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=before.get("daily_report_id"),
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=True,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
+    await db.qc_issues.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"$set": updates},
+    )
+    after = await db.qc_issues.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="qc_issues", op="UPDATE",
+        record_id=qc_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    if is_locked_edit:
+        after = await db.qc_issues.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="qc_issues", record_id=qc_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
+    return QcIssue(**after)
 
 
 # --- Photos ---
@@ -605,10 +922,19 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     )
     if not before:
         raise HTTPException(404, "Photo not found")
-    updates = {k: v for k, v in payload.model_dump(mode="json", exclude_unset=True).items()
-                if v is not None}
-    if not updates:
+    raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
+    updates = {k: v for k, v in raw.items() if v is not None}
+    if not updates and not edit_reason:
         return Photo(**before)
+    # Addition 4 -- locked-DR edit policy.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("daily_report_id"),
+        edit_reason=edit_reason, event_type="photo", event_id=photo_id,
+    )
     # Recompute evidentiary_flag if class changed.
     if "photo_class" in updates:
         updates["evidentiary_flag"] = _compute_evidentiary(
@@ -627,6 +953,17 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
         before=before, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Addition 4 -- post-submit edit audit + metadata stamp.
+    if is_locked_edit:
+        after = await db.photos.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="photos", record_id=photo_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
     return Photo(**after)
 
 
@@ -670,7 +1007,17 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
                       schedule_activity_id: Optional[str] = None,
                       photo_class: Optional[str] = None,
                       evidentiary_only: bool = False,
+                      affected_activity_id: Optional[str] = None,
+                      tagged_to: Optional[str] = None,
                       ctx: dict = Depends(require_tenant)):
+    """Bucket D Phase 3 -- gallery filters added:
+       affected_activity_id  filter to rows where the daily-report
+                             activity (or any indirect-link via tagged
+                             event) matches.
+       tagged_to             one of activity|delay|rfi|qc|safety|
+                             coordination|delivery|drawing -- filters
+                             to photos whose XOR event-ref is set in
+                             that bucket."""
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": project_id})
     if location_id:
@@ -681,5 +1028,59 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
         f["photo_class"] = photo_class
     if evidentiary_only:
         f["evidentiary_flag"] = True
+    indirect_event_ids: dict[str, list[str]] = {}
+    if affected_activity_id:
+        # Direct tag OR indirect via a tagged event whose
+        # linked_dr_activity_ids contains the activity id. Pre-collect
+        # event ids for each indirect collection so the photo query
+        # can $or-match in one shot.
+        for coll, ref_field in [("delays", "delay_id"),
+                                  ("rfis", "rfi_id"),
+                                  ("qc_issues", "qc_issue_id"),
+                                  ("safety_events", "safety_event_id"),
+                                  ("coordination_events", "coordination_event_id"),
+                                  ("deliveries", "delivery_id")]:
+            ids = await db[coll].find(
+                tenant_filter(ctx["tenant_id"], {
+                    "project_id": project_id,
+                    "linked_dr_activity_ids": affected_activity_id,
+                }),
+                {"_id": 0, "id": 1},
+            ).to_list(length=None)
+            if ids:
+                indirect_event_ids[ref_field] = [r["id"] for r in ids]
+        # Build $or branches: direct + each indirect FK match.
+        or_branches: list[dict] = [{"daily_report_activity_id": affected_activity_id}]
+        for ref_field, id_list in indirect_event_ids.items():
+            or_branches.append({ref_field: {"$in": id_list}})
+        # If only one branch, $or with a single elem is wasteful; use
+        # the branch directly.
+        if len(or_branches) == 1:
+            f.update(or_branches[0])
+        else:
+            f["$or"] = or_branches
+    if tagged_to:
+        ref_map = {
+            "activity": "daily_report_activity_id", "delay": "delay_id",
+            "rfi": "rfi_id", "qc": "qc_issue_id", "safety": "safety_event_id",
+            "coordination": "coordination_event_id",
+            "delivery": "delivery_id", "drawing": "drawing_pin_id",
+        }
+        ref_field = ref_map.get(tagged_to)
+        if ref_field:
+            f[ref_field] = {"$type": "string"}
     docs = await db.photos.find(f, {"_id": 0}).sort("captured_at", -1).to_list(500)
+    # Bucket D Task 2 -- enrich supplement rows with parent DR date.
+    parent_dr_ids = list({d["parent_daily_report_id"] for d in docs
+                          if d.get("is_supplement") and d.get("parent_daily_report_id")})
+    if parent_dr_ids:
+        parent_drs = await db.daily_reports.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": parent_dr_ids}}),
+            {"_id": 0, "id": 1, "report_date": 1},
+        ).to_list(length=None)
+        date_map = {d["id"]: d["report_date"] for d in parent_drs}
+        for d in docs:
+            pid = d.get("parent_daily_report_id")
+            if pid and pid in date_map:
+                d["parent_daily_report_date"] = date_map[pid]
     return [Photo(**d) for d in docs]

@@ -46,9 +46,11 @@ from routers.schedule_proposals_router import router as schedule_proposals_route
 from routers.schedule_diffs_router import router as schedule_diffs_router  # noqa: E402
 from routers.calendar_reconciliation_router import router as calendar_reconciliation_router  # noqa: E402
 from routers.tia_router import router as tia_router  # noqa: E402
+from routers.photo_tray_router import router as photo_tray_router  # noqa: E402
 from routers.mitigations_router import router as mitigations_router  # noqa: E402
 from routers.gating_entities_router import router as gating_entities_router  # noqa: E402
 from routers.coordination_router import router as coordination_router  # noqa: E402
+from routers.edit_requests_router import router as edit_requests_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -147,6 +149,51 @@ async def _ensure_indexes():
     await db.tia_generations.create_index(
         [("tenant_id", 1), ("project_id", 1), ("generated_at", -1)],
     )
+    # Bucket D Phase 1 — photo_tray (staging area). Tray page filters
+    # by status; the dedup check on upload looks up phash within a
+    # project; tagging-wizard reads by id.
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("status", 1), ("uploaded_at", -1)],
+    )
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("phash", 1)],
+        partialFilterExpression={"phash": {"$type": "string"}},
+    )
+    # Photos (now tagging junction) — gallery filter by event-ref FKs.
+    # Each is partial so legacy untagged rows don't pollute the index.
+    for ref in ("daily_report_activity_id", "delay_id", "rfi_id",
+                 "qc_issue_id", "safety_event_id",
+                 "coordination_event_id", "delivery_id"):
+        await db.photos.create_index(
+            [("tenant_id", 1), ("project_id", 1), (ref, 1)],
+            partialFilterExpression={ref: {"$type": "string"}},
+        )
+    await db.photos.create_index(
+        [("tenant_id", 1), ("tray_photo_id", 1)],
+        partialFilterExpression={"tray_photo_id": {"$type": "string"}},
+    )
+    # Supplement queries on each event collection -- lets the parent
+    # DR detail view efficiently load its supplements.
+    for coll in ("delays", "rfis", "qc_issues", "safety_events",
+                  "coordination_events", "deliveries", "photos"):
+        await db[coll].create_index(
+            [("tenant_id", 1), ("parent_daily_report_id", 1)],
+            partialFilterExpression={"parent_daily_report_id": {"$type": "string"}},
+        )
+    # daily_report_activities rows don't carry tenant_id (they're
+    # scoped via daily_report_id). Index by parent_daily_report_id only.
+    await db.daily_report_activities.create_index(
+        [("parent_daily_report_id", 1)],
+        partialFilterExpression={"parent_daily_report_id": {"$type": "string"}},
+    )
+    # Bucket D Phase 1 -- linked_dr_activity_ids gallery filter (Phase 3).
+    # Each event collection gets the index for "what events affect
+    # activity X?" lookups across DRs.
+    for coll in ("delays", "rfis", "qc_issues", "safety_events",
+                  "coordination_events", "deliveries"):
+        await db[coll].create_index(
+            [("tenant_id", 1), ("project_id", 1), ("linked_dr_activity_ids", 1)],
+        )
 
 
 @asynccontextmanager
@@ -227,9 +274,11 @@ api_router.include_router(schedule_proposals_router)
 api_router.include_router(schedule_diffs_router)
 api_router.include_router(calendar_reconciliation_router)
 api_router.include_router(tia_router)
+api_router.include_router(photo_tray_router)
 api_router.include_router(mitigations_router)
 api_router.include_router(gating_entities_router)
 api_router.include_router(coordination_router)
+api_router.include_router(edit_requests_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

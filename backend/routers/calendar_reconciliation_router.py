@@ -54,12 +54,17 @@ async def _build_rows(tenant_id: str, project_id: str,
             cal_by_date[key] = d
 
     # Daily reports in range
+    # Addition 3 -- include no-work fields so each row in TIA Section 11
+    # can render the explicit no-work-day acknowledgment instead of a
+    # bare blank.
     drs = await db.daily_reports.find(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "report_date": {"$gte": start.isoformat(), "$lte": end.isoformat()},
         }),
-        {"_id": 0, "id": 1, "report_date": 1, "status": 1, "weather_conditions": 1},
+        {"_id": 0, "id": 1, "report_date": 1, "status": 1,
+         "weather_conditions": 1, "is_no_work_day": 1,
+         "no_work_reason": 1, "no_work_note": 1},
     ).to_list(5000)
     dr_by_date: dict[str, dict] = {}
     dr_ids: list[str] = []
@@ -110,6 +115,12 @@ async def _build_rows(tenant_id: str, project_id: str,
             "headcount_total": int(agg["headcount_total"]) if agg else 0,
             "daily_report_id": dr["id"] if dr else None,
             "daily_report_status": dr.get("status") if dr else None,
+            # Addition 3 -- explicit no-work-day acknowledgment surfaces
+            # in TIA Section 11. Rendered ONLY for submitted DRs since
+            # the field is set at submit time and unset on draft DRs.
+            "is_no_work_day": bool(dr.get("is_no_work_day")) if dr else False,
+            "no_work_reason": (dr.get("no_work_reason") if dr else None),
+            "no_work_note": (dr.get("no_work_note") if dr else None),
         }
         out.append(row)
         cur += timedelta(days=1)

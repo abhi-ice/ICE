@@ -37,6 +37,18 @@ async def create_coordination_event(
         raise HTTPException(404, "Project not found")
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
+    # Bucket D Phase 1 — DR-activity linkage OPTIONAL for coordination
+    # (some events are project-wide). Validation just confirms ids are
+    # real if provided. linked_daily_report_id (existing field) is the
+    # scope DR for the activity-id check.
+    from services.dr_activity_linkage import validate_linked_dr_activity_ids
+    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+        tenant_id=ctx["tenant_id"],
+        daily_report_id=doc.get("linked_daily_report_id"),
+        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        required=False,
+        parent_daily_report_id=doc.get("parent_daily_report_id"),
+    )
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -46,7 +58,24 @@ async def create_coordination_event(
         "deleted_at": None,
         "deleted_by_user_id": None,
     })
+    # Bucket D Phase 4 -- supplement metadata + audit.
+    from services.dr_activity_linkage import (
+        stamp_supplement_metadata, validate_supplement_parent_locked,
+    )
+    if doc.get("is_supplement") and doc.get("parent_daily_report_id"):
+        await validate_supplement_parent_locked(
+            tenant_id=ctx["tenant_id"],
+            parent_daily_report_id=doc["parent_daily_report_id"],
+        )
+    sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="coordination_event")
     await db.coordination_events.insert_one(doc.copy())
+    if sup_audit:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="coordination_events",
+            op="SUPPLEMENT_FILED",
+            record_id=doc["id"], before=None, after=sup_audit,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="coordination_events",
         op="COORDINATION_EVENT_CREATE", record_id=doc["id"],
@@ -71,6 +100,7 @@ async def list_coordination_events(
                     "or equals linked_daily_report_id.",
     ),
     include_deleted: bool = Query(False),
+    affected_activity_id: Optional[str] = Query(None),
     ctx: dict = Depends(require_tenant),
 ):
     """Sidebar list — sortable filters per spec. Cap 500 rows; default
@@ -85,6 +115,10 @@ async def list_coordination_events(
         f["channel"] = channel
     if direction:
         f["direction"] = direction
+    # Bucket D Phase 3 -- gallery filter on linked_dr_activity_ids
+    # (Phase 1 added the field; this is the matching list filter).
+    if affected_activity_id:
+        f["linked_dr_activity_ids"] = affected_activity_id
     if date_from or date_to:
         rng: dict = {}
         if date_from:
@@ -144,9 +178,35 @@ async def update_coordination_event(
     if not _can_edit(ctx, before):
         raise HTTPException(403, "Only the event creator or admin can edit this event.")
     raw = payload.model_dump(mode="json", exclude_unset=True)
+    edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
-    if not updates:
+    if not updates and not edit_reason:
         return CoordinationEvent(**before)
+    # Addition 4 -- locked-DR edit policy. Coordination uses
+    # linked_daily_report_id (different field name).
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before.get("linked_daily_report_id"),
+        edit_reason=edit_reason, event_type="coordination", event_id=event_id,
+    )
+    # Bucket D verification fix -- re-validate linked_dr_activity_ids
+    # when the patch attempts to replace it. Linkage is OPTIONAL for
+    # coordination per spec, so required=False (empty list is allowed
+    # to clear the linkage), but anything that IS present must resolve
+    # to real rows on the parent DR.
+    if "linked_dr_activity_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_dr_activity_ids
+        # Coordination uses linked_daily_report_id (different field name).
+        scope_dr = updates.get("linked_daily_report_id") or before.get("linked_daily_report_id")
+        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+            tenant_id=ctx["tenant_id"],
+            daily_report_id=scope_dr,
+            activity_ids=updates["linked_dr_activity_ids"],
+            required=False,
+            parent_daily_report_id=before.get("parent_daily_report_id"),
+        )
     updates["updated_at"] = utc_now().isoformat()
     await db.coordination_events.update_one(
         tenant_filter(ctx["tenant_id"], {"id": event_id}), {"$set": updates},
@@ -160,6 +220,17 @@ async def update_coordination_event(
         before=before, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Addition 4 -- post-submit edit audit + metadata stamp.
+    if is_locked_edit:
+        after = await db.coordination_events.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": event_id}), {"_id": 0},
+        )
+        await stamp_edit_metadata(
+            db=db, collection="coordination_events", record_id=event_id,
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            edit_reason=edit_reason, before=before, after=after,
+            request_id=ctx["request_id"],
+        )
     return CoordinationEvent(**after)
 
 

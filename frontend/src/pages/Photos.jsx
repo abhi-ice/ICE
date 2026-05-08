@@ -1,150 +1,240 @@
-// Photos page — upload via Emergent Object Storage + masonry grid + viewer.
-import { useEffect, useState } from "react";
+// Bucket D Phase 3 -- Photos page reworked as a gallery aggregation
+// across all DRs in the project. Each card is a `photos` row (the
+// tagging junction); filters cover date, class, evidentiary flag,
+// tagged-to event type, affected activity. Click a card -> opens the
+// parent DR with the relevant event highlighted.
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { Camera, Upload, X } from "lucide-react";
+import { useUrlState } from "../lib/useUrlState";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
+import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
 import { getToken } from "../lib/auth";
+import GalleryActivityChips from "../components/photos/GalleryActivityChips";
+import { localTodayISO } from "../lib/dateUtil";
+
+const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
+                        "safety", "coordination", "closeout"];
+const PHOTO_CLASS_TONES = {
+  progress: "bg-slate-100 text-slate-700 border-slate-300",
+  discovery: "bg-amber-100 text-amber-800 border-amber-300",
+  damage: "bg-rose-100 text-rose-800 border-rose-300",
+  quality: "bg-violet-100 text-violet-800 border-violet-300",
+  safety: "bg-orange-100 text-orange-800 border-orange-300",
+  coordination: "bg-sky-100 text-sky-800 border-sky-300",
+  closeout: "bg-emerald-100 text-emerald-800 border-emerald-300",
+};
+
+const TAGGED_TO_OPTIONS = [
+  { value: "",            label: "Any tag type" },
+  { value: "activity",    label: "Activity" },
+  { value: "delay",       label: "Delay" },
+  { value: "rfi",         label: "RFI" },
+  { value: "qc",          label: "QC issue" },
+  { value: "safety",      label: "Safety event" },
+  { value: "coordination", label: "Coordination" },
+  { value: "delivery",    label: "Delivery" },
+  { value: "drawing",     label: "Drawing pin" },
+];
+
+function eventLabelForRow(p) {
+  if (p.daily_report_activity_id) return { type: "activity", id: p.daily_report_activity_id };
+  if (p.delay_id) return { type: "delay", id: p.delay_id };
+  if (p.rfi_id) return { type: "RFI", id: p.rfi_id };
+  if (p.qc_issue_id) return { type: "QC", id: p.qc_issue_id };
+  if (p.safety_event_id) return { type: "safety", id: p.safety_event_id };
+  if (p.coordination_event_id) return { type: "coordination", id: p.coordination_event_id };
+  if (p.delivery_id) return { type: "delivery", id: p.delivery_id };
+  if (p.drawing_pin_id) return { type: "drawing pin", id: p.drawing_pin_id };
+  return { type: "untagged", id: null };
+}
 
 export default function Photos() {
   const { activeId, projects } = useProjects();
   const [photos, setPhotos] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(null);
-  const [locations, setLocations] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [linkLoc, setLinkLoc] = useState("");
-  const [linkAct, setLinkAct] = useState("");
-  const [caption, setCaption] = useState("");
+  const [loading, setLoading] = useState(false);
+  // Bucket D Fix H -- filter state mirrored to URL.
+  const [filters, setFilters] = useUrlState({
+    photo_class: "", evidentiary_only: false, tagged_to: "",
+    affected_activity_id: "",
+  });
   const project = projects.find((p) => p.id === activeId);
 
-  const load = () => activeId && api.get(`/projects/${activeId}/photos`).then(({ data }) => setPhotos(data));
-  useEffect(() => {
+  const load = async () => {
     if (!activeId) return;
-    load();
-    api.get(`/projects/${activeId}/locations`).then(({ data }) => setLocations(data));
-    api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data.filter((t) => t.status !== "deleted")));
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [activeId]);
-
-  const upload = async (file) => {
-    if (!file || !activeId) return;
-    setBusy(true);
+    setLoading(true);
     try {
-      const fd = new FormData();
-      fd.append("project_id", activeId);
-      fd.append("file", file);
-      if (linkLoc) fd.append("location_id", linkLoc);
-      if (linkAct) fd.append("schedule_activity_id", linkAct);
-      if (caption) fd.append("caption", caption);
-      await api.post("/photos/upload", fd);
-      toast.success("Photo uploaded");
-      setCaption(""); setLinkLoc(""); setLinkAct("");
-      load();
+      const params = {};
+      if (filters.photo_class) params.photo_class = filters.photo_class;
+      if (filters.evidentiary_only) params.evidentiary_only = true;
+      if (filters.tagged_to) params.tagged_to = filters.tagged_to;
+      if (filters.affected_activity_id) params.affected_activity_id = filters.affected_activity_id;
+      const r = await api.get(`/projects/${activeId}/photos`, { params });
+      setPhotos(Array.isArray(r.data) ? r.data : []);
     } catch (e) {
-      toast.error("Upload failed: " + (e.response?.data?.detail || e.message));
-    } finally {
-      setBusy(false);
-    }
+      toast.error(e.response?.data?.detail || "Failed to load photos");
+    } finally { setLoading(false); }
   };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [activeId, filters]);
+
+  if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see photos.</div>;
 
   return (
-    <div data-testid="photos-page" className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Photos</h1>
-        <p className="text-sm text-slate-500">{project?.name}</p>
+    <div className="p-6 max-w-7xl mx-auto" data-testid="photos-page">
+      <header className="mb-4 flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Camera className="h-5 w-5 text-slate-700" />
+            <h1 className="text-xl font-semibold text-slate-800">Photos</h1>
+          </div>
+          <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Bucket D Fix G [3/4] -- "+ New" routes to today's DR's
+              photos panel (consistent with all other galleries). The
+              upload+tag flow lives on the Photo Tray page; the link
+              below is preserved for users who want to go straight
+              to the tray. */}
+          <PhotoNewButton projectId={activeId} />
+          <Link to="/photo-tray"
+            data-testid="photos-go-to-tray"
+            className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300 inline-flex items-center gap-1">
+            <Upload className="h-3.5 w-3.5" /> Photo tray
+          </Link>
+        </div>
+      </header>
+
+      <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 mb-4">
+        <strong>Gallery view.</strong> Each card is a tag connecting a photo to one event on
+        a specific daily report. The same image may appear multiple times if tagged to
+        multiple events. Upload + tag from the <Link to="/photo-tray" className="underline">Photo tray</Link>.
       </div>
 
-      <div className="surface p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-        <div className="md:col-span-2">
-          <label className="field-label">Capture or upload photo *</label>
-          <input
-            data-testid="photo-file"
-            type="file"
-            accept="image/*"
-            capture="environment"
-            disabled={busy}
-            onChange={(e) => e.target.files[0] && upload(e.target.files[0])}
-            className="block text-sm w-full h-9"
-          />
-          <div className="text-[11px] text-slate-400 mt-1">On mobile this opens the rear camera. Stored in Emergent Object Storage under <code>photos/&#123;tenant_id&#125;/</code>.</div>
+      <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
+        <Filter className="h-4 w-4 text-slate-500 mb-2" />
+        <div>
+          <label className="text-[10px] text-slate-500 uppercase">Photo class</label>
+          <select data-testid="photos-filter-class"
+            value={filters.photo_class} onChange={(e) => setFilters({ ...filters, photo_class: e.target.value })}
+            className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
+            <option value="">(any)</option>
+            {PHOTO_CLASSES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
         </div>
         <div>
-          <label className="field-label">Caption (optional)</label>
-          <input data-testid="photo-caption" value={caption} onChange={(e) => setCaption(e.target.value)} className="w-full h-9 px-3 rounded border border-slate-200 text-sm" />
+          <label className="text-[10px] text-slate-500 uppercase">Tagged to</label>
+          <select data-testid="photos-filter-tagged-to"
+            value={filters.tagged_to} onChange={(e) => setFilters({ ...filters, tagged_to: e.target.value })}
+            className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
+            {TAGGED_TO_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="field-label">Location</label>
-            <select data-testid="photo-location" value={linkLoc} onChange={(e) => setLinkLoc(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-xs">
-              <option value="">—</option>
-              {locations.map((l) => <option key={l.id} value={l.id}>{l.code} {l.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="field-label">Activity</label>
-            <select data-testid="photo-activity" value={linkAct} onChange={(e) => setLinkAct(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-xs">
-              <option value="">—</option>
-              {tasks.map((t) => <option key={t.id} value={t.id}>{t.activity_code}</option>)}
-            </select>
-          </div>
+        <div>
+          <label className="text-[10px] text-slate-500 uppercase">Affected activity id</label>
+          <input data-testid="photos-filter-activity"
+            value={filters.affected_activity_id}
+            onChange={(e) => setFilters({ ...filters, affected_activity_id: e.target.value })}
+            placeholder="daily_report_activity.id"
+            className="block h-8 px-2 rounded border border-slate-300 text-sm w-64" />
         </div>
+        <label className="text-xs flex items-center gap-1">
+          <input data-testid="photos-filter-evidentiary"
+            type="checkbox" checked={filters.evidentiary_only}
+            onChange={(e) => setFilters({ ...filters, evidentiary_only: e.target.checked })} />
+          <span>Evidentiary only</span>
+        </label>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-        {photos.map((p) => (
-          <button
-            key={p.id}
-            data-testid={`photo-tile-${p.id}`}
-            onClick={() => setOpen(p)}
-            className="surface aspect-square overflow-hidden relative group hover:ring-2 hover:ring-blue-500 transition"
-          >
-            <PhotoImage photoId={p.id} />
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-900/80 to-transparent text-white text-[11px] p-2 truncate">
-              {p.caption || new Date(p.captured_at).toLocaleDateString()}
-            </div>
-          </button>
-        ))}
-        {!photos.length && <div className="col-span-full text-sm text-slate-500 py-8 text-center">No photos yet. Capture one above.</div>}
-      </div>
-
-      {open && (
-        <div data-testid="photo-modal" className="fixed inset-0 z-40 bg-slate-900/80 grid place-items-center p-4">
-          <div className="bg-white rounded-md max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="h-12 px-4 border-b border-slate-200 flex items-center gap-2">
-              <Camera className="h-4 w-4 text-blue-600" />
-              <div className="text-sm font-medium truncate">{open.caption || open.id.slice(0, 8)}</div>
-              <button onClick={() => setOpen(null)} className="ml-auto h-7 w-7 grid place-items-center rounded hover:bg-slate-100"><X className="h-4 w-4" /></button>
-            </div>
-            <div className="flex-1 grid place-items-center bg-slate-50 overflow-auto">
-              <PhotoImage photoId={open.id} large />
-            </div>
-            <div className="px-4 py-3 border-t border-slate-200 text-xs text-slate-600 grid grid-cols-3 gap-3">
-              <div><span className="text-slate-400">Captured:</span> {new Date(open.captured_at).toLocaleString()}</div>
-              <div><span className="text-slate-400">Location:</span> {locations.find((l) => l.id === open.location_id)?.name || "—"}</div>
-              <div><span className="text-slate-400">Activity:</span> {tasks.find((t) => t.id === open.schedule_activity_id)?.activity_code || "—"}</div>
-              {open.gps_lat && (
-                <div data-testid="photo-gps"><span className="text-slate-400">GPS:</span> {open.gps_lat.toFixed(4)}, {open.gps_lng?.toFixed(4)}</div>
-              )}
-              {open.camera_make && <div><span className="text-slate-400">Camera:</span> {open.camera_make} {open.camera_model || ""}</div>}
-              {open.phash && <div className="font-mono"><span className="text-slate-400">pHash:</span> {open.phash.slice(0, 12)}</div>}
-              {open.visual_fingerprint_match_id && (
-                <div data-testid="photo-dup">
-                  <span className="text-amber-600 font-medium">Duplicate</span> conf {(open.visual_fingerprint_match_confidence * 100).toFixed(0)}%
-                </div>
-              )}
-            </div>
-          </div>
+      {loading ? (
+        <div className="text-sm text-slate-500">Loading…</div>
+      ) : !photos.length ? (
+        <div className="text-sm text-slate-500 border border-dashed border-slate-300 rounded p-8 text-center">
+          No photos match these filters. Upload + tag from the Photo tray.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+          {photos.map((p) => <PhotoCard key={p.id} photo={p} projectId={activeId} />)}
         </div>
       )}
     </div>
   );
 }
 
-function PhotoImage({ photoId, large = false }) {
-  // We hit the streaming endpoint with the bearer token via fetch + blob URL,
-  // because <img src> can't carry auth headers.
+function PhotoCard({ photo, projectId }) {
+  const tone = PHOTO_CLASS_TONES[photo.photo_class] || PHOTO_CLASS_TONES.progress;
+  const { type: eventType } = eventLabelForRow(photo);
+  return (
+    <Link to={`/daily-reports?openId=${photo.daily_report_id}&openEvent=${photo.id}&openEventType=photo`}
+      data-testid={`photos-card-${photo.id}`}
+      className="block bg-white border border-slate-200 rounded overflow-hidden hover:border-blue-400 hover:shadow-sm transition">
+      <div className="relative aspect-square bg-slate-100">
+        <PhotoImage photoId={photo.id} />
+        <span className={`absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded border ${tone}`}>
+          {photo.photo_class}
+        </span>
+        {photo.evidentiary_flag && (
+          <span title="Evidentiary -- locked record" className="absolute top-1 right-1 bg-black/70 text-white rounded p-0.5">
+            <Lock className="h-2.5 w-2.5" />
+          </span>
+        )}
+        {photo.timestamp_mismatch_flag && (
+          <span title="Device/server timestamp mismatch" className="absolute bottom-1 right-1 bg-amber-500 text-white rounded p-0.5">
+            <AlertTriangle className="h-2.5 w-2.5" />
+          </span>
+        )}
+      </div>
+      <div className="p-2 space-y-1 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-slate-500">{photo.daily_report_id ? (photo.daily_report_id.slice(0, 8)) : "no DR"}</span>
+          <span className="text-[10px] text-slate-400 uppercase">{eventType}</span>
+        </div>
+        {photo.tag_caption && <div className="text-slate-700 truncate" title={photo.tag_caption}>"{photo.tag_caption}"</div>}
+        {photo.daily_report_activity_id && (
+          <GalleryActivityChips projectId={projectId} activityIds={[photo.daily_report_activity_id]} max={1} />
+        )}
+        {photo.is_supplement && (
+          <div data-testid={`photo-gallery-supp-${photo.id}`}
+            className="text-[9px] inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-mono uppercase">
+            SUPP→{photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || "?"}
+          </div>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+// Bucket D Fix G [3/4] -- + New button that routes to today's DR with
+// PhotosPanel scrolled into view + pulsed.
+function PhotoNewButton({ projectId }) {
+  const navigate = useNavigate();
+  const [routing, setRouting] = useState(false);
+  const click = async () => {
+    if (routing || !projectId) return;
+    setRouting(true);
+    try {
+      const { url, locked, dr } = await navigateToTodaysDrForCreate(projectId, "photo");
+      if (locked) {
+        toast.info(`Today's DR is locked. Upload + tag photos via the Photo tray instead.`);
+        navigate(`/daily-reports?openId=${dr.id}`);
+      } else {
+        navigate(url);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't resolve today's DR");
+    } finally { setRouting(false); }
+  };
+  return (
+    <button data-testid="photos-add-via-dr" onClick={click} disabled={routing}
+      className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+      <Plus className="h-3.5 w-3.5" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+    </button>
+  );
+}
+
+function PhotoImage({ photoId }) {
   const [url, setUrl] = useState(null);
   useEffect(() => {
     let urlObj = null;
@@ -154,14 +244,11 @@ function PhotoImage({ photoId, large = false }) {
           headers: { Authorization: `Bearer ${getToken()}` },
           credentials: "include",
         });
-        if (res.ok) {
-          urlObj = URL.createObjectURL(await res.blob());
-          setUrl(urlObj);
-        }
+        if (res.ok) { urlObj = URL.createObjectURL(await res.blob()); setUrl(urlObj); }
       } catch {}
     })();
     return () => { if (urlObj) URL.revokeObjectURL(urlObj); };
   }, [photoId]);
-  if (!url) return <div className="w-full h-full bg-slate-200 animate-pulse" />;
-  return <img src={url} alt="" className={large ? "max-h-[80vh] object-contain" : "w-full h-full object-cover"} />;
+  if (!url) return <div className="w-full h-full grid place-items-center text-slate-300"><FileImage className="h-8 w-8" /></div>;
+  return <img src={url} alt="" className="w-full h-full object-cover" />;
 }

@@ -2,7 +2,7 @@
 // the shared DelayForm for create/edit and shows status + linked-task counts
 // + days open in the table. Each row is clickable to /delays/:id (detail).
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -10,6 +10,9 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
+import GalleryActivityChips from "../components/photos/GalleryActivityChips";
+import { useUrlState } from "../lib/useUrlState";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 
 export default function DelayList() {
   const { activeId } = useProjects();
@@ -17,32 +20,65 @@ export default function DelayList() {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  // Bucket D Phase 3 + Fix H -- gallery filter mirrored to URL.
+  const [urlFilters, setUrlFilters] = useUrlState({ affected_activity_id: "" });
+  const affectedActivityId = urlFilters.affected_activity_id;
+  const setAffectedActivityId = (v) => setUrlFilters({ affected_activity_id: v || "" });
 
   const refresh = async () => {
     if (!activeId) return;
     setLoading(true);
     try {
-      const { data } = await api.get(`/projects/${activeId}/delays`);
+      const params = {};
+      if (affectedActivityId) params.affected_activity_id = affectedActivityId;
+      const { data } = await api.get(`/projects/${activeId}/delays`, { params });
       setRows(Array.isArray(data) ? data : []);
     } catch (e) { toast.error("Load failed"); }
     finally { setLoading(false); }
   };
-  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
+  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId, affectedActivityId]);
 
   if (!activeId) {
     return <div className="text-sm text-slate-500">Select a project from the top bar to view Delays.</div>;
   }
 
-  const startCreate = () => { setEditing(null); setOpen(true); };
+  // Bucket D Fix G [2/4] -- "+ Add" routes to today's DR's delay
+  // creation (or supplement flow on locked DR). The legacy
+  // startCreate inline-modal path stays for the row-edit Pencil
+  // button so editing existing delays still works inline.
+  const navigate = useNavigate();
+  const [routing, setRouting] = useState(false);
+  const startCreate = async () => {
+    if (routing) return;
+    if (!activeId) return toast.error("Pick a project first");
+    setRouting(true);
+    try {
+      const { url, locked, dr } = await navigateToTodaysDrForCreate(activeId, "delay");
+      if (locked) {
+        toast.info(`Today's DR is locked. Use Supplements panel on the parent DR to add a delay.`);
+        navigate(`/daily-reports?openId=${dr.id}`);
+      } else {
+        navigate(url);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Couldn't resolve today's DR");
+    } finally { setRouting(false); }
+  };
   const startEdit = (r) => { setEditing(r); setOpen(true); };
+  // Bucket D Fix E -- per-row delete guard (Set tracks which rows are mid-delete).
+  const [deleting, setDeleting] = useState(new Set());
   const remove = async (r) => {
+    if (deleting.has(r.id)) return;
     if (!window.confirm(`Delete this delay? This is permanent and the audit log will record it.`)) return;
+    setDeleting((prev) => new Set(prev).add(r.id));
     try {
       await api.delete(`/delays/${r.id}`);
       toast.success("Delay deleted");
       refresh();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Delete failed");
+    } finally {
+      setDeleting((prev) => { const n = new Set(prev); n.delete(r.id); return n; });
     }
   };
 
@@ -53,13 +89,31 @@ export default function DelayList() {
           <h1 className="text-2xl font-semibold tracking-tight">Delays</h1>
           <p className="text-sm text-slate-500">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
-        <Button data-testid="delays-add" onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 gap-1">
-          <Plus className="h-4 w-4" /> Add
+        <Button data-testid="delays-add" onClick={startCreate} disabled={routing}
+          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
+          <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
         </Button>
       </div>
 
       <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-2">
         Each delay can link multiple schedule tasks and capture per-task projected impact in days. Open delays whose tasks are scheduled today appear as reminder cards on the daily report.
+      </div>
+
+      {/* Bucket D Phase 3 -- gallery filter. */}
+      <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900 flex items-center gap-2">
+        <span><strong>Gallery view.</strong> Click a date or chip to jump to the parent DR.</span>
+        <label className="uppercase tracking-wide text-[10px]">Filter by activity id</label>
+        <input data-testid="delays-affected-activity-filter"
+          value={affectedActivityId}
+          onChange={(e) => setAffectedActivityId(e.target.value)}
+          placeholder="paste a daily_report_activity.id"
+          className="h-7 px-2 rounded border border-amber-300 bg-white text-xs flex-1" />
+        {affectedActivityId && (
+          <button onClick={() => setAffectedActivityId("")}
+            className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">
+            Clear
+          </button>
+        )}
       </div>
 
       <div className="surface overflow-hidden">
@@ -71,6 +125,7 @@ export default function DelayList() {
               <th>Status</th>
               <th>Description</th>
               <th>Linked tasks</th>
+              <th>Affected activities</th>
               <th>Days open</th>
               <th className="w-20 text-right">Actions</th>
             </tr>
@@ -81,7 +136,13 @@ export default function DelayList() {
               const stat = r.status === "resolved" ? "pill-green" : r.status === "in_progress" ? "pill-amber" : "pill-slate";
               return (
                 <tr key={r.id} data-testid={`delay-row-${r.id}`}>
-                  <td className="font-mono text-xs">{r.date}</td>
+                  <td className="font-mono text-xs">
+                    {r.daily_report_id ? (
+                      <Link to={`/daily-reports?openId=${r.daily_report_id}&openEvent=${r.id}&openEventType=delay`} className="text-blue-700 hover:underline">
+                        {r.date}
+                      </Link>
+                    ) : r.date}
+                  </td>
                   <td><span className={`pill ${sev}`}>{r.severity}</span></td>
                   <td><span className={`pill ${stat}`}>{(r.status || "open").replace(/_/g, " ")}</span></td>
                   <td className="text-sm max-w-[420px] truncate">
@@ -90,6 +151,7 @@ export default function DelayList() {
                     </Link>
                   </td>
                   <td className="text-xs">{(r.linked_task_ids || []).length}</td>
+                  <td><GalleryActivityChips projectId={activeId} activityIds={r.linked_dr_activity_ids || []} /></td>
                   <td className="text-xs">{r.duration_days ?? "—"}</td>
                   <td className="text-right">
                     <button data-testid={`delays-edit-${r.id}`} onClick={() => startEdit(r)}
@@ -98,7 +160,8 @@ export default function DelayList() {
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                     <button data-testid={`delays-delete-${r.id}`} onClick={() => remove(r)}
-                      className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500"
+                      disabled={deleting.has(r.id)}
+                      className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500 disabled:opacity-50"
                       title="Delete">
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

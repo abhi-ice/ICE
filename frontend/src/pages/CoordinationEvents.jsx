@@ -10,6 +10,9 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
+import { useUrlState } from "../lib/useUrlState";
+import { useNavigate } from "react-router-dom";
+import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 
 const TOPIC_LABELS = {
   tenant_access: "Tenant access",
@@ -40,7 +43,8 @@ export default function CoordinationEvents() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const [filters, setFilters] = useState({ topic: "", channel: "", direction: "", date_from: "", date_to: "" });
+  // Bucket D Fix H -- filters mirrored to URL.
+  const [filters, setFilters] = useUrlState({ topic: "", channel: "", direction: "", date_from: "", date_to: "" });
 
   const params = useMemo(() => {
     const p = {};
@@ -75,9 +79,8 @@ export default function CoordinationEvents() {
           <h1 className="text-2xl font-semibold tracking-tight">Coordination log</h1>
           <p className="text-sm text-slate-500">Every email, call, meeting, and letter that affects schedule or scope. TIA-ready.</p>
         </div>
-        <Button data-testid="coord-new" onClick={() => setOpen(true)} className="bg-blue-600 hover:bg-blue-700 gap-1">
-          <Plus className="h-4 w-4" /> New event
-        </Button>
+        <CoordinationNewButton projectId={activeId}
+          fallbackOpen={() => setOpen(true)} />
       </div>
 
       {/* Filter bar */}
@@ -191,5 +194,39 @@ export default function CoordinationEvents() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// Bucket D Fix G [4/4] -- + New button routes to today's DR with the
+// quick-log dialog opened (DR detail's createEvent=coordination handler
+// flips setCoordOpen=true). If today's DR is locked, we fall back to
+// opening the standalone form dialog on this page so the user can
+// still log the event project-wide.
+function CoordinationNewButton({ projectId, fallbackOpen }) {
+  const navigate = useNavigate();
+  const [routing, setRouting] = useState(false);
+  const click = async () => {
+    if (routing) return;
+    if (!projectId) { fallbackOpen(); return; }
+    setRouting(true);
+    try {
+      const { url, locked } = await navigateToTodaysDrForCreate(projectId, "coordination");
+      if (locked) {
+        toast.info("Today's DR is locked. Opening project-wide log here.");
+        fallbackOpen();
+      } else {
+        navigate(url);
+      }
+    } catch (e) {
+      // If today's DR can't be resolved (no project, network error),
+      // fall back to the standalone dialog rather than blocking the user.
+      fallbackOpen();
+    } finally { setRouting(false); }
+  };
+  return (
+    <Button data-testid="coord-new" onClick={click} disabled={routing}
+      className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
+      <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+    </Button>
   );
 }

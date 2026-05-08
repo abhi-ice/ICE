@@ -1,0 +1,607 @@
+"""Bucket D Phase 2 -- Photo tray + tagging junction endpoints.
+
+Photo tray = staging area before tagging. Every photo upload from the
+mobile camera (PWA) or manual drag/drop lands here first with
+status='untagged'. From the tray UI a 3-step wizard (Phase 2.3 frontend)
+calls POST /photo-tags to create a `photos` row connecting one tray
+entry to one event (XOR rule).
+
+Endpoints:
+  POST   /api/photo-tray                     multipart upload, returns tray entry
+  GET    /api/projects/{pid}/photo-tray      list (status/source/date filters)
+  GET    /api/photo-tray/{id}                detail (single tray row)
+  GET    /api/photo-tray/{id}/file           stream image bytes for thumbnail/preview
+  POST   /api/photo-tray/{id}/archive        flip status to archived
+  POST   /api/photo-tags                     create a Photo (tag tray->event)
+  GET    /api/photo-tray/{id}/tags           list Photo rows for a tray entry
+  DELETE /api/photo-tags/{photo_id}          remove a single tag
+
+Tenant-scoped via require_tenant. XOR rule on POST /photo-tags
+enforced: exactly one of (daily_report_activity_id, delay_id, rfi_id,
+qc_issue_id, safety_event_id, coordination_event_id, delivery_id,
+drawing_pin_id) must be non-null. Tagging recomputes evidentiary_flag
+per Bucket C3b Phase 4 OR semantics.
+"""
+from __future__ import annotations
+import hashlib
+import io
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Response
+
+from database import get_db, tenant_filter
+from auth import require_tenant
+from audit import write_audit
+from models import (PhotoTray, PhotoTagCreate, EVIDENTIARY_CLASSES,
+                     gen_id, utc_now)
+from services.storage import put_object, get_object, make_path, record_file
+
+
+router = APIRouter(tags=["photo-tray"])
+
+
+# Event-ref fields on Photo. Exactly one must be non-null per row.
+_PHOTO_EVENT_REFS = (
+    "daily_report_activity_id", "delay_id", "rfi_id", "qc_issue_id",
+    "safety_event_id", "coordination_event_id", "delivery_id",
+    "drawing_pin_id",
+)
+
+# Dedup window for pHash matches: same project + same pHash within
+# this duration -> treat as same upload (return existing tray entry).
+_PHASH_DEDUP_WINDOW = timedelta(hours=24)
+
+
+def _extract_image_meta(body: bytes) -> dict:
+    """Best-effort EXIF + pHash + dimensions. Never raises."""
+    out: dict = {
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "phash": None,
+        "width": None,
+        "height": None,
+        "exif_taken_at": None,
+        "exif_gps_lat": None,
+        "exif_gps_lng": None,
+    }
+    try:
+        from PIL import Image, ExifTags
+        import imagehash
+        img = Image.open(io.BytesIO(body))
+        out["width"] = img.width
+        out["height"] = img.height
+        out["phash"] = str(imagehash.phash(img))
+        try:
+            exif_raw = img._getexif() or {}
+        except Exception:
+            exif_raw = {}
+        exif: dict = {ExifTags.TAGS.get(k, str(k)): v for k, v in exif_raw.items()}
+        if "DateTimeOriginal" in exif:
+            raw = str(exif["DateTimeOriginal"])
+            try:
+                if len(raw) >= 19 and raw[4] == ":":
+                    iso = raw[:4] + "-" + raw[5:7] + "-" + raw[8:10] + "T" + raw[11:19]
+                else:
+                    iso = raw
+                out["exif_taken_at"] = datetime.fromisoformat(iso).isoformat()
+            except Exception:
+                pass
+        gps_raw = exif.get("GPSInfo")
+        if isinstance(gps_raw, dict):
+            from routers.iter6_router import _dms_to_dd
+            gps = {ExifTags.GPSTAGS.get(k, str(k)): v for k, v in gps_raw.items()}
+            if "GPSLatitude" in gps and "GPSLongitude" in gps:
+                try:
+                    out["exif_gps_lat"] = _dms_to_dd(gps["GPSLatitude"], gps.get("GPSLatitudeRef") or "N")
+                    out["exif_gps_lng"] = _dms_to_dd(gps["GPSLongitude"], gps.get("GPSLongitudeRef") or "E")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+async def _find_dedup(tenant_id: str, project_id: str,
+                       sha256: Optional[str], phash: Optional[str]) -> Optional[dict]:
+    """Return an existing tray row that matches on SHA-256 (any time) or
+    pHash within the dedup window. None if no match."""
+    db = get_db()
+    if sha256:
+        existing = await db.photo_tray.find_one(
+            tenant_filter(tenant_id, {"project_id": project_id, "sha256": sha256}),
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+    if phash:
+        cutoff = (utc_now() - _PHASH_DEDUP_WINDOW).isoformat()
+        existing = await db.photo_tray.find_one(
+            tenant_filter(tenant_id, {
+                "project_id": project_id, "phash": phash,
+                "uploaded_at": {"$gte": cutoff},
+            }),
+            {"_id": 0},
+        )
+        if existing:
+            return existing
+    return None
+
+
+# ============================================================
+# Upload
+# ============================================================
+@router.post("/photo-tray", response_model=PhotoTray)
+async def upload_to_tray(
+    project_id: str = Form(...),
+    capture_source: str = Form("manual_upload"),
+    file: UploadFile = File(...),
+    ctx: dict = Depends(require_tenant),
+):
+    """Multipart upload -- writes bytes to storage, extracts EXIF +
+    pHash, dedups against existing tray entries, returns the tray row.
+
+    Dedup rules:
+      * SHA-256 match (any time) -> return existing (true byte-equality).
+      * pHash match within 24h    -> return existing (same scene
+        re-uploaded; mobile cameras re-encode and break SHA but keep
+        perceptual signature).
+
+    capture_source values: mobile_camera | manual_upload | drawing_pin.
+    """
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    if capture_source not in ("mobile_camera", "manual_upload", "drawing_pin"):
+        capture_source = "manual_upload"
+
+    body = await file.read()
+    if len(body) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Photo > 10MB")
+    if not body:
+        raise HTTPException(400, "Empty file")
+
+    meta = _extract_image_meta(body)
+    dup = await _find_dedup(ctx["tenant_id"], project_id, meta["sha256"], meta["phash"])
+    if dup:
+        return PhotoTray(**dup)
+
+    ext = (file.filename.rsplit(".", 1)[-1] if "." in (file.filename or "") else "jpg").lower()
+    if ext not in ("jpg", "jpeg", "png", "webp", "heic"):
+        ext = "jpg"
+    storage_path = make_path(ctx["tenant_id"], "tray", ext)
+    ct = file.content_type or "image/jpeg"
+    try:
+        put_object(storage_path, body, ct)
+    except Exception as e:
+        raise HTTPException(500, f"storage: {e}")
+    await record_file(
+        tenant_id=ctx["tenant_id"], storage_path=storage_path,
+        original_filename=file.filename or f"photo.{ext}",
+        content_type=ct, size=len(body), kind="photo_tray",
+        actor_id=ctx["user"]["id"],
+    )
+    now_iso = utc_now().isoformat()
+    doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": project_id,
+        "uploaded_by": ctx["user"]["id"],
+        "uploaded_at": now_iso,
+        "capture_source": capture_source,
+        "source_path": file.filename,
+        "storage_key": storage_path,
+        "phash": meta["phash"],
+        "sha256": meta["sha256"],
+        "exif_taken_at": meta["exif_taken_at"],
+        "exif_gps_lat": meta["exif_gps_lat"],
+        "exif_gps_lng": meta["exif_gps_lng"],
+        "width": meta["width"],
+        "height": meta["height"],
+        "file_size_bytes": len(body),
+        "status": "untagged",
+    }
+    await db.photo_tray.insert_one(doc.copy())
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photo_tray",
+        op="PHOTO_TRAY_UPLOAD",
+        record_id=doc["id"], before=None, after={
+            "project_id": project_id, "capture_source": capture_source,
+            "phash": meta["phash"], "sha256": meta["sha256"],
+            "size_bytes": len(body),
+        },
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return PhotoTray(**doc)
+
+
+# ============================================================
+# List + detail
+# ============================================================
+@router.get("/projects/{project_id}/photo-tray")
+async def list_tray(
+    project_id: str,
+    status: Optional[str] = Query(None, description="untagged|partially_tagged|fully_tagged|archived"),
+    capture_source: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="ISO date"),
+    date_to: Optional[str] = Query(None, description="ISO date"),
+    untagged_only: bool = Query(False),
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    f: dict = {"project_id": project_id}
+    if untagged_only:
+        f["status"] = "untagged"
+    elif status:
+        wanted = [s.strip() for s in status.split(",") if s.strip()]
+        if wanted:
+            f["status"] = {"$in": wanted}
+    else:
+        # Task 3 verification fix: archived rows hide by default. The
+        # tray UI default view should show actionable photos only;
+        # archived ones still resolvable via explicit status=archived.
+        f["status"] = {"$ne": "archived"}
+    if capture_source:
+        f["capture_source"] = capture_source
+    if date_from or date_to:
+        rng: dict = {}
+        if date_from:
+            rng["$gte"] = date_from
+        if date_to:
+            rng["$lte"] = date_to + "T23:59:59Z"
+        f["uploaded_at"] = rng
+    docs = await db.photo_tray.find(
+        tenant_filter(ctx["tenant_id"], f), {"_id": 0},
+    ).sort("uploaded_at", -1).to_list(length=500)
+    return docs
+
+
+@router.get("/photo-tray/{tray_id}")
+async def get_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    doc = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}), {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(404, "Tray entry not found")
+    # Also fetch the existing tags so the UI can show "already tagged to..."
+    tags = await db.photos.find(
+        tenant_filter(ctx["tenant_id"], {"tray_photo_id": tray_id}),
+        {"_id": 0, "id": 1, "daily_report_id": 1, "tag_caption": 1,
+         "tagged_at": 1, "tagged_by": 1, "photo_class": 1,
+         "evidentiary_flag": 1,
+         **{k: 1 for k in _PHOTO_EVENT_REFS}},
+    ).to_list(length=None)
+    return {"tray": doc, "tags": tags}
+
+
+@router.get("/photo-tray/{tray_id}/file")
+async def stream_tray_image(tray_id: str, ctx: dict = Depends(require_tenant)):
+    """Stream image bytes for thumbnail/preview in the tray UI."""
+    db = get_db()
+    doc = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}), {"_id": 0, "storage_key": 1},
+    )
+    if not doc:
+        raise HTTPException(404, "Tray entry not found")
+    try:
+        data, ct = get_object(doc["storage_key"])
+    except Exception as e:
+        raise HTTPException(500, f"storage: {e}")
+    return Response(content=data, media_type=ct)
+
+
+# ============================================================
+# Archive (status flip)
+# ============================================================
+@router.post("/photo-tray/{tray_id}/archive")
+async def archive_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    before = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Tray entry not found")
+    if before.get("status") == "archived":
+        return {"ok": True, "already_archived": True}
+    await db.photo_tray.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+        {"$set": {"status": "archived"}},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photo_tray",
+        op="PHOTO_TRAY_ARCHIVE",
+        record_id=tray_id, before={"status": before.get("status")},
+        after={"status": "archived"},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True}
+
+
+# ============================================================
+# Tagging (tray -> event via Photo row)
+# ============================================================
+def _xor_check(payload: PhotoTagCreate) -> str:
+    """Returns the single non-null event-ref field name, or raises 422."""
+    set_fields = [k for k in _PHOTO_EVENT_REFS if getattr(payload, k, None)]
+    if len(set_fields) == 0:
+        raise HTTPException(
+            422,
+            "Exactly one event reference required: "
+            + ", ".join(_PHOTO_EVENT_REFS),
+        )
+    if len(set_fields) > 1:
+        raise HTTPException(
+            422,
+            f"Only one event reference allowed; got {len(set_fields)}: "
+            + ", ".join(set_fields),
+        )
+    return set_fields[0]
+
+
+async def _validate_event_ref(db, tenant_id: str, daily_report_id: str,
+                                ref_field: str, ref_id: str) -> dict:
+    """Confirm the referenced event exists and (where applicable) belongs
+    to the named DR. Returns the event doc for downstream copy of
+    project_id and other denorm fields. Raises 422/404 as appropriate."""
+    coll = {
+        "daily_report_activity_id": "daily_report_activities",
+        "delay_id": "delays",
+        "rfi_id": "rfis",
+        "qc_issue_id": "qc_issues",
+        "safety_event_id": "safety_events",
+        "coordination_event_id": "coordination_events",
+        "delivery_id": "deliveries",
+        "drawing_pin_id": "drawing_pins",
+    }[ref_field]
+
+    # daily_report_activities don't carry tenant_id; query by id +
+    # daily_report_id directly. coordination_events use
+    # linked_daily_report_id rather than daily_report_id.
+    if ref_field == "daily_report_activity_id":
+        ev = await db[coll].find_one(
+            {"id": ref_id, "daily_report_id": daily_report_id},
+            {"_id": 0},
+        )
+        if not ev:
+            raise HTTPException(404, f"daily_report_activity {ref_id} not on DR {daily_report_id}")
+        return ev
+
+    ev = await db[coll].find_one(
+        tenant_filter(tenant_id, {"id": ref_id}), {"_id": 0},
+    )
+    if not ev:
+        raise HTTPException(404, f"{coll} entry {ref_id} not found")
+    # Optional DR scope check for events that carry daily_report_id.
+    dr_field = "linked_daily_report_id" if coll == "coordination_events" else "daily_report_id"
+    ev_dr = ev.get(dr_field)
+    if ev_dr and ev_dr != daily_report_id:
+        # Cross-DR linkage isn't allowed except via supplements (Phase 4).
+        # For Phase 2 the wizard always picks a DR; the event must share it.
+        raise HTTPException(
+            422,
+            f"{coll} {ref_id} belongs to DR {ev_dr}, not {daily_report_id}",
+        )
+    return ev
+
+
+@router.post("/photo-tags")
+async def create_photo_tag(
+    payload: PhotoTagCreate, ctx: dict = Depends(require_tenant),
+):
+    """Create a Photo row tying a tray entry to ONE event. XOR-enforced.
+    Tray status flips untagged -> partially_tagged on first tag."""
+    db = get_db()
+    ref_field = _xor_check(payload)
+    ref_id = getattr(payload, ref_field)
+
+    tray = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": payload.tray_photo_id}),
+        {"_id": 0},
+    )
+    if not tray:
+        raise HTTPException(404, "Tray entry not found")
+    if tray.get("status") == "archived":
+        raise HTTPException(409, "Tray entry is archived")
+
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}),
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1},
+    )
+    if not dr:
+        raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
+    if dr.get("project_id") != tray.get("project_id"):
+        raise HTTPException(
+            422,
+            "Tray entry and daily report must belong to the same project",
+        )
+    if dr.get("status") == "submitted":
+        raise HTTPException(
+            409,
+            "Daily report is locked. Use the supplement flow to tag photos against locked DRs.",
+        )
+
+    # Validate event ref exists in tenant + (where applicable) on the DR.
+    ev = await _validate_event_ref(
+        db, ctx["tenant_id"], payload.daily_report_id, ref_field, ref_id,
+    )
+
+    # Addition 2 -- re-validate the event's own linked_dr_activity_ids
+    # at tag time. The M2M tagging junction (Photo) inherits context
+    # from the tagged event; if the event's linkage was somehow broken
+    # (corrupted offline, created via copilot/voice bypass before
+    # linkage was required, mutated by a future PATCH that skipped
+    # validation, etc.) the photo would inherit invalid context. Tag
+    # time is the right moment to catch this so we don't paper over a
+    # data-integrity break on the linked event.
+    #
+    # Required-linkage events: delays / rfis / qc_issues / deliveries.
+    # Optional-linkage events: safety_events / coordination_events.
+    # daily_report_activity_id and drawing_pin_id tags are already
+    # scoped to the DR via _validate_event_ref above; they have no
+    # `linked_dr_activity_ids` field of their own to re-validate.
+    REQUIRED_LINKAGE_REFS = {"delay_id", "rfi_id", "qc_issue_id", "delivery_id"}
+    LINKAGE_OWNING_REFS = REQUIRED_LINKAGE_REFS | {
+        "safety_event_id", "coordination_event_id",
+    }
+    if ref_field in LINKAGE_OWNING_REFS:
+        ev_linkage = list(ev.get("linked_dr_activity_ids") or [])
+        if ref_field in REQUIRED_LINKAGE_REFS and not ev_linkage:
+            raise HTTPException(
+                422,
+                f"Cannot tag photo: the {ref_field.replace('_id', '')} record "
+                f"{ref_id} has no linked_dr_activity_ids (required for this "
+                f"event type). Edit the event to add at least one activity "
+                f"link before tagging photos.",
+            )
+        if ev_linkage:
+            # Coordination uses linked_daily_report_id as its DR scope;
+            # all other linkage-owning events use daily_report_id (which
+            # we've already verified matches payload.daily_report_id via
+            # _validate_event_ref).
+            scope_dr = (
+                ev.get("linked_daily_report_id")
+                if ref_field == "coordination_event_id"
+                else ev.get("daily_report_id")
+            ) or payload.daily_report_id
+            existing_act_rows = await db.daily_report_activities.find(
+                {"id": {"$in": ev_linkage}, "daily_report_id": scope_dr},
+                {"_id": 0, "id": 1},
+            ).to_list(length=None)
+            existing_ids = {r["id"] for r in existing_act_rows}
+            stale = [i for i in ev_linkage if i not in existing_ids]
+            if stale:
+                raise HTTPException(
+                    422,
+                    f"Cannot tag photo: the {ref_field.replace('_id', '')} "
+                    f"record {ref_id} carries {len(stale)} stale "
+                    f"linked_dr_activity_ids that no longer resolve on "
+                    f"DR {scope_dr}: {', '.join(stale[:3])}"
+                    + (" ..." if len(stale) > 3 else "")
+                    + ". Edit the event to refresh its linkage before tagging.",
+                )
+
+    # Pull schedule_activity_id from the activity ref for downstream
+    # convenience (TIA generator, gallery filters).
+    schedule_activity_id = (
+        ev.get("schedule_activity_id")
+        if ref_field == "daily_report_activity_id"
+        else None
+    )
+
+    # Evidentiary flag: class in evidentiary set OR drawing_pin attached.
+    evidentiary = (
+        payload.photo_class in EVIDENTIARY_CLASSES
+        or ref_field == "drawing_pin_id"
+    )
+
+    now_iso = utc_now().isoformat()
+    photo_doc = {
+        "id": gen_id(),
+        "tenant_id": ctx["tenant_id"],
+        "project_id": tray["project_id"],
+        "daily_report_id": payload.daily_report_id,
+        # Tray + tagging-junction fields
+        "tray_photo_id": tray["id"],
+        "tagged_at": now_iso,
+        "tagged_by": ctx["user"]["id"],
+        "tag_caption": payload.tag_caption,
+        # Event-ref XOR
+        "daily_report_activity_id": payload.daily_report_activity_id,
+        "delay_id": payload.delay_id,
+        "rfi_id": payload.rfi_id,
+        "qc_issue_id": payload.qc_issue_id,
+        "safety_event_id": payload.safety_event_id,
+        "coordination_event_id": payload.coordination_event_id,
+        "delivery_id": payload.delivery_id,
+        "drawing_pin_id": payload.drawing_pin_id,
+        # Evidentiary discipline (carried from tray + recomputed)
+        "storage_path": tray["storage_key"],  # photos.storage_path is the tray's storage_key
+        "captured_at": tray.get("uploaded_at") or now_iso,
+        "captured_by": tray.get("uploaded_by"),
+        "phash": tray.get("phash"),
+        "sha256_hash": tray.get("sha256"),
+        "device_timestamp": tray.get("exif_taken_at"),
+        "server_received_timestamp": tray.get("uploaded_at"),
+        "timestamp_mismatch_flag": False,
+        "exif_preserved": True,
+        "gps_lat": tray.get("exif_gps_lat"),
+        "gps_lng": tray.get("exif_gps_lng"),
+        "photo_class": payload.photo_class,
+        "evidentiary_flag": evidentiary,
+        # Legacy/additional
+        "schedule_activity_id": schedule_activity_id,
+        "tags": [],
+        "caption": payload.tag_caption,
+        "is_supplement": False,
+        "created_at": now_iso,
+    }
+    await db.photos.insert_one(photo_doc.copy())
+
+    # Flip tray status untagged -> partially_tagged on first tag. We
+    # leave the user to mark fully_tagged explicitly via /tray/{id}/done
+    # (deferred -- Phase 3 may add it as part of the gallery rework).
+    if tray.get("status") == "untagged":
+        await db.photo_tray.update_one(
+            tenant_filter(ctx["tenant_id"], {"id": tray["id"]}),
+            {"$set": {"status": "partially_tagged"}},
+        )
+
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_TAG_CREATED",
+        record_id=photo_doc["id"], before=None,
+        after={
+            "tray_photo_id": tray["id"],
+            "daily_report_id": payload.daily_report_id,
+            "ref_field": ref_field, "ref_id": ref_id,
+            "photo_class": payload.photo_class,
+            "evidentiary_flag": evidentiary,
+        },
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return photo_doc
+
+
+@router.get("/photo-tray/{tray_id}/tags")
+async def list_tags_for_tray(tray_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    docs = await db.photos.find(
+        tenant_filter(ctx["tenant_id"], {"tray_photo_id": tray_id}),
+        {"_id": 0},
+    ).sort("tagged_at", -1).to_list(length=None)
+    return docs
+
+
+@router.delete("/photo-tags/{photo_id}")
+async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
+    """Remove a single tagging-junction row. Tray entry stays; if this
+    was the last tag, tray status flips back to 'untagged'."""
+    db = get_db()
+    photo = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0},
+    )
+    if not photo:
+        raise HTTPException(404, "Photo tag not found")
+    tray_id = photo.get("tray_photo_id")
+    await db.photos.delete_one(
+        tenant_filter(ctx["tenant_id"], {"id": photo_id}),
+    )
+    if tray_id:
+        remaining = await db.photos.count_documents(
+            tenant_filter(ctx["tenant_id"], {"tray_photo_id": tray_id}),
+        )
+        if remaining == 0:
+            await db.photo_tray.update_one(
+                tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+                {"$set": {"status": "untagged"}},
+            )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_TAG_REMOVED",
+        record_id=photo_id, before=photo, after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True, "tray_photo_id": tray_id}

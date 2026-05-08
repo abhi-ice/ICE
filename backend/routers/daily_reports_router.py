@@ -18,6 +18,86 @@ from audit import write_audit
 router = APIRouter(tags=["daily-reports"])
 
 
+# Bucket D Phase 4 -- supplements appendix. Returns every event with
+# parent_daily_report_id == this DR, grouped by collection. The DR
+# detail view renders this below the main panels so the parent shows
+# its supplement trail.
+@router.get("/daily-reports/{daily_report_id}/supplements")
+async def list_supplements_for_dr(
+    daily_report_id: str, ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+        {"_id": 0, "id": 1, "report_date": 1, "status": 1},
+    )
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    out: dict = {"daily_report_id": daily_report_id, "report_date": dr.get("report_date")}
+    coll_map = {
+        "delays": "delays", "rfis": "rfis", "qc_issues": "qc_issues",
+        "safety_events": "safety_events", "deliveries": "deliveries",
+        "coordination_events": "coordination_events", "photos": "photos",
+        "daily_report_activities": "daily_report_activities",
+    }
+    for key, coll in coll_map.items():
+        rows = await db[coll].find(
+            {"parent_daily_report_id": daily_report_id},
+            {"_id": 0},
+        ).sort("supplement_filed_at", -1).to_list(length=200)
+        out[key] = rows
+    return out
+
+
+# Bucket D Phase 3 -- gallery views show "affected activity" chips. The
+# event collections store linked_dr_activity_ids (UUIDs); the UI needs
+# {id, code, description, dr_date} to render the chip text. This batch
+# endpoint takes the union of ids visible on a gallery page and returns
+# the chip data in one round-trip (no N+1).
+@router.get("/projects/{project_id}/dr-activity-chips")
+async def dr_activity_chips(
+    project_id: str, ids: str = "", ctx: dict = Depends(require_tenant),
+):
+    """ids is a comma-separated list of daily_report_activities.id values.
+    Returns [{id, daily_report_id, dr_date, activity_code,
+    activity_description, schedule_activity_id}]. Capped at 500 ids per
+    call -- the frontend pages cap at <100 visible rows so this is
+    well within range."""
+    db = get_db()
+    parts = [s.strip() for s in (ids or "").split(",") if s.strip()][:500]
+    if not parts:
+        return []
+    rows = await db.daily_report_activities.find(
+        {"id": {"$in": parts}},
+        {"_id": 0, "id": 1, "daily_report_id": 1, "schedule_activity_id": 1,
+         "activity_code": 1, "activity_description": 1},
+    ).to_list(length=None)
+    # Tenant-guard via parent DR + denormalize report_date.
+    dr_ids = list({r.get("daily_report_id") for r in rows if r.get("daily_report_id")})
+    drs: dict[str, dict] = {}
+    if dr_ids:
+        dr_docs = await db.daily_reports.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": dr_ids}}),
+            {"_id": 0, "id": 1, "report_date": 1},
+        ).to_list(length=None)
+        drs = {d["id"]: d for d in dr_docs}
+    out: list[dict] = []
+    for r in rows:
+        dr = drs.get(r.get("daily_report_id"))
+        if not dr:
+            # Cross-tenant or orphan -- skip.
+            continue
+        out.append({
+            "id": r["id"],
+            "daily_report_id": r["daily_report_id"],
+            "dr_date": dr.get("report_date"),
+            "activity_code": r.get("activity_code"),
+            "activity_description": r.get("activity_description"),
+            "schedule_activity_id": r.get("schedule_activity_id"),
+        })
+    return out
+
+
 async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: str, report_date: date):
     """Find activities planned for the day → create grid rows. A task is
     'planned for this day' iff `planned_start <= report_date <= planned_finish`.
@@ -709,6 +789,48 @@ def _task_for_409(t: dict) -> dict:
 
 class SubmitPayload(StrictModel):
     notes: Optional[str] = None
+    # Addition 3 -- no-work-day acknowledgment fields. Required when the
+    # DR has zero activities AND zero events; otherwise ignored.
+    is_no_work_day: bool = False
+    no_work_reason: Optional[str] = None  # NoWorkReason literal validated below
+    no_work_note: Optional[str] = None
+
+
+# Addition 3 -- the event collections that count as "did anything
+# happen on this day". Activities are counted separately because
+# they can be auto-prepopulated from the schedule grid.
+_NO_WORK_EVENT_COLLECTIONS = (
+    "delays", "rfis", "qc_issues", "safety_events",
+    "deliveries", "photos",
+)
+_NO_WORK_REASON_VALUES = {
+    "weather", "holiday", "scheduled_non_work",
+    "crew_unavailable", "tenant_restriction", "other",
+}
+
+
+async def _dr_is_empty(db, daily_report_id: str, tenant_id: str) -> bool:
+    """True if the DR has no activity rows AND no events. Coordination
+    events use linked_daily_report_id (different field name)."""
+    has_activities = await db.daily_report_activities.count_documents(
+        {"daily_report_id": daily_report_id}, limit=1,
+    )
+    if has_activities:
+        return False
+    for coll in _NO_WORK_EVENT_COLLECTIONS:
+        n = await db[coll].count_documents(
+            tenant_filter(tenant_id, {"daily_report_id": daily_report_id}),
+            limit=1,
+        )
+        if n:
+            return False
+    coord = await db.coordination_events.count_documents(
+        tenant_filter(tenant_id, {"linked_daily_report_id": daily_report_id}),
+        limit=1,
+    )
+    if coord:
+        return False
+    return True
 
 
 @router.post("/daily-reports/{daily_report_id}/submit", response_model=DailyReport)
@@ -717,6 +839,55 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Daily report not found")
+
+    # Addition 3 -- empty DR requires explicit no-work-day ack.
+    if await _dr_is_empty(db, daily_report_id, ctx["tenant_id"]):
+        if not payload.is_no_work_day:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "empty_dr_requires_no_work_day",
+                    "message": (
+                        "This daily report has no activities or events. "
+                        "Submit it explicitly as a no-work day with a "
+                        "reason, or add at least one activity / event "
+                        "first."
+                    ),
+                    "valid_no_work_reasons": sorted(_NO_WORK_REASON_VALUES),
+                },
+            )
+        if payload.no_work_reason not in _NO_WORK_REASON_VALUES:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "invalid_no_work_reason",
+                    "message": f"no_work_reason must be one of: "
+                                f"{', '.join(sorted(_NO_WORK_REASON_VALUES))}",
+                },
+            )
+        if payload.no_work_reason == "other" and not (payload.no_work_note or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "no_work_note_required_when_other",
+                    "message": "no_work_note is required when no_work_reason='other'.",
+                },
+            )
+    elif payload.is_no_work_day:
+        # Caller flagged it as no-work but the DR isn't actually empty;
+        # refuse to flip the flag rather than silently accept the
+        # contradiction (corrupts TIA Section 11).
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "is_no_work_day_with_recorded_work",
+                "message": (
+                    "Cannot submit as no-work day: the daily report has "
+                    "recorded activities or events. Either remove them "
+                    "or submit normally."
+                ),
+            },
+        )
 
     # Bucket C3a Phase 3 — submit-time validation. A zero-progress row
     # (EOD% == SOD%) without an explicit constraint isn't TIA-ready.
@@ -772,6 +943,15 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     }
     if payload.notes:
         updates["notes"] = payload.notes
+    # Addition 3 -- persist the no-work ack so TIA Section 11
+    # (Calendar Reconciliation) and Section 12 (Audit Log Extract)
+    # can render it later. Stamping happens here even on non-empty
+    # DRs because the contradiction case (is_no_work_day=true on a
+    # non-empty DR) was rejected above.
+    if payload.is_no_work_day:
+        updates["is_no_work_day"] = True
+        updates["no_work_reason"] = payload.no_work_reason
+        updates["no_work_note"] = (payload.no_work_note or "").strip() or None
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates}
     )
@@ -799,6 +979,21 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
         record_id=daily_report_id, before=before, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Addition 3 -- separate audit op when the submit was a no-work day,
+    # so audit-log extracts and TIA Section 12 surface these distinctly
+    # from regular submits.
+    if payload.is_no_work_day:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="daily_reports",
+            op="NO_WORK_DAY_SUBMITTED",
+            record_id=daily_report_id, before=None,
+            after={
+                "report_date": after.get("report_date"),
+                "no_work_reason": after.get("no_work_reason"),
+                "no_work_note": after.get("no_work_note"),
+            },
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return DailyReport(**after)
 
 
@@ -1457,6 +1652,28 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
             {"table_name": "daily_presence", "record_id": {"$in": [p["id"] for p in presence]}} if presence else {"_unused": True},
         ]}), {"_id": 0},
     ).sort("created_at", -1).limit(100).to_list(100)
+
+    # Bucket D Task 2 -- enrich every supplement row with its parent
+    # DR's report_date so the panel SupplementBadge can render
+    # "SUPP→YYYY-MM-DD" without a per-row fetch. Single $in query
+    # across all event collections.
+    parent_dr_ids: set[str] = set()
+    for coll_rows in (delays, safety, qc, rfis, deliveries, photos, presence, grid):
+        for r in coll_rows:
+            if r.get("is_supplement") and r.get("parent_daily_report_id"):
+                parent_dr_ids.add(r["parent_daily_report_id"])
+    parent_dr_dates: dict[str, str] = {}
+    if parent_dr_ids:
+        parent_drs = await db.daily_reports.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": list(parent_dr_ids)}}),
+            {"_id": 0, "id": 1, "report_date": 1},
+        ).to_list(length=None)
+        parent_dr_dates = {d["id"]: d["report_date"] for d in parent_drs}
+    for coll_rows in (delays, safety, qc, rfis, deliveries, photos, presence, grid):
+        for r in coll_rows:
+            pid = r.get("parent_daily_report_id")
+            if pid and pid in parent_dr_dates:
+                r["parent_daily_report_date"] = parent_dr_dates[pid]
 
     user_ids = [dr.get("prepared_by"), dr.get("submitted_by"), dr.get("approved_by")]
     user_labels = await _user_label_map(db, ctx["tenant_id"], user_ids)

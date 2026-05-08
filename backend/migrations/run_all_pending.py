@@ -44,6 +44,10 @@ MIGRATIONS = [
     # Followup-fix 1+3 (2026-05-07) -- DR cascade orphans + gating
     # entity orphans + photo evidentiary backfill (Fix 8 retroactive).
     "migrations.004_orphan_cleanup",
+    # Bucket D Phase 1 (2026-05-08) -- DR-as-parent. Drops orphan
+    # events, backfills linked_dr_activity_ids on every event with a
+    # daily_report_id, creates photo_tray rows from existing photos.
+    "migrations.005_dr_as_parent",
 ]
 
 
