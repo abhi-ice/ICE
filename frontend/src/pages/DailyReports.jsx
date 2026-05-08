@@ -25,7 +25,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
-  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2,
+  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil,
 } from "lucide-react";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
@@ -2181,7 +2181,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   return (
     <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length}>
       <div className="grid grid-cols-3 gap-2">
-        {rows.map((p) => <AuthPhoto key={p.id} photo={p} />)}
+        {rows.map((p) => (
+          <AuthPhoto key={p.id} photo={p}
+            locked={locked} dailyReportId={dailyReportId} reload={reload} />
+        ))}
         {!rows.length && <div className="col-span-3 text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
       </div>
       {!locked && (
@@ -2202,8 +2205,12 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   );
 }
 
-function AuthPhoto({ photo }) {
+function AuthPhoto({ photo, locked, dailyReportId, reload }) {
   const [src, setSrc] = useState(null);
+  // Addition 4 follow-up -- locked-DR edit modal toggle for the photo
+  // card. Pencil icon overlays in the top-right when locked; opens
+  // LockedEventEditModal pre-filled with caption + photo_class.
+  const [editOpen, setEditOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     let blobUrl = null;
@@ -2215,7 +2222,7 @@ function AuthPhoto({ photo }) {
   const cls = PHOTO_CLASS_BY_VALUE[photo.photo_class] || PHOTO_CLASS_BY_VALUE.progress;
   return (
     <div data-testid={`photo-${photo.id}`} data-event-row-id={photo.id} data-event-row-type="photo"
-      className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200">
+      className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200 group">
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">
@@ -2241,8 +2248,43 @@ function AuthPhoto({ photo }) {
             SUPP
           </span>
         )}
+        {/* Addition 4 follow-up -- post-submit-edited annotation.
+            Saffron square stays visible; the edit-pencil only shows
+            on hover when the parent DR is locked. */}
+        {photo.post_submit_edited && (
+          <span data-testid={`photo-edited-${photo.id}`}
+            title={`Edited ${photo.edit_count || 0}x post-submit. ${photo.last_edit_reason ? `Last reason: ${photo.last_edit_reason}` : ""}`}
+            className="bg-amber-300 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            EDITED {photo.edit_count || 0}x
+          </span>
+        )}
       </div>
+      {locked && (
+        <button data-testid={`photo-edit-locked-${photo.id}`}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditOpen(true); }}
+          title="Edit photo (post-submit -- captures audit trail)"
+          className="absolute top-1 right-1 bg-amber-600/90 hover:bg-amber-700 text-white rounded p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Pencil className="h-2.5 w-2.5" />
+        </button>
+      )}
       {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">{photo.caption}</div>}
+      {locked && (
+        <LockedEventEditModal
+          open={editOpen} onOpenChange={setEditOpen}
+          eventType="photo" eventId={photo.id} dailyReportId={dailyReportId}
+          patchUrl={`/photos/${photo.id}`}
+          fields={[
+            { key: "caption", label: "Caption", type: "textarea" },
+            { key: "photo_class", label: "Photo class", type: "select",
+              options: ["progress", "discovery", "damage", "quality", "safety", "coordination", "closeout"]
+                .map((c) => ({ value: c, label: c })) },
+          ]}
+          currentValues={{
+            caption: photo.caption || "", photo_class: photo.photo_class || "progress",
+          }}
+          onSaved={reload}
+        />
+      )}
     </div>
   );
 }
