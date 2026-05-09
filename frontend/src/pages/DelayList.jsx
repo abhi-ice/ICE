@@ -158,7 +158,7 @@ export default function DelayList() {
                     </Link>
                   </td>
                   <td className="text-xs">{(r.linked_task_ids || []).length}</td>
-                  <td><GalleryActivityChips projectId={activeId} activityIds={r.linked_dr_activity_ids || []} /></td>
+                  <td><GalleryActivityChips projectId={activeId} activityIds={r.linked_task_ids || []} /></td>
                   <td className="text-xs">{r.duration_days ?? "—"}</td>
                   <td className="text-right">
                     <button data-testid={`delays-edit-${r.id}`} onClick={() => startEdit(r)}

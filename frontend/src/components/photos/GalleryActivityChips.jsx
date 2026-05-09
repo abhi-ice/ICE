@@ -1,14 +1,19 @@
-// Bucket D Phase 3 -- inline chip rendering for linked_dr_activity_ids.
-// Used by the Photos / Delays / RFIs / QC / Safety / Deliveries /
-// Coordination gallery pages. Pulls the chip data via the shared
-// useDrActivityChips hook (one round-trip for the whole page's union
-// of ids).
+// Bucket D Phase 3 + Corrective (2026-05-08) -- inline chip rendering
+// for event row task linkage. Used by Photos / Delays / RFIs / QC /
+// Safety / Deliveries / Coordination gallery pages.
+//
+// Backing data: useTaskChips fetches /projects/{pid}/tasks once per
+// project and indexes by id. Chips link to /tasks/{id} (master
+// schedule), since the corrective renamed the field from
+// linked_dr_activity_ids (per-DR scope) to linked_task_ids (master
+// schedule scope). The prop name (activityIds) stays for backward
+// compat with the existing gallery callers; pass linked_task_ids in.
 import { Link } from "react-router-dom";
-import { useDrActivityChips, chipLabel, chipTooltip } from "../../lib/drActivityChips";
+import { useTaskChips, chipLabel, chipTooltip } from "../../lib/drActivityChips";
 
 export default function GalleryActivityChips({ projectId, activityIds, max = 4 }) {
   const ids = Array.isArray(activityIds) ? activityIds : [];
-  const chips = useDrActivityChips(projectId, ids);
+  const chips = useTaskChips(projectId, ids);
   if (!ids.length) return <span className="text-slate-300 text-xs">—</span>;
   const visible = ids.slice(0, max);
   const overflow = ids.length - visible.length;
@@ -25,11 +30,13 @@ export default function GalleryActivityChips({ projectId, activityIds, max = 4 }
           );
         }
         return (
-          <Link key={id} to={`/daily-reports?openId=${c.daily_report_id}`}
+          <Link key={id} to={`/tasks/${id}`}
             title={chipTooltip(c)}
             className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 hover:bg-blue-100 inline-flex items-center gap-1">
             <span className="font-mono">{chipLabel(c)}</span>
-            {c.dr_date && <span className="text-blue-500">[{c.dr_date.slice(5)}]</span>}
+            {c.is_critical_path && (
+              <span className="text-rose-600">CP</span>
+            )}
           </Link>
         );
       })}

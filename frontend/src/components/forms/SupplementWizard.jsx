@@ -73,13 +73,28 @@ export default function SupplementWizard({
     }
     setBusy(true);
     try {
+      // Bucket D Corrective (2026-05-08) -- backend now expects
+      // linked_task_ids (master schedule scope). The wizard still
+      // lets the user pick from the parent DR's grid for UX clarity
+      // ("this is what was happening on that day"); translate each
+      // picked daily_report_activities row to its schedule_activity_id
+      // before posting. Rows without a schedule_activity_id (rare --
+      // only happens for ad-hoc grid additions) are dropped.
+      const linkedTaskIds = pickedIds
+        .map((id) => parentActivities.find((a) => a.id === id)?.schedule_activity_id)
+        .filter(Boolean);
+      if (!linkedTaskIds.length) {
+        toast.error("None of the picked DR rows resolve to a master schedule task.");
+        setBusy(false);
+        return;
+      }
       const payload = {
         project_id: projectId,
         daily_report_id: containerDailyReportId,
         is_supplement: true,
         parent_daily_report_id: parentDailyReport.id,
         supplement_reason: reason.trim(),
-        linked_dr_activity_ids: pickedIds,
+        linked_task_ids: linkedTaskIds,
         date: parentDailyReport.report_date,
         description,
       };

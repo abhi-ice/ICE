@@ -2,7 +2,8 @@
 // project. Now full CRUD via CrudList component. Delays use a custom page
 // (DelayList) because the Phase A multi-task picker doesn't fit CrudList.
 //
-// Bucket D Phase 3 -- entities now carry linked_dr_activity_ids; the
+// Bucket D Corrective (2026-05-08) -- entities carry linked_task_ids
+// (master schedule scope; was per-DR linked_dr_activity_ids briefly); the
 // gallery view renders affected-activity chips and accepts an
 // affected_activity_id query param. Click-through goes to the parent
 // Daily Report (via daily_report_id) so users land where the event
@@ -75,7 +76,7 @@ const KIND_CONFIG = {
       // Bucket D Phase 3 -- chip column. Rendered via the page wrapper
       // since Tile/CrudList knows nothing about projectId; we inject a
       // closure over projectId at mount time below.
-      { key: "linked_dr_activity_ids", label: "Affected activities", _isChips: true },
+      { key: "linked_task_ids", label: "Linked tasks", _isChips: true },
     ],
     form: [
       { key: "subject", label: "Subject", required: true },
@@ -99,7 +100,7 @@ const KIND_CONFIG = {
       { key: "delivery_date", label: "Date" },
       { key: "po_number", label: "PO" },
       { key: "status", label: "Status" },
-      { key: "linked_dr_activity_ids", label: "Activities consuming", _isChips: true },
+      { key: "linked_task_ids", label: "Tasks consuming", _isChips: true },
     ],
     form: [
       { key: "vendor", label: "Vendor", required: true },
@@ -191,7 +192,7 @@ const KIND_CONFIG = {
       { key: "description", label: "Description" },
       { key: "severity", label: "Severity" },
       { key: "status", label: "Status" },
-      { key: "linked_dr_activity_ids", label: "Affected activities", _isChips: true },
+      { key: "linked_task_ids", label: "Linked tasks", _isChips: true },
     ],
     form: [
       { key: "date", label: "Date", type: "date" },
@@ -214,7 +215,7 @@ const KIND_CONFIG = {
       { key: "description", label: "Description" },
       { key: "severity", label: "Severity" },
       { key: "status", label: "Status" },
-      { key: "linked_dr_activity_ids", label: "Affected activities", _isChips: true },
+      { key: "linked_task_ids", label: "Linked tasks", _isChips: true },
     ],
     form: [
       { key: "date", label: "Date", type: "date" },
@@ -309,17 +310,18 @@ export default function ProjectScopedList({ kind }) {
     locations: "locations",
   }[kind];
 
-  // Bucket D Phase 3 -- decorate gallery columns with chip render + DR
-  // click-through. The _isChips marker on a column means render via
-  // GalleryActivityChips against linked_dr_activity_ids on the row.
-  // Date column gets a click-through to the parent DR.
+  // Bucket D Phase 3 + Corrective -- decorate gallery columns with
+  // chip render + DR click-through. The _isChips marker on a column
+  // means render via GalleryActivityChips against linked_task_ids on
+  // the row (master schedule scope per the corrective). Date column
+  // gets a click-through to the parent DR.
   const decoratedColumns = cfg.columns.map((c) => {
     if (c._isChips) {
       return {
         ...c,
         render: (r) => (
           <GalleryActivityChips projectId={activeId}
-            activityIds={r.linked_dr_activity_ids || []} />
+            activityIds={r.linked_task_ids || []} />
         ),
       };
     }
