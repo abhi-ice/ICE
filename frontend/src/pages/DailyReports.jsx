@@ -21,6 +21,11 @@ import CoordinationEventForm from "../components/forms/CoordinationEventForm";
 import LockedEventEditModal from "../components/forms/LockedEventEditModal";
 import SupplementWizard from "../components/forms/SupplementWizard";
 import DrActivityPicker from "../components/forms/DrActivityPicker";
+// Bucket D Corrective (2026-05-08) -- master-schedule task picker.
+// Used by RFI / QC / Safety / Delivery / Coord forms below in place of
+// DrActivityPicker. DrActivityPicker stays imported because nothing else
+// uses it on this page yet -- safe to remove once nothing references it.
+import TaskPicker from "../components/forms/TaskPicker";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
@@ -1644,11 +1649,12 @@ function ReminderCard({ delay, reload }) {
 function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
   // Phase C — simplified: description + type + severity. OSHA recordable
   // checkbox removed per spec.
-  // Bucket D Task 1 -- linked_dr_activity_ids picker. OPTIONAL for
-  // safety per spec (some events area-wide); empty list still saves.
+  // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
+  // scope) picker. OPTIONAL for safety per spec (some events area-wide);
+  // empty list still saves.
   const [draft, setDraft] = useState({
     description: "", severity: "minor", event_type: "near_miss",
-    linked_dr_activity_ids: [],
+    linked_task_ids: [],
   });
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
@@ -1665,10 +1671,10 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
       await api.post(`/safety-events`, {
         project_id: projectId, daily_report_id: dailyReportId, date: reportDate,
         description: draft.description, severity: draft.severity, event_type: draft.event_type,
-        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+        linked_task_ids: draft.linked_task_ids,
       });
       setDraft({ description: "", severity: "minor", event_type: "near_miss",
-                  linked_dr_activity_ids: [] });
+                  linked_task_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Create safety event")); }
     finally { setBusy(false); }
@@ -1685,11 +1691,11 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           <textarea data-testid="safety-new-desc" rows={4} placeholder="Describe the event"
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
-          <DrActivityPicker grid={grid}
-            value={draft.linked_dr_activity_ids}
-            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
-            required={false} label="Affected activities (optional)"
-            testidPrefix="safety-activity" compact />
+          <TaskPicker projectId={projectId}
+            value={draft.linked_task_ids}
+            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+            required={false} label="Linked tasks (optional)"
+            testidPrefix="safety-activity" />
           <div className="grid grid-cols-2 gap-2">
             <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
               {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
@@ -1753,10 +1759,13 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   // When picked, super enters rework_duration_hours + basis;
   // calibration RAG suggests a benchmark from prior outcomes (advisory).
   // Submit -> backend creates synthetic delay + runs CPM cascade.
+  // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
+  // scope) replaces the old per-DR linked_dr_activity_ids picker. The
+  // synthetic delay and CPM cascade walk these task ids directly.
   const [draft, setDraft] = useState({
     description: "", severity: "minor",
     rework_duration_hours: "", rework_duration_basis: "",
-    linked_dr_activity_ids: [],
+    linked_task_ids: [],
   });
   const [benchmark, setBenchmark] = useState(null);
   // Phase D — copilot can push a drafted description into this form.
@@ -1779,7 +1788,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   const create = async () => {
     if (busy) return;
     if (!draft.description) return toast.error("Description required");
-    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
+    if (!draft.linked_task_ids.length) return toast.error("Pick at least one linked task");
     if (isRework) {
       if (!draft.rework_duration_hours || Number(draft.rework_duration_hours) <= 0) {
         return toast.error("Rework hours required when severity=rework_required");
@@ -1796,7 +1805,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         date: reportDate,
         description: draft.description,
         severity: draft.severity,
-        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+        linked_task_ids: draft.linked_task_ids,
       };
       if (isRework) {
         payload.rework_duration_hours = Number(draft.rework_duration_hours);
@@ -1805,7 +1814,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
       await api.post(`/qc-issues`, payload);
       setDraft({ description: "", severity: "minor",
                   rework_duration_hours: "", rework_duration_basis: "",
-                  linked_dr_activity_ids: [] });
+                  linked_task_ids: [] });
       reload();
       toast.success(isRework
         ? "QC rework filed -- synthetic delay created and CPM cascade running."
@@ -1813,16 +1822,6 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
     } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
     finally { setBusy(false); }
   };
-
-  const togglePicked = (id) => {
-    setDraft((d) => ({
-      ...d,
-      linked_dr_activity_ids: d.linked_dr_activity_ids.includes(id)
-        ? d.linked_dr_activity_ids.filter((x) => x !== id)
-        : [...d.linked_dr_activity_ids, id],
-    }));
-  };
-  const activitiesAvailable = (grid || []).filter((a) => a.id);
 
   return (
     <PanelShell icon={ClipboardCheck} title="QC issues" testid="dr-qc-panel" count={rows.length}>
@@ -1837,23 +1836,12 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
 
-          {/* Bucket D Phase 1 -- affected-activity multi-select. */}
-          <div>
-            <div className="text-[10px] uppercase text-slate-500 mb-1">Affected activities (required)</div>
-            <div className="max-h-24 overflow-auto border border-slate-200 rounded">
-              {activitiesAvailable.length ? activitiesAvailable.map((a) => (
-                <label key={a.id} className="flex items-center gap-2 px-2 py-1 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-xs">
-                  <input type="checkbox" data-testid={`qc-activity-${a.activity_code}`}
-                    checked={draft.linked_dr_activity_ids.includes(a.id)}
-                    onChange={() => togglePicked(a.id)} />
-                  <span className="font-mono text-blue-700">{a.activity_code}</span>
-                  <span className="text-slate-700 truncate">{a.activity_description}</span>
-                </label>
-              )) : (
-                <div className="p-2 text-xs text-slate-400">No activities on this DR yet</div>
-              )}
-            </div>
-          </div>
+          {/* Bucket D Corrective -- master-schedule task picker. */}
+          <TaskPicker projectId={projectId}
+            value={draft.linked_task_ids}
+            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+            required={true} label="Linked tasks (required)"
+            testidPrefix="qc-activity" />
 
           <div className="flex items-center gap-2">
             <select data-testid="qc-new-severity" value={draft.severity}
@@ -1968,18 +1956,19 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
 
 
 function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
-  // Bucket D Task 1c -- linked_dr_activity_ids picker. RFIs are
-  // REQUIRED to link >=1 activity per Phase 1 (gates a task).
+  // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
+  // scope) picker. RFIs are REQUIRED to link >=1 task (gates a CPM
+  // node via the gating_entities back-pointer).
   const [draft, setDraft] = useState({
     subject: "", description: "", priority: "normal",
-    linked_dr_activity_ids: [],
+    linked_task_ids: [],
   });
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
   const create = async () => {
     if (busy) return;
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
-    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one affected activity");
+    if (!draft.linked_task_ids.length) return toast.error("Pick at least one linked task");
     setBusy(true);
     try {
       await api.post(`/rfis`, {
@@ -1987,9 +1976,9 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         subject: draft.subject,
         question: draft.description,  // backend alias -> description
         priority: draft.priority,
-        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+        linked_task_ids: draft.linked_task_ids,
       });
-      setDraft({ subject: "", description: "", priority: "normal", linked_dr_activity_ids: [] });
+      setDraft({ subject: "", description: "", priority: "normal", linked_task_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Open RFI")); }
     finally { setBusy(false); }
@@ -2005,11 +1994,11 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
           <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
           <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="w-full px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
-          <DrActivityPicker grid={grid}
-            value={draft.linked_dr_activity_ids}
-            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
-            required={true} label="Affected activities"
-            testidPrefix="rfi-activity" compact />
+          <TaskPicker projectId={projectId}
+            value={draft.linked_task_ids}
+            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+            required={true} label="Linked tasks"
+            testidPrefix="rfi-activity" />
           <div className="flex items-center gap-2">
             <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
               {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
@@ -2066,18 +2055,20 @@ function RfiRowInline({ row, locked, dailyReportId, reload }) {
 
 
 function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
-  // Bucket D Task 1d -- linked_dr_activity_ids picker. REQUIRED min-1
-  // (deliveries gate the activities consuming them per Phase 1 spec).
+  // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
+  // scope) picker. REQUIRED min-1 -- deliveries gate the tasks
+  // consuming them so the cascade can attribute slip if a delivery is
+  // late.
   const [draft, setDraft] = useState({
     vendor: "", description: "", po_number: "",
-    linked_dr_activity_ids: [],
+    linked_task_ids: [],
   });
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
   const create = async () => {
     if (busy) return;
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
-    if (!draft.linked_dr_activity_ids.length) return toast.error("Pick at least one activity consuming this delivery");
+    if (!draft.linked_task_ids.length) return toast.error("Pick at least one task consuming this delivery");
     setBusy(true);
     try {
       await api.post(`/deliveries`, {
@@ -2085,9 +2076,9 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
         daily_report_id: dailyReportId,
         vendor: draft.vendor, description: draft.description,
         po_number: draft.po_number || null,
-        linked_dr_activity_ids: draft.linked_dr_activity_ids,
+        linked_task_ids: draft.linked_task_ids,
       });
-      setDraft({ vendor: "", description: "", po_number: "", linked_dr_activity_ids: [] });
+      setDraft({ vendor: "", description: "", po_number: "", linked_task_ids: [] });
       reload();
     } catch (e) { toast.error(formatErr(e, "Log delivery")); }
     finally { setBusy(false); }
@@ -2108,11 +2099,11 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
             <button data-testid="delivery-add" onClick={create} disabled={busy}
               className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Log delivery"}</button>
           </div>
-          <DrActivityPicker grid={grid}
-            value={draft.linked_dr_activity_ids}
-            onChange={(v) => setDraft({ ...draft, linked_dr_activity_ids: v })}
-            required={true} label="Activities consuming this delivery"
-            testidPrefix="delivery-activity" compact />
+          <TaskPicker projectId={projectId}
+            value={draft.linked_task_ids}
+            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+            required={true} label="Tasks consuming this delivery"
+            testidPrefix="delivery-activity" />
         </div>
       )}
     </PanelShell>

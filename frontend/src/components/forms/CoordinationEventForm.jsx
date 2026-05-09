@@ -13,7 +13,9 @@
 import { useState } from "react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
-import DrActivityPicker from "./DrActivityPicker";
+// Bucket D Corrective (2026-05-08) -- master-schedule task picker
+// replaces the per-DR DrActivityPicker for coordination linkage.
+import TaskPicker from "./TaskPicker";
 
 const CHANNELS = ["email", "phone", "in_person", "formal_letter",
                    "text_message", "meeting", "system_notification"];
@@ -41,9 +43,9 @@ function defaultsFromInitial(initial, linkedDailyReportId) {
     outcome: initial?.outcome || "informational",
     outcome_notes: initial?.outcome_notes || "",
     linked_daily_report_id: initial?.linked_daily_report_id || linkedDailyReportId || "",
-    // Bucket D Task 1e -- linked_dr_activity_ids (per-DR WBS rows).
-    // OPTIONAL for coordination events (some are project-wide).
-    linked_dr_activity_ids: initial?.linked_dr_activity_ids || [],
+    // Bucket D Corrective -- master-schedule task linkage. OPTIONAL
+    // for coordination events (some are project-wide).
+    linked_task_ids: initial?.linked_task_ids || [],
   };
 }
 
@@ -87,8 +89,8 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         detail_text: form.detail_text || null,
         outcome_notes: form.outcome_notes || null,
         linked_daily_report_id: effectiveLinkedDr,
-        // Bucket D Task 1e -- carry the linked DR-activity ids.
-        linked_dr_activity_ids: form.linked_dr_activity_ids || [],
+        // Bucket D Corrective -- master-schedule task linkage.
+        linked_task_ids: form.linked_task_ids || [],
       };
       let res;
       if (initial?.id) {
@@ -229,19 +231,16 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
       )}
 
-      {/* Bucket D Task 1e -- DR-activity multi-select. OPTIONAL for
-          coordination events. Source mode: if a linked DR is in scope
-          (form.linked_daily_report_id), the picker auto-fetches that
-          DR's grid; otherwise it renders an empty state telling the
-          user to pick a DR first. */}
-      {(form.linked_daily_report_id || linkedDailyReportId) && (
-        <DrActivityPicker
-          dailyReportId={form.linked_daily_report_id || linkedDailyReportId}
-          value={form.linked_dr_activity_ids}
-          onChange={(v) => set("linked_dr_activity_ids", v)}
-          required={false} label="Affected activities (optional)"
-          testidPrefix="coord-activity" compact />
-      )}
+      {/* Bucket D Corrective -- master-schedule task picker. OPTIONAL
+          for coordination events. No DR-scope dependency: the picker
+          loads the project's master schedule directly so it works
+          even on the standalone /coordination page where there's no
+          linkedDailyReportId. */}
+      <TaskPicker projectId={projectId}
+        value={form.linked_task_ids}
+        onChange={(v) => set("linked_task_ids", v)}
+        required={false} label="Linked tasks (optional)"
+        testidPrefix="coord-activity" />
 
       <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
         {onCancel && (

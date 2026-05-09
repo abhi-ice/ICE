@@ -48,6 +48,11 @@ MIGRATIONS = [
     # events, backfills linked_dr_activity_ids on every event with a
     # daily_report_id, creates photo_tray rows from existing photos.
     "migrations.005_dr_as_parent",
+    # Bucket D Corrective (2026-05-08) -- replace per-DR-scope
+    # linked_dr_activity_ids with master-schedule-scope linked_task_ids.
+    # Translates ids via daily_report_activities.schedule_activity_id,
+    # drops the old field everywhere, drops legacy indexes. Idempotent.
+    "migrations.007_dr_activity_to_task",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

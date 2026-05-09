@@ -31,14 +31,19 @@ class ReadModel(BaseModel):
 
 
 # ============================================================
-# Bucket D Phase 1 — DR-activity linkage + supplement fields
+# Bucket D Corrective (2026-05-08) — master-schedule task linkage
 # ============================================================
-# `linked_dr_activity_ids` is a list of daily_report_activities.id
-# (the per-DR WBS row), NOT the master schedule task id. The cascade
-# walks DR-row -> daily_report_activities.schedule_activity_id ->
-# master task -> CPM successors. Every event collection (delays, rfis,
-# qc_issues, safety_events, coordination_events, deliveries, photos)
-# carries this field; the per-endpoint require-min-1 check lives in the
+# `linked_task_ids` is a list of tasks.id (the master schedule rows),
+# NOT per-DR WBS row IDs. Same scope as delay's existing `linked_task_
+# ids` field, which was always the canonical linkage; the per-DR-scope
+# field that briefly existed (`linked_dr_activity_ids`) was a wrong
+# build and is migrated away by 007_dr_activity_to_task.
+#
+# Every event collection (rfis, qc_issues, safety_events,
+# coordination_events, deliveries) carries this field. Delays already
+# had it (with per-task impact + CPM cascade integration); the others
+# now carry it as plain task linkage (no impact-days input -- only
+# delays drive cascade math). Per-endpoint require-min-1 lives in the
 # router so AI/voice/copilot creation paths (which bypass the HTTP
 # layer via direct db.X.insert_one) aren't broken by Pydantic-level
 # enforcement.
@@ -46,12 +51,12 @@ class ReadModel(BaseModel):
 # Supplement fields: when a DR is locked (status=submitted) and a new
 # fact arrives, the platform files the new event with is_supplement=
 # true, daily_report_id=<today's container DR>, parent_daily_report_id
-# =<the locked DR being supplemented>, and linked_dr_activity_ids
-# pointing at the PARENT DR's activities. This preserves chronological
-# truth in the TIA timeline while making the audit trail honest.
+# =<the locked DR being supplemented>. The supplement flow does NOT
+# change linkage scope -- linked_task_ids still references master
+# tasks regardless of which DR the event sits on.
 LINKAGE_MIN_ERR = (
-    "At least one linked daily-report activity is required. "
-    "Pick the WBS row(s) on the daily report that this event affects."
+    "At least one linked schedule task is required. "
+    "Pick the master-schedule task(s) this event affects."
 )
 
 
@@ -820,13 +825,15 @@ class RfiCreate(StrictModel):
     drawing_refs: List[dict] = Field(default_factory=list)
     date_required: Optional[date] = None
     priority: Priority = "normal"
-    # Bucket D Phase 1 — DR-activity M2M. Required min-1 enforced in
-    # the router (POST /rfis); copilot/voice paths bypass via insert_one.
-    # Coexists with the C3a gating_entities back-pointer (gating_entity_
-    # id is set after RFI insert by the create_for_entity hook) -- the
-    # gating row drives the cascade dashboard, this list drives TIA
-    # rollup + gallery filtering + form validation.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule task linkage.
+    # References tasks.id (the master schedule), not daily_report_
+    # activities.id. Required min-1 enforced in the router (POST /rfis);
+    # copilot/voice paths bypass via insert_one. Coexists with the C3a
+    # gating_entities back-pointer (gating_entity_id is set after RFI
+    # insert by the create_for_entity hook) -- the gating row drives the
+    # cascade dashboard, this list drives TIA rollup + gallery filtering
+    # + form validation.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
@@ -840,8 +847,9 @@ class RfiUpdate(StrictModel):
     date_responded: Optional[date] = None
     cost_impact_estimated_usd: Optional[float] = None
     time_impact_estimated_days: Optional[int] = None
-    # Bucket D Phase 1 — re-pickable post-create.
-    linked_dr_activity_ids: Optional[List[str]] = None
+    # Bucket D Corrective -- re-pickable post-create. Re-validated
+    # against tasks (master schedule) when present in the patch.
+    linked_task_ids: Optional[List[str]] = None
     # Addition 4 -- required when the parent DR is locked. Server
     # rejects locked-DR patches with a missing or short reason.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
@@ -879,8 +887,10 @@ class Rfi(ReadModel):
     # represents this RFI as a scheduleable CPM node. Auto-populated on
     # POST /rfis. Older records get this via the 002 backfill.
     gating_entity_id: Optional[str] = None
-    # Bucket D Phase 1 — DR-activity M2M + supplement metadata.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule linkage +
+    # supplement metadata. linked_task_ids references tasks.id, not the
+    # per-DR daily_report_activities row.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_filed_at: Optional[datetime] = None
@@ -974,12 +984,12 @@ class DelayCreate(StrictModel):
     # GatingEntity so cross-entity rollups stay consistent.
     owner_attribution: Optional[str] = "none"  # OwnerAttribution literal
     cause_class: Optional[str] = "other"        # CauseClass literal
-    # Bucket D Phase 1 — DR-activity linkage. List of
-    # daily_report_activities.id rows (per-DR WBS rows) this delay
-    # affects. Router enforces min-1 on POST /delays; AI/voice/copilot
-    # paths can post empty (they go through db.delays.insert_one).
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
-    # Supplement fields (set true when filing against a locked parent DR).
+    # Bucket D Corrective (2026-05-08) -- the DR-activity linkage that
+    # used to live here was a redundant second scope. Delays already
+    # carry linked_task_ids (master schedule scope) above with per-task
+    # impact + CPM cascade integration -- that's the canonical linkage.
+    # Supplement fields stay (they describe DR-as-parent semantics, not
+    # activity scope).
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
@@ -1000,9 +1010,9 @@ class DelayUpdate(StrictModel):
     # Followup-fix 7 (2026-05-07): editable post-create via Delay detail.
     owner_attribution: Optional[str] = None
     cause_class: Optional[str] = None
-    # Bucket D Phase 1 — let the user re-pick affected activities post-
-    # create. Router validates min-1 if the field is present in the patch.
-    linked_dr_activity_ids: Optional[List[str]] = None
+    # Bucket D Corrective (2026-05-08) -- linked_dr_activity_ids removed
+    # from DelayUpdate; the canonical linkage is linked_task_ids above
+    # (already editable post-create, drives CPM cascade).
     # Addition 4 -- required when the parent DR is locked.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
 
@@ -1029,8 +1039,10 @@ class Delay(ReadModel):
     # "no attribution".
     owner_attribution: Optional[str] = "none"
     cause_class: Optional[str] = "other"
-    # Bucket D Phase 1 — DR-activity linkage + supplement metadata.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- linked_dr_activity_ids dropped
+    # (was a redundant second scope). Canonical linkage is
+    # linked_task_ids below; supplement fields here describe DR-as-parent
+    # semantics, not activity scope.
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_filed_at: Optional[datetime] = None
@@ -1040,8 +1052,8 @@ class Delay(ReadModel):
     # supplement badge renders without a per-row fetch. Server-enriched
     # in /context bundle and /photos list (extend other lists if needed).
     parent_daily_report_date: Optional[str] = None
-    # New (Phase A) fields. Default to empty/none so old records continue
-    # to deserialize until the migration runs.
+    # Master-schedule linkage (Phase A). Default empty so old records
+    # continue to deserialize until the migration runs.
     linked_task_ids: List[str] = Field(default_factory=list)
     per_task_impacts: List[TaskImpact] = Field(default_factory=list)
     logged_date: Optional[date] = None
@@ -1088,9 +1100,10 @@ class SafetyEventCreate(StrictModel):
     description: str
     severity: Severity = "minor"
     event_type: SafetyEventType = "near_miss"
-    # Bucket D Phase 1 — DR-activity linkage. OPTIONAL (some safety
-    # events are area-wide and don't tie to a specific WBS row).
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule task linkage.
+    # OPTIONAL (some safety events are area-wide and don't tie to a
+    # specific scheduled task).
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
@@ -1102,7 +1115,7 @@ class SafetyEventUpdate(StrictModel):
     description: Optional[str] = None
     severity: Optional[Severity] = None
     event_type: Optional[SafetyEventType] = None
-    linked_dr_activity_ids: Optional[List[str]] = None
+    linked_task_ids: Optional[List[str]] = None
     edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -1119,8 +1132,9 @@ class SafetyEvent(ReadModel):
     reported_by: Optional[str] = None
     reported_at: datetime
     created_at: datetime
-    # Bucket D Phase 1 — DR-activity linkage + supplement metadata.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule linkage +
+    # supplement metadata.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_filed_at: Optional[datetime] = None
@@ -1141,9 +1155,10 @@ class QcIssueCreate(StrictModel):
     date: date
     description: str
     severity: str = "minor"  # see QcSeverity for Phase 5 vocabulary
-    # Bucket D Phase 1 — DR-activity M2M. Router enforces min-1 on
-    # POST /qc-issues; copilot/voice paths bypass via insert_one.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule task linkage.
+    # Required min-1 for QC (drives the rework cascade); copilot/voice
+    # paths bypass via insert_one.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
@@ -1165,7 +1180,7 @@ class QcIssueUpdate(StrictModel):
     severity: Optional[str] = None
     status: Optional[str] = None
     resolution_notes: Optional[str] = None
-    linked_dr_activity_ids: Optional[List[str]] = None
+    linked_task_ids: Optional[List[str]] = None
     # Phase 5 -- rework estimate fields (editable post-create until
     # outcome is recorded).
     rework_duration_hours: Optional[float] = None
@@ -1200,8 +1215,9 @@ class QcIssue(ReadModel):
     resolved_at: Optional[datetime] = None
     resolution_notes: Optional[str] = None
     created_at: datetime
-    # Bucket D Phase 1 — DR-activity M2M + supplement metadata.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule linkage +
+    # supplement metadata.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_filed_at: Optional[datetime] = None
@@ -1819,11 +1835,12 @@ class CoordinationEventCreate(StrictModel):
     # Phase 2 marks events created by the voice extractor — UI shows them
     # as a "voice draft" so the user can review before treating as final.
     voice_extracted: bool = False
-    # Bucket D Phase 1 — DR-activity linkage. OPTIONAL (some
-    # coordination events are project-wide). Note: existing
-    # `linked_activity_ids` holds master-task IDs; this list is the
-    # per-DR WBS row IDs.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective (2026-05-08) -- master-schedule task linkage.
+    # OPTIONAL (some coordination events are project-wide). Coexists
+    # with the legacy `linked_activity_ids` (kept for C3b back-compat
+    # readers) which historically held master-task IDs as well; new
+    # form code writes here, validators check this list.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
@@ -1856,8 +1873,8 @@ class CoordinationEventUpdate(StrictModel):
     linked_gating_entity_ids: Optional[List[str]] = None
     linked_daily_report_id: Optional[str] = None
     voice_extracted: Optional[bool] = None
-    # Bucket D Phase 1 — re-pickable post-create.
-    linked_dr_activity_ids: Optional[List[str]] = None
+    # Bucket D Corrective -- re-pickable post-create.
+    linked_task_ids: Optional[List[str]] = None
     # Addition 4 -- required when the parent DR is locked.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
 
@@ -1896,8 +1913,8 @@ class CoordinationEvent(ReadModel):
     # Soft-delete marker — list endpoints filter where this is None.
     deleted_at: Optional[datetime] = None
     deleted_by_user_id: Optional[str] = None
-    # Bucket D Phase 1 — DR-activity linkage + supplement metadata.
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    # Bucket D Corrective -- master-schedule linkage + supplement metadata.
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_filed_at: Optional[datetime] = None

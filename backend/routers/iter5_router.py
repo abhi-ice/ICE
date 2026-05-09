@@ -834,11 +834,12 @@ class DeliveryCreate(StrictModel):
     po_number: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     location_id: Optional[str] = None
-    # Bucket D Phase 1 — DR-activity linkage. Required min-1; copilot/
-    # voice paths bypass via direct insert_one. daily_report_id is also
-    # added so the linkage can be scoped to a specific DR.
+    # Bucket D Corrective (2026-05-08) -- master-schedule task linkage.
+    # Required min-1; copilot/voice paths bypass via direct insert_one.
+    # daily_report_id pins the delivery to its parent DR (always the
+    # day it actually arrived, or today's DR if it was a supplement).
     daily_report_id: Optional[str] = None
-    linked_dr_activity_ids: List[str] = Field(default_factory=list)
+    linked_task_ids: List[str] = Field(default_factory=list)
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
@@ -855,7 +856,7 @@ class DeliveryUpdate(StrictModel):
     location_id: Optional[str] = None
     status: Optional[str] = None
     received_by: Optional[str] = None
-    linked_dr_activity_ids: Optional[List[str]] = None
+    linked_task_ids: Optional[List[str]] = None
     edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -863,14 +864,13 @@ class DeliveryUpdate(StrictModel):
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
-    # Bucket D Phase 1 — DR-activity linkage required.
-    from services.dr_activity_linkage import validate_linked_dr_activity_ids
-    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- master-schedule task linkage required min-1.
+    from services.dr_activity_linkage import validate_linked_task_ids
+    doc["linked_task_ids"] = await validate_linked_task_ids(
         tenant_id=ctx["tenant_id"],
-        daily_report_id=doc.get("daily_report_id"),
-        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        project_id=doc["project_id"],
+        task_ids=doc.get("linked_task_ids") or [],
         required=True,
-        parent_daily_report_id=doc.get("parent_daily_report_id"),
     )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "scheduled",
@@ -915,7 +915,8 @@ async def list_deliveries(project_id: str,
     db = get_db()
     f = {"project_id": project_id}
     if affected_activity_id:
-        f["linked_dr_activity_ids"] = affected_activity_id
+        # Bucket D Corrective -- gallery filter on master-schedule tasks.
+        f["linked_task_ids"] = affected_activity_id
     docs = await db.deliveries.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("delivery_date", -1).to_list(500)
@@ -946,14 +947,14 @@ async def update_delivery(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="delivery", event_id=delivery_id,
     )
-    if "linked_dr_activity_ids" in updates:
-        from services.dr_activity_linkage import validate_linked_dr_activity_ids
-        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    if "linked_task_ids" in updates:
+        # Bucket D Corrective -- master-schedule re-validation on PATCH.
+        from services.dr_activity_linkage import validate_linked_task_ids
+        updates["linked_task_ids"] = await validate_linked_task_ids(
             tenant_id=ctx["tenant_id"],
-            daily_report_id=before.get("daily_report_id"),
-            activity_ids=updates["linked_dr_activity_ids"],
+            project_id=before["project_id"],
+            task_ids=updates["linked_task_ids"],
             required=True,
-            parent_daily_report_id=before.get("parent_daily_report_id"),
         )
     await db.deliveries.update_one(
         tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"$set": updates},

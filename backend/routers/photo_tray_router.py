@@ -428,57 +428,51 @@ async def create_photo_tag(
         db, ctx["tenant_id"], payload.daily_report_id, ref_field, ref_id,
     )
 
-    # Addition 2 -- re-validate the event's own linked_dr_activity_ids
-    # at tag time. The M2M tagging junction (Photo) inherits context
-    # from the tagged event; if the event's linkage was somehow broken
-    # (corrupted offline, created via copilot/voice bypass before
-    # linkage was required, mutated by a future PATCH that skipped
-    # validation, etc.) the photo would inherit invalid context. Tag
-    # time is the right moment to catch this so we don't paper over a
-    # data-integrity break on the linked event.
+    # Addition 2 (Bucket D Corrective rev) -- re-validate the event's
+    # own linked_task_ids at tag time. The M2M tagging junction (Photo)
+    # inherits context from the tagged event; if the event's linkage
+    # was somehow broken (corrupted offline, created via copilot/voice
+    # bypass before linkage was required, mutated by a future PATCH
+    # that skipped validation, etc.) the photo would inherit invalid
+    # context. Tag time is the right moment to catch this.
     #
     # Required-linkage events: delays / rfis / qc_issues / deliveries.
     # Optional-linkage events: safety_events / coordination_events.
-    # daily_report_activity_id and drawing_pin_id tags are already
-    # scoped to the DR via _validate_event_ref above; they have no
-    # `linked_dr_activity_ids` field of their own to re-validate.
+    # daily_report_activity_id and drawing_pin_id tags don't carry
+    # linked_task_ids of their own.
     REQUIRED_LINKAGE_REFS = {"delay_id", "rfi_id", "qc_issue_id", "delivery_id"}
     LINKAGE_OWNING_REFS = REQUIRED_LINKAGE_REFS | {
         "safety_event_id", "coordination_event_id",
     }
     if ref_field in LINKAGE_OWNING_REFS:
-        ev_linkage = list(ev.get("linked_dr_activity_ids") or [])
+        ev_linkage = list(ev.get("linked_task_ids") or [])
         if ref_field in REQUIRED_LINKAGE_REFS and not ev_linkage:
             raise HTTPException(
                 422,
                 f"Cannot tag photo: the {ref_field.replace('_id', '')} record "
-                f"{ref_id} has no linked_dr_activity_ids (required for this "
-                f"event type). Edit the event to add at least one activity "
-                f"link before tagging photos.",
+                f"{ref_id} has no linked_task_ids (required for this event "
+                f"type). Edit the event to add at least one task link before "
+                f"tagging photos.",
             )
         if ev_linkage:
-            # Coordination uses linked_daily_report_id as its DR scope;
-            # all other linkage-owning events use daily_report_id (which
-            # we've already verified matches payload.daily_report_id via
-            # _validate_event_ref).
-            scope_dr = (
-                ev.get("linked_daily_report_id")
-                if ref_field == "coordination_event_id"
-                else ev.get("daily_report_id")
-            ) or payload.daily_report_id
-            existing_act_rows = await db.daily_report_activities.find(
-                {"id": {"$in": ev_linkage}, "daily_report_id": scope_dr},
+            # Master schedule scope: tasks must belong to the same project.
+            project_id = ev.get("project_id") or tray.get("project_id")
+            existing_task_rows = await db.tasks.find(
+                tenant_filter(ctx["tenant_id"], {
+                    "id": {"$in": ev_linkage},
+                    "project_id": project_id,
+                }),
                 {"_id": 0, "id": 1},
             ).to_list(length=None)
-            existing_ids = {r["id"] for r in existing_act_rows}
+            existing_ids = {r["id"] for r in existing_task_rows}
             stale = [i for i in ev_linkage if i not in existing_ids]
             if stale:
                 raise HTTPException(
                     422,
                     f"Cannot tag photo: the {ref_field.replace('_id', '')} "
                     f"record {ref_id} carries {len(stale)} stale "
-                    f"linked_dr_activity_ids that no longer resolve on "
-                    f"DR {scope_dr}: {', '.join(stale[:3])}"
+                    f"linked_task_ids that no longer resolve on project "
+                    f"{project_id}: {', '.join(stale[:3])}"
                     + (" ..." if len(stale) > 3 else "")
                     + ". Edit the event to refresh its linkage before tagging.",
                 )

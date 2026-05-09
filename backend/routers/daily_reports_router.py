@@ -49,11 +49,13 @@ async def list_supplements_for_dr(
     return out
 
 
-# Bucket D Phase 3 -- gallery views show "affected activity" chips. The
-# event collections store linked_dr_activity_ids (UUIDs); the UI needs
-# {id, code, description, dr_date} to render the chip text. This batch
-# endpoint takes the union of ids visible on a gallery page and returns
-# the chip data in one round-trip (no N+1).
+# Bucket D Phase 3 -- gallery views show "affected activity" chips.
+# Originally event collections stored linked_dr_activity_ids (per-DR
+# WBS row ids); the Bucket D Corrective (2026-05-08) renamed this to
+# linked_task_ids (master schedule scope). This batch endpoint still
+# works against daily_report_activities for chip rendering of the per-
+# DR grid view; gallery chips on event rows now resolve via the master
+# `tasks` collection in the frontend.
 @router.get("/projects/{project_id}/dr-activity-chips")
 async def dr_activity_chips(
     project_id: str, ids: str = "", ctx: dict = Depends(require_tenant),

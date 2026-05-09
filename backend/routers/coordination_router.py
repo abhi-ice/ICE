@@ -37,17 +37,15 @@ async def create_coordination_event(
         raise HTTPException(404, "Project not found")
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
-    # Bucket D Phase 1 — DR-activity linkage OPTIONAL for coordination
-    # (some events are project-wide). Validation just confirms ids are
-    # real if provided. linked_daily_report_id (existing field) is the
-    # scope DR for the activity-id check.
-    from services.dr_activity_linkage import validate_linked_dr_activity_ids
-    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- master-schedule task linkage OPTIONAL for
+    # coordination (some events are project-wide). Validation confirms
+    # ids resolve to project tasks if provided.
+    from services.dr_activity_linkage import validate_linked_task_ids
+    doc["linked_task_ids"] = await validate_linked_task_ids(
         tenant_id=ctx["tenant_id"],
-        daily_report_id=doc.get("linked_daily_report_id"),
-        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        project_id=doc["project_id"],
+        task_ids=doc.get("linked_task_ids") or [],
         required=False,
-        parent_daily_report_id=doc.get("parent_daily_report_id"),
     )
     doc.update({
         "id": gen_id(),
@@ -115,10 +113,9 @@ async def list_coordination_events(
         f["channel"] = channel
     if direction:
         f["direction"] = direction
-    # Bucket D Phase 3 -- gallery filter on linked_dr_activity_ids
-    # (Phase 1 added the field; this is the matching list filter).
+    # Bucket D Corrective -- gallery filter on master-schedule tasks.
     if affected_activity_id:
-        f["linked_dr_activity_ids"] = affected_activity_id
+        f["linked_task_ids"] = affected_activity_id
     if date_from or date_to:
         rng: dict = {}
         if date_from:
@@ -191,21 +188,17 @@ async def update_coordination_event(
         ctx=ctx, daily_report_id=before.get("linked_daily_report_id"),
         edit_reason=edit_reason, event_type="coordination", event_id=event_id,
     )
-    # Bucket D verification fix -- re-validate linked_dr_activity_ids
-    # when the patch attempts to replace it. Linkage is OPTIONAL for
-    # coordination per spec, so required=False (empty list is allowed
-    # to clear the linkage), but anything that IS present must resolve
-    # to real rows on the parent DR.
-    if "linked_dr_activity_ids" in updates:
-        from services.dr_activity_linkage import validate_linked_dr_activity_ids
-        # Coordination uses linked_daily_report_id (different field name).
-        scope_dr = updates.get("linked_daily_report_id") or before.get("linked_daily_report_id")
-        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- re-validate linked_task_ids on PATCH
+    # against master schedule. Linkage is OPTIONAL for coordination per
+    # spec, so required=False; anything provided must resolve to a
+    # project task.
+    if "linked_task_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_task_ids
+        updates["linked_task_ids"] = await validate_linked_task_ids(
             tenant_id=ctx["tenant_id"],
-            daily_report_id=scope_dr,
-            activity_ids=updates["linked_dr_activity_ids"],
+            project_id=before["project_id"],
+            task_ids=updates["linked_task_ids"],
             required=False,
-            parent_daily_report_id=before.get("parent_daily_report_id"),
         )
     updates["updated_at"] = utc_now().isoformat()
     await db.coordination_events.update_one(

@@ -88,12 +88,13 @@ async def create_synthetic_delay_for_qc(
         "reason_category": "other",
         "owner_attribution": owner_attribution,
         "cause_class": "quality_rework",
-        "linked_dr_activity_ids": list(qc_issue.get("linked_dr_activity_ids") or []),
         # Cross-link to the source QC issue.
         "linked_qc_issue_id": qc_issue["id"],
-        # Linked tasks: try to resolve from the DR-activity rows so the
-        # C1 cascade has master schedule_activity_ids to walk.
-        "linked_task_ids": [],
+        # Bucket D Corrective -- linked_task_ids comes directly from
+        # qc_issue.linked_task_ids (master-schedule scope, no DR-activity
+        # translation step needed). The cascade walks these task ids
+        # forward through CPM successors.
+        "linked_task_ids": list(qc_issue.get("linked_task_ids") or []),
         "per_task_impacts": [],
         "is_supplement": False,
         "reported_by": actor_id,
@@ -101,21 +102,15 @@ async def create_synthetic_delay_for_qc(
         "created_at": now_iso,
     }
 
-    # Resolve master task ids for the C1 cascade.
-    if delay_doc["linked_dr_activity_ids"]:
-        dra_rows = await db.daily_report_activities.find(
-            {"id": {"$in": delay_doc["linked_dr_activity_ids"]}},
-            {"_id": 0, "id": 1, "schedule_activity_id": 1},
-        ).to_list(length=None)
-        seen: set[str] = set()
-        for r in dra_rows:
-            sid = r.get("schedule_activity_id")
-            if sid and sid not in seen:
-                seen.add(sid)
-                delay_doc["linked_task_ids"].append(sid)
-                delay_doc["per_task_impacts"].append({
-                    "task_id": sid, "projected_impact_days": delay_days,
-                })
+    # Build per-task impact rows from the QC's task linkage. Each task
+    # gets the same projected_impact_days (the rework hours converted to
+    # days); per-task float snapshots happen via _resolve_task_impacts
+    # in the delay PATCH path on subsequent edits.
+    if delay_doc["linked_task_ids"]:
+        for sid in delay_doc["linked_task_ids"]:
+            delay_doc["per_task_impacts"].append({
+                "task_id": sid, "projected_impact_days": delay_days,
+            })
 
     await db.delays.insert_one(delay_doc.copy())
 
@@ -243,20 +238,17 @@ async def record_rework_outcome(
         pass
 
     # Re-run cascade (delay status changed -> may release float).
+    # Bucket D Corrective -- linked_task_ids on the QC are master task
+    # ids directly; no DR-activity translation step needed.
     try:
         from services.task_status import (
             compute_and_persist_status, compute_projected_finish_dates,
         )
-        for tid in (qc_issue.get("linked_dr_activity_ids") or []):
-            # Map DR-activity id -> master task id.
-            dra = await db.daily_report_activities.find_one(
-                {"id": tid}, {"_id": 0, "schedule_activity_id": 1},
+        for tid in (qc_issue.get("linked_task_ids") or []):
+            await compute_and_persist_status(
+                db, tenant_id, tid,
+                actor_id=actor_id, request_id=request_id,
             )
-            if dra and dra.get("schedule_activity_id"):
-                await compute_and_persist_status(
-                    db, tenant_id, dra["schedule_activity_id"],
-                    actor_id=actor_id, request_id=request_id,
-                )
         await compute_projected_finish_dates(
             db, tenant_id, qc_issue["project_id"],
             actor_id=actor_id, request_id=request_id,

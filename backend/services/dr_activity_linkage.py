@@ -1,24 +1,19 @@
-"""Bucket D Phase 1 + Phase 4 -- DR-activity linkage validation helper
-+ supplement stamping helper.
+"""Bucket D Corrective (2026-05-08) — master-schedule task linkage
+validation helper + supplement stamping helper.
 
-Every event create endpoint that requires per-DR WBS linkage
-(delays / rfis / qc-issues / deliveries -- safety + coordination
-are optional) imports `validate_linked_dr_activity_ids` and runs it
-before persisting. Centralized here so the rule lives in one place
-and all routers stay consistent.
+Replaces the earlier dr-activity scope (`linked_dr_activity_ids`
+referencing daily_report_activities.id), which was a wrong build that
+created two parallel pickers on the delay form. The canonical scope is
+master schedule: `linked_task_ids` references tasks.id, same as
+delay's existing field. Migration 007 backfills + drops the old field.
 
-Two checks:
+Two checks (validate_linked_task_ids):
   1. Min-1 if `required=True` -- raises 422 with a friendly message.
-  2. Each id resolves to a real daily_report_activities row that
-     belongs to the supplied daily_report_id (cross-DR linkage is
-     not allowed -- a delay logged on Tuesday's DR cannot link to
-     Monday's WBS row except via the supplement flow in Phase 4,
-     where the parent_daily_report_id explicitly opts in).
+  2. Each id resolves to a real tasks row scoped by tenant_id +
+     project_id (cross-project linkage is not allowed).
 
-Phase 4 adds `stamp_supplement_metadata`: validates supplement payload
-shape and stamps supplement_filed_at/by, ready for insert. Returns
-the audit-payload dict for the caller to write a SUPPLEMENT_FILED
-audit entry alongside the entity's normal INSERT audit.
+Phase 4 supplement helper (stamp_supplement_metadata) is unchanged --
+it operates on supplement metadata fields, not on linkage scope.
 """
 from typing import Iterable, Optional
 from datetime import datetime, timezone
@@ -39,7 +34,7 @@ def stamp_supplement_metadata(doc: dict, *, actor_id: str, fact_type: str) -> Op
     contract lives in one place.
 
     Pure function -- does NOT validate parent DR lock state (that
-    requires DB access). Async wrapper validate_supplement_against_db
+    requires DB access). Async wrapper validate_supplement_parent_locked
     below handles that check."""
     if not doc.get("is_supplement"):
         return None
@@ -81,24 +76,24 @@ async def validate_supplement_parent_locked(
         )
 
 
-async def validate_linked_dr_activity_ids(
+async def validate_linked_task_ids(
     *,
     tenant_id: str,
-    daily_report_id: Optional[str],
-    activity_ids: Iterable[str],
+    project_id: str,
+    task_ids: Iterable[str],
     required: bool = True,
-    parent_daily_report_id: Optional[str] = None,
 ) -> list[str]:
-    """Validate the linked_dr_activity_ids list against the DB.
+    """Validate the linked_task_ids list against the master schedule.
 
     Returns the validated list (deduped, in input order). Raises
-    HTTPException(422) on missing or cross-DR ids.
+    HTTPException(422) on missing or cross-project task ids.
 
-    `parent_daily_report_id` (Phase 4 supplement flow) overrides the
-    DR-scope check: when set, ids must belong to that parent DR's
-    activities rather than the container DR.
+    Master-schedule scope: ids must resolve to `tasks` rows scoped to
+    the same tenant + project. Cross-project task references are
+    rejected. Past / today / future tasks are all valid -- the picker
+    UI shows the full list and the cascade handles forward propagation.
     """
-    ids = [str(i) for i in (activity_ids or []) if i]
+    ids = [str(i) for i in (task_ids or []) if i]
     # Dedup preserving order.
     seen: set[str] = set()
     deduped: list[str] = []
@@ -112,37 +107,21 @@ async def validate_linked_dr_activity_ids(
     if not deduped:
         return []
 
-    scope_dr = parent_daily_report_id or daily_report_id
-    if not scope_dr:
-        # Required + no scope = caller programming error; surface
-        # rather than silently accept ids of unknown provenance.
-        raise HTTPException(
-            422,
-            "daily_report_id is required when linked_dr_activity_ids is set",
-        )
-
     db = get_db()
-    rows = await db.daily_report_activities.find(
-        {"id": {"$in": deduped}, "daily_report_id": scope_dr},
+    rows = await db.tasks.find(
+        tenant_filter(tenant_id, {
+            "id": {"$in": deduped},
+            "project_id": project_id,
+        }),
         {"_id": 0, "id": 1},
     ).to_list(length=None)
     found_ids = {r["id"] for r in rows}
     missing = [i for i in deduped if i not in found_ids]
     if missing:
-        # Tenant-guard cross-check via the parent DR's tenant.
-        dr = await db.daily_reports.find_one(
-            tenant_filter(tenant_id, {"id": scope_dr}),
-            {"_id": 0, "id": 1},
-        )
-        if not dr:
-            raise HTTPException(
-                404, f"daily_report_id {scope_dr} not found in this tenant",
-            )
-        # DR exists in tenant but the ids don't match its activities.
         raise HTTPException(
             422,
-            f"linked_dr_activity_ids contains {len(missing)} id(s) "
-            f"that don't belong to daily report {scope_dr}: "
+            f"linked_task_ids contains {len(missing)} id(s) that don't "
+            f"resolve to a task on project {project_id}: "
             f"{', '.join(missing[:5])}"
             + (" ..." if len(missing) > 5 else ""),
         )
