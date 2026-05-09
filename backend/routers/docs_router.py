@@ -28,16 +28,15 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
-    # Bucket D Phase 1 — DR-activity linkage required min-1. Coexists
-    # with the C3a gating_entities back-pointer (still set below by
-    # create_for_entity).
-    from services.dr_activity_linkage import validate_linked_dr_activity_ids
-    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- master-schedule task linkage required min-1.
+    # Coexists with the C3a gating_entities back-pointer (still set
+    # below by create_for_entity).
+    from services.dr_activity_linkage import validate_linked_task_ids
+    doc["linked_task_ids"] = await validate_linked_task_ids(
         tenant_id=ctx["tenant_id"],
-        daily_report_id=doc.get("daily_report_id"),
-        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        project_id=doc["project_id"],
+        task_ids=doc.get("linked_task_ids") or [],
         required=True,
-        parent_daily_report_id=doc.get("parent_daily_report_id"),
     )
     # Followup-fix (2026-05-07): preserve user-supplied response_text
     # (frontend "answer" field) instead of wiping it. Status is always
@@ -108,9 +107,9 @@ async def list_rfis(project_id: str, status_filter: Optional[str] = None,
         # this filter deleted RFIs would keep appearing in the sidebar
         # list and the daily-report panel.
         f["status"] = {"$ne": "deleted"}
-    # Bucket D Phase 3 -- gallery filter.
+    # Bucket D Corrective -- gallery filter on master-schedule tasks.
     if affected_activity_id:
-        f["linked_dr_activity_ids"] = affected_activity_id
+        f["linked_task_ids"] = affected_activity_id
     docs = await db.rfis.find(f, {"_id": 0}).sort("date_initiated", -1).to_list(500)
     return [Rfi(**d) for d in docs]
 
@@ -132,19 +131,16 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="rfi", event_id=rfi_id,
     )
-    # Bucket D verification fix -- re-validate linked_dr_activity_ids
-    # when the patch attempts to replace it, otherwise a client could
-    # write ids that don't exist or belong to a different DR/project
-    # (linkage is required min-1 on POST so the patch must keep that
-    # invariant).
-    if "linked_dr_activity_ids" in updates:
-        from services.dr_activity_linkage import validate_linked_dr_activity_ids
-        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- re-validate linked_task_ids on PATCH
+    # against master schedule. Linkage is required min-1 on POST so
+    # the patch keeps the invariant.
+    if "linked_task_ids" in updates:
+        from services.dr_activity_linkage import validate_linked_task_ids
+        updates["linked_task_ids"] = await validate_linked_task_ids(
             tenant_id=ctx["tenant_id"],
-            daily_report_id=before.get("daily_report_id"),
-            activity_ids=updates["linked_dr_activity_ids"],
+            project_id=before["project_id"],
+            task_ids=updates["linked_task_ids"],
             required=True,
-            parent_daily_report_id=before.get("parent_daily_report_id"),
         )
     await db.rfis.update_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"$set": updates})
     after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})

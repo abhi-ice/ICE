@@ -96,19 +96,20 @@ def _enrich_delay_for_read(d: dict) -> dict:
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
-    # Bucket D Phase 1 — DR-activity linkage. Required min-1 unless this
-    # is a supplement (Phase 4); supplement_reason path validates against
-    # parent_daily_report_id instead. Validation early so the cascade
-    # below doesn't run for an invalid payload.
-    from services.dr_activity_linkage import validate_linked_dr_activity_ids
-    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
-        tenant_id=ctx["tenant_id"],
-        daily_report_id=doc.get("daily_report_id"),
-        activity_ids=doc.get("linked_dr_activity_ids") or [],
-        required=True,
-        parent_daily_report_id=doc.get("parent_daily_report_id"),
-    )
+    # Bucket D Corrective (2026-05-08) -- the dr-activity linkage that
+    # used to be validated here was a wrong-scope build. Canonical
+    # linkage is linked_task_ids (master schedule). _resolve_task_impacts
+    # below pulls/synthesizes the list (including legacy
+    # schedule_activity_id back-compat); we then validate min-1 +
+    # cross-project against tasks via the master-schedule helper.
     linked_ids, impacts = await _resolve_task_impacts(db, ctx["tenant_id"], doc)
+    from services.dr_activity_linkage import validate_linked_task_ids
+    linked_ids = await validate_linked_task_ids(
+        tenant_id=ctx["tenant_id"],
+        project_id=doc["project_id"],
+        task_ids=linked_ids,
+        required=True,
+    )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
         "status": doc.get("status") or "open",
@@ -166,7 +167,10 @@ async def list_delays(project_id: str,
     # (status='deleted' was set by the old /crud/delays/{id} DELETE path).
     f = {"project_id": project_id, "status": {"$ne": "deleted"}}
     if affected_activity_id:
-        f["linked_dr_activity_ids"] = affected_activity_id
+        # Bucket D Corrective -- gallery filter now matches against
+        # master-schedule task ids (linked_task_ids), not the dropped
+        # per-DR linked_dr_activity_ids field.
+        f["linked_task_ids"] = affected_activity_id
     docs = await db.delays.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
@@ -203,20 +207,10 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         edit_reason=edit_reason, event_type="delay", event_id=delay_id,
     )
 
-    # Bucket D verification fix -- re-validate linked_dr_activity_ids
-    # when the patch attempts to replace it, otherwise a client could
-    # write ids that don't exist or belong to a different DR/project
-    # (linkage is required min-1 on POST so the patch must keep that
-    # invariant).
-    if "linked_dr_activity_ids" in updates:
-        from services.dr_activity_linkage import validate_linked_dr_activity_ids
-        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
-            tenant_id=ctx["tenant_id"],
-            daily_report_id=before.get("daily_report_id"),
-            activity_ids=updates["linked_dr_activity_ids"],
-            required=True,
-            parent_daily_report_id=before.get("parent_daily_report_id"),
-        )
+    # Bucket D Corrective -- the dr-activity re-validation that used to
+    # live here is gone (field dropped). linked_task_ids re-validation
+    # against master schedule happens after _resolve_task_impacts via
+    # validate_linked_task_ids below.
 
     # If linked_task_ids OR per_task_impacts is in the patch, recompute the
     # snapshot — keep logic in one place rather than two slightly-different
@@ -227,6 +221,15 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
             "per_task_impacts": updates.get("per_task_impacts", before.get("per_task_impacts", [])),
         }
         new_ids, new_impacts = await _resolve_task_impacts(db, ctx["tenant_id"], merged)
+        # Bucket D Corrective -- validate the resolved task ids against
+        # master schedule (cross-project safety + min-1 invariant).
+        from services.dr_activity_linkage import validate_linked_task_ids
+        new_ids = await validate_linked_task_ids(
+            tenant_id=ctx["tenant_id"],
+            project_id=before["project_id"],
+            task_ids=new_ids,
+            required=True,
+        )
         updates["linked_task_ids"] = new_ids
         updates["per_task_impacts"] = new_impacts
 
@@ -521,16 +524,16 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
-    # Bucket D Phase 1 — DR-activity linkage OPTIONAL for safety (some
-    # events are area-wide with no specific WBS row). Validation just
-    # confirms ids are real if provided.
-    from services.dr_activity_linkage import validate_linked_dr_activity_ids
-    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- master-schedule task linkage OPTIONAL for
+    # safety (some events are area-wide and don't tie to a specific
+    # task). Validation just confirms ids resolve to project tasks if
+    # provided.
+    from services.dr_activity_linkage import validate_linked_task_ids
+    doc["linked_task_ids"] = await validate_linked_task_ids(
         tenant_id=ctx["tenant_id"],
-        daily_report_id=doc.get("daily_report_id"),
-        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        project_id=doc["project_id"],
+        task_ids=doc.get("linked_task_ids") or [],
         required=False,
-        parent_daily_report_id=doc.get("parent_daily_report_id"),
     )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
@@ -568,7 +571,8 @@ async def list_safety(project_id: str,
     # Filter soft-deleted leftovers from the old /crud/ DELETE path.
     f = {"project_id": project_id, "status": {"$ne": "deleted"}}
     if affected_activity_id:
-        f["linked_dr_activity_ids"] = affected_activity_id
+        # Bucket D Corrective -- gallery filter on master-schedule tasks.
+        f["linked_task_ids"] = affected_activity_id
     docs = await db.safety_events.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
@@ -600,14 +604,14 @@ async def update_safety_event(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="safety", event_id=event_id,
     )
-    if "linked_dr_activity_ids" in updates:
-        from services.dr_activity_linkage import validate_linked_dr_activity_ids
-        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    if "linked_task_ids" in updates:
+        # Bucket D Corrective -- master-schedule re-validation on PATCH.
+        from services.dr_activity_linkage import validate_linked_task_ids
+        updates["linked_task_ids"] = await validate_linked_task_ids(
             tenant_id=ctx["tenant_id"],
-            daily_report_id=before.get("daily_report_id"),
-            activity_ids=updates["linked_dr_activity_ids"],
+            project_id=before["project_id"],
+            task_ids=updates["linked_task_ids"],
             required=False,
-            parent_daily_report_id=before.get("parent_daily_report_id"),
         )
     await db.safety_events.update_one(
         tenant_filter(ctx["tenant_id"], {"id": event_id}), {"$set": updates},
@@ -638,15 +642,15 @@ async def update_safety_event(
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
-    # Bucket D Phase 1 — DR-activity linkage required (QC drives the
-    # rework cascade in Phase 5; the linkage is the cascade's seed).
-    from services.dr_activity_linkage import validate_linked_dr_activity_ids
-    doc["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    # Bucket D Corrective -- master-schedule task linkage required (QC
+    # drives the rework cascade in Phase 5; the linkage is the cascade's
+    # seed). Cascade reads doc["linked_task_ids"] downstream.
+    from services.dr_activity_linkage import validate_linked_task_ids
+    doc["linked_task_ids"] = await validate_linked_task_ids(
         tenant_id=ctx["tenant_id"],
-        daily_report_id=doc.get("daily_report_id"),
-        activity_ids=doc.get("linked_dr_activity_ids") or [],
+        project_id=doc["project_id"],
+        task_ids=doc.get("linked_task_ids") or [],
         required=True,
-        parent_daily_report_id=doc.get("parent_daily_report_id"),
     )
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "open",
@@ -752,7 +756,8 @@ async def list_qc(project_id: str,
     # Filter soft-deleted leftovers from the old /crud/ DELETE path.
     f = {"project_id": project_id, "status": {"$ne": "deleted"}}
     if affected_activity_id:
-        f["linked_dr_activity_ids"] = affected_activity_id
+        # Bucket D Corrective -- gallery filter on master-schedule tasks.
+        f["linked_task_ids"] = affected_activity_id
     docs = await db.qc_issues.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
@@ -787,14 +792,14 @@ async def update_qc_issue(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="qc", event_id=qc_id,
     )
-    if "linked_dr_activity_ids" in updates:
-        from services.dr_activity_linkage import validate_linked_dr_activity_ids
-        updates["linked_dr_activity_ids"] = await validate_linked_dr_activity_ids(
+    if "linked_task_ids" in updates:
+        # Bucket D Corrective -- master-schedule re-validation on PATCH.
+        from services.dr_activity_linkage import validate_linked_task_ids
+        updates["linked_task_ids"] = await validate_linked_task_ids(
             tenant_id=ctx["tenant_id"],
-            daily_report_id=before.get("daily_report_id"),
-            activity_ids=updates["linked_dr_activity_ids"],
+            project_id=before["project_id"],
+            task_ids=updates["linked_task_ids"],
             required=True,
-            parent_daily_report_id=before.get("parent_daily_report_id"),
         )
     await db.qc_issues.update_one(
         tenant_filter(ctx["tenant_id"], {"id": qc_id}), {"$set": updates},
@@ -1031,9 +1036,10 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
     indirect_event_ids: dict[str, list[str]] = {}
     if affected_activity_id:
         # Direct tag OR indirect via a tagged event whose
-        # linked_dr_activity_ids contains the activity id. Pre-collect
-        # event ids for each indirect collection so the photo query
-        # can $or-match in one shot.
+        # linked_task_ids contains the master-schedule task id. Pre-
+        # collect event ids for each indirect collection so the photo
+        # query can $or-match in one shot. (Bucket D Corrective: scope
+        # is now master schedule, not per-DR activity rows.)
         for coll, ref_field in [("delays", "delay_id"),
                                   ("rfis", "rfi_id"),
                                   ("qc_issues", "qc_issue_id"),
@@ -1043,7 +1049,7 @@ async def list_photos(project_id: str, location_id: Optional[str] = None,
             ids = await db[coll].find(
                 tenant_filter(ctx["tenant_id"], {
                     "project_id": project_id,
-                    "linked_dr_activity_ids": affected_activity_id,
+                    "linked_task_ids": affected_activity_id,
                 }),
                 {"_id": 0, "id": 1},
             ).to_list(length=None)

@@ -186,13 +186,14 @@ async def _ensure_indexes():
         [("parent_daily_report_id", 1)],
         partialFilterExpression={"parent_daily_report_id": {"$type": "string"}},
     )
-    # Bucket D Phase 1 -- linked_dr_activity_ids gallery filter (Phase 3).
-    # Each event collection gets the index for "what events affect
-    # activity X?" lookups across DRs.
+    # Bucket D Corrective (2026-05-08) -- linked_task_ids gallery filter.
+    # Each event collection gets the master-schedule-scoped index for
+    # "what events affect task X?" lookups. Old per-DR-scope indexes on
+    # linked_dr_activity_ids are dropped by migration 007.
     for coll in ("delays", "rfis", "qc_issues", "safety_events",
                   "coordination_events", "deliveries"):
         await db[coll].create_index(
-            [("tenant_id", 1), ("project_id", 1), ("linked_dr_activity_ids", 1)],
+            [("tenant_id", 1), ("project_id", 1), ("linked_task_ids", 1)],
         )
 
 
