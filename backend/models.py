@@ -2685,6 +2685,105 @@ class SubmittalReviewEventCreate(StrictModel):
     performed_at: Optional[datetime] = None
 
 
+# ============================================================
+# Bucket I Phase 1 (2026-05-11) — Recovery Report Generator
+# ============================================================
+# Per Sid's Friday-cadence diagram: unify Weekly Rollup +
+# AI Recovery Suggestions + Calibration RAG into a single
+# Friday-end report. Generators are thin wrappers around existing
+# services -- NO duplicate aggregation logic.
+RecoveryReportType = Literal[
+    "weekly_variance",      # Mon-Sun variance vs. plan
+    "friday_recovery",      # Mon-Fri snapshot with recovery actions
+    "daily_variance",       # single-day deviation report
+    "project_health_summary",  # current-state snapshot, no period
+    "custom",               # caller supplies period_start + period_end
+]
+
+RecoveryReportStatus = Literal["draft", "finalized", "archived"]
+
+
+class RecoveryActionItem(StrictModel):
+    """One recovery action proposed by the AI / calibration RAG.
+    Embedded in RecoveryReport.recovery_actions."""
+    action: str = Field(..., max_length=500)
+    owner: Optional[str] = Field(default=None, max_length=120)
+    due_date: Optional[date] = None
+    rationale: Optional[str] = Field(default=None, max_length=2000)
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    # When the AI produced this action against a specific mitigation
+    # scenario, the source mitigation id lets us close the calibration
+    # RAG loop (Phase 3b) when its outcome is later recorded.
+    source_mitigation_id: Optional[str] = None
+    source_delay_id: Optional[str] = None
+
+
+class ExhibitArtifact(StrictModel):
+    """Stored export of the report (PDF / DOCX / JSON). One row per
+    format we've rendered. Re-renders overwrite the existing row for
+    that format."""
+    type: Literal["pdf", "docx", "json"]
+    storage_key: str
+    sha256: str
+    size_bytes: Optional[int] = None
+    generated_at: datetime
+
+
+class RecoveryReportCreate(StrictModel):
+    """POST /recovery-reports/generate payload. period_start +
+    period_end optional -- defaults derived from report_type."""
+    project_id: str
+    report_type: RecoveryReportType
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    # Idempotency key. Two generate calls with the same key on the
+    # same (tenant, project, type, period) return the existing
+    # report (per spec edge case).
+    idempotency_key: Optional[str] = Field(default=None, max_length=80)
+
+
+class RecoveryReport(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    report_type: RecoveryReportType
+    generated_at: datetime
+    generated_by: Optional[str] = None        # user_id or None for system gen
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    # Snapshot of the source data the AI / aggregator saw at gen time.
+    # Locked at finalization so re-renders use the same numbers counsel
+    # can defend.
+    data_snapshot: dict = Field(default_factory=dict)
+    ai_narrative: Optional[str] = None
+    recovery_actions: List[RecoveryActionItem] = Field(default_factory=list)
+    variance_summary: dict = Field(default_factory=dict)
+    exhibit_artifacts: List[ExhibitArtifact] = Field(default_factory=list)
+    status: RecoveryReportStatus = "draft"
+    finalized_by: Optional[str] = None
+    finalized_at: Optional[datetime] = None
+    archived_by: Optional[str] = None
+    archived_at: Optional[datetime] = None
+    # Human-readable label for the audit log entry (e.g. "Friday
+    # Recovery Report 2026-W19").
+    audit_op_label: Optional[str] = None
+    # Phase 1 edge case: if the AI recovery service was unreachable
+    # during generation, we mark the report degraded so PMs know the
+    # narrative is missing. The aggregation numbers are still real.
+    is_degraded: bool = False
+    degraded_reason: Optional[str] = None
+    # Phase 3d -- AI budget cost tracking. Sum of token costs for
+    # this report's AI calls (mitigation suggestions + narrative).
+    ai_cost_estimate_usd: Optional[float] = None
+    idempotency_key: Optional[str] = None
+
+
+# Default authorized_confirmer_roles is admin-only since recovery
+# reports are sensitive (counsel evidence). PM is added via the
+# router's RBAC; this list governs who can FINALIZE the report.
+RECOVERY_REPORT_FINALIZER_ROLES = ["admin", "pm"]
+
+
 class SubmittalReviewEvent(ReadModel):
     """One row in the submittal_review_events collection. Indexed
     by (tenant_id, submittal_id, performed_at) for chronological

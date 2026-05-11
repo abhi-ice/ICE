@@ -89,6 +89,11 @@ MIGRATIONS = [
     # tenant. Idempotent via per-field $exists checks + per-tenant
     # audit existence check.
     "migrations.013_submittals_sla_setup",
+    # Bucket I (2026-05-11) -- Recovery Report Generator setup.
+    # Creates the recovery_reports collection + 4 indexes. No data
+    # backfill. Single RECOVERY_REPORTS_INITIALIZED audit op per
+    # tenant. Idempotent via per-tenant audit existence check.
+    "migrations.014_recovery_reports_setup",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

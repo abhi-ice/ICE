@@ -202,6 +202,24 @@ async def _gather_data(
         tenant_filter(tenant_id, mq), {"_id": 0},
     ).to_list(5000)
 
+    # Bucket I (2026-05-11) -- pull finalized recovery_reports as
+    # mitigation evidence. Each report's recovery_actions list feeds
+    # into mitigation evidence: counsel sees "AI proposed action X,
+    # PM finalized the report on date Y, here's the chain". Filter to
+    # finalized reports in the period so drafts don't pollute counsel
+    # output.
+    recovery_reports = await db.recovery_reports.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id,
+            "status": "finalized",
+            "finalized_at": {
+                "$gte": start_iso,
+                "$lte": end_iso + "T23:59:59Z",
+            },
+        }),
+        {"_id": 0},
+    ).sort("finalized_at", 1).to_list(length=500)
+
     # ---- Photos: only evidentiary classes (discovery, damage) per spec ----
     pq2: dict = {"project_id": project_id,
                  "photo_class": {"$in": ["discovery", "damage"]}}
@@ -530,6 +548,9 @@ async def _gather_data(
         "section_3_cpm_cascade_analysis": cascade_snapshots,
         "section_4_owner_attribution_summary": _summarize_attribution(delays, gating_entities),
         "section_5_mitigations": mitigations,
+        # Bucket I -- finalized recovery reports landing as
+        # mitigation evidence (Section 5a in the render).
+        "section_5a_recovery_reports": recovery_reports,
         "section_6_coordination_events": coord,
         "section_7_schedule_update_diffs": schedule_diffs,
         "section_8_photo_evidence_pack": photos,
@@ -688,6 +709,48 @@ def _render_docx(data: dict) -> bytes:
         ("estimated_schedule_impact_days", "Predicted Δ"),
         ("actual_time_recovered_days", "Actual Δ"),
     ])
+
+    # Bucket I -- Section 5a finalized recovery reports. Each is
+    # counsel evidence: AI proposed action X, PM finalized on Y. We
+    # render the report list + the action breakdown so counsel can
+    # cross-reference any disputed action with its source report.
+    recovery_reports_list = data.get("section_5a_recovery_reports") or []
+    H("5a. Recovery Reports (finalized)", level=2)
+    P(
+        f"{len(recovery_reports_list)} finalized recovery report(s) "
+        f"in range. Each captures the AI's recovery-action proposal "
+        f"and the PM's confirmation -- defensible evidence chain."
+    )
+    if not recovery_reports_list:
+        empty()
+    else:
+        table(recovery_reports_list, [
+            ("audit_op_label", "Label"),
+            ("report_type", "Type"),
+            ("period_start", "From"),
+            ("period_end", "To"),
+            ("finalized_at", "Finalized"),
+            ("finalized_by", "By"),
+            ("is_degraded", "AI degraded?"),
+        ])
+        # Per-report recovery action listing.
+        for rep in recovery_reports_list:
+            actions = rep.get("recovery_actions") or []
+            if not actions:
+                continue
+            sub = doc.add_paragraph()
+            r0 = sub.add_run(
+                f"  Actions for {rep.get('audit_op_label') or rep.get('id', '')[:8]}:",
+            )
+            r0.bold = True
+            for a in actions[:20]:
+                bullet = doc.add_paragraph(style="List Bullet")
+                bullet.add_run(
+                    f"{a.get('action', '')[:200]} "
+                    f"(owner: {a.get('owner') or '—'}, "
+                    f"due: {a.get('due_date') or '—'}, "
+                    f"conf: {int((a.get('confidence') or 0) * 100)}%)"
+                )
 
     # SECTION 6
     H("6. Coordination Event Log Extract")

@@ -4,9 +4,11 @@ import {
   ShieldCheck, Bot, FileText, History, ShoppingBasket, FileBarChart,
   Settings as SettingsIcon, MapPin, Sparkles, AlertTriangle,
   RefreshCw, Loader2, ShieldAlert, Activity, Check, X,
+  Download, ChevronRight,
 } from "lucide-react";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
+import { Button } from "../components/ui/button";
 
 // Bucket H Phase 5 (2026-05-08) -- audit op filter dropdown options.
 // Grouped for legibility; "(all)" sentinel left as empty string so the
@@ -98,6 +100,20 @@ const AUDIT_OP_GROUPS = [
       "SUBMITTAL_SLA_REVIEW_EVENT_RECORDED",
       "SUBMITTAL_SLA_REVIEWER_ASSIGNED",
       "SUBMITTAL_SLA_AGING_RECOMPUTED",
+    ],
+  },
+  // Bucket I (2026-05-11) -- Recovery Report Generator op family.
+  // Counsel + admins can audit Friday-cadence + ad-hoc report
+  // lifecycle (generate -> finalize -> export -> archive).
+  {
+    label: "Recovery reports",
+    ops: [
+      "RECOVERY_REPORTS_INITIALIZED",
+      "RECOVERY_REPORT_GENERATED",
+      "RECOVERY_REPORT_FINALIZED",
+      "RECOVERY_REPORT_ARCHIVED",
+      "RECOVERY_REPORT_EXPORTED",
+      "RECOVERY_REPORT_DELETED",
     ],
   },
 ];
@@ -1084,13 +1100,112 @@ export function AiHelpPanel({ onClose }) {
               </p>
             </section>
           </div>
+
+          {/* Bucket I (2026-05-11) -- Recovery Reports section.
+              4 sub-sections covering the unified Friday-cadence
+              report flow + report types + finalization rules. */}
+          <div className="border-t border-slate-200 pt-3 mt-2"
+            data-testid="ai-help-recovery-reports-section">
+            <div className="text-sm font-semibold text-slate-900 inline-flex items-center gap-1.5 mb-2">
+              <FileText className="h-3.5 w-3.5 text-blue-700" />
+              Recovery Reports
+            </div>
+            <section>
+              <div className="font-medium text-slate-900">What it does</div>
+              <p>
+                Unified Friday-cadence report combining Weekly Rollup +
+                AI Recovery Suggestions + Calibration RAG into one
+                exhibit. Lives inside Weekly Reports as the "Reports
+                Generator" tab (no new sidebar entry).
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Report types</div>
+              <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                <li><b>Weekly Variance</b> (Mon-Sun) — numerical
+                  variance vs. plan; no AI narrative.</li>
+                <li><b>Friday Recovery</b> (Mon-Fri) — variance + AI
+                  recovery actions per top-impact delay + calibration-
+                  RAG-informed mitigation suggestions.</li>
+                <li><b>Daily Variance</b> — single-day deviation.</li>
+                <li><b>Project Health Summary</b> — current-state
+                  snapshot (no period); good for owner-meeting
+                  one-pagers.</li>
+                <li><b>Custom</b> — caller-supplied window.</li>
+              </ul>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Draft → Finalize → Export</div>
+              <p>
+                Reports land as drafts. JSON export works for drafts
+                (preview); <b>PDF + DOCX require finalization</b> so
+                counsel isn't handed an in-flight artifact. Finalize
+                writes <code className="px-1 mx-0.5 bg-slate-100 rounded">RECOVERY_REPORT_FINALIZED</code>
+                to the audit chain and locks the data_snapshot. PM /
+                admin only can finalize. TIA Section 5a picks up
+                finalized reports automatically.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Auto-generation + cost</div>
+              <p>
+                Every Friday at 21:00 UTC (4-5pm CONUS), a BG task
+                drops a draft Friday Recovery Report per active
+                non-CUI project. Tenants can opt out via
+                <code className="px-1 mx-0.5 bg-slate-100 rounded">tenant.recovery_reports_auto_friday=false</code>.
+                Cost: Friday Recovery type calls the AI recovery
+                producer (~$0.01–0.05 per report). Other types are
+                $0 (numeric only). All AI costs roll into the
+                existing Bucket F budget tracking.
+              </p>
+            </section>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
+// Bucket I (2026-05-11) -- Weekly Reports page rebuilt with tabs.
+// Per spec: NO new sidebar entry. Reports Generator lives as a tab
+// inside the existing /weekly-reports route.
 export function WeeklyReports() {
+  const [tab, setTab] = useState("rollup");
+  return (
+    <div data-testid="weekly-reports-page" className="space-y-4">
+      <div className="flex items-center gap-2">
+        <FileBarChart className="h-5 w-5" />
+        <h1 className="text-2xl font-semibold">Weekly reports</h1>
+      </div>
+      <div className="flex border-b border-slate-200 text-sm overflow-x-auto"
+        data-testid="weekly-tabs">
+        <WrTab tab="rollup" active={tab} onClick={setTab}
+          label="Weekly rollup" testid="weekly-tab-rollup" />
+        <WrTab tab="generator" active={tab} onClick={setTab}
+          label="Reports Generator" testid="weekly-tab-generator" />
+      </div>
+      {tab === "rollup" && <WeeklyRollupTab />}
+      {tab === "generator" && <ReportsGeneratorTab />}
+    </div>
+  );
+}
+
+function WrTab({ tab, active, onClick, label, testid }) {
+  const isActive = tab === active;
+  return (
+    <button data-testid={testid} onClick={() => onClick(tab)}
+      className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap ${
+        isActive
+          ? "border-blue-600 text-blue-900 font-medium"
+          : "border-transparent text-slate-600 hover:text-slate-900"
+      }`}>
+      {label}
+    </button>
+  );
+}
+
+
+function WeeklyRollupTab() {
   const { activeId, projects } = useProjects();
   const [week, setWeek] = useState(() => {
     const d = new Date();
@@ -1112,8 +1227,7 @@ export function WeeklyReports() {
   };
 
   return (
-    <div data-testid="weekly-reports-page" className="space-y-4">
-      <div className="flex items-center gap-2"><FileBarChart className="h-5 w-5" /><h1 className="text-2xl font-semibold">Weekly rollup</h1></div>
+    <div className="space-y-3">
       <p className="text-sm text-muted-foreground">{projects.find(p => p.id === activeId)?.name}</p>
       <div className="flex items-center gap-2">
         <label className="field-label mb-0">Week starting</label>
@@ -1146,6 +1260,506 @@ export function WeeklyReports() {
     </div>
   );
 }
+
+
+// =====================================================================
+// Bucket I -- Reports Generator tab.
+// =====================================================================
+const REPORT_TYPES = [
+  { value: "weekly_variance",       label: "Weekly Variance (Mon-Sun)" },
+  { value: "friday_recovery",       label: "Friday Recovery (Mon-Fri)" },
+  { value: "daily_variance",        label: "Daily Variance" },
+  { value: "project_health_summary", label: "Project Health Summary" },
+  { value: "custom",                label: "Custom (pick dates)" },
+];
+
+const STATUS_PILL = {
+  draft:     "bg-amber-100 text-amber-900 border-amber-300",
+  finalized: "bg-emerald-100 text-emerald-900 border-emerald-300",
+  archived:  "bg-slate-100 text-slate-500 border-slate-200",
+};
+
+function _today() { return new Date().toISOString().slice(0, 10); }
+function _monday(d) {
+  const dt = new Date(d || Date.now());
+  const diff = (dt.getDay() + 6) % 7;     // Mon=0
+  dt.setDate(dt.getDate() - diff);
+  return dt.toISOString().slice(0, 10);
+}
+function _friday(monday) {
+  const dt = new Date(monday);
+  dt.setDate(dt.getDate() + 4);
+  return dt.toISOString().slice(0, 10);
+}
+
+function ReportsGeneratorTab() {
+  const { activeId, projects } = useProjects();
+  const project = projects.find((p) => p.id === activeId);
+  const user = (typeof window !== "undefined"
+    && JSON.parse(localStorage.getItem("ice.user") || "null")) || {};
+  const role = (user.role || "").toLowerCase();
+  const isAdminOrPm = ["admin", "pm"].includes(role);
+
+  const [reportType, setReportType] = useState("friday_recovery");
+  const [periodStart, setPeriodStart] = useState(() => _monday());
+  const [periodEnd, setPeriodEnd] = useState(() => _friday(_monday()));
+  const [generating, setGenerating] = useState(false);
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [filterType, setFilterType] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [openReport, setOpenReport] = useState(null);
+
+  // Sync period when report_type changes.
+  useEffect(() => {
+    if (reportType === "weekly_variance") {
+      const m = _monday();
+      setPeriodStart(m);
+      const sun = new Date(m);
+      sun.setDate(sun.getDate() + 6);
+      setPeriodEnd(sun.toISOString().slice(0, 10));
+    } else if (reportType === "friday_recovery") {
+      const m = _monday();
+      setPeriodStart(m);
+      setPeriodEnd(_friday(m));
+    } else if (reportType === "daily_variance") {
+      setPeriodStart(_today());
+      setPeriodEnd(_today());
+    } else if (reportType === "project_health_summary") {
+      setPeriodStart(""); setPeriodEnd("");
+    }
+  }, [reportType]);
+
+  const load = async () => {
+    if (!activeId) { setList([]); return; }
+    setLoading(true);
+    try {
+      const params = {};
+      if (filterType) params.type = filterType;
+      if (filterStatus) params.status = filterStatus;
+      const { data } = await api.get(
+        `/projects/${activeId}/recovery-reports`, { params },
+      );
+      setList(data?.reports || []);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Load failed");
+      setList([]);
+    } finally { setLoading(false); }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [activeId, filterType, filterStatus]);
+
+  const generate = async () => {
+    if (!activeId) return;
+    setGenerating(true);
+    try {
+      const payload = {
+        project_id: activeId,
+        report_type: reportType,
+      };
+      if (periodStart) payload.period_start = periodStart;
+      if (periodEnd)   payload.period_end = periodEnd;
+      const { data } = await api.post(
+        "/recovery-reports/generate", payload,
+      );
+      if (data?.deduped) {
+        toast.info(`Existing report returned (${data.status})`);
+      } else {
+        toast.success("Report generating...");
+      }
+      // Poll once after a short delay so the BG task has time to
+      // commit the row.
+      setTimeout(load, 2000);
+      setTimeout(load, 5000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Generate failed");
+    } finally { setGenerating(false); }
+  };
+
+  const exportFmt = async (report, fmt) => {
+    try {
+      const res = await api.get(
+        `/recovery-reports/${report.id}/export?format=${fmt}`,
+        { responseType: "blob" },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `recovery_${report.id.slice(0, 8)}.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      const detail = e.response?.data?.detail || "Export failed";
+      toast.error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+  };
+
+  const finalize = async (report) => {
+    if (!window.confirm(
+      `Finalize "${report.audit_op_label || report.id.slice(0, 8)}"? `
+      + "This locks the report and writes it to the audit chain.",
+    )) return;
+    try {
+      await api.post(`/recovery-reports/${report.id}/finalize`);
+      toast.success("Finalized");
+      load();
+      if (openReport?.id === report.id) {
+        const { data } = await api.get(`/recovery-reports/${report.id}`);
+        setOpenReport(data);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail?.reason
+        || e.response?.data?.detail || "Finalize failed");
+    }
+  };
+
+  const archive = async (report) => {
+    if (!window.confirm("Archive this report?")) return;
+    try {
+      await api.post(`/recovery-reports/${report.id}/archive`);
+      toast.success("Archived");
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Archive failed");
+    }
+  };
+
+  // First-run guidance.
+  const firstRun = !loading && list.length === 0
+    && !filterType && !filterStatus;
+  return (
+    <div className="space-y-3" data-testid="reports-generator-tab">
+      {/* Generator controls */}
+      <div className="bg-card border border-border rounded p-3 space-y-2"
+        data-testid="generator-controls">
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="text-[10px] uppercase text-slate-500 block">Report type</label>
+            <select data-testid="generator-type"
+              value={reportType}
+              onChange={(e) => setReportType(e.target.value)}
+              className="h-8 px-2 rounded border border-slate-200 text-sm bg-white">
+              {REPORT_TYPES.map((t) =>
+                <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+          {reportType !== "project_health_summary" && (
+            <>
+              <div>
+                <label className="text-[10px] uppercase text-slate-500 block">From</label>
+                <input data-testid="generator-period-start" type="date"
+                  value={periodStart}
+                  onChange={(e) => setPeriodStart(e.target.value)}
+                  className="h-8 px-2 rounded border border-slate-200 text-sm" />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase text-slate-500 block">To</label>
+                <input data-testid="generator-period-end" type="date"
+                  value={periodEnd}
+                  onChange={(e) => setPeriodEnd(e.target.value)}
+                  className="h-8 px-2 rounded border border-slate-200 text-sm" />
+              </div>
+            </>
+          )}
+          <Button data-testid="generator-fire"
+            onClick={generate} disabled={generating || !activeId}
+            className="bg-blue-600 hover:bg-blue-700 h-8 gap-1">
+            {generating
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Sparkles className="h-3.5 w-3.5" />}
+            Generate
+          </Button>
+          <div className="text-[10px] text-slate-500 ml-2">
+            Est. AI cost: ${reportType === "friday_recovery" ? "0.01–0.05" : "$0"}
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-500">
+          {project?.name && <>Project: <b>{project.name}</b>.</>}
+          {" "}Generated reports auto-save as drafts. Finalize when ready
+          to lock + write to the audit chain.
+        </p>
+      </div>
+
+      {/* First-run guidance */}
+      {firstRun && (
+        <div className="bg-blue-50 border border-blue-300 rounded p-4 text-center"
+          data-testid="generator-firstrun">
+          <Sparkles className="h-5 w-5 mx-auto mb-1 text-blue-700" />
+          <div className="font-medium text-blue-900">
+            Generate your first Friday Recovery Report
+          </div>
+          <div className="text-xs text-blue-700 mt-1 mb-2">
+            Unified view of weekly variance + AI recovery suggestions +
+            calibration RAG.
+          </div>
+          <Button onClick={() => {
+            setReportType("friday_recovery");
+            setTimeout(generate, 100);
+          }} disabled={generating || !activeId}
+            data-testid="generator-firstrun-fire"
+            className="bg-blue-600 hover:bg-blue-700 h-8 gap-1">
+            <Sparkles className="h-3.5 w-3.5" />
+            Generate this week
+          </Button>
+        </div>
+      )}
+
+      {/* Filter + list */}
+      <div className="bg-card border border-border rounded p-3 space-y-2"
+        data-testid="generator-list">
+        <div className="flex items-center gap-2 flex-wrap">
+          <select data-testid="generator-filter-type"
+            value={filterType} onChange={(e) => setFilterType(e.target.value)}
+            className="h-8 px-2 rounded border border-slate-200 text-xs bg-white">
+            <option value="">All types</option>
+            {REPORT_TYPES.map((t) =>
+              <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          <select data-testid="generator-filter-status"
+            value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}
+            className="h-8 px-2 rounded border border-slate-200 text-xs bg-white">
+            <option value="">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="finalized">Finalized</option>
+            <option value="archived">Archived</option>
+          </select>
+          <button onClick={load} disabled={loading}
+            className="h-8 px-2 rounded border border-slate-200 bg-white text-xs ml-auto inline-flex items-center gap-1">
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+        {loading && list.length === 0 ? (
+          <div className="space-y-2" data-testid="generator-loading">
+            {[1, 2, 3].map((i) =>
+              <div key={i} className="h-12 bg-slate-100 rounded animate-pulse" />)}
+          </div>
+        ) : list.length === 0 ? (
+          <div data-testid="generator-empty"
+            className="p-6 text-center border border-dashed border-slate-300 rounded text-sm text-slate-500">
+            No reports yet. Click Generate above to create one.
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {list.map((r) =>
+              <ReportRow key={r.id} r={r} onOpen={() => setOpenReport(r)}
+                onFinalize={() => finalize(r)} onArchive={() => archive(r)}
+                onExport={(fmt) => exportFmt(r, fmt)}
+                isAdminOrPm={isAdminOrPm} />
+            )}
+          </div>
+        )}
+      </div>
+
+      {openReport && (
+        <ReportModal report={openReport}
+          onClose={() => setOpenReport(null)}
+          onFinalize={() => finalize(openReport)}
+          onExport={(fmt) => exportFmt(openReport, fmt)}
+          isAdminOrPm={isAdminOrPm} />
+      )}
+    </div>
+  );
+}
+
+
+function ReportRow({ r, onOpen, onFinalize, onArchive, onExport, isAdminOrPm }) {
+  const pillCls = STATUS_PILL[r.status] || "bg-slate-100 text-slate-500 border-slate-200";
+  return (
+    <div data-testid={`report-row-${r.id}`}
+      className="border border-slate-200 rounded p-2 bg-white text-xs flex items-center gap-2 flex-wrap">
+      <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-200 text-[10px]">
+        {r.report_type.replace(/_/g, " ")}
+      </span>
+      <span className={`px-1.5 py-0.5 rounded border text-[10px] ${pillCls}`}>
+        {r.status}
+      </span>
+      {r.is_degraded && (
+        <span className="px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-900 text-[10px] inline-flex items-center gap-0.5">
+          <AlertTriangle className="h-2.5 w-2.5" /> AI degraded
+        </span>
+      )}
+      <span className="flex-1 truncate">
+        <span className="font-medium">{r.audit_op_label || `Report ${r.id.slice(0, 8)}`}</span>
+        {r.period_start && (
+          <span className="text-slate-500 ml-2 font-mono">
+            {r.period_start}{r.period_end && r.period_end !== r.period_start
+              ? ` → ${r.period_end}` : ""}
+          </span>
+        )}
+      </span>
+      <span className="text-slate-400 font-mono text-[10px]">
+        {new Date(r.generated_at).toLocaleString()}
+      </span>
+      <div className="flex items-center gap-1">
+        <button onClick={onOpen} data-testid={`report-open-${r.id}`}
+          className="h-7 px-2 rounded bg-blue-600 text-white text-[10px] inline-flex items-center gap-1 hover:bg-blue-700">
+          <ChevronRight className="h-3 w-3" /> Open
+        </button>
+        {r.status === "draft" && isAdminOrPm && (
+          <button onClick={onFinalize} data-testid={`report-finalize-${r.id}`}
+            className="h-7 px-2 rounded bg-emerald-600 text-white text-[10px] inline-flex items-center gap-1 hover:bg-emerald-700">
+            <Check className="h-3 w-3" /> Finalize
+          </button>
+        )}
+        <div className="relative inline-flex">
+          <button data-testid={`report-export-${r.id}`}
+            onClick={() => onExport("pdf")}
+            disabled={r.status === "draft"}
+            title={r.status === "draft"
+              ? "Finalize before exporting PDF / DOCX"
+              : "Export PDF"}
+            className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+            <Download className="h-3 w-3" /> PDF
+          </button>
+        </div>
+        <button onClick={() => onExport("docx")}
+          disabled={r.status === "draft"}
+          className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+          <Download className="h-3 w-3" /> DOCX
+        </button>
+        <button onClick={() => onExport("json")}
+          className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 hover:bg-slate-50">
+          <Download className="h-3 w-3" /> JSON
+        </button>
+        {isAdminOrPm && r.status !== "archived" && (
+          <button onClick={onArchive} title="Archive"
+            className="h-7 px-1 rounded border border-slate-200 bg-white text-slate-500 text-[10px]">
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 overflow-y-auto"
+      onClick={onClose} data-testid="report-modal">
+      <div className="bg-white max-w-4xl w-full rounded-lg shadow-xl my-8"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-3 border-b border-slate-200 sticky top-0 bg-white">
+          <div className="text-sm font-medium inline-flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-blue-700" />
+            {report.audit_op_label || `Report ${report.id.slice(0, 8)}`}
+            <span className={`px-1.5 py-0.5 rounded border text-[10px] ${
+              STATUS_PILL[report.status] || ""
+            }`}>{report.status}</span>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-4 space-y-4 text-sm">
+          {/* KPIs */}
+          <div>
+            <div className="font-medium text-slate-900 mb-2">Variance Summary</div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {Object.entries(report.variance_summary || {}).map(([k, v]) => (
+                <div key={k} className="bg-slate-50 border border-slate-200 rounded p-2">
+                  <div className="text-[10px] uppercase text-slate-500">
+                    {k.replace(/_/g, " ")}
+                  </div>
+                  <div className="text-lg font-semibold tabular-nums mt-0.5">
+                    {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* AI narrative */}
+          {report.ai_narrative && (
+            <div>
+              <div className="font-medium text-slate-900 mb-2">AI Narrative</div>
+              <div className="bg-blue-50 border border-blue-200 rounded p-3 whitespace-pre-wrap">
+                {report.ai_narrative}
+              </div>
+            </div>
+          )}
+
+          {/* Recovery actions */}
+          {report.recovery_actions?.length > 0 && (
+            <div>
+              <div className="font-medium text-slate-900 mb-2">
+                Recovery Actions ({report.recovery_actions.length})
+              </div>
+              <div className="space-y-1">
+                {report.recovery_actions.map((a, i) => (
+                  <div key={i} className="border border-slate-200 rounded p-2 text-xs bg-white">
+                    <div className="font-medium">{a.action}</div>
+                    <div className="text-slate-500 text-[10px] mt-1">
+                      Owner: {a.owner || "—"} ·
+                      Due: {a.due_date || "—"} ·
+                      Confidence: {a.confidence != null
+                        ? `${Math.round(a.confidence * 100)}%` : "—"}
+                    </div>
+                    {a.rationale && (
+                      <div className="text-slate-600 mt-1 italic">"{a.rationale}"</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Exhibit artifacts */}
+          {report.exhibit_artifacts?.length > 0 && (
+            <div>
+              <div className="font-medium text-slate-900 mb-2">Exhibit Artifacts</div>
+              <div className="flex flex-wrap gap-2 text-xs">
+                {report.exhibit_artifacts.map((a) => (
+                  <button key={a.type} onClick={() => onExport(a.type)}
+                    className="h-7 px-2 rounded border border-slate-200 bg-white inline-flex items-center gap-1 hover:bg-slate-50">
+                    <Download className="h-3 w-3" /> {a.type.toUpperCase()}
+                    <span className="text-[9px] text-slate-400 font-mono">
+                      sha:{a.sha256.slice(0, 8)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Degraded marker */}
+          {report.is_degraded && (
+            <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-900">
+              <b>AI service was degraded during generation.</b>
+              {report.degraded_reason && <> Reason: {report.degraded_reason}</>}
+            </div>
+          )}
+
+          {/* Action bar */}
+          <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+            {report.status === "draft" && isAdminOrPm && (
+              <Button onClick={onFinalize} data-testid="report-modal-finalize"
+                className="bg-emerald-600 hover:bg-emerald-700 h-8 gap-1">
+                <Check className="h-3.5 w-3.5" /> Finalize
+              </Button>
+            )}
+            <button onClick={() => onExport("pdf")}
+              disabled={report.status === "draft"}
+              className="h-8 px-3 rounded border border-slate-300 bg-white text-xs inline-flex items-center gap-1 disabled:opacity-50">
+              <Download className="h-3.5 w-3.5" /> PDF
+            </button>
+            <button onClick={() => onExport("docx")}
+              disabled={report.status === "draft"}
+              className="h-8 px-3 rounded border border-slate-300 bg-white text-xs inline-flex items-center gap-1 disabled:opacity-50">
+              <Download className="h-3.5 w-3.5" /> DOCX
+            </button>
+            <button onClick={() => onExport("json")}
+              className="h-8 px-3 rounded border border-slate-300 bg-white text-xs inline-flex items-center gap-1">
+              <Download className="h-3.5 w-3.5" /> JSON
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 const Stat = ({ label, value }) => (
   <div className="bg-card border border-border rounded-lg p-4">

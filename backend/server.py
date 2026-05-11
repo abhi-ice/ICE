@@ -55,6 +55,7 @@ from routers.resource_leveling_router import router as resource_leveling_router 
 from routers.project_members_router import router as project_members_router  # noqa: E402
 from routers.field_suggestions_router import router as field_suggestions_router  # noqa: E402
 from routers.submittal_sla_router import router as submittal_sla_router  # noqa: E402
+from routers.recovery_reports_router import router as recovery_reports_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -354,6 +355,26 @@ async def _ensure_indexes():
         name="sre_tenant_project_event",
     )
 
+    # Bucket I (2026-05-11) -- recovery_reports indexes. Mirror
+    # migration 014 so fresh deploys get them on lifespan startup.
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("generated_at", -1)],
+        name="rr_tenant_project_generated",
+    )
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("report_type", 1), ("status", 1)],
+        name="rr_tenant_type_status",
+    )
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("project_id", 1),
+         ("report_type", 1), ("idempotency_key", 1)],
+        name="rr_tenant_project_type_idem",
+    )
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("status", 1), ("generated_at", -1)],
+        name="rr_tenant_status_generated",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -553,6 +574,87 @@ async def lifespan(app: FastAPI):
     app.state.submittal_sla_breach_task = _asyncio.create_task(
         _periodic_submittal_breach_detect(),
     )
+
+    # Bucket I (2026-05-11) -- Friday Recovery Report auto-generation.
+    # Every Friday at 21:00 UTC (which is 4-5pm in CONUS time zones)
+    # the BG task scans every active project (skipping CUI projects
+    # per Bucket F gate) and drops a draft friday_recovery report.
+    # PM sees the draft in the Reports Generator tab + can finalize.
+    # Tenants can opt out via tenant.recovery_reports_auto_friday
+    # = false (default True for non-CUI tenants).
+    async def _periodic_friday_recovery():
+        from services.recovery_report import generate_friday_recovery
+        from datetime import datetime, timezone, timedelta
+        # Sleep loop with a 30-min granularity. Each tick checks if
+        # we just crossed Friday 21:00 UTC; if so, fire generation.
+        # last_fire_ts prevents double-fire if the worker restarts
+        # within a 30-min window.
+        last_fire_ts: dict[str, str] = {}  # project_id -> week_key
+        while True:
+            try:
+                await _asyncio.sleep(30 * 60)   # 30 min
+                now = datetime.now(timezone.utc)
+                if now.weekday() != 4:          # Mon=0 ... Fri=4
+                    continue
+                if now.hour < 21:               # Run from 21:00 UTC on
+                    continue
+                week_key = now.strftime("%Y-W%V")
+                db = get_db()
+                # All active tenants.
+                tenants = await db.tenants.find(
+                    {"status": {"$ne": "archived"}},
+                    {"_id": 0, "id": 1,
+                     "recovery_reports_auto_friday": 1},
+                ).to_list(length=None)
+                for t in tenants:
+                    if t.get("recovery_reports_auto_friday") is False:
+                        continue
+                    tid = t.get("id")
+                    if not tid:
+                        continue
+                    # Pull active non-CUI projects.
+                    projects = await db.projects.find(
+                        tenant_filter(tid, {
+                            "status": {"$in": ["active", "mobilization"]},
+                            "is_cui": {"$ne": True},
+                        }),
+                        {"_id": 0, "id": 1, "name": 1},
+                    ).to_list(length=None)
+                    for p in projects:
+                        pid = p.get("id")
+                        if not pid:
+                            continue
+                        key = f"{tid}|{pid}|{week_key}"
+                        if last_fire_ts.get(key):
+                            continue
+                        try:
+                            await generate_friday_recovery(
+                                tenant_id=tid, project_id=pid,
+                                actor_id=None,
+                                request_id=f"friday_auto_{week_key}",
+                                idempotency_key=f"friday_auto_{week_key}",
+                            )
+                            last_fire_ts[key] = week_key
+                        except Exception as exc:
+                            logger.warning(
+                                "Friday auto-gen failed for project %s: %s",
+                                pid, exc,
+                            )
+                logger.info(
+                    "Friday recovery auto-gen tick: tenants=%s",
+                    len(tenants),
+                )
+            except _asyncio.CancelledError:
+                logger.info("Friday auto-gen task cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Friday auto-gen tick failed (non-fatal): %s", exc,
+                )
+
+    app.state.friday_recovery_task = _asyncio.create_task(
+        _periodic_friday_recovery(),
+    )
     yield
     # Cancel the recurring task before closing the DB so the next
     # tick doesn't hit a closed connection.
@@ -568,6 +670,13 @@ async def lifespan(app: FastAPI):
         sla_task.cancel()
         try:
             await sla_task
+        except Exception:
+            pass
+    friday_task = getattr(app.state, "friday_recovery_task", None)
+    if friday_task and not friday_task.done():
+        friday_task.cancel()
+        try:
+            await friday_task
         except Exception:
             pass
     await close_db()
@@ -646,6 +755,7 @@ api_router.include_router(resource_leveling_router)
 api_router.include_router(project_members_router)
 api_router.include_router(field_suggestions_router)
 api_router.include_router(submittal_sla_router)
+api_router.include_router(recovery_reports_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)
