@@ -1,8 +1,11 @@
 // Bucket D Phase 2 -- Photo tray page. Staging area for photos before
 // they're tagged to specific DR events. Grid of tray photos with
 // status filter; click a photo to open the tagging wizard.
-import { useEffect, useState, useCallback } from "react";
-import { Camera, Upload, Filter, Archive, Check, MapPin, Clock, FileImage, Sparkles, X as XIcon } from "lucide-react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import {
+  Camera, Upload, Filter, Archive, Check, MapPin, Clock, FileImage,
+  Sparkles, X as XIcon, AlertTriangle, HelpCircle,
+} from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -10,6 +13,7 @@ import { toast } from "../components/ui/sonner";
 import TagWizard from "../components/photos/TagWizard";
 import AiAnalysisCard from "../components/photos/AiAnalysisCard";
 import { useUrlState } from "../lib/useUrlState";
+import { AiHelpPanel } from "./SystemPages";
 
 // Bucket F Phase 3 -- first-run tooltip dismissable per user via
 // localStorage. Shown the first time a user opens the tray modal
@@ -94,6 +98,17 @@ export default function PhotoTray() {
     } catch (e) { toast.error(e.response?.data?.detail || "Archive failed"); }
   };
 
+  // Bucket F Phase 5 -- show a budget-paused banner whenever any
+  // tray row on this page has status=budget_paused. The pill on
+  // individual cards is easy to miss when scrolling; the banner is
+  // a clear top-of-page signal that AI is currently disabled
+  // tenant-wide and explains what to do.
+  const budgetPausedCount = useMemo(
+    () => rows.filter((r) => r.ai_analysis_status === "budget_paused").length,
+    [rows],
+  );
+  const [helpOpen, setHelpOpen] = useState(false);
+
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see the photo tray.</div>;
 
   return (
@@ -106,13 +121,39 @@ export default function PhotoTray() {
             Untagged + partially-tagged staging. Tag photos to events from here.
           </span>
         </div>
-        <label data-testid="photo-tray-upload" className="block">
-          <span className="h-9 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
-            <Upload className="h-3.5 w-3.5" /> {uploading ? "Uploading…" : "Upload photo"}
-          </span>
-          <input type="file" accept="image/*" onChange={onUpload} className="hidden" />
-        </label>
+        <div className="flex items-center gap-2">
+          <button data-testid="photo-tray-ai-help"
+            onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
+            className="h-9 px-2 rounded border border-slate-300 bg-white text-slate-600 text-sm inline-flex items-center gap-1 hover:bg-slate-50">
+            <HelpCircle className="h-3.5 w-3.5" /> AI help
+          </button>
+          <label data-testid="photo-tray-upload" className="block">
+            <span className="h-9 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
+              <Upload className="h-3.5 w-3.5" /> {uploading ? "Uploading…" : "Upload photo"}
+            </span>
+            <input type="file" accept="image/*" onChange={onUpload} className="hidden" />
+          </label>
+        </div>
       </header>
+
+      {budgetPausedCount > 0 && (
+        <div data-testid="tray-budget-paused-banner"
+          className="mb-4 bg-rose-50 border border-rose-300 rounded p-3 text-sm text-rose-900 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <div className="font-medium">
+              AI analyses paused — monthly budget reached.
+            </div>
+            <div className="text-xs mt-0.5">
+              {budgetPausedCount} photo(s) on this page are queued in
+              <code className="mx-1 px-1 bg-rose-100 rounded">budget_paused</code>
+              state. They'll auto-process when the budget resets on the 1st,
+              or admins can raise the cap in{" "}
+              <a href="/settings" className="underline">Settings → AI Usage</a>.
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <Filter className="h-4 w-4 text-slate-500 mb-2" />
@@ -184,6 +225,10 @@ export default function PhotoTray() {
           tray={openDetail} projectId={activeId}
           onTagged={() => { load(); setOpenDetail(null); }} />
       )}
+
+      {/* Bucket F Phase 5 -- in-app AI help. Same panel renders on the
+          AI Usage settings tab; importing keeps copy consistent. */}
+      {helpOpen && <AiHelpPanel onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }

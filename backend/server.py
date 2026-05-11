@@ -272,6 +272,20 @@ async def _ensure_indexes():
         name="pal_locked_at_ttl",
     )
 
+    # Bucket F Phase 5 (2026-05-11) -- ai_call_timings TTL + lookup
+    # indexes. Timing rows feed the P50/P95/P99 dashboard. TTL retains
+    # 90 days; that's enough for trend lines but not so much that the
+    # collection bloats.
+    await db.ai_call_timings.create_index(
+        [("tenant_id", 1), ("recorded_at", -1)],
+        name="act_tenant_recorded",
+    )
+    await db.ai_call_timings.create_index(
+        [("recorded_at", 1)],
+        expireAfterSeconds=90 * 24 * 3600,  # 90 days
+        name="act_recorded_ttl",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

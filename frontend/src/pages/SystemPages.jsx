@@ -1,7 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import api from "../lib/api";
-import { ShieldCheck, Bot, FileText, History, ShoppingBasket, FileBarChart, Settings as SettingsIcon, MapPin } from "lucide-react";
+import {
+  ShieldCheck, Bot, FileText, History, ShoppingBasket, FileBarChart,
+  Settings as SettingsIcon, MapPin, Sparkles, AlertTriangle,
+  RefreshCw, Loader2, ShieldAlert, Activity, Check, X,
+} from "lucide-react";
 import { useProjects } from "../lib/projects";
+import { toast } from "../components/ui/sonner";
 
 // Bucket H Phase 5 (2026-05-08) -- audit op filter dropdown options.
 // Grouped for legibility; "(all)" sentinel left as empty string so the
@@ -46,6 +51,24 @@ const AUDIT_OP_GROUPS = [
     label: "Auth + admin",
     ops: ["ADMIN_PASSWORD_RESET", "OPERATOR_PASSWORD_RESET",
            "LINKAGE_FIELD_MIGRATED", "RESET_BOUNDARY"],
+  },
+  // Bucket F Phase 5 (2026-05-11) -- Photo AI op family. Surfacing
+  // these in the filter dropdown lets compliance + admins audit AI
+  // activity without grepping the raw audit feed.
+  {
+    label: "Photo AI",
+    ops: [
+      "PHOTO_AI_ANALYZED",
+      "PHOTO_AI_ANALYSIS_FAILED",
+      "PHOTO_AI_OVERRIDDEN",
+      "PHOTO_AI_REJECTED",
+      "PHOTO_AI_BUDGET_REACHED",
+      "PHOTO_AI_BUDGET_UPDATED",
+      "PHOTO_AI_CUI_BLOCKED",
+      "PHOTO_AI_CUI_COMPLIANCE_REPORT_PULLED",
+      "PHOTO_AI_BACKFILL",
+      "PHOTO_AI_OVERRIDE_SNAPSHOT_BACKFILL",
+    ],
   },
 ];
 
@@ -220,13 +243,39 @@ export function Marketplace() {
   );
 }
 
+// Bucket F Phase 5 -- Settings page now has tabs. AI Usage tab surfaces
+// the cost dashboard, monthly budget controls, performance percentiles,
+// and the CUI compliance report (admin only).
 export function Settings() {
   const [tenant, setTenant] = useState(null);
+  const [tab, setTab] = useState("general");
   useEffect(() => { api.get("/tenants/current").then(({ data }) => setTenant(data)); }, []);
+  const role = (tenant?.user_role || "").toLowerCase();
+  // The /tenants/current endpoint doesn't include the caller's role
+  // explicitly today; we fall back to checking the AI budget endpoint
+  // (admin-only). If that 200s, the user is admin.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    api.get("/tenants/current/ai-budget")
+      .then(() => setIsAdmin(true))
+      .catch(() => setIsAdmin(false));
+  }, []);
   return (
     <div data-testid="settings-page" className="space-y-4">
-      <div className="flex items-center gap-2"><SettingsIcon className="h-5 w-5" /><h1 className="text-2xl font-semibold">Settings</h1></div>
-      {tenant && (
+      <div className="flex items-center gap-2">
+        <SettingsIcon className="h-5 w-5" />
+        <h1 className="text-2xl font-semibold">Settings</h1>
+      </div>
+
+      <div className="flex border-b border-slate-200 text-sm">
+        <SettingsTab tab="general" active={tab} onClick={setTab} label="General" />
+        {isAdmin && (
+          <SettingsTab tab="ai_usage" active={tab} onClick={setTab}
+            label="AI Usage" icon={Sparkles} testid="settings-tab-ai-usage" />
+        )}
+      </div>
+
+      {tab === "general" && tenant && (
         <div className="bg-card border border-border rounded-lg p-4 space-y-2 text-sm">
           <div><span className="text-muted-foreground">Legal name:</span> <b>{tenant.legal_name}</b></div>
           <div><span className="text-muted-foreground">Display name:</span> {tenant.display_name}</div>
@@ -238,6 +287,513 @@ export function Settings() {
           <div><span className="text-muted-foreground">Status:</span> <span className="pill pill-green">{tenant.status}</span></div>
         </div>
       )}
+
+      {tab === "ai_usage" && isAdmin && <AiUsageTab />}
+      {tab === "ai_usage" && !isAdmin && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-900">
+          AI Usage settings are admin-only.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsTab({ tab, active, onClick, label, icon: Icon, testid }) {
+  const isActive = tab === active;
+  return (
+    <button data-testid={testid || `settings-tab-${tab}`}
+      onClick={() => onClick(tab)}
+      className={`px-3 py-2 -mb-px border-b-2 inline-flex items-center gap-1.5 ${
+        isActive
+          ? "border-blue-600 text-blue-900 font-medium"
+          : "border-transparent text-slate-600 hover:text-slate-900"
+      }`}>
+      {Icon && <Icon className="h-3.5 w-3.5" />} {label}
+    </button>
+  );
+}
+
+// =====================================================================
+// AI Usage tab
+// =====================================================================
+function AiUsageTab() {
+  const [budget, setBudget] = useState(null);
+  const [dashboard, setDashboard] = useState(null);
+  const [timings, setTimings] = useState(null);
+  const [compliance, setCompliance] = useState(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [days, setDays] = useState(30);
+  const [loading, setLoading] = useState(false);
+  const [editingBudget, setEditingBudget] = useState(false);
+
+  const loadAll = async () => {
+    setLoading(true);
+    try {
+      const [b, d, t] = await Promise.all([
+        api.get("/tenants/current/ai-budget"),
+        api.get("/tenants/current/photo-ai-cost-dashboard", { params: { days } }),
+        api.get("/tenants/current/photo-ai-timings", { params: { days: Math.min(days, 90) } }),
+      ]);
+      setBudget(b.data);
+      setDashboard(d.data);
+      setTimings(t.data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load AI usage data");
+    } finally {
+      setLoading(false);
+    }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadAll(); }, [days]);
+
+  const loadCompliance = async () => {
+    try {
+      const { data } = await api.get(
+        "/tenants/current/cui-compliance-report", { params: { days: 90 } },
+      );
+      setCompliance(data);
+      toast.success(
+        data.is_clean
+          ? "Compliance report: clean."
+          : `Compliance report: ${data.compliance_flag_count} flag(s) need review.`,
+      );
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load compliance report");
+    }
+  };
+
+  // Posture banner: 100% -> rose pause banner, 80%+ -> amber warning,
+  // otherwise nothing.
+  const pct = budget?.pct_consumed ?? 0;
+  const paused = budget && !budget.budget_ok;
+  return (
+    <div className="space-y-4" data-testid="settings-ai-usage">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-blue-700" />
+          <h2 className="text-lg font-medium">Photo AI</h2>
+          <button data-testid="ai-help-open" onClick={() => setHelpOpen(true)}
+            className="ml-2 text-xs text-blue-700 hover:underline inline-flex items-center gap-1">
+            <FileText className="h-3 w-3" /> How does this work?
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] uppercase text-slate-500">Window</label>
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+          </select>
+          <button onClick={loadAll} disabled={loading}
+            data-testid="ai-usage-refresh"
+            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs inline-flex items-center gap-1 hover:bg-slate-50">
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Budget posture banner */}
+      {paused && (
+        <div data-testid="ai-budget-paused-banner"
+          className="bg-rose-50 border border-rose-300 rounded p-3 text-sm text-rose-900 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium">AI analyses paused.</div>
+            <div className="text-xs mt-0.5">
+              {budget?.reason === "tenant_ai_disabled"
+                ? "AI is disabled for this tenant. Toggle it back on below."
+                : "Monthly budget reached. Raise the cap below or wait for the 1st."}
+              {budget?.reset_at && (
+                <> Resets {new Date(budget.reset_at).toLocaleDateString()}.</>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {!paused && pct >= 80 && (
+        <div data-testid="ai-budget-warning-banner"
+          className="bg-amber-50 border border-amber-300 rounded p-3 text-sm text-amber-900 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium">Approaching monthly cap ({pct}%).</div>
+            <div className="text-xs mt-0.5">
+              {budget?.remaining_usd !== undefined && `$${budget.remaining_usd?.toFixed(2)} remaining of `}
+              ${budget?.monthly_limit_usd?.toFixed?.(2) || budget?.monthly_limit?.toFixed?.(2) || "—"}.
+              Consider raising the cap before new analyses start pausing.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Budget controls */}
+      <div className="bg-card border border-border rounded p-4 space-y-3">
+        <div className="text-sm font-medium">Monthly budget</div>
+        {budget && (
+          <BudgetControls budget={budget} editing={editingBudget}
+            setEditing={setEditingBudget} onSaved={loadAll} />
+        )}
+      </div>
+
+      {/* Cost dashboard */}
+      {dashboard && <CostDashboardCard dashboard={dashboard} />}
+
+      {/* Performance percentiles */}
+      {timings && <TimingPercentilesCard timings={timings} />}
+
+      {/* CUI compliance */}
+      <div className="bg-card border border-border rounded p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium inline-flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-700" />
+            CUI compliance report
+          </div>
+          <button onClick={loadCompliance} data-testid="ai-cui-report-pull"
+            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs hover:bg-slate-50">
+            Pull report (last 90 days)
+          </button>
+        </div>
+        {compliance ? (
+          <CuiComplianceReport report={compliance} />
+        ) : (
+          <div className="text-xs text-slate-500">
+            Generates a compliance roll-up of CUI projects, their tray AI
+            activity, and PHOTO_AI_CUI_BLOCKED audit entries — for federal
+            audit evidence. Pulling the report writes an audit op recording
+            who looked at it and when.
+          </div>
+        )}
+      </div>
+
+      {helpOpen && <AiHelpPanel onClose={() => setHelpOpen(false)} />}
+    </div>
+  );
+}
+
+function BudgetControls({ budget, editing, setEditing, onSaved }) {
+  const [val, setVal] = useState(
+    Number(budget?.monthly_limit_usd ?? budget?.monthly_limit ?? 100),
+  );
+  const [enabled, setEnabled] = useState(Boolean(budget?.ai_enabled));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setVal(Number(budget?.monthly_limit_usd ?? budget?.monthly_limit ?? 100));
+    setEnabled(Boolean(budget?.ai_enabled));
+  }, [budget]);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.patch("/tenants/current/ai-budget", {
+        ai_enabled: enabled,
+        ai_monthly_budget_usd: Number(val),
+      });
+      toast.success("Budget updated");
+      setEditing(false);
+      onSaved?.();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const pct = Number(budget?.pct_consumed ?? 0);
+  const barColor =
+    pct >= 100 ? "bg-rose-500"
+    : pct >= 80 ? "bg-amber-500"
+    : "bg-emerald-500";
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <KpiTile label="Spend this month" value={`$${(budget?.current_spend ?? 0).toFixed(2)}`} />
+        <KpiTile label="Cap" value={`$${(budget?.monthly_limit_usd ?? budget?.monthly_limit ?? 0).toFixed(2)}`} />
+        <KpiTile label="Remaining" value={`$${(budget?.remaining_usd ?? 0).toFixed(2)}`} />
+        <KpiTile label="% consumed" value={`${pct}%`}
+          tone={pct >= 100 ? "rose" : pct >= 80 ? "amber" : "emerald"} />
+      </div>
+      <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+        <div className={`h-full ${barColor} transition-all`}
+          style={{ width: `${Math.min(100, pct)}%` }}
+          data-testid="ai-budget-bar" />
+      </div>
+      <div className="text-[10px] text-slate-500">
+        Resets {budget?.reset_at ? new Date(budget.reset_at).toLocaleDateString() : "first of next month"}.
+        Spend tracks the actual Anthropic input + output token cost; pHash
+        reuse never adds to spend.
+      </div>
+      {!editing ? (
+        <button data-testid="ai-budget-edit"
+          onClick={() => setEditing(true)}
+          className="h-8 px-3 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">
+          Edit
+        </button>
+      ) : (
+        <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-2">
+          <div>
+            <label className="text-[10px] uppercase text-slate-500 block">Monthly cap (USD)</label>
+            <input data-testid="ai-budget-input" type="number" min="0" step="10"
+              value={val} onChange={(e) => setVal(e.target.value)}
+              className="h-8 px-2 rounded border border-slate-300 text-sm w-32" />
+          </div>
+          <div>
+            <label className="inline-flex items-center gap-2 text-xs">
+              <input data-testid="ai-budget-enabled" type="checkbox"
+                checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+              AI enabled (master kill switch)
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={save} disabled={busy} data-testid="ai-budget-save"
+              className="h-8 px-3 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50">
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button onClick={() => setEditing(false)} disabled={busy}
+              className="h-8 px-3 rounded border border-slate-300 bg-white text-xs hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiTile({ label, value, tone }) {
+  const toneCls =
+    tone === "rose" ? "text-rose-700"
+    : tone === "amber" ? "text-amber-700"
+    : tone === "emerald" ? "text-emerald-700"
+    : "text-slate-700";
+  return (
+    <div className="border border-slate-200 rounded p-2 bg-white">
+      <div className="text-[10px] uppercase text-slate-500">{label}</div>
+      <div className={`text-base font-semibold tabular-nums mt-0.5 ${toneCls}`}>{value}</div>
+    </div>
+  );
+}
+
+function CostDashboardCard({ dashboard }) {
+  const days = dashboard.window_days;
+  const perDay = dashboard.per_day || [];
+  const maxUsd = Math.max(0.001, ...perDay.map((d) => d.usd || 0));
+  return (
+    <div className="bg-card border border-border rounded p-4 space-y-3">
+      <div className="text-sm font-medium">Cost dashboard ({days}d)</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <KpiTile label="Analyses" value={dashboard.analyses_complete} />
+        <KpiTile label="pHash reused" value={dashboard.phash_reused_count} tone="emerald" />
+        <KpiTile label="Tokens (in/out)" value={`${dashboard.input_tokens_total} / ${dashboard.output_tokens_total}`} />
+        <KpiTile label="Est. cost" value={`$${(dashboard.estimated_cost_usd || 0).toFixed(2)}`} />
+      </div>
+      {perDay.length > 0 && (
+        <div data-testid="ai-cost-per-day"
+          className="border border-slate-200 rounded p-2 bg-white">
+          <div className="text-[10px] uppercase text-slate-500 mb-2">Spend per day</div>
+          <div className="flex items-end gap-0.5 h-20">
+            {perDay.map((d) => (
+              <div key={d.date} title={`${d.date}: $${d.usd.toFixed(3)} (${d.analyses} analyses)`}
+                className="flex-1 bg-blue-500/70 hover:bg-blue-700 transition-colors min-w-[2px]"
+                style={{ height: `${(d.usd / maxUsd) * 100}%` }} />
+            ))}
+          </div>
+          <div className="flex justify-between text-[9px] text-slate-400 mt-1">
+            <span>{perDay[0]?.date}</span>
+            <span>{perDay[perDay.length - 1]?.date}</span>
+          </div>
+        </div>
+      )}
+      {dashboard.per_model?.length > 0 && (
+        <div data-testid="ai-cost-per-model">
+          <div className="text-[10px] uppercase text-slate-500 mb-1">By model version</div>
+          <div className="space-y-1">
+            {dashboard.per_model.map((m) => (
+              <div key={m.model} className="flex items-center justify-between text-xs border-b border-slate-100 py-1">
+                <code className="text-slate-700">{m.model}</code>
+                <div className="flex items-center gap-3 text-slate-600">
+                  <span>{m.analyses} analyses</span>
+                  <span className="font-mono">${m.usd.toFixed(3)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {dashboard.top_cost_trays?.length > 0 && (
+        <details data-testid="ai-cost-top-trays" className="text-xs">
+          <summary className="cursor-pointer text-slate-700 hover:underline">
+            Top {dashboard.top_cost_trays.length} most-expensive trays
+          </summary>
+          <ul className="mt-1 space-y-0.5">
+            {dashboard.top_cost_trays.map((t) => (
+              <li key={t.tray_id} className="flex justify-between border-b border-slate-100 py-1">
+                <code className="text-slate-600 truncate max-w-[260px]">{t.tray_id}</code>
+                <span className="font-mono">${t.usd.toFixed(4)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function TimingPercentilesCard({ timings }) {
+  const fmt = (ms) => ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
+  return (
+    <div className="bg-card border border-border rounded p-4 space-y-2"
+      data-testid="ai-timings-card">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium inline-flex items-center gap-1.5">
+          <Activity className="h-3.5 w-3.5 text-blue-700" />
+          Vision call performance ({timings.window_days}d)
+        </div>
+        <div className="text-[10px] text-slate-500">
+          n = {timings.sample_size}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <KpiTile label="P50" value={fmt(timings.p50_ms)} />
+        <KpiTile label="P95" value={fmt(timings.p95_ms)} tone={timings.p95_ms > 15000 ? "amber" : undefined} />
+        <KpiTile label="P99" value={fmt(timings.p99_ms)} tone={timings.p99_ms > 25000 ? "rose" : undefined} />
+        <KpiTile label="Max" value={fmt(timings.max_ms)} />
+      </div>
+      {timings.by_status && Object.keys(timings.by_status).length > 0 && (
+        <div className="text-[10px] uppercase text-slate-500 mt-2">By status</div>
+      )}
+      {timings.by_status && (
+        <div className="space-y-0.5 text-xs">
+          {Object.entries(timings.by_status).map(([s, v]) => (
+            <div key={s} className="flex justify-between border-b border-slate-100 py-0.5">
+              <span className="text-slate-700">{s}</span>
+              <span className="font-mono text-slate-600">{v.n} calls · P50 {fmt(v.p50_ms)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CuiComplianceReport({ report }) {
+  return (
+    <div className="space-y-2 text-xs" data-testid="ai-cui-report">
+      <div className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
+        report.is_clean
+          ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+          : "bg-rose-100 text-rose-900 border border-rose-300"
+      }`}>
+        {report.is_clean
+          ? <><Check className="h-3 w-3" /> Clean — no violations</>
+          : <><ShieldAlert className="h-3 w-3" /> {report.compliance_flag_count} flag(s)</>}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KpiTile label="CUI projects" value={report.cui_project_count} />
+        <KpiTile label="CUI blocks enforced" value={report.cui_blocks_enforced_count} tone="emerald" />
+        <KpiTile label="Non-CUI completes" value={report.non_cui_completes_in_window} />
+        <KpiTile label="Generated" value={new Date(report.generated_at).toLocaleString()} />
+      </div>
+      {report.compliance_flags?.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-rose-700 hover:underline">
+            Show {report.compliance_flags.length} flag(s)
+          </summary>
+          <ul className="mt-1 space-y-0.5">
+            {report.compliance_flags.slice(0, 30).map((f) => (
+              <li key={f.tray_id} className={`border-l-2 pl-2 py-0.5 ${
+                f.severity === "violation" ? "border-rose-400" : "border-amber-400"
+              }`}>
+                <code className="text-slate-600">{f.tray_id}</code>
+                {" · "}status={f.status}
+                {f.reason && <> · reason={f.reason}</>}
+                <span className="ml-1 text-[9px] uppercase text-slate-500">[{f.severity}]</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// In-app help panel. Surfaces from the AI Usage tab + the PhotoTray
+// "?" button. Single source of truth so help copy doesn't drift.
+export function AiHelpPanel({ onClose }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-end md:items-center justify-center p-4"
+      onClick={onClose} data-testid="ai-help-panel">
+      <div className="bg-white max-w-2xl w-full rounded-lg shadow-xl max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-3 border-b border-slate-200 sticky top-0 bg-white">
+          <div className="text-sm font-medium inline-flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-blue-700" />
+            How Photo AI works
+          </div>
+          <button onClick={onClose}
+            className="text-slate-400 hover:text-slate-700"
+            data-testid="ai-help-close">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-4 text-sm space-y-3 text-slate-700">
+          <section>
+            <div className="font-medium text-slate-900">What it does</div>
+            <p>
+              Every photo uploaded to the tray gets analyzed by Claude Sonnet 4.5
+              Vision. The AI suggests a photo class (progress / discovery / damage /
+              quality), a caption, an event type (delay / RFI / QC issue / safety
+              event), a trade, and any safety concerns it spots.
+            </p>
+          </section>
+          <section>
+            <div className="font-medium text-slate-900">Privacy + CUI</div>
+            <p>
+              Projects flagged <code>is_cui=true</code> never have their photos sent
+              to AI. The CUI check fires before any image leaves the server, and a
+              <code className="px-1 mx-0.5 bg-slate-100 rounded">PHOTO_AI_CUI_BLOCKED</code>
+              audit row is written for proof of enforcement. The kill switches:
+              tenant <code>ai_enabled</code>, project <code>ai_enabled</code>,
+              and project <code>is_cui</code>. Any one of those = no AI call.
+            </p>
+          </section>
+          <section>
+            <div className="font-medium text-slate-900">Cost</div>
+            <p>
+              Pricing tracks Anthropic actual: $3 per 1M input tokens, $15 per 1M output
+              tokens. A typical photo costs ≈ $0.005–$0.01. pHash dedup means re-uploads
+              of the same image (common on construction sites — same pour, different
+              angles) reuse a prior analysis for zero cost.
+            </p>
+          </section>
+          <section>
+            <div className="font-medium text-slate-900">Budget</div>
+            <p>
+              Set a monthly cap; when spend hits 80% you get a warning banner; at 100%
+              new analyses pause until the 1st (or until you raise the cap). pHash
+              reuses never count against the cap. The budget resets on the 1st of
+              every month automatically.
+            </p>
+          </section>
+          <section>
+            <div className="font-medium text-slate-900">Override / Reject</div>
+            <p>
+              When the AI gets it wrong, override the specific fields with a reason
+              (5+ chars) or reject the whole suggestion (10+ chars). Both feed the
+              <code className="px-1 mx-0.5 bg-slate-100 rounded">photo_ai_calibration</code>
+              collection so future fine-tuning can learn from your corrections.
+              The original AI suggestion stays on the row for evidence.
+            </p>
+          </section>
+          <section>
+            <div className="font-medium text-slate-900">Performance</div>
+            <p>
+              Single-photo analysis takes 3–8 seconds end-to-end. The dashboard
+              tracks P50/P95/P99 so operators can spot regressions. Vision calls
+              time out at 30 seconds; failed calls retry once with a 5-second
+              backoff before marking the photo failed.
+            </p>
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

@@ -9,12 +9,13 @@ import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
-import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload, Sparkles, Edit3 } from "lucide-react";
+import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload, Sparkles, Edit3, HelpCircle } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
 import { getToken, getUser } from "../lib/auth";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { localTodayISO } from "../lib/dateUtil";
+import { AiHelpPanel } from "./SystemPages";
 
 const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
                         "safety", "coordination", "closeout"];
@@ -94,6 +95,13 @@ export default function Photos() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [activeId, filters]);
 
+  // Bucket F Phase 5 -- detect budget_paused state from the per-
+  // project AI stats. Surfaces a page-level banner so users don't
+  // have to drill into individual tray photos to understand why
+  // their new uploads aren't being analyzed.
+  const budgetPausedCount = (aiStats?.by_status?.budget_paused) || 0;
+  const [helpOpen, setHelpOpen] = useState(false);
+
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see photos.</div>;
 
   return (
@@ -107,6 +115,11 @@ export default function Photos() {
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
         <div className="flex items-center gap-2">
+          <button data-testid="photos-ai-help"
+            onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
+            className="h-9 px-2 rounded border border-slate-300 bg-white text-slate-600 text-sm inline-flex items-center gap-1 hover:bg-slate-50">
+            <HelpCircle className="h-3.5 w-3.5" /> AI help
+          </button>
           {/* Bucket D Fix G [3/4] -- "+ New" routes to today's DR's
               photos panel (consistent with all other galleries). The
               upload+tag flow lives on the Photo Tray page; the link
@@ -120,6 +133,24 @@ export default function Photos() {
           </Link>
         </div>
       </header>
+
+      {budgetPausedCount > 0 && (
+        <div data-testid="photos-budget-paused-banner"
+          className="mb-4 bg-rose-50 border border-rose-300 rounded p-3 text-sm text-rose-900 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium">
+              AI analyses paused — monthly budget reached.
+            </div>
+            <div className="text-xs mt-0.5">
+              {budgetPausedCount} tray photo(s) on this project are queued
+              waiting for the budget reset (1st of next month) or for an admin
+              to raise the cap in{" "}
+              <Link to="/settings" className="underline">Settings → AI Usage</Link>.
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 mb-4">
         <strong>Gallery view.</strong> Each card is a tag connecting a photo to one event on
@@ -178,6 +209,9 @@ export default function Photos() {
           {photos.map((p) => <PhotoCard key={p.id} photo={p} projectId={activeId} />)}
         </div>
       )}
+
+      {/* Bucket F Phase 5 -- in-app AI help (same panel as Settings tab). */}
+      {helpOpen && <AiHelpPanel onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }
@@ -204,22 +238,28 @@ function PhotoCard({ photo, projectId }) {
             <AlertTriangle className="h-2.5 w-2.5" />
           </span>
         )}
-        {/* Bucket F Phase 3 -- AI lineage indicator. Sparkles icon
-            on photos created via an AI suggestion. Hover shows the
-            confidence captured at tag time. Override pencil shown
-            when the suggestion was modified at tag-time -- the
-            ai_user_overridden flag lives on the tray row, not the
-            tag row, so we approximate via confidence vs class diff. */}
+        {/* Bucket F Phase 3 + Phase 5 pull-forward Risk #1 -- AI
+            lineage indicator. Sparkles icon on photos created via an
+            AI suggestion. user_overridden_at_tag_time (denormalized
+            snapshot at tag time per migration 011) determines whether
+            the override pencil renders, so the indicator stays
+            accurate even if the tray row is later edited or
+            archived. Hover shows confidence captured at tag time. */}
         {photo.created_via_ai_suggestion && (
           <span data-testid={`photo-ai-${photo.id}`}
             title={
-              `AI-suggested tag` +
-              (photo.ai_confidence_at_tag_time != null
-                ? ` (${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence)`
-                : "")
+              (photo.user_overridden_at_tag_time
+                ? `AI suggestion (overridden at tag time)`
+                : `AI-suggested tag`)
+              + (photo.ai_confidence_at_tag_time != null
+                  ? ` · ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
+                  : "")
             }
             className="absolute top-1 right-6 bg-blue-600 text-white rounded px-1 py-0.5 text-[8px] inline-flex items-center gap-0.5">
             <Sparkles className="h-2.5 w-2.5" /> AI
+            {photo.user_overridden_at_tag_time && (
+              <Edit3 className="h-2.5 w-2.5" />
+            )}
           </span>
         )}
       </div>

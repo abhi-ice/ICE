@@ -1581,6 +1581,13 @@ class Photo(ReadModel):
     created_via_ai_suggestion: bool = False
     ai_suggestion_id: Optional[str] = None
     ai_confidence_at_tag_time: Optional[float] = Field(default=None, ge=0, le=1)
+    # Bucket F Phase 5 (2026-05-11) -- pull-forward from Phase 3 Risk #1.
+    # Snapshots tray.ai_user_overridden AT the moment of tag creation so
+    # the gallery indicator stays accurate even if the tray row is later
+    # archived or its override state changes. Without this snapshot the
+    # "AI badge" on a tagged photo can drift from the truth as users
+    # re-touch suggestions.
+    user_overridden_at_tag_time: bool = False
 
 
 # ============================================================
@@ -1699,6 +1706,9 @@ class PhotoTagCreate(StrictModel):
     created_via_ai_suggestion: bool = False
     ai_suggestion_id: Optional[str] = None
     ai_confidence_at_tag_time: Optional[float] = Field(default=None, ge=0, le=1)
+    # Bucket F Phase 5 -- snapshot of tray.ai_user_overridden at tag
+    # time. Sets the user_overridden_at_tag_time field on Photo (above).
+    user_overridden_at_tag_time: bool = False
 
 
 # ---------- Work items / field issues ----------

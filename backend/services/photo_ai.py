@@ -93,6 +93,194 @@ BATCH_THROTTLE_MS = 200
 RETRY_DELAY_SECONDS = 5
 MAX_RETRIES = 1                    # one retry, then mark failed
 
+# Bucket F Phase 5 (2026-05-11) -- performance + observability knobs.
+# All values are constants so smoke tests can verify caching behavior
+# without runtime config plumbing.
+IMAGE_CACHE_TTL_SECONDS = 60       # storage blob cache for repeat reads
+STATS_CACHE_TTL_SECONDS = 300      # 5min cache on get_analysis_stats
+TIMING_RETENTION_DAYS = 90         # ai_call_timings TTL window
+
+# In-process LRU-ish caches. Single-worker assumption; multi-worker
+# deploys lose some hits but never serve stale data because every entry
+# carries an absolute expiry timestamp.
+_image_cache: dict[str, tuple[float, bytes, str]] = {}
+_image_cache_max = 64              # bounded to prevent RSS bloat
+_stats_cache: dict[str, tuple[float, dict]] = {}
+_stats_cache_max = 32
+
+# Verbose failure-reason labels. Service code stamps the short reason
+# code on the tray row (image_too_large, vision_timeout, etc.); the
+# verbose label is returned in API responses so the UI can render
+# specific user-facing copy without hard-coding the mapping.
+FAILURE_REASON_VERBOSE = {
+    "image_too_large":
+        "The image exceeds the 20 MB upload limit. Resize or compress before retrying.",
+    "not_an_image":
+        "The file isn't a recognized image format. HEIC requires iOS support to be enabled.",
+    "image_conversion_failed":
+        "Pillow couldn't decode the image bytes (corrupted file or unsupported codec).",
+    "storage_unavailable":
+        "Couldn't read the photo bytes from storage. Check S3 / object-store connectivity.",
+    "vision_api_error":
+        "The Anthropic Vision API returned an error. The retry queue will pick this up.",
+    "vision_timeout":
+        "The Vision API call exceeded the 30-second timeout. Site network may be unstable.",
+    "vision_malformed_json":
+        "The AI response wasn't valid JSON. Likely a prompt regression -- file a bug.",
+    "tray_deleted_mid_flight":
+        "Photo was deleted from the tray during analysis. Nothing to retry.",
+    "tray_not_found":
+        "Tray row not found.",
+    "tenant_not_found":
+        "Tenant not found.",
+    "tenant_ai_disabled":
+        "AI is disabled for this tenant. An admin can re-enable in Settings > AI Usage.",
+    "project_ai_disabled":
+        "AI is disabled for this project. Toggle via the project settings page.",
+    "cui_blocked":
+        "Project is flagged CUI; photos are never sent to AI per federal compliance.",
+    "budget_exceeded":
+        "Monthly AI budget hit. New analyses will resume on the 1st or when an admin raises the cap.",
+    "pre_ai_upload":
+        "This photo was uploaded before AI shipped. No analysis was attempted.",
+    "another_caller_in_flight":
+        "Another worker is analyzing this photo right now.",
+}
+
+
+def verbose_failure_reason(code: Optional[str]) -> str:
+    """Returns the verbose label for a tray.ai_failure_reason code.
+    Falls back to the code itself if unknown so the UI always has
+    something to render."""
+    if not code:
+        return "No reason recorded."
+    return FAILURE_REASON_VERBOSE.get(code, f"Unknown failure code: {code}")
+
+
+async def _evict_image_cache_if_needed() -> None:
+    """Bounded eviction. Drops entries with the oldest expiry when over
+    the size cap; cheap O(n) scan since the cap is tiny."""
+    if len(_image_cache) <= _image_cache_max:
+        return
+    # Sort by expiry ascending, drop the oldest half.
+    items = sorted(_image_cache.items(), key=lambda kv: kv[1][0])
+    for key, _ in items[: max(1, len(items) // 2)]:
+        _image_cache.pop(key, None)
+
+
+async def cached_get_object(storage_key: str) -> tuple[bytes, str]:
+    """Wrap services.storage.get_object with a 60s TTL cache. Repeat
+    reads of the same blob (e.g. tray detail open + analyze + override
+    flow on the same photo within a minute) avoid a network round-trip.
+
+    Cache key = storage_key. Returns (blob_bytes, content_type)."""
+    import time
+    now = time.monotonic()
+    cached = _image_cache.get(storage_key)
+    if cached and cached[0] > now:
+        return cached[1], cached[2]
+    from services.storage import get_object
+    blob, content_type = await asyncio.to_thread(get_object, storage_key)
+    _image_cache[storage_key] = (
+        now + IMAGE_CACHE_TTL_SECONDS, blob, content_type,
+    )
+    await _evict_image_cache_if_needed()
+    return blob, content_type
+
+
+async def record_call_timing(
+    *, tenant_id: str, project_id: Optional[str], tray_id: str,
+    elapsed_ms: int, model_version: str, status: str,
+    input_tokens: int = 0, output_tokens: int = 0,
+) -> None:
+    """Append a single timing row to ai_call_timings. Used by
+    analyze_photo to feed the P50/P95/P99 dashboard. Bounded retention
+    via the TTL index declared in server.py _ensure_indexes()."""
+    db = get_db()
+    try:
+        await db.ai_call_timings.insert_one({
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "tray_id": tray_id,
+            "elapsed_ms": int(elapsed_ms),
+            "model_version": model_version,
+            "status": status,
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "recorded_at": datetime.now(timezone.utc),
+        })
+    except Exception as exc:
+        # Timing collection is best-effort; never block the analyze call.
+        log.warning("ai timing record failed (%s): %s", tray_id, exc)
+
+
+def _percentile(sorted_vals: list[int], pct: float) -> int:
+    """Linear-interpolation percentile over a pre-sorted int list.
+    Returns 0 on empty input so the dashboard renders a clean zero
+    rather than blowing up."""
+    if not sorted_vals:
+        return 0
+    if len(sorted_vals) == 1:
+        return int(sorted_vals[0])
+    k = (len(sorted_vals) - 1) * pct
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = k - lo
+    return int(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac)
+
+
+async def get_call_timing_percentiles(
+    *, tenant_id: str, days: int = 7,
+) -> dict:
+    """Roll up ai_call_timings into P50 / P95 / P99 over the window
+    and split by model_version + status. Used by the cost dashboard."""
+    if days < 1:
+        days = 1
+    if days > 90:
+        days = 90
+    db = get_db()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cursor = db.ai_call_timings.find(
+        {"tenant_id": tenant_id, "recorded_at": {"$gte": cutoff}},
+        {"_id": 0, "elapsed_ms": 1, "model_version": 1, "status": 1},
+    )
+    overall: list[int] = []
+    by_model: dict[str, list[int]] = {}
+    by_status: dict[str, list[int]] = {}
+    async for row in cursor:
+        ms = int(row.get("elapsed_ms") or 0)
+        if ms < 0:
+            continue
+        overall.append(ms)
+        m = row.get("model_version") or "(unknown)"
+        s = row.get("status") or "(unknown)"
+        by_model.setdefault(m, []).append(ms)
+        by_status.setdefault(s, []).append(ms)
+    overall.sort()
+    summary = {
+        "window_days": days,
+        "sample_size": len(overall),
+        "p50_ms": _percentile(overall, 0.50),
+        "p95_ms": _percentile(overall, 0.95),
+        "p99_ms": _percentile(overall, 0.99),
+        "min_ms": overall[0] if overall else 0,
+        "max_ms": overall[-1] if overall else 0,
+        "by_model": {
+            m: {
+                "n": len(v),
+                "p50_ms": _percentile(sorted(v), 0.50),
+                "p95_ms": _percentile(sorted(v), 0.95),
+                "p99_ms": _percentile(sorted(v), 0.99),
+            }
+            for m, v in by_model.items()
+        },
+        "by_status": {
+            s: {"n": len(v), "p50_ms": _percentile(sorted(v), 0.50)}
+            for s, v in by_status.items()
+        },
+    }
+    return summary
+
 
 # =====================================================================
 # CUI + budget gates
@@ -878,9 +1066,15 @@ async def _run_vision_with_retry(
 ) -> dict:
     """The actual Vision call + retry loop. Separated so analyze_
     photo can wrap it in the lock release try/finally."""
+    import time
     db = get_db()
     tray_id = tray["id"]
     storage_key = tray.get("storage_key")
+    # Bucket F Phase 5 -- measure end-to-end Vision-call wall time so
+    # the dashboard can render P50/P95/P99. Start the clock at the
+    # first storage read so storage + preprocess + API are all in the
+    # number (which is what operators actually care about).
+    t_start = time.monotonic()
 
     last_error: Optional[_PhotoAIError] = None
     last_reason: str = "unknown"
@@ -896,12 +1090,9 @@ async def _run_vision_with_retry(
                 return {"ok": False, "status": "skipped",
                         "reason": "tray_deleted_mid_flight"}
 
-            # Storage read.
+            # Storage read (Phase 5 -- routed through 60s cache).
             try:
-                from services.storage import get_object
-                blob, _content_type = await asyncio.to_thread(
-                    get_object, storage_key,
-                )
+                blob, _content_type = await cached_get_object(storage_key)
             except Exception as exc:
                 raise StorageUnavailableError(
                     f"storage read failed: {exc}",
@@ -962,6 +1153,16 @@ async def _run_vision_with_retry(
                 await increment_spend(
                     tenant_id=tenant_id, input_tokens=in_tok, output_tokens=out_tok,
                 )
+            # Phase 5 -- record success timing for the P50/P95/P99
+            # dashboard. Best-effort; never blocks the analyze path.
+            elapsed_ms = int((time.monotonic() - t_start) * 1000)
+            await record_call_timing(
+                tenant_id=tenant_id,
+                project_id=tray.get("project_id"),
+                tray_id=tray_id, elapsed_ms=elapsed_ms,
+                model_version=model, status="complete",
+                input_tokens=in_tok, output_tokens=out_tok,
+            )
             try:
                 from audit import write_audit
                 await write_audit(
@@ -976,6 +1177,7 @@ async def _run_vision_with_retry(
                             "model": model,
                             "input_tokens": in_tok,
                             "output_tokens": out_tok,
+                            "elapsed_ms": elapsed_ms,
                             "attempt": attempt + 1},
                     actor_id=actor_id,
                     request_id=f"photo_ai_{tray_id}",
@@ -1016,6 +1218,17 @@ async def _run_vision_with_retry(
         "ai_model_version": DEFAULT_MODEL,
     }
     await db.photo_tray.update_one({"id": tray_id}, {"$set": update})
+    # Phase 5 -- record failure timing too; the dashboard splits by
+    # status so operators can see "complete vs. failed" latency
+    # separately (failures usually finish fast, but timeouts pin to
+    # the 30s ceiling).
+    failure_elapsed_ms = int((time.monotonic() - t_start) * 1000)
+    await record_call_timing(
+        tenant_id=tenant_id,
+        project_id=tray.get("project_id"),
+        tray_id=tray_id, elapsed_ms=failure_elapsed_ms,
+        model_version=DEFAULT_MODEL, status="failed",
+    )
     try:
         from audit import write_audit
         await write_audit(
@@ -1023,6 +1236,7 @@ async def _run_vision_with_retry(
             op="PHOTO_AI_ANALYSIS_FAILED",
             record_id=tray_id, before=None,
             after={"reason": last_reason, "tray_id": tray_id,
+                    "elapsed_ms": failure_elapsed_ms,
                     "attempts": MAX_RETRIES + 1},
             actor_id=actor_id,
             request_id=f"photo_ai_failed_{tray_id}",
@@ -1030,7 +1244,8 @@ async def _run_vision_with_retry(
     except Exception:
         pass
     return {"ok": False, "status": "failed",
-            "reason": last_reason, "fields": update}
+            "reason": last_reason, "fields": update,
+            "verbose": verbose_failure_reason(last_reason)}
 
 
 # =====================================================================
@@ -1236,13 +1451,27 @@ async def sweep_stuck_pending(
 
 async def get_analysis_stats(
     *, tenant_id: str, project_id: Optional[str] = None, days: int = 30,
+    bypass_cache: bool = False,
 ) -> dict:
     """Per-project (or tenant-wide) rollup over a recent window.
-    Returns the shape the Photos page stats card needs in Phase 3."""
+    Returns the shape the Photos page stats card needs in Phase 3.
+
+    Bucket F Phase 5 -- 5min in-process cache. Stats are expensive on
+    large tenants (full-tray scan per call); the Photos page card
+    only changes meaningfully on the timescale of new uploads, so a
+    5min TTL is the right trade-off. bypass_cache=True forces a fresh
+    compute (used by the dashboard refresh button)."""
+    import time
     if days < 1:
         days = 1
     if days > 365:
         days = 365
+    cache_key = f"{tenant_id}|{project_id or ''}|{days}"
+    now_mono = time.monotonic()
+    if not bypass_cache:
+        cached = _stats_cache.get(cache_key)
+        if cached and cached[0] > now_mono:
+            return {**cached[1], "_cache_hit": True}
     db = get_db()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     q = {"tenant_id": tenant_id,
@@ -1291,7 +1520,7 @@ async def get_analysis_stats(
     avg_conf = (confidence_sum / confidence_n) if confidence_n else 0.0
     override_rate = (overridden / analyzed) if analyzed else 0.0
     rejection_rate = (rejected / max(1, analyzed + rejected))
-    return {
+    result = {
         "tenant_id": tenant_id,
         "project_id": project_id,
         "window_days": days,
@@ -1310,4 +1539,234 @@ async def get_analysis_stats(
         "input_tokens_total": total_in_tokens,
         "output_tokens_total": total_out_tokens,
         "estimated_cost_usd": round(estimated_cost_usd, 4),
+        "_cache_hit": False,
+    }
+    # Cache + bounded eviction.
+    _stats_cache[cache_key] = (
+        now_mono + STATS_CACHE_TTL_SECONDS, result,
+    )
+    if len(_stats_cache) > _stats_cache_max:
+        oldest = sorted(_stats_cache.items(), key=lambda kv: kv[1][0])
+        for k, _ in oldest[: max(1, len(oldest) // 2)]:
+            _stats_cache.pop(k, None)
+    return result
+
+
+# =====================================================================
+# Bucket F Phase 5 -- cost monitoring + CUI compliance
+# =====================================================================
+
+async def get_cost_dashboard(
+    *, tenant_id: str, days: int = 30,
+) -> dict:
+    """Tenant-wide cost rollup for Settings > AI Usage. Returns:
+      - per-day spend buckets (date, input_tokens, output_tokens,
+        usd, analyses)
+      - top-10 most expensive trays (id, project_id, model, usd)
+      - split by model_version (for migration windows when a model
+        bumps mid-month)
+      - current budget posture + warning/pause signals
+    """
+    if days < 1:
+        days = 1
+    if days > 365:
+        days = 365
+    db = get_db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = await db.photo_tray.find(
+        {"tenant_id": tenant_id,
+         "uploaded_at": {"$gte": cutoff},
+         "ai_analysis_status": "complete"},
+        {"_id": 0, "id": 1, "project_id": 1,
+         "ai_analysis_completed_at": 1,
+         "ai_model_version": 1,
+         "ai_cost_tokens_input": 1,
+         "ai_cost_tokens_output": 1,
+         "ai_reused_from_phash": 1},
+    ).to_list(length=None)
+
+    per_day: dict[str, dict] = {}
+    per_model: dict[str, dict] = {}
+    top_cost: list[dict] = []
+    reused = 0
+    total_in = 0
+    total_out = 0
+    for r in rows:
+        in_tok = int(r.get("ai_cost_tokens_input") or 0)
+        out_tok = int(r.get("ai_cost_tokens_output") or 0)
+        if r.get("ai_reused_from_phash"):
+            reused += 1
+        usd = (in_tok * COST_PER_INPUT_TOKEN_USD
+               + out_tok * COST_PER_OUTPUT_TOKEN_USD)
+        total_in += in_tok
+        total_out += out_tok
+        day = (r.get("ai_analysis_completed_at") or "")[:10] or "unknown"
+        b = per_day.setdefault(day, {
+            "date": day, "input_tokens": 0, "output_tokens": 0,
+            "usd": 0.0, "analyses": 0,
+        })
+        b["input_tokens"] += in_tok
+        b["output_tokens"] += out_tok
+        b["usd"] += usd
+        b["analyses"] += 1
+        model = r.get("ai_model_version") or "(unknown)"
+        m = per_model.setdefault(model, {
+            "model": model, "analyses": 0,
+            "input_tokens": 0, "output_tokens": 0, "usd": 0.0,
+        })
+        m["analyses"] += 1
+        m["input_tokens"] += in_tok
+        m["output_tokens"] += out_tok
+        m["usd"] += usd
+        top_cost.append({
+            "tray_id": r.get("id"),
+            "project_id": r.get("project_id"),
+            "model": model,
+            "usd": round(usd, 6),
+            "completed_at": r.get("ai_analysis_completed_at"),
+        })
+
+    # Round + sort.
+    per_day_list = sorted(
+        [{**v, "usd": round(v["usd"], 4)} for v in per_day.values()],
+        key=lambda x: x["date"],
+    )
+    per_model_list = sorted(
+        [{**v, "usd": round(v["usd"], 4)} for v in per_model.values()],
+        key=lambda x: -x["usd"],
+    )
+    top_cost.sort(key=lambda x: -x["usd"])
+    top_cost = top_cost[:10]
+
+    # Live budget posture for the dashboard header.
+    budget = await check_budget(tenant_id=tenant_id)
+    total_usd = (total_in * COST_PER_INPUT_TOKEN_USD
+                 + total_out * COST_PER_OUTPUT_TOKEN_USD)
+    return {
+        "tenant_id": tenant_id,
+        "window_days": days,
+        "analyses_complete": len(rows),
+        "phash_reused_count": reused,
+        "input_tokens_total": total_in,
+        "output_tokens_total": total_out,
+        "estimated_cost_usd": round(total_usd, 4),
+        "per_day": per_day_list,
+        "per_model": per_model_list,
+        "top_cost_trays": top_cost,
+        "budget": budget,
+    }
+
+
+async def get_cui_compliance_report(
+    *, tenant_id: str, days: int = 90,
+) -> dict:
+    """CUI compliance audit roll-up. Counts photo-tray AI activity by
+    project CUI status over the window + lists every PHOTO_AI_CUI_
+    BLOCKED audit op for proof of enforcement. Federal auditors ask
+    for this; the report is generated on-demand from
+    audit_log + photo_tray data.
+
+    Returns the shape an admin can export as evidence:
+      - tenant info
+      - projects flagged is_cui=true
+      - tray counts per (project, ai_analysis_status) -- CUI projects
+        should have everything in skipped(cui_blocked) or skipped(
+        pre_ai_upload); a single complete row on a CUI project is a
+        compliance flag.
+      - audit_log entries for PHOTO_AI_CUI_BLOCKED in the window
+      - generated_at timestamp + range
+    """
+    if days < 1:
+        days = 1
+    if days > 365:
+        days = 365
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat()
+
+    tenant = await db.tenants.find_one(
+        {"id": tenant_id},
+        {"_id": 0, "legal_name": 1, "display_name": 1,
+         "cmmc_level": 1, "data_region": 1, "ai_enabled": 1},
+    ) or {}
+
+    cui_projects = await db.projects.find(
+        tenant_filter(tenant_id, {"is_cui": True}),
+        {"_id": 0, "id": 1, "name": 1, "agency": 1,
+         "contract_number": 1, "ai_enabled": 1},
+    ).to_list(length=None)
+    cui_ids = [p["id"] for p in cui_projects]
+
+    # Per-CUI-project tray status rollup. Anything that's NOT
+    # skipped(cui_blocked) / skipped(pre_ai_upload) / pending is a
+    # compliance flag (means the photo got past the CUI gate somehow).
+    flags: list[dict] = []
+    by_project_status: dict[str, dict[str, int]] = {}
+    if cui_ids:
+        rows = await db.photo_tray.find(
+            {"tenant_id": tenant_id, "project_id": {"$in": cui_ids},
+             "uploaded_at": {"$gte": cutoff}},
+            {"_id": 0, "id": 1, "project_id": 1,
+             "ai_analysis_status": 1, "ai_failure_reason": 1,
+             "uploaded_at": 1},
+        ).to_list(length=None)
+        for r in rows:
+            pid = r.get("project_id")
+            s = r.get("ai_analysis_status") or "pending"
+            by_project_status.setdefault(pid, {}).setdefault(s, 0)
+            by_project_status[pid][s] += 1
+            if s == "complete":
+                # CUI photo that got analyzed -- compliance flag.
+                flags.append({
+                    "tray_id": r.get("id"),
+                    "project_id": pid,
+                    "status": s,
+                    "uploaded_at": r.get("uploaded_at"),
+                    "severity": "violation",
+                })
+            elif s in ("failed", "rejected_by_user", "budget_paused"):
+                # Edge: gate fired AFTER status flipped to analyzing.
+                # We can't always tell from the row alone; surface for
+                # manual review.
+                if r.get("ai_failure_reason") != "cui_blocked":
+                    flags.append({
+                        "tray_id": r.get("id"),
+                        "project_id": pid,
+                        "status": s,
+                        "reason": r.get("ai_failure_reason"),
+                        "uploaded_at": r.get("uploaded_at"),
+                        "severity": "review",
+                    })
+
+    # CUI-block audit entries (proof of enforcement).
+    blocked_entries = await db.audit_log.find(
+        {"tenant_id": tenant_id,
+         "op": "PHOTO_AI_CUI_BLOCKED",
+         "created_at": {"$gte": cutoff}},
+        {"_id": 0, "id": 1, "created_at": 1, "table_name": 1,
+         "record_id": 1, "actor_id": 1, "hash": 1, "after": 1},
+    ).sort("created_at", -1).limit(500).to_list(length=None)
+
+    # Non-CUI project AI activity counts (denominator for the report).
+    non_cui_count = await db.photo_tray.count_documents(
+        {"tenant_id": tenant_id, "project_id": {"$nin": cui_ids},
+         "uploaded_at": {"$gte": cutoff},
+         "ai_analysis_status": "complete"},
+    )
+
+    return {
+        "tenant_id": tenant_id,
+        "tenant": tenant,
+        "window_days": days,
+        "generated_at": now.isoformat(),
+        "cui_projects": cui_projects,
+        "cui_project_count": len(cui_projects),
+        "cui_tray_status_rollup": by_project_status,
+        "compliance_flags": flags,
+        "compliance_flag_count": len(flags),
+        "cui_blocks_enforced_count": len(blocked_entries),
+        "cui_block_audit_entries": blocked_entries[:50],
+        "non_cui_completes_in_window": non_cui_count,
+        # A clean report = zero violation-severity flags.
+        "is_clean": all(f.get("severity") != "violation" for f in flags),
     }

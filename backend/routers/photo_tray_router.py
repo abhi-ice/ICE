@@ -571,6 +571,21 @@ async def create_photo_tag(
         "caption": payload.tag_caption,
         "is_supplement": False,
         "created_at": now_iso,
+        # Bucket F Phase 1 -- AI lineage on the tag row.
+        "created_via_ai_suggestion": bool(payload.created_via_ai_suggestion),
+        "ai_suggestion_id": payload.ai_suggestion_id,
+        "ai_confidence_at_tag_time": payload.ai_confidence_at_tag_time,
+        # Bucket F Phase 5 (pull-forward Risk #1) -- denormalize the
+        # tray's user_overridden flag at tag time so gallery + TIA
+        # indicators don't drift if the tray row is later edited or
+        # archived. Snapshot semantics: this represents the truth at
+        # the moment the user committed the tag, even if the tray's
+        # ai_user_overridden later flips. Caller can pass it
+        # explicitly; otherwise we read it off the tray row.
+        "user_overridden_at_tag_time": bool(
+            payload.user_overridden_at_tag_time
+            or tray.get("ai_user_overridden", False)
+        ),
     }
     await db.photos.insert_one(photo_doc.copy())
 
@@ -952,6 +967,122 @@ async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
 
 
 # =====================================================================
+# Bucket F Phase 5 (2026-05-11) -- production polish endpoints
+# =====================================================================
+
+# PATCH /tenants/current/ai-budget (admin) -- raise/lower the monthly
+# cap or flip ai_enabled. Writes a PHOTO_AI_BUDGET_UPDATED audit entry
+# so compliance can trace who changed the cap.
+@router.patch("/tenants/current/ai-budget")
+async def update_tenant_ai_budget(
+    payload: "TenantAiBudgetUpdate",  # forward ref, imported below
+    ctx: dict = Depends(require_tenant),
+):
+    from models import TenantAiBudgetUpdate  # local to avoid circular
+    if not isinstance(payload, TenantAiBudgetUpdate):
+        payload = TenantAiBudgetUpdate(**(payload or {}))
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- only admins can modify AI budget",
+        )
+    db = get_db()
+    updates: dict = {}
+    if payload.ai_enabled is not None:
+        updates["ai_enabled"] = bool(payload.ai_enabled)
+    if payload.ai_monthly_budget_usd is not None:
+        updates["ai_monthly_budget_usd"] = float(payload.ai_monthly_budget_usd)
+    if not updates:
+        raise HTTPException(422, "Provide ai_enabled and/or ai_monthly_budget_usd")
+    before = await db.tenants.find_one(
+        {"id": ctx["tenant_id"]},
+        {"_id": 0, "ai_enabled": 1, "ai_monthly_budget_usd": 1},
+    ) or {}
+    await db.tenants.update_one(
+        {"id": ctx["tenant_id"]}, {"$set": updates},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="tenants",
+        op="PHOTO_AI_BUDGET_UPDATED",
+        record_id=ctx["tenant_id"], before=before, after=updates,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    from services.photo_ai import check_budget
+    return await check_budget(tenant_id=ctx["tenant_id"])
+
+
+# GET /tenants/current/photo-ai-cost-dashboard (admin)
+# Per-day spend buckets, top-10 expensive trays, model split, budget.
+@router.get("/tenants/current/photo-ai-cost-dashboard")
+async def get_cost_dashboard_endpoint(
+    days: int = 30, ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- cost dashboard surfaces tenant spend",
+        )
+    if days < 1 or days > 365:
+        raise HTTPException(422, "days must be 1..365")
+    from services.photo_ai import get_cost_dashboard
+    return await get_cost_dashboard(tenant_id=ctx["tenant_id"], days=days)
+
+
+# GET /tenants/current/photo-ai-timings (admin)
+# P50/P95/P99 call timings for the dashboard performance card.
+@router.get("/tenants/current/photo-ai-timings")
+async def get_timings_endpoint(
+    days: int = 7, ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- timings expose ops latency data",
+        )
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be 1..90")
+    from services.photo_ai import get_call_timing_percentiles
+    return await get_call_timing_percentiles(
+        tenant_id=ctx["tenant_id"], days=days,
+    )
+
+
+# GET /tenants/current/cui-compliance-report (admin)
+# Compliance evidence for federal auditors. Writes an audit op every
+# time it's pulled so the access itself is auditable.
+@router.get("/tenants/current/cui-compliance-report")
+async def get_cui_compliance_report_endpoint(
+    days: int = 90, ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- compliance reports are admin-restricted",
+        )
+    if days < 1 or days > 365:
+        raise HTTPException(422, "days must be 1..365")
+    from services.photo_ai import get_cui_compliance_report
+    report = await get_cui_compliance_report(
+        tenant_id=ctx["tenant_id"], days=days,
+    )
+    # Audit the pull so the compliance evidence chain shows who looked
+    # at what + when. Federal audit pattern: access to compliance
+    # surfaces must be logged.
+    try:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="tenants",
+            op="PHOTO_AI_CUI_COMPLIANCE_REPORT_PULLED",
+            record_id=ctx["tenant_id"], before=None,
+            after={
+                "window_days": days,
+                "cui_project_count": report.get("cui_project_count"),
+                "compliance_flag_count": report.get("compliance_flag_count"),
+                "is_clean": report.get("is_clean"),
+            },
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    except Exception:
+        pass
+    return report
+
+
+# =====================================================================
 # Bucket F Phase 4 (2026-05-08) -- integration endpoints
 # =====================================================================
 
@@ -1112,6 +1243,11 @@ async def create_safety_event_from_photo(
         "created_via_ai_suggestion": True,
         "ai_suggestion_id": tray_id,
         "ai_confidence_at_tag_time": tray.get("ai_confidence_score"),
+        # Bucket F Phase 5 -- snapshot tray's override state at tag time.
+        # Quick-action paths always start from an unaltered AI
+        # suggestion, but the user may have already overridden tray
+        # fields before clicking "Create safety event"; preserve that.
+        "user_overridden_at_tag_time": bool(tray.get("ai_user_overridden", False)),
     }
     await db.photos.insert_one(photo_doc.copy())
     await write_audit(

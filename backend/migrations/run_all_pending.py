@@ -70,6 +70,11 @@ MIGRATIONS = [
     # is_cui + ai_enabled on projects, monthly budget on tenants.
     # Idempotent via $exists checks.
     "migrations.010_photo_ai_setup",
+    # Bucket F Phase 5 (2026-05-11) -- pull-forward Risk #1. Snapshots
+    # the tray's ai_user_overridden flag onto each Photo tag row as
+    # user_overridden_at_tag_time so gallery + TIA Section 8 indicators
+    # don't drift when the tray is later edited. Idempotent via $exists.
+    "migrations.011_photo_override_snapshot",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
