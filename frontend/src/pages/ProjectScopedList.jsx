@@ -8,17 +8,18 @@
 // affected_activity_id query param. Click-through goes to the parent
 // Daily Report (via daily_report_id) so users land where the event
 // was logged.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import CrudList from "../components/CrudList";
 import DelayList from "./DelayList";
 import { useProjects } from "../lib/projects";
 import { Link, useNavigate } from "react-router-dom";
-import { Plus } from "lucide-react";
+import { Plus, ShieldAlert, Sparkles, Loader2, X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { useUrlState } from "../lib/useUrlState";
-import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
+import { navigateToTodaysDrForCreate, resolveTodaysDr } from "../lib/todaysDr";
+import api from "../lib/api";
 
 const TRADE_OPTIONS = [
   "general", "concrete", "masonry", "steel", "framing", "drywall",
@@ -354,6 +355,13 @@ export default function ProjectScopedList({ kind }) {
 
   return (
     <div className="space-y-3">
+      {/* Bucket F Phase 4 -- AI-flagged-photos surfacing on the Safety
+          events page. Pulls /api/projects/{id}/photos-flagged-by-ai
+          and shows a banner with one-click "Create safety event from
+          this photo" actions. Other galleries skip this. */}
+      {kind === "safety-events" && (
+        <AiFlaggedSafetyPhotosBanner projectId={activeId} />
+      )}
       {cfg.galleryEventKind && (
         <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900">
           <strong>Gallery view.</strong> {cfg.title} live on their parent daily report; this page
@@ -394,6 +402,147 @@ export default function ProjectScopedList({ kind }) {
           </Button>
         ) : undefined}
       />
+    </div>
+  );
+}
+
+
+// ============================================================
+// Bucket F Phase 4 -- AI-flagged-photos quick-action banner.
+// Shown above the Safety events gallery. Each row is a tray photo
+// whose AI analysis surfaced safety_concerns. One click creates a
+// safety_event pre-filled with the AI-inferred severity, event_type,
+// and DR's task linkage; the photo is auto-attached as evidence.
+// ============================================================
+function AiFlaggedSafetyPhotosBanner({ projectId }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  const reload = () => {
+    if (!projectId) return;
+    setLoading(true);
+    api.get(`/projects/${projectId}/photos-flagged-by-ai`)
+      .then((r) => setRows(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    reload();
+    // Re-poll on tab focus so a brand-new AI-flagged photo surfaces
+    // without a full reload.
+    const onVis = () => { if (document.visibilityState === "visible") reload(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const createEvent = async (row) => {
+    setBusyId(row.id);
+    try {
+      // Resolve today's DR first so the safety event has a parent.
+      const dr = await resolveTodaysDr(projectId);
+      if (dr.status === "submitted" || dr.status === "approved") {
+        toast.info(
+          `Today's DR (${dr.report_date}) is locked. File the safety event via Supplements on the parent DR.`,
+        );
+        return;
+      }
+      const res = await api.post(`/photo-tray/${row.id}/create-safety-event`, {
+        daily_report_id: dr.id,
+      });
+      toast.success(
+        `Safety event created (${res.data.event_type}, ${res.data.severity}). Photo attached as evidence.`,
+      );
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not create safety event");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Only count rows that haven't been auto-tagged yet (the API does
+  // not filter these out -- it just annotates them with
+  // already_tagged_to_safety_event when the DR id is supplied -- but
+  // we render banners regardless of whether the tag exists, since
+  // the user might want to file a SECOND safety event for the same
+  // photo on a different DR).
+  if (loading && !rows.length) {
+    return (
+      <div data-testid="safety-ai-banner-loading"
+        className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800 inline-flex items-center gap-2">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Checking AI-flagged photos…
+      </div>
+    );
+  }
+  if (!rows.length || dismissed) return null;
+
+  return (
+    <div data-testid="safety-ai-banner"
+      className="bg-rose-50 border border-rose-300 rounded p-3 text-xs">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 text-rose-900">
+          <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold">
+              {rows.length} AI-flagged photo{rows.length === 1 ? "" : "s"} need review
+            </div>
+            <div className="text-rose-700 mt-0.5">
+              Claude Vision detected safety concerns in recent tray uploads. One click to
+              file a safety event with the photo auto-attached as evidence.
+            </div>
+          </div>
+        </div>
+        <button data-testid="safety-ai-banner-dismiss"
+          onClick={() => setDismissed(true)}
+          title="Hide banner for this session"
+          className="text-rose-700 hover:text-rose-900 p-1">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <ul className="mt-2 space-y-1">
+        {rows.slice(0, 5).map((r) => (
+          <li key={r.id} data-testid={`safety-ai-row-${r.id}`}
+            className="flex items-start gap-2 bg-white border border-rose-200 rounded px-2 py-1.5">
+            <Sparkles className="h-3 w-3 text-blue-600 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-slate-700 truncate">
+                {r.ai_suggested_caption || "(no caption)"}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                Concerns: {(r.ai_safety_concerns_detected || []).slice(0, 3).join(", ") || "—"}
+                {r.ai_confidence_score != null && (
+                  <span className="ml-2">
+                    Conf: {Math.round(r.ai_confidence_score * 100)}%
+                  </span>
+                )}
+                {r.already_tagged_to_safety_event && (
+                  <span className="ml-2 text-emerald-700">· already tagged</span>
+                )}
+              </div>
+            </div>
+            <button data-testid={`safety-ai-create-${r.id}`}
+              onClick={() => createEvent(r)}
+              disabled={busyId === r.id}
+              className="h-7 px-2 rounded bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-[11px] inline-flex items-center gap-1 shrink-0">
+              {busyId === r.id ? (
+                <><Loader2 className="h-3 w-3 animate-spin" /> Filing…</>
+              ) : (
+                <>Create safety event</>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {rows.length > 5 && (
+        <div className="mt-2 text-[11px] text-rose-700">
+          + {rows.length - 5} more flagged photos. Open the Photo tray to review.
+        </div>
+      )}
     </div>
   );
 }

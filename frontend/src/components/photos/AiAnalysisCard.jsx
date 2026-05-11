@@ -244,6 +244,22 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
   return (
     <div data-testid="ai-card-complete"
       className="p-3 border border-blue-200 rounded bg-blue-50/40 text-xs space-y-2">
+      {/* Bucket F Phase 4 -- cross-project reuse banner. Renders when
+          ai_reused_from_phash is true (the analyzer found a prior
+          analysis on the same pHash and copied the result over
+          without paying for another Vision call). Promoted from the
+          small inline line to a banner at the top so users
+          immediately see this analysis cost zero tokens. */}
+      {data.ai_reused_from_phash && (
+        <div data-testid="ai-card-reused-banner"
+          className="px-2 py-1.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 text-[11px] flex items-center gap-2">
+          <Check className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            <span className="font-medium">AI analysis reused from previous upload.</span>{" "}
+            Same image was analyzed before; no new tokens were spent.
+          </span>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <Sparkles className="h-3.5 w-3.5 text-blue-700" />
         <span className="font-medium text-blue-900">AI suggestion</span>
@@ -311,12 +327,6 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
         <div className="flex items-center gap-1 text-amber-700 text-[10px]">
           <Edit3 className="h-3 w-3" />
           Overridden by user{data.ai_user_override_reason ? `: "${data.ai_user_override_reason}"` : ""}
-        </div>
-      )}
-
-      {data.ai_reused_from_phash && (
-        <div className="flex items-center gap-1 text-emerald-700 text-[10px]">
-          <Check className="h-3 w-3" /> Reused from earlier upload (zero cost)
         </div>
       )}
 

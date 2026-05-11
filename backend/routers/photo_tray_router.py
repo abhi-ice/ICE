@@ -856,6 +856,7 @@ async def override_ai(
             "tenant_id": ctx["tenant_id"],
             "tray_id": tray_id,
             "project_id": tray.get("project_id"),
+            "kind": "override",
             "original_ai": res.get("ai_originals"),
             "user_correction": res.get("user_overrides"),
             "reason": payload.override_reason,
@@ -948,6 +949,285 @@ async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
         )
     from services.photo_ai import check_budget
     return await check_budget(tenant_id=ctx["tenant_id"])
+
+
+# =====================================================================
+# Bucket F Phase 4 (2026-05-08) -- integration endpoints
+# =====================================================================
+
+# Severity inference for the safety-event quick-action. Maps AI safety-
+# concern keywords (loose substring match) to SafetyEventType +
+# Severity. Default tail catches anything we don't recognize.
+_SEVERITY_BY_CONCERN = [
+    # (keyword fragments, event_type, severity)
+    (("fall", "height", "no harness"),      "recordable", "major"),
+    (("ppe", "hard hat", "safety glasses",
+      "high-vis", "hi-vis"),                "near_miss",  "minor"),
+    (("electrical", "exposed wire",
+      "live circuit"),                      "first_aid",  "moderate"),
+    (("fire", "ignition", "flammable",
+      "extinguisher"),                      "recordable", "major"),
+    (("trench", "excavation", "shoring"),   "recordable", "major"),
+    (("scaffold", "platform"),              "near_miss",  "moderate"),
+    (("rebar", "exposed steel"),            "first_aid",  "minor"),
+]
+
+
+def _infer_severity_from_concerns(concerns: list[str]) -> tuple[str, str, str]:
+    """Returns (event_type, severity, matched_concern). Falls back to
+    (near_miss, minor, '') when no keyword matches."""
+    for concern in (concerns or []):
+        lc = (concern or "").lower()
+        for keywords, ev, sev in _SEVERITY_BY_CONCERN:
+            if any(k in lc for k in keywords):
+                return ev, sev, concern
+    return "near_miss", "minor", ""
+
+
+class _CreateSafetyFromPhotoPayload(_AiStrictModel):
+    """Override flow. Most fields auto-populated from AI suggestion;
+    user can edit before save (the frontend prefills + lets the user
+    confirm in a small dialog)."""
+    daily_report_id: str
+    description: Optional[str] = None
+    severity: Optional[str] = None         # "minor"|"moderate"|"major"|"critical"
+    event_type: Optional[str] = None       # SafetyEventType
+    linked_task_ids: Optional[list[str]] = None
+
+
+@router.post("/photo-tray/{tray_id}/create-safety-event")
+async def create_safety_event_from_photo(
+    tray_id: str, payload: _CreateSafetyFromPhotoPayload,
+    ctx: dict = Depends(require_tenant),
+):
+    """One-click safety event creation from an AI-flagged photo.
+    Auto-fills description from ai_suggested_caption, infers severity
+    + event_type from ai_safety_concerns_detected, attaches the photo
+    as evidence via a Photo tag row pointing to the new safety_event.
+    User can pre-edit any field via the payload."""
+    db = get_db()
+    tray = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+        {"_id": 0},
+    )
+    if not tray:
+        raise HTTPException(404, "Tray photo not found")
+    await _enforce_tray_access(ctx, tray, _ROLE_OVERRIDE_REJECT)
+
+    # Confirm DR exists in tenant + matches project.
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}),
+        {"_id": 0, "id": 1, "project_id": 1, "report_date": 1, "status": 1},
+    )
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    if dr.get("project_id") != tray.get("project_id"):
+        raise HTTPException(
+            422,
+            "Daily report's project does not match the photo's project",
+        )
+
+    # Build the SafetyEventCreate body. Override fields take precedence
+    # over AI-derived defaults.
+    concerns = tray.get("ai_safety_concerns_detected") or []
+    inferred_event_type, inferred_severity, _ = _infer_severity_from_concerns(concerns)
+    description = (
+        (payload.description or "").strip()
+        or (tray.get("ai_suggested_caption") or "").strip()
+        or f"AI-flagged photo (tray {tray_id[:8]}): {', '.join(concerns[:2]) or 'safety concern'}"
+    )
+    severity = (payload.severity or inferred_severity)
+    event_type = (payload.event_type or inferred_event_type)
+    # Infer linked_task_ids from the DR's activity grid -- pick the
+    # task ids attached to the activities scheduled on that DR's day.
+    if payload.linked_task_ids:
+        linked_task_ids = payload.linked_task_ids
+    else:
+        grid = await db.daily_report_activities.find(
+            {"daily_report_id": payload.daily_report_id},
+            {"_id": 0, "schedule_activity_id": 1},
+        ).to_list(length=None)
+        linked_task_ids = [
+            r["schedule_activity_id"] for r in grid
+            if r.get("schedule_activity_id")
+        ][:5]   # cap at 5 -- safety events rarely span every task on a day
+
+    # Create the safety event by calling the existing service path
+    # (POST /api/safety-events) -- duplicate the body shape here.
+    # We don't HTTP-call ourselves; just insert + audit inline.
+    from models import gen_id as _gen_id_evt
+    se_id = _gen_id_evt()
+    now_iso = utc_now().isoformat()
+    se_doc = {
+        "id": se_id,
+        "tenant_id": ctx["tenant_id"],
+        "project_id": tray.get("project_id"),
+        "daily_report_id": payload.daily_report_id,
+        "date": dr.get("report_date"),
+        "description": description[:2000],
+        "severity": severity,
+        "event_type": event_type,
+        "status": "open",
+        "linked_task_ids": linked_task_ids,
+        "is_supplement": False,
+        "reported_by": ctx["user"]["id"],
+        "reported_at": now_iso,
+        "created_at": now_iso,
+    }
+    await db.safety_events.insert_one(se_doc.copy())
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="safety_events", op="INSERT",
+        record_id=se_id, before=None, after={
+            **se_doc,
+            "_source": "ai_safety_concern_quick_action",
+            "source_tray_id": tray_id,
+            "ai_safety_concerns": concerns,
+        },
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+
+    # Auto-attach the photo as evidence -- create a Photo tag row
+    # linking the tray photo to the new safety_event.
+    photo_id = gen_id()
+    photo_doc = {
+        "id": photo_id,
+        "tenant_id": ctx["tenant_id"],
+        "project_id": tray.get("project_id"),
+        "tray_photo_id": tray_id,
+        "daily_report_id": payload.daily_report_id,
+        "safety_event_id": se_id,
+        "storage_path": tray.get("storage_key"),
+        "captured_at": tray.get("uploaded_at") or now_iso,
+        "captured_by": tray.get("uploaded_by"),
+        "created_at": now_iso,
+        "photo_class": tray.get("ai_suggested_class") or "safety",
+        "tag_caption": tray.get("ai_suggested_caption"),
+        "tagged_at": now_iso,
+        "tagged_by": ctx["user"]["id"],
+        "evidentiary_flag": True,           # safety photos are evidentiary
+        "sha256_hash": tray.get("sha256"),
+        "phash": tray.get("phash"),
+        # Bucket F Phase 1 lineage so TIA + Calibration RAG see this
+        # photo originated from an AI suggestion.
+        "created_via_ai_suggestion": True,
+        "ai_suggestion_id": tray_id,
+        "ai_confidence_at_tag_time": tray.get("ai_confidence_score"),
+    }
+    await db.photos.insert_one(photo_doc.copy())
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photos",
+        op="PHOTO_TAG_CREATED",
+        record_id=photo_id, before=None, after={
+            "tray_photo_id": tray_id, "safety_event_id": se_id,
+            "_source": "ai_safety_concern_quick_action",
+        },
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    # Flip tray status to partially_tagged.
+    await db.photo_tray.update_one(
+        {"id": tray_id},
+        {"$set": {"status": "partially_tagged"}},
+    )
+
+    return {
+        "ok": True,
+        "safety_event_id": se_id,
+        "photo_id": photo_id,
+        "severity": severity,
+        "event_type": event_type,
+        "linked_task_ids": linked_task_ids,
+        "description": description,
+        "source_concerns": concerns,
+    }
+
+
+# GET /api/projects/{id}/photos-flagged-by-ai
+# Surfaces tray rows with non-empty safety_concerns that haven't yet
+# been tagged to a safety_event. Used by the SafetyPanel notification
+# on the DR detail page.
+@router.get("/projects/{project_id}/photos-flagged-by-ai")
+async def list_photos_flagged_by_ai(
+    project_id: str, daily_report_id: Optional[str] = None,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    # Cross-tenant 404.
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "id": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    role = _user_role(ctx)
+    if role != "admin":
+        ok = await has_project_access(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=role, project_id=project_id,
+        )
+        if not ok:
+            raise HTTPException(404, "Project not found")
+    # Walk tray rows with safety concerns + complete analysis.
+    q: dict = {
+        "tenant_id": ctx["tenant_id"], "project_id": project_id,
+        "ai_analysis_status": "complete",
+        "ai_safety_concerns_detected.0": {"$exists": True},
+    }
+    rows = await db.photo_tray.find(
+        q, {"_id": 0, "id": 1, "uploaded_at": 1,
+              "ai_suggested_caption": 1,
+              "ai_safety_concerns_detected": 1,
+              "ai_confidence_score": 1, "status": 1},
+    ).sort("uploaded_at", -1).limit(50).to_list(50)
+    # If daily_report_id supplied, also surface whether each tray was
+    # already tagged to a safety_event from THAT DR (so the UI can
+    # mark "already handled").
+    out: list[dict] = []
+    for r in rows:
+        already_tagged = False
+        if daily_report_id:
+            existing = await db.photos.find_one(
+                tenant_filter(ctx["tenant_id"], {
+                    "tray_photo_id": r["id"],
+                    "daily_report_id": daily_report_id,
+                    "safety_event_id": {"$ne": None},
+                }),
+                {"_id": 0, "id": 1},
+            )
+            already_tagged = bool(existing)
+        out.append({**r, "already_tagged_to_safety_event": already_tagged})
+    return out
+
+
+# GET /api/tenants/current/photo-ai-calibration  (admin)
+# Surfaces the calibration corpus for future fine-tuning work. Paginated
+# by cursor (created_at desc). Returns the raw (original_ai, user_
+# correction, reason, kind) tuples.
+@router.get("/tenants/current/photo-ai-calibration")
+async def list_calibration_corpus(
+    limit: int = 100, cursor: Optional[str] = None,
+    ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- calibration corpus contains user feedback",
+        )
+    if limit < 1 or limit > 500:
+        limit = 100
+    db = get_db()
+    q: dict = {"tenant_id": ctx["tenant_id"]}
+    if cursor:
+        q["created_at"] = {"$lt": cursor}
+    rows = await db.photo_ai_calibration.find(
+        q, {"_id": 0},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    next_cursor = rows[-1]["created_at"] if rows and len(rows) == limit else None
+    # Aggregate counts so the admin export view can show kind breakdown.
+    kind_counts: dict[str, int] = {}
+    for r in rows:
+        k = r.get("kind") or "override"
+        kind_counts[k] = kind_counts.get(k, 0) + 1
+    return {"rows": rows, "next_cursor": next_cursor,
+            "count": len(rows), "kind_counts_in_page": kind_counts}
 
 
 # Bucket F Phase 3 -- pending-row sweeper. Admin-only manual trigger.

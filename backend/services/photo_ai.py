@@ -1078,11 +1078,27 @@ async def reject_analysis(
 ) -> dict:
     """User explicitly rejects the AI suggestion. tray row stays in
     the tray with status="rejected_by_user" and ai_user_override_
-    reason set. Phase 2 audits this op."""
+    reason set. Phase 2 audits this op.
+
+    Bucket F Phase 4 -- rejections also feed the calibration corpus
+    so future fine-tuning can learn from "AI said X, user rejected
+    because Y" pairs. Same shape as the override write so the corpus
+    is uniform: original_ai (the suggestion) + user_correction (None
+    on reject) + reason.
+    """
     if not reason or len(reason.strip()) < 10:
         return {"ok": False, "reason": "reason_required_min_10_chars"}
     db = get_db()
     now_iso = datetime.now(timezone.utc).isoformat()
+    # Snapshot AI fields BEFORE the status flip so the calibration
+    # row captures what was actually rejected.
+    tray = await db.photo_tray.find_one(
+        tenant_filter(tenant_id, {"id": tray_id}),
+        {"_id": 0, "id": 1, "project_id": 1,
+         "ai_suggested_class": 1, "ai_suggested_caption": 1,
+         "ai_suggested_event_type": 1, "ai_suggested_trade": 1,
+         "ai_confidence_score": 1, "ai_safety_concerns_detected": 1},
+    )
     res = await db.photo_tray.update_one(
         tenant_filter(tenant_id, {"id": tray_id}),
         {"$set": {
@@ -1093,6 +1109,32 @@ async def reject_analysis(
     )
     if not res.matched_count:
         return {"ok": False, "reason": "tray_not_found"}
+    # Calibration write -- mirror the override path. user_correction
+    # is None to distinguish "rejected everything" from "overrode field X".
+    try:
+        await db.photo_ai_calibration.insert_one({
+            "id": _gen_id(),
+            "tenant_id": tenant_id,
+            "tray_id": tray_id,
+            "project_id": (tray or {}).get("project_id"),
+            "kind": "reject",
+            "original_ai": {
+                "photo_class": (tray or {}).get("ai_suggested_class"),
+                "caption": (tray or {}).get("ai_suggested_caption"),
+                "event_type": (tray or {}).get("ai_suggested_event_type"),
+                "trade": (tray or {}).get("ai_suggested_trade"),
+                "confidence": (tray or {}).get("ai_confidence_score"),
+                "safety_concerns":
+                    list((tray or {}).get("ai_safety_concerns_detected") or []),
+            },
+            "user_correction": None,
+            "reason": reason.strip(),
+            "actor_id": actor_id,
+            "created_at": now_iso,
+        })
+    except Exception:
+        # Calibration is best-effort; reject still succeeds.
+        pass
     return {"ok": True, "tray_id": tray_id, "reason": reason.strip()}
 
 

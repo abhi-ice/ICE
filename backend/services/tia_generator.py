@@ -137,11 +137,80 @@ async def _gather_data(
          "evidentiary_flag": 1, "sha256_hash": 1, "device_timestamp": 1,
          "server_received_timestamp": 1, "timestamp_mismatch_flag": 1,
          "drawing_pin_id": 1, "pin_x": 1, "pin_y": 1, "pin_drawing_id": 1,
-         "location_id": 1, "created_at": 1, "schedule_activity_id": 1},
+         "location_id": 1, "created_at": 1, "schedule_activity_id": 1,
+         # Bucket F Phase 4 -- AI lineage on the tag row. The tray row is
+         # the authoritative source for the *suggestion* fields; the tag
+         # row carries lineage flags (created_via_ai_suggestion +
+         # ai_suggestion_id + ai_confidence_at_tag_time) so counsel can
+         # see "this tag was authored from AI suggestion X with
+         # confidence Y at tag time".
+         "tray_photo_id": 1, "created_via_ai_suggestion": 1,
+         "ai_suggestion_id": 1, "ai_confidence_at_tag_time": 1},
     ).to_list(5000)
     photos = [p for p in photos
               if (p.get("device_timestamp") or p.get("server_received_timestamp") or p.get("created_at") or "")[:10] >= start_iso
               and (p.get("device_timestamp") or p.get("server_received_timestamp") or p.get("created_at") or "")[:10] <= end_iso]
+
+    # ---- Bucket F Phase 4 -- enrich evidentiary photos with AI metadata
+    # from the linked tray row. Counsel needs to see what the AI
+    # suggested, what the user kept vs. overrode, and any safety
+    # concerns the model flagged. We pull the tray rows in one batch
+    # then merge by tray_photo_id.
+    tray_ids = [p.get("tray_photo_id") for p in photos if p.get("tray_photo_id")]
+    tray_by_id: dict[str, dict] = {}
+    if tray_ids:
+        tray_rows = await db.photo_tray.find(
+            tenant_filter(tenant_id, {"id": {"$in": tray_ids}}),
+            {"_id": 0, "id": 1, "ai_analysis_status": 1,
+             "ai_suggested_class": 1, "ai_suggested_caption": 1,
+             "ai_suggested_event_type": 1, "ai_suggested_trade": 1,
+             "ai_confidence_score": 1, "ai_user_overridden": 1,
+             "ai_user_override_reason": 1, "ai_safety_concerns_detected": 1,
+             "ai_model_version": 1, "ai_reused_from_phash": 1},
+        ).to_list(length=5000)
+        tray_by_id = {t["id"]: t for t in tray_rows}
+    for p in photos:
+        tray = tray_by_id.get(p.get("tray_photo_id") or "")
+        if not tray:
+            # No tray row (legacy photo, pre-AI upload, or skipped CUI).
+            # Stamp empty AI fields so renderers can branch uniformly.
+            p["ai_analysis_status"] = None
+            p["ai_suggested_class"] = None
+            p["ai_suggested_caption"] = None
+            p["ai_suggested_event_type"] = None
+            p["ai_suggested_trade"] = None
+            p["ai_confidence_score"] = None
+            p["ai_user_overridden"] = False
+            p["ai_user_override_reason"] = None
+            p["ai_safety_concerns_detected"] = []
+            p["ai_reused_from_phash"] = False
+            continue
+        p["ai_analysis_status"] = tray.get("ai_analysis_status")
+        p["ai_suggested_class"] = tray.get("ai_suggested_class")
+        p["ai_suggested_caption"] = tray.get("ai_suggested_caption")
+        p["ai_suggested_event_type"] = tray.get("ai_suggested_event_type")
+        p["ai_suggested_trade"] = tray.get("ai_suggested_trade")
+        p["ai_confidence_score"] = tray.get("ai_confidence_score")
+        p["ai_user_overridden"] = bool(tray.get("ai_user_overridden"))
+        p["ai_user_override_reason"] = tray.get("ai_user_override_reason")
+        p["ai_safety_concerns_detected"] = list(
+            tray.get("ai_safety_concerns_detected") or []
+        )
+        p["ai_reused_from_phash"] = bool(tray.get("ai_reused_from_phash"))
+        # Compose a per-row override-detail string in the form the spec
+        # requires: "AI suggested X; user marked as Y, reason: Z" --
+        # the docx + pdf renderers read this directly so the override
+        # narrative is single-sourced.
+        if p["ai_user_overridden"]:
+            suggested_class = p.get("ai_suggested_class") or "—"
+            user_class = p.get("photo_class") or "—"
+            reason = p.get("ai_user_override_reason") or "(no reason recorded)"
+            p["ai_override_detail"] = (
+                f"AI suggested {suggested_class}; user marked as {user_class}, "
+                f"reason: {reason}"
+            )
+        else:
+            p["ai_override_detail"] = ""
 
     # ---- Schedule update diffs ----
     sd_q: dict = {"project_id": project_id,
@@ -437,14 +506,46 @@ def _render_docx(data: dict) -> bytes:
 
     # SECTION 8
     H("8. Photo Evidence Pack (discovery + damage)")
-    table(data["section_8_photo_evidence_pack"] or [], [
+    photo_rows = data["section_8_photo_evidence_pack"] or []
+    # Bucket F Phase 4 -- expanded photo table with AI lineage columns.
+    # Counsel needs to see (a) what the AI suggested at upload time,
+    # (b) confidence the suggestion was made with, (c) whether the
+    # user overrode and what the user wrote instead, and (d) safety
+    # concerns the model flagged. The override-detail copy renders as
+    # a separate paragraph block under the table for any photo whose
+    # tag was authored over an AI suggestion AND ai_user_overridden=true.
+    table(photo_rows, [
         ("id", "ID"), ("photo_class", "Class"), ("caption", "Caption"),
         ("device_timestamp", "Device ts"),
         ("server_received_timestamp", "Server ts"),
         ("timestamp_mismatch_flag", "TS mismatch"),
         ("sha256_hash", "SHA-256"),
+        ("ai_suggested_class", "AI class"),
+        ("ai_suggested_caption", "AI caption"),
+        ("ai_confidence_score", "AI conf."),
+        ("ai_user_overridden", "User override"),
+        ("ai_safety_concerns_detected", "AI safety flags"),
+        ("created_via_ai_suggestion", "AI-authored tag"),
+        ("ai_reused_from_phash", "Analysis reused"),
         ("edits_summary", "Post-submit edits"),
     ])
+    # Per-photo override-detail block: only renders when a photo's tag
+    # was authored over an AI suggestion AND the user changed at least
+    # one suggested field. Renders one bullet per affected photo with
+    # the exact spec-required copy.
+    overrides = [p for p in photo_rows if p.get("ai_user_overridden")]
+    if overrides:
+        H("8a. AI Suggestion Overrides", level=2)
+        P(
+            f"{len(overrides)} photo(s) where the user changed an AI-suggested "
+            f"value at tag time. The original AI suggestion and the user-recorded "
+            f"reason are preserved verbatim for cross-examination purposes."
+        )
+        for p in overrides:
+            para = doc.add_paragraph(style="List Bullet")
+            r0 = para.add_run(f"Photo {p.get('id') or '—'}: ")
+            r0.bold = True
+            para.add_run(p.get("ai_override_detail") or "")
 
     # SECTION 9
     H("9. Gating Entities Log (RFI / Submittal / Field Issue)")
@@ -555,7 +656,41 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
         ts = html.escape(str(p.get("device_timestamp") or p.get("server_received_timestamp") or ""))
         cap = html.escape(str(p.get("caption") or "")[:80])
         sha = html.escape(str(p.get("sha256_hash") or "")[:16])
-        return f"<li>[{cls}] {ts} — {cap} <span class='hash'>sha256:{sha}…</span></li>"
+        # Bucket F Phase 4 -- inline AI lineage on each row. The block
+        # is rendered as a sub-paragraph so the index stays scannable
+        # but counsel can see the AI provenance without flipping to
+        # the .docx.
+        ai_bits: list[str] = []
+        if p.get("ai_suggested_class"):
+            conf = p.get("ai_confidence_score")
+            conf_s = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
+            ai_bits.append(
+                f"AI suggested: {html.escape(str(p.get('ai_suggested_class')))}{conf_s}"
+            )
+        if p.get("ai_user_overridden"):
+            ai_bits.append(
+                "<b>user overrode</b> — " + html.escape(str(
+                    p.get("ai_override_detail")
+                    or "(no override detail recorded)"
+                )[:240])
+            )
+        if p.get("ai_safety_concerns_detected"):
+            flags = ", ".join(p["ai_safety_concerns_detected"][:5])
+            ai_bits.append(
+                f"safety flags: {html.escape(flags)}"
+            )
+        if p.get("ai_reused_from_phash"):
+            ai_bits.append("analysis reused from prior upload")
+        ai_html = ""
+        if ai_bits:
+            ai_html = (
+                "<div class='ai-line'>" + " · ".join(ai_bits) + "</div>"
+            )
+        return (
+            f"<li>[{cls}] {ts} — {cap} "
+            f"<span class='hash'>sha256:{sha}…</span>"
+            f"{ai_html}</li>"
+        )
 
     def _mit_row(i, m):
         label = html.escape(str(m.get("strategy_name") or m.get("scenario_label") or m.get("id"))[:120])
@@ -584,6 +719,7 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
       .empty { color: #888; font-style: italic; }
       .privilege { background: #fff5e6; border: 1px solid #d97757; padding: 6pt 10pt; margin: 8pt 0; font-size: 9pt; }
       .hash { color: #999; font-family: monospace; font-size: 8pt; }
+      .ai-line { color: #555; font-size: 9pt; margin-top: 2pt; padding-left: 8pt; border-left: 2px solid #d97757; }
     """
     privilege_block = (
         "<div class='privilege'><b>Privileged work product (counsel privileged).</b> "

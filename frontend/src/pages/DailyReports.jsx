@@ -30,8 +30,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
-  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil,
+  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil, Sparkles, Loader2,
 } from "lucide-react";
+// Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
+// AI analysis lands (3-5s wait). Imported as a default export from
+// the photos sub-package.
+import TagWizard from "../components/photos/TagWizard";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -2215,15 +2219,53 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
 
 function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [busy, setBusy] = useState(false);
+  // Bucket F Phase 4 -- after upload, we poll the tray's AI analysis
+  // for up to ~6s while showing "Preparing tag suggestions…", then
+  // open the tag wizard with the AI defaults pre-loaded. The wizard
+  // starts at step 2 since the DR is already known from the page.
+  const [aiPrepStatus, setAiPrepStatus] = useState(null); // null | 'preparing' | 'ready' | 'skipped'
+  const [pendingTray, setPendingTray] = useState(null);
+  const [openWizard, setOpenWizard] = useState(false);
+
+  // Poll the tray's /ai-analysis until status leaves "pending"/"analyzing"
+  // or we hit the time cap. We never fail the upload on AI errors;
+  // worst case the wizard opens without AI defaults and the user tags
+  // manually.
+  const waitForAnalysis = async (trayId) => {
+    const MAX_ITERS = 12; // 12 * 500ms = 6s
+    for (let i = 0; i < MAX_ITERS; i++) {
+      try {
+        const r = await api.get(`/photo-tray/${trayId}/ai-analysis`);
+        const s = r.data?.ai_analysis_status;
+        if (s === "complete" || s === "failed" || s === "skipped"
+            || s === "budget_paused" || s === "rejected_by_user") {
+          return r.data;
+        }
+      } catch {
+        // Non-fatal -- keep waiting; loop will eventually time out.
+      }
+      // Don't sleep on the last iteration.
+      if (i < MAX_ITERS - 1) {
+        await new Promise((res) => setTimeout(res, 500));
+      }
+    }
+    return null;
+  };
+
   // Bucket D Phase 2 -- DR upload now lands in the photo_tray
   // (status=untagged) instead of going straight to the legacy
   // /photos/upload endpoint. The tray page (sidebar) is where the
   // user opens the 3-step tagging wizard. Caption + class moved to
   // the wizard since both are tag-time decisions, not capture-time.
+  //
+  // Bucket F Phase 4 -- after upload, we don't redirect the user to
+  // the tray page; we open the tag wizard inline with AI defaults
+  // pre-loaded.
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setBusy(true);
+    setAiPrepStatus(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -2231,11 +2273,38 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       fd.append("capture_source", "manual_upload");
       const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
       reload();
-      if (r.data?.status === "untagged") {
-        toast.success("Uploaded to photo tray. Tag it from the Photo tray page.");
-      } else {
-        toast.info(`Same photo already in tray (status=${r.data?.status})`);
+      const trayRow = r.data;
+      if (!trayRow?.id) {
+        toast.error("Upload returned no tray row");
+        return;
       }
+      // Existing dedup branch: same photo already uploaded -> the
+      // server returns the prior tray row (any status). Surface a
+      // friendlier message but still proceed to wizard if untagged.
+      if (trayRow.status && trayRow.status !== "untagged") {
+        toast.info(`Same photo already in tray (status=${trayRow.status}). Opening wizard.`);
+      }
+      // If CUI / AI disabled, the analysis status is already "skipped"
+      // -- don't wait; just open the wizard immediately.
+      const initialStatus = trayRow.ai_analysis_status;
+      if (initialStatus === "complete" || initialStatus === "skipped"
+          || initialStatus === "budget_paused"
+          || initialStatus === "rejected_by_user"
+          || initialStatus === "failed") {
+        setPendingTray(trayRow);
+        setAiPrepStatus(initialStatus === "complete" ? "ready" : "skipped");
+        setOpenWizard(true);
+        return;
+      }
+      // Otherwise: wait + show inline spinner.
+      setAiPrepStatus("preparing");
+      const finalRow = await waitForAnalysis(trayRow.id);
+      // Merge the latest analysis fields back onto the tray row so
+      // the wizard picks them up via its `tray` prop.
+      const merged = finalRow ? { ...trayRow, ...finalRow } : trayRow;
+      setPendingTray(merged);
+      setAiPrepStatus(finalRow?.ai_analysis_status === "complete" ? "ready" : "skipped");
+      setOpenWizard(true);
     } catch (err) {
       toast.error(err.response?.data?.detail || "Upload failed");
     }
@@ -2251,19 +2320,55 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
         ))}
         {!rows.length && <div className="col-span-3 text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
       </div>
+      {/* Bucket F Phase 4 -- "Preparing tag suggestions…" spinner
+          renders inline below the gallery while the upload waits for
+          AI analysis to land. Cap is 6s; the user can keep working
+          on the page in the meantime since the wizard hasn't opened
+          yet. */}
+      {aiPrepStatus === "preparing" && (
+        <div data-testid="dr-photos-ai-preparing"
+          className="mt-3 px-3 py-2 rounded bg-blue-50 border border-blue-200 text-blue-800 text-xs inline-flex items-center gap-2">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Sparkles className="h-3.5 w-3.5" />
+          Preparing tag suggestions…
+        </div>
+      )}
       {!locked && (
         <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
           <div className="text-[11px] text-slate-500">
             Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
-            Tag them to specific events from there.
+            After upload, we'll open the tag wizard with AI suggestions ready.
           </div>
           <label data-testid="photo-upload-label" className="block">
             <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
-              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload to tray"}
+              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload + tag"}
             </span>
             <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
           </label>
         </div>
+      )}
+      {/* Auto-opened tag wizard. DR is pre-locked so the wizard starts
+          at step 2 (event-type picker) and inherits AI suggestions. */}
+      {pendingTray && (
+        <TagWizard
+          open={openWizard}
+          onOpenChange={(v) => {
+            setOpenWizard(v);
+            if (!v) {
+              setPendingTray(null);
+              setAiPrepStatus(null);
+            }
+          }}
+          tray={pendingTray}
+          projectId={projectId}
+          initialDailyReportId={dailyReportId}
+          onTagged={() => {
+            reload();
+            setOpenWizard(false);
+            setPendingTray(null);
+            setAiPrepStatus(null);
+          }}
+        />
       )}
     </PanelShell>
   );
@@ -2320,6 +2425,21 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
             title={`Edited ${photo.edit_count || 0}x post-submit. ${photo.last_edit_reason ? `Last reason: ${photo.last_edit_reason}` : ""}`}
             className="bg-amber-300 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
             EDITED {photo.edit_count || 0}x
+          </span>
+        )}
+        {/* Bucket F Phase 3 pulled-forward (Risk #4) -- AI lineage
+            badge. Stamps when the tag row's created_via_ai_suggestion
+            is true. Renders alongside the post-submit-edited badge so
+            counsel + supers can see both lineage facts at a glance. */}
+        {photo.created_via_ai_suggestion && (
+          <span data-testid={`photo-ai-${photo.id}`}
+            title={
+              photo.ai_confidence_at_tag_time != null
+                ? `Tagged from AI suggestion at ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
+                : "Tagged from AI suggestion"
+            }
+            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-[8px] font-mono uppercase inline-flex items-center gap-0.5">
+            <Sparkles className="h-2 w-2" /> AI
           </span>
         )}
       </div>

@@ -47,7 +47,12 @@ const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
 
 function isoToday() { return new Date().toISOString().slice(0, 10); }
 
-export default function TagWizard({ open, onOpenChange, tray, projectId, onTagged }) {
+export default function TagWizard({ open, onOpenChange, tray, projectId, onTagged,
+                                    initialDailyReportId = null }) {
+  // Bucket F Phase 4 -- when the wizard is opened from the DR PhotosPanel
+  // upload flow, the DR is already known. Skip step 1 in that case
+  // (pre-select the DR + start at step 2) so the user lands directly
+  // on the AI-suggested event-type picker.
   const [step, setStep] = useState(1);
   const [drs, setDrs] = useState([]);
   const [drsLoading, setDrsLoading] = useState(false);
@@ -69,7 +74,8 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
   // Reset when the dialog opens for a new tray entry.
   useEffect(() => {
     if (!open) return;
-    setStep(1);
+    // Bucket F Phase 4 -- skip step 1 when DR is pre-supplied.
+    setStep(initialDailyReportId ? 2 : 1);
     setEventOptions([]);
     setEventId("");
     setShowAllTrades(false);
@@ -108,18 +114,26 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
     setCaption(trayAi?.ai_suggested_caption || "");
     // Pre-pick DR from tray's exif_taken_at date if available, else today.
     const exifDate = tray?.exif_taken_at ? String(tray.exif_taken_at).slice(0, 10) : null;
-    setDrId("");
+    // Bucket F Phase 4 -- when the wizard was launched from a known DR
+    // (DR PhotosPanel upload flow), pin the DR id immediately. We
+    // still pull the DR list so optionLabel still works if step 1 is
+    // surfaced via a back-button.
+    setDrId(initialDailyReportId || "");
     if (projectId) {
       setDrsLoading(true);
       api.get(`/projects/${projectId}/daily-reports`)
         .then((r) => {
           const list = Array.isArray(r.data) ? r.data : [];
           setDrs(list);
-          // Default selection: DR with report_date == exifDate, else today's, else newest.
-          const targetDate = exifDate || isoToday();
-          const match = list.find((d) => d.report_date === targetDate);
-          if (match) setDrId(match.id);
-          else if (list.length) setDrId(list[0].id);
+          // Default selection: explicit initial DR > EXIF-date DR > today's DR > newest.
+          if (initialDailyReportId) {
+            // Already set above; just make sure the list is loaded.
+          } else {
+            const targetDate = exifDate || isoToday();
+            const match = list.find((d) => d.report_date === targetDate);
+            if (match) setDrId(match.id);
+            else if (list.length) setDrId(list[0].id);
+          }
         })
         .catch(() => setDrs([]))
         .finally(() => setDrsLoading(false));
@@ -127,7 +141,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
   }, [open, projectId, tray?.id, tray?.ai_analysis_status,
        tray?.ai_suggested_event_type, tray?.ai_suggested_class,
        tray?.ai_suggested_caption, tray?.ai_suggested_trade,
-       tray?.ai_confidence_score]);
+       tray?.ai_confidence_score, initialDailyReportId]);
 
   // Bucket F Phase 3 -- step-3 trade filter. When AI suggested a
   // trade AND the user hasn't toggled showAllTrades, filter options
