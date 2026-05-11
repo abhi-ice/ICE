@@ -391,12 +391,13 @@ function PendingSuggestionsQueue() {
           data-testid="suggestions-bulk-bar"
           className="flex flex-wrap items-center gap-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs"
         >
-          <label className="inline-flex items-center gap-1">
+          <label className="inline-flex items-center gap-2 p-1 -m-1 cursor-pointer">
             <input
               type="checkbox"
               data-testid="suggestions-select-all"
               checked={selected.size === rows.length && rows.length > 0}
               onChange={toggleAll}
+              className="h-4 w-4 cursor-pointer"
             />
             <span>{selected.size} / {rows.length} selected on this page</span>
           </label>
@@ -612,13 +613,22 @@ function SuggestionRow({ row, selected, onToggle, onNavigate, onChanged }) {
       className="bg-white border border-slate-200 rounded p-2"
     >
       <div className="flex items-start gap-2">
-        <input
-          type="checkbox"
-          data-testid={`suggestion-select-${row.id}`}
-          checked={selected}
-          onChange={onToggle}
-          className="mt-1 shrink-0"
-        />
+        {/* Bucket G Phase 5 mobile polish: thumb-friendly checkbox
+            target (~44px tap area at 380px width). Larger box +
+            padding so power-users on phones can rapidly bulk-select
+            without overshooting. */}
+        <label
+          className="p-1 -m-1 shrink-0 inline-flex"
+          aria-label="Select suggestion"
+        >
+          <input
+            type="checkbox"
+            data-testid={`suggestion-select-${row.id}`}
+            checked={selected}
+            onChange={onToggle}
+            className="mt-1 h-4 w-4 cursor-pointer"
+          />
+        </label>
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1 text-[10px] uppercase">
             <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-200">

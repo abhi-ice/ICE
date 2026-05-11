@@ -85,6 +85,50 @@ EXPIRATION_DAYS = 30
 # the service either.
 BULK_CAP = 50
 
+# Bucket G Phase 5 (2026-05-11) -- 60s TTL in-process cache for the
+# per-user pending-suggestions feed. Drives the sidebar badge + the
+# Review Queue page; both call back roughly every 60s, so a single-
+# tick cache flatlines the per-user query load. Eviction is bounded
+# at _PENDING_CACHE_MAX rows so RSS stays reasonable; the cache is
+# also invalidated explicitly on confirm / reject / bulk-ops for
+# that user (so the user sees their own action reflected
+# immediately, not 60s later).
+PENDING_CACHE_TTL_SECONDS = 60
+_PENDING_CACHE_MAX = 128
+_pending_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _pending_cache_key(
+    *, tenant_id: str, user_role: str,
+    project_id: Optional[str], entity_type: Optional[str],
+    limit: int, cursor: Optional[str],
+) -> str:
+    return (
+        f"{tenant_id}|{user_role}|{project_id or ''}|"
+        f"{entity_type or ''}|{limit}|{cursor or ''}"
+    )
+
+
+def _invalidate_pending_cache(tenant_id: str) -> None:
+    """Drop every cached page for this tenant. We don't try to be
+    surgical about per-user invalidation -- the bulk operations span
+    multiple suggestions which may sit on different users' queues,
+    and a tenant-wide flush is cheap because the cache is small."""
+    if not tenant_id:
+        return
+    prefix = f"{tenant_id}|"
+    for k in list(_pending_cache.keys()):
+        if k.startswith(prefix):
+            _pending_cache.pop(k, None)
+
+
+def _evict_pending_cache_if_needed() -> None:
+    if len(_pending_cache) <= _PENDING_CACHE_MAX:
+        return
+    items = sorted(_pending_cache.items(), key=lambda kv: kv[1][0])
+    for k, _ in items[: max(1, len(items) // 2)]:
+        _pending_cache.pop(k, None)
+
 
 def _normalize_authorized_roles(
     *,
@@ -249,6 +293,9 @@ async def create_suggestion(
     except Exception as exc:
         log.warning("audit FIELD_SUGGESTION_CREATED failed (%s): %s",
                     doc["id"], exc)
+    # Phase 5 cache invalidation -- a new pending row needs to be
+    # visible immediately in the sidebar badge + Review Queue.
+    _invalidate_pending_cache(tenant_id)
     return {"ok": True, "row": doc}
 
 
@@ -331,6 +378,10 @@ async def confirm_suggestion(
     refreshed = await db.field_suggestions.find_one(
         {"id": suggestion_id}, {"_id": 0},
     )
+    # Phase 5 cache invalidation -- confirmation flips status; the
+    # row must drop out of every cached pending feed for this tenant
+    # so the actor sees their own click reflected immediately.
+    _invalidate_pending_cache(tenant_id)
     return {"ok": True, "row": refreshed}
 
 
@@ -395,6 +446,8 @@ async def reject_suggestion(
     refreshed = await db.field_suggestions.find_one(
         {"id": suggestion_id}, {"_id": 0},
     )
+    # Phase 5 cache invalidation.
+    _invalidate_pending_cache(tenant_id)
     return {"ok": True, "row": refreshed}
 
 
@@ -427,6 +480,8 @@ async def _mark_superseded(
     except Exception as exc:
         log.warning("audit FIELD_SUGGESTION_SUPERSEDED failed (%s): %s",
                     old_id, exc)
+    # Phase 5 cache invalidation.
+    _invalidate_pending_cache(tenant_id)
 
 
 async def supersede_suggestion(
@@ -481,11 +536,31 @@ async def get_pending_suggestions_for_user(
     project_id: Optional[str] = None,
     entity_type: Optional[str] = None,
     limit: int = 100, cursor: Optional[str] = None,
+    bypass_cache: bool = False,
 ) -> dict:
     """Review-queue feed. Returns pending suggestions where the
     caller's role is in authorized_confirmer_roles. Cursor-paginated
     on created_at desc.
+
+    Bucket G Phase 5 -- wraps the query in a 60s TTL in-process
+    cache so the sidebar-badge refresh + Review-Queue page poll
+    don't double-hit the DB. Invalidated explicitly on mutations
+    for the tenant; cursor + filter combos are part of the cache
+    key so two users browsing different pages don't collide.
     """
+    import time
+    limit = max(1, min(int(limit), 500))
+    cache_key = _pending_cache_key(
+        tenant_id=tenant_id, user_role=user_role,
+        project_id=project_id, entity_type=entity_type,
+        limit=limit, cursor=cursor,
+    )
+    now_mono = time.monotonic()
+    if not bypass_cache:
+        cached = _pending_cache.get(cache_key)
+        if cached and cached[0] > now_mono:
+            return {**cached[1], "_cache_hit": True}
+
     db = get_db()
     q: dict = {
         "tenant_id": tenant_id,
@@ -498,7 +573,6 @@ async def get_pending_suggestions_for_user(
         q["entity_type"] = entity_type
     if cursor:
         q["created_at"] = {"$lt": cursor}
-    limit = max(1, min(int(limit), 500))
     rows = await db.field_suggestions.find(
         q, {"_id": 0},
     ).sort("created_at", -1).limit(limit).to_list(length=limit)
@@ -508,12 +582,18 @@ async def get_pending_suggestions_for_user(
     for r in rows:
         et = r.get("entity_type") or "unknown"
         counts_by_entity_type[et] = counts_by_entity_type.get(et, 0) + 1
-    return {
+    result = {
         "rows": rows,
         "next_cursor": next_cursor,
         "count_in_page": len(rows),
         "counts_by_entity_type": counts_by_entity_type,
+        "_cache_hit": False,
     }
+    _pending_cache[cache_key] = (
+        now_mono + PENDING_CACHE_TTL_SECONDS, result,
+    )
+    _evict_pending_cache_if_needed()
+    return result
 
 
 async def get_suggestion(
@@ -562,10 +642,17 @@ async def expire_stale_pending(
             if not tid:
                 continue
             seen_tenants.add(tid)
+            # Spec rejection_reason matches the Phase 5 wording so
+            # the calibration RAG corpus can distinguish "user
+            # rejected" from "system auto-rejected after timeout".
+            expired_reason = (
+                "expired_30d_no_action" if older_than_days == 30
+                else f"expired_after_{older_than_days}_days"
+            )
             res = await db.field_suggestions.update_one(
                 {"id": r["id"], "status": "pending"},
                 {"$set": {"status": "expired",
-                           "rejection_reason": f"expired_after_{older_than_days}_days",
+                           "rejection_reason": expired_reason,
                            "rejected_at": now.isoformat(),
                            "updated_at": now.isoformat()}},
             )
@@ -590,6 +677,10 @@ async def expire_stale_pending(
             log.warning("expire_stale_pending failed for %s: %s",
                         r.get("id"), exc)
     out["tenants_touched"] = len(seen_tenants)
+    # Phase 5 cache invalidation -- every tenant we touched needs
+    # its pending feed cleared.
+    for tid in seen_tenants:
+        _invalidate_pending_cache(tid)
     return out
 
 
@@ -651,3 +742,145 @@ async def bulk_reject(
                                      "reason": res.get("reason"),
                                      "current_status": res.get("current_status")})
     return out
+
+
+# =====================================================================
+# Bucket G Phase 5 -- per-source acceptance-rate stats.
+# Drives the "is this AI producer actually useful?" dashboard card.
+# Per-tenant roll-up of the last `days` (default 30).
+# =====================================================================
+
+async def get_source_acceptance_stats(
+    *, tenant_id: str, days: int = 30,
+) -> dict:
+    """For each registered AI source, returns counts + acceptance
+    rate + average confidence at acceptance + top rejection reasons.
+
+    Acceptance rate = confirmed / (confirmed + rejected). Superseded
+    + expired excluded -- those aren't user decisions. Pending is
+    surfaced separately so admins can spot "huge pending pile means
+    this source is overproducing and nobody's reviewing it"."""
+    if days < 1:
+        days = 1
+    if days > 365:
+        days = 365
+    db = get_db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cursor = db.field_suggestions.find(
+        {"tenant_id": tenant_id, "created_at": {"$gte": cutoff}},
+        {"_id": 0, "id": 1, "suggested_by": 1, "status": 1,
+         "confidence_score": 1, "rejection_reason": 1,
+         "confirmed_at": 1, "rejected_at": 1, "created_at": 1},
+    )
+    by_source: dict[str, dict] = {}
+    async for r in cursor:
+        s = r.get("suggested_by") or "(unknown)"
+        bucket = by_source.setdefault(s, {
+            "source": s,
+            "total_created": 0,
+            "confirmed_count": 0,
+            "rejected_count": 0,
+            "expired_count": 0,
+            "superseded_count": 0,
+            "pending_count": 0,
+            "_conf_sum_accepted": 0.0,
+            "_conf_n_accepted": 0,
+            "_rejection_reasons": {},
+            "_avg_decision_seconds": [],
+        })
+        bucket["total_created"] += 1
+        status = r.get("status") or "pending"
+        if status == "confirmed":
+            bucket["confirmed_count"] += 1
+            c = r.get("confidence_score")
+            if isinstance(c, (int, float)):
+                bucket["_conf_sum_accepted"] += float(c)
+                bucket["_conf_n_accepted"] += 1
+            # Median decision latency for the per-source card.
+            try:
+                if r.get("created_at") and r.get("confirmed_at"):
+                    t0 = datetime.fromisoformat(
+                        r["created_at"].replace("Z", "+00:00"),
+                    )
+                    t1 = datetime.fromisoformat(
+                        r["confirmed_at"].replace("Z", "+00:00"),
+                    )
+                    bucket["_avg_decision_seconds"].append(
+                        (t1 - t0).total_seconds(),
+                    )
+            except Exception:
+                pass
+        elif status == "rejected":
+            bucket["rejected_count"] += 1
+            rr = (r.get("rejection_reason") or "").strip()
+            if rr and rr != "entity_deleted" and not rr.startswith("expired"):
+                # Snippets are first 80 chars so the dashboard can
+                # show top reasons compactly.
+                snippet = rr[:80]
+                bucket["_rejection_reasons"][snippet] = (
+                    bucket["_rejection_reasons"].get(snippet, 0) + 1
+                )
+        elif status == "expired":
+            bucket["expired_count"] += 1
+        elif status == "superseded":
+            bucket["superseded_count"] += 1
+        elif status == "pending":
+            bucket["pending_count"] += 1
+
+    # Post-process: derive rates + top reasons. Strip the leading-
+    # underscore intermediate fields so the API response is clean.
+    out_rows = []
+    for s, b in by_source.items():
+        decided = b["confirmed_count"] + b["rejected_count"]
+        rate = (b["confirmed_count"] / decided) if decided else 0.0
+        avg_conf = (
+            b["_conf_sum_accepted"] / b["_conf_n_accepted"]
+            if b["_conf_n_accepted"] else 0.0
+        )
+        avg_decision_s = (
+            sum(b["_avg_decision_seconds"]) / len(b["_avg_decision_seconds"])
+            if b["_avg_decision_seconds"] else 0.0
+        )
+        top_reasons = sorted(
+            b["_rejection_reasons"].items(),
+            key=lambda kv: -kv[1],
+        )[:3]
+        out_rows.append({
+            "source": s,
+            "total_created": b["total_created"],
+            "confirmed_count": b["confirmed_count"],
+            "rejected_count": b["rejected_count"],
+            "expired_count": b["expired_count"],
+            "superseded_count": b["superseded_count"],
+            "pending_count": b["pending_count"],
+            "acceptance_rate": round(rate, 3),
+            "acceptance_pct": round(rate * 100.0, 1),
+            "avg_confidence_at_acceptance": round(avg_conf, 3),
+            "avg_decision_seconds": round(avg_decision_s, 1),
+            "top_rejection_reasons": [
+                {"reason": k, "count": v} for k, v in top_reasons
+            ],
+        })
+
+    out_rows.sort(key=lambda x: -x["total_created"])
+    overall_confirmed = sum(r["confirmed_count"] for r in out_rows)
+    overall_rejected = sum(r["rejected_count"] for r in out_rows)
+    overall_decided = overall_confirmed + overall_rejected
+    overall_rate = (
+        round(overall_confirmed / overall_decided, 3)
+        if overall_decided else 0.0
+    )
+    return {
+        "tenant_id": tenant_id,
+        "window_days": days,
+        "per_source": out_rows,
+        "overall": {
+            "total_created": sum(r["total_created"] for r in out_rows),
+            "confirmed_count": overall_confirmed,
+            "rejected_count": overall_rejected,
+            "expired_count": sum(r["expired_count"] for r in out_rows),
+            "pending_count": sum(r["pending_count"] for r in out_rows),
+            "acceptance_rate": overall_rate,
+            "acceptance_pct": round(overall_rate * 100.0, 1),
+        },
+    }

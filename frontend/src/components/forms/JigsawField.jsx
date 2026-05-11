@@ -142,7 +142,26 @@ export default function JigsawField({
   const [loading, setLoading] = useState(false);
   const [suggestion, setSuggestion] = useState(null);   // null OR row
   const [terminal, setTerminal] = useState(null);       // confirmed / rejected metadata
-  const [expanded, setExpanded] = useState(true);
+  // Bucket G Phase 5 (2026-05-11) -- reactive mobile detection. The
+  // initial state defaults to collapsed-on-mobile so a 380px-wide
+  // screen doesn't have the callout taking up most of the viewport.
+  // Desktop keeps the callout expanded by default. Resize listener
+  // keeps the band accurate across orientation changes.
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth < 640,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onResize = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener("resize", onResize, { passive: true });
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  // Default expanded only on desktop; mobile users tap the chevron
+  // to expand on demand.
+  const [expanded, setExpanded] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.innerWidth >= 640;
+  });
   const [busy, setBusy] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
@@ -243,10 +262,8 @@ export default function JigsawField({
   // STATE 1: no entity yet (create form) -- pass through.
   // -------------------------------------------------------------------
   if (noEntity) return <>{children}</>;
-
-  // Detect rough mobile width without subscribing (it's enough for the
-  // collapsed-by-default callout; full media-query is overkill).
-  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+  // (mobile detection now lives in component state via useState +
+  //  resize listener; see hooks above.)
 
   // -------------------------------------------------------------------
   // STATE 2: pending AI suggestion exists.
@@ -297,6 +314,8 @@ export default function JigsawField({
                 Edited from AI suggestion — input value differs from above.
               </div>
             )}
+            {/* Phase 5 mobile polish: thumb-friendly button heights
+                on touch surfaces. Desktop keeps the compact h-7. */}
             <div className="flex flex-wrap gap-1">
               <button
                 type="button"
@@ -308,7 +327,10 @@ export default function JigsawField({
                     ? `Only ${allowedRoles.join(", ")} can confirm this field`
                     : "Accept the AI suggestion"
                 }
-                className="h-7 px-2 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className={
+                  `${isMobile ? "h-9 px-3" : "h-7 px-2"} ` +
+                  "rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                }
               >
                 {busy
                   ? <Loader2 className="h-3 w-3 animate-spin" />
@@ -325,7 +347,10 @@ export default function JigsawField({
                     ? `Only ${allowedRoles.join(", ")} can reject this field`
                     : "Reject (requires a reason)"
                 }
-                className="h-7 px-2 rounded border border-rose-300 bg-white text-rose-700 text-xs inline-flex items-center gap-1 hover:bg-rose-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                className={
+                  `${isMobile ? "h-9 px-3" : "h-7 px-2"} ` +
+                  "rounded border border-rose-300 bg-white text-rose-700 text-xs inline-flex items-center gap-1 hover:bg-rose-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                }
               >
                 <X className="h-3 w-3" />
                 Reject
@@ -335,7 +360,10 @@ export default function JigsawField({
                 onClick={editInline}
                 data-testid={`jigsaw-edit-${fieldPath}`}
                 title="Copy the AI value into the input, then edit it manually"
-                className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50"
+                className={
+                  `${isMobile ? "h-9 px-3" : "h-7 px-2"} ` +
+                  "rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50"
+                }
               >
                 <Edit3 className="h-3 w-3" />
                 Edit

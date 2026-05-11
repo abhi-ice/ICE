@@ -470,6 +470,47 @@ async def get_project_suggestion_stats(
 
 
 # =====================================================================
+# POST /api/field-suggestions/sweep-expired  (admin)
+# Phase 5 manual trigger for the 30-day expiration sweep. The
+# lifespan path runs this on boot + every 6 hours; this endpoint
+# is the on-demand admin override for testing / one-shot runs.
+# =====================================================================
+
+@router.post("/field-suggestions/sweep-expired")
+async def sweep_expired_endpoint(
+    older_than_days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_ADMIN_SWEEP:
+        raise HTTPException(403, "Admins only")
+    # Tenant-scoped sweep -- only this tenant's rows get touched.
+    # The lifespan path runs an unscoped variant.
+    res = await fs.expire_stale_pending(
+        tenant_id=ctx["tenant_id"],
+        older_than_days=older_than_days, limit=limit,
+    )
+    return res
+
+
+# Bucket G Phase 5 -- per-source acceptance-rate stats. Admin/PM
+# only. Feeds the Settings -> AI Usage tab card that shows which
+# producers are actually getting their suggestions accepted.
+@router.get("/tenants/current/suggestion-source-stats")
+async def get_source_acceptance_stats_endpoint(
+    days: int = Query(default=30, ge=1, le=365),
+    ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_VIEW_STATS:
+        raise HTTPException(
+            403, "Admins / PMs only -- per-source acceptance is sensitive",
+        )
+    return await fs.get_source_acceptance_stats(
+        tenant_id=ctx["tenant_id"], days=days,
+    )
+
+
+# =====================================================================
 # POST /api/field-suggestions/sweep-deleted-entities  (admin)
 # Edge case #2 from the spec: when a suggestion's underlying entity
 # is deleted, the suggestion is auto-rejected with reason="entity_

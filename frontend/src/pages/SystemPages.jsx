@@ -70,6 +70,21 @@ const AUDIT_OP_GROUPS = [
       "PHOTO_AI_OVERRIDE_SNAPSHOT_BACKFILL",
     ],
   },
+  // Bucket G Phase 5 (2026-05-11) -- Jigsaw field_suggestions op
+  // family. Surfacing every lifecycle op so compliance can audit
+  // "AI suggested X, human did Y" without grepping raw audit feed.
+  {
+    label: "Jigsaw suggestions",
+    ops: [
+      "FIELD_SUGGESTIONS_INITIALIZED",
+      "FIELD_SUGGESTION_CREATED",
+      "FIELD_SUGGESTION_CONFIRMED",
+      "FIELD_SUGGESTION_REJECTED",
+      "FIELD_SUGGESTION_SUPERSEDED",
+      "FIELD_SUGGESTION_EXPIRED",
+      "FIELD_SUGGESTIONS_SCHEDULE_TRADE_INFERENCE",
+    ],
+  },
 ];
 
 // AuditLog page — append-only, with hash-chain integrity check button.
@@ -321,6 +336,8 @@ function AiUsageTab() {
   const [dashboard, setDashboard] = useState(null);
   const [timings, setTimings] = useState(null);
   const [compliance, setCompliance] = useState(null);
+  // Bucket G Phase 5 -- per-source Jigsaw acceptance-rate stats.
+  const [sourceStats, setSourceStats] = useState(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
@@ -329,14 +346,17 @@ function AiUsageTab() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [b, d, t] = await Promise.all([
+      const [b, d, t, ss] = await Promise.all([
         api.get("/tenants/current/ai-budget"),
         api.get("/tenants/current/photo-ai-cost-dashboard", { params: { days } }),
         api.get("/tenants/current/photo-ai-timings", { params: { days: Math.min(days, 90) } }),
+        api.get("/tenants/current/suggestion-source-stats", { params: { days } })
+            .catch(() => ({ data: null })),
       ]);
       setBudget(b.data);
       setDashboard(d.data);
       setTimings(t.data);
+      setSourceStats(ss.data);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to load AI usage data");
     } finally {
@@ -441,6 +461,9 @@ function AiUsageTab() {
 
       {/* Performance percentiles */}
       {timings && <TimingPercentilesCard timings={timings} />}
+
+      {/* Bucket G Phase 5 -- Suggestion Acceptance Rates card. */}
+      {sourceStats && <SuggestionSourceStatsCard stats={sourceStats} />}
 
       {/* CUI compliance */}
       <div className="bg-card border border-border rounded p-4 space-y-3">
@@ -674,6 +697,117 @@ function TimingPercentilesCard({ timings }) {
   );
 }
 
+// Bucket G Phase 5 -- per-AI-source acceptance-rate roll-up. Drives
+// the "is this AI producer actually useful?" feedback signal.
+function SuggestionSourceStatsCard({ stats }) {
+  const rows = stats?.per_source || [];
+  const overall = stats?.overall || {};
+  const SOURCE_LABELS = {
+    ai_copilot: "AI Copilot",
+    ai_photo_vision: "Photo AI",
+    ai_rfi_drafter: "RFI Drafter",
+    ai_qc_analyzer: "QC Analyzer",
+    ai_safety_analyzer: "Safety Analyzer",
+    ai_schedule_analyzer: "Schedule Analyzer",
+    system_inference: "System",
+    calibration_rag: "Calibration RAG",
+  };
+  // Acceptance-rate tone -- mirrors the Jigsaw confidence palette so
+  // operators read the visual language consistently.
+  const rateTone = (pct) => {
+    if (pct >= 75) return "bg-emerald-100 text-emerald-900 border-emerald-300";
+    if (pct >= 50) return "bg-sky-100 text-sky-900 border-sky-300";
+    if (pct >= 25) return "bg-amber-100 text-amber-900 border-amber-300";
+    return "bg-rose-100 text-rose-900 border-rose-300";
+  };
+  return (
+    <div className="bg-card border border-border rounded p-4 space-y-3"
+      data-testid="ai-suggestion-source-stats">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium inline-flex items-center gap-1.5">
+          <Sparkles className="h-3.5 w-3.5 text-blue-700" />
+          Suggestion acceptance rates ({stats.window_days}d)
+        </div>
+        <div className="text-[10px] text-slate-500">
+          {overall.total_created || 0} created · {overall.confirmed_count || 0} confirmed
+          · {overall.rejected_count || 0} rejected
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-xs text-slate-500 italic">
+          No AI suggestions in the last {stats.window_days} days.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r) => {
+            const pct = r.acceptance_pct || 0;
+            return (
+              <div key={r.source}
+                data-testid={`ai-source-stats-row-${r.source}`}
+                className="border border-slate-200 rounded p-2 bg-white">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-medium text-slate-800">
+                    {SOURCE_LABELS[r.source] || r.source}
+                  </span>
+                  <span className={`px-1.5 py-0.5 rounded border text-[10px] ${rateTone(pct)}`}>
+                    {pct}% accepted
+                  </span>
+                  <span className="text-slate-500 text-[10px]">
+                    ({r.confirmed_count}/{r.confirmed_count + r.rejected_count} decided)
+                  </span>
+                  {r.pending_count > 0 && (
+                    <span className="text-[10px] text-slate-500">
+                      · {r.pending_count} pending
+                    </span>
+                  )}
+                  {r.expired_count > 0 && (
+                    <span className="text-[10px] text-slate-400">
+                      · {r.expired_count} expired
+                    </span>
+                  )}
+                  {r.avg_confidence_at_acceptance > 0 && (
+                    <span className="text-[10px] text-slate-500 ml-auto">
+                      avg conf at accept:&nbsp;
+                      {Math.round(r.avg_confidence_at_acceptance * 100)}%
+                    </span>
+                  )}
+                </div>
+                {/* Visual progress bar so trends are scannable. */}
+                <div className="mt-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className={
+                      pct >= 75 ? "h-full bg-emerald-500" :
+                      pct >= 50 ? "h-full bg-sky-500" :
+                      pct >= 25 ? "h-full bg-amber-500" :
+                      "h-full bg-rose-500"
+                    }
+                    style={{ width: `${Math.min(100, pct)}%` }}
+                  />
+                </div>
+                {/* Top 3 rejection reasons -- the calibration feedback. */}
+                {r.top_rejection_reasons?.length > 0 && (
+                  <details className="mt-1.5">
+                    <summary className="text-[10px] cursor-pointer text-slate-600 hover:underline">
+                      Top {r.top_rejection_reasons.length} rejection reason(s)
+                    </summary>
+                    <ul className="mt-1 space-y-0.5">
+                      {r.top_rejection_reasons.map((rr, idx) => (
+                        <li key={idx} className="text-[10px] text-rose-800 border-l-2 border-rose-200 pl-2">
+                          "{rr.reason}" <span className="text-slate-500">×{rr.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CuiComplianceReport({ report }) {
   return (
     <div className="space-y-2 text-xs" data-testid="ai-cui-report">
@@ -792,6 +926,86 @@ export function AiHelpPanel({ onClose }) {
               backoff before marking the photo failed.
             </p>
           </section>
+
+          {/* Bucket G Phase 5 (2026-05-11) -- Jigsaw Suggestions
+              section. Six sub-sections per spec. */}
+          <div className="border-t border-slate-200 pt-3 mt-2"
+            data-testid="ai-help-jigsaw-section">
+            <div className="text-sm font-semibold text-slate-900 inline-flex items-center gap-1.5 mb-2">
+              <Sparkles className="h-3.5 w-3.5 text-blue-700" />
+              Jigsaw Suggestions (cross-form pre-fill)
+            </div>
+            <section>
+              <div className="font-medium text-slate-900">What is Jigsaw?</div>
+              <p>
+                A unified UX pattern across every form: AI producers (Photo AI,
+                RFI Drafter, QC Analyzer, Safety Analyzer, Schedule Analyzer,
+                Calibration RAG) drop suggested values onto specific fields.
+                The fields render with a colored ring + Accept/Reject/Edit
+                buttons until a human confirms.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">What the colors mean</div>
+              <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                <li><b className="text-emerald-700">Emerald ring</b> = AI is ≥85% confident ("High confidence")</li>
+                <li><b className="text-sky-700">Sky-blue ring</b> = 70–84% ("Confident")</li>
+                <li><b className="text-amber-700">Amber ring</b> = 30–69% ("Review suggested")</li>
+                <li><b className="text-rose-700">Rose ring</b> = &lt;30% ("Low confidence — verify")</li>
+                <li>No ring = no pending suggestion, or value is human-confirmed</li>
+              </ul>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Role permissions</div>
+              <p>
+                Each entity type has authorized confirmer roles: e.g. RFIs
+                require <b>PM or admin</b>; safety events accept <b>super, PM,
+                admin, foreman</b>. If you're not in the allowed list, the
+                Accept/Reject buttons are disabled with a Lock icon — but you
+                can still <b>Edit</b> (the suggestion stays pending for the
+                authorized confirmer to review). Defaults are per the
+                <code className="px-1 mx-0.5 bg-slate-100 rounded">FIELD_SUGGESTION_DEFAULT_ROLES</code>
+                mapping; admins can override per-suggestion via the manual
+                create endpoint.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Accept / Reject / Edit</div>
+              <p>
+                <b>Accept</b> applies the AI value to the form and stamps a
+                <code className="px-1 mx-0.5 bg-slate-100 rounded">FIELD_SUGGESTION_CONFIRMED</code>
+                audit op. <b>Reject</b> (requires a 10+ character reason) feeds
+                the calibration RAG corpus so future fine-tuning learns from
+                "AI said X, user rejected because Y". <b>Edit</b> copies the
+                value into the input and lets you tweak it before saving — the
+                suggestion stays pending in the audit trail so the lineage is
+                preserved.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">What expires</div>
+              <p>
+                Pending suggestions older than <b>30 days</b> auto-expire with
+                rejection_reason <code className="px-1 mx-0.5 bg-slate-100 rounded">expired_30d_no_action</code>.
+                A boot-time sweep + every-6-hour recurring task handle this;
+                admins can trigger an immediate sweep via
+                <code className="px-1 mx-0.5 bg-slate-100 rounded">POST /api/field-suggestions/sweep-expired</code>.
+                Expired rows stay in the audit chain (for the FIELD_SUGGESTION_
+                EXPIRED op) but drop out of the Review Queue.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Where to find the Review Queue</div>
+              <p>
+                Cross-tenant queue lives at <b>Approvals → Pending suggestions
+                tab</b>. The sidebar Approvals badge rolls in both
+                approvals + pending suggestions; "N+" appears when more rows
+                are available beyond the badge's fetched page. The Tasks page
+                also shows a per-project banner after a schedule import drops
+                AI trade suggestions in bulk.
+              </p>
+            </section>
+          </div>
         </div>
       </div>
     </div>

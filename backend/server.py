@@ -369,7 +369,77 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning("Photo AI startup sweep failed (non-fatal): %s", e)
+
+    # Bucket G Phase 5 (2026-05-11) -- field_suggestions expiration
+    # sweep. Pending suggestions older than EXPIRATION_DAYS (30) get
+    # flipped to "expired" with rejection_reason set. Audit fires
+    # FIELD_SUGGESTION_EXPIRED. Stops zombie suggestions from
+    # cluttering the Review Queue forever.
+    #
+    # Boot pass: cap at 1000 rows so a backlog can't slow startup.
+    # Recurring pass: every 6 hours via asyncio task. Cancelled on
+    # shutdown via the lifespan exit path below.
+    try:
+        from services.field_suggestions import expire_stale_pending
+        boot_sweep = await expire_stale_pending(
+            tenant_id=None, older_than_days=30, limit=1000,
+        )
+        if boot_sweep.get("swept"):
+            logger.info(
+                "field_suggestions boot expiration sweep: swept=%s "
+                "expired=%s tenants_touched=%s failures=%s",
+                boot_sweep.get("swept"), boot_sweep.get("expired"),
+                boot_sweep.get("tenants_touched"),
+                boot_sweep.get("failures"),
+            )
+    except Exception as e:
+        logger.warning(
+            "field_suggestions boot expiration sweep failed (non-fatal): %s",
+            e,
+        )
+
+    # Recurring 6-hour expiration sweep. asyncio.create_task so it
+    # runs alongside the API server without blocking request handling.
+    # The task ref is stashed on app.state so the shutdown path can
+    # cancel it cleanly.
+    import asyncio as _asyncio
+
+    async def _periodic_suggestion_expire():
+        from services.field_suggestions import expire_stale_pending as _exp
+        SLEEP_S = 6 * 3600
+        while True:
+            try:
+                await _asyncio.sleep(SLEEP_S)
+                res = await _exp(tenant_id=None, older_than_days=30, limit=5000)
+                if res.get("expired"):
+                    logger.info(
+                        "field_suggestions periodic sweep: "
+                        "swept=%s expired=%s tenants=%s",
+                        res.get("swept"), res.get("expired"),
+                        res.get("tenants_touched"),
+                    )
+            except _asyncio.CancelledError:
+                logger.info("field_suggestions periodic sweep cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "field_suggestions periodic sweep tick failed "
+                    "(non-fatal): %s", exc,
+                )
+
+    app.state.field_suggestions_expire_task = _asyncio.create_task(
+        _periodic_suggestion_expire(),
+    )
     yield
+    # Cancel the recurring task before closing the DB so the next
+    # tick doesn't hit a closed connection.
+    task = getattr(app.state, "field_suggestions_expire_task", None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except Exception:
+            pass
     await close_db()
 
 
