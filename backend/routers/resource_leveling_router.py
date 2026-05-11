@@ -282,6 +282,37 @@ async def get_project_demand(
 
 
 # =====================================================================
+# 3b. Crew utilization rollup (Phase 4 fix -- replaces placeholder zeros)
+# =====================================================================
+
+@router.get("/crew-utilization-rollup")
+async def get_utilization_rollup(
+    date_range_start: Optional[str] = None,
+    date_range_end: Optional[str] = None,
+    ctx: dict = Depends(require_tenant),
+):
+    """Per-crew aggregates over the date window. Returns one row per
+    crew (filtered by RBAC) with utilization%, over/under days,
+    committed/available hour totals."""
+    _enforce_read(ctx)
+    start, end = _parse_range(date_range_start, date_range_end, default_window_days=14)
+    accessible = await get_accessible_project_ids(
+        tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+        user_role=(ctx["user"].get("role") or ""),
+    )
+    # If user is scoped with no memberships, return empty.
+    if accessible is not None and not accessible:
+        return []
+    try:
+        return await svc.get_crew_utilization_rollup(
+            tenant_id=ctx["tenant_id"], start=start, end=end,
+            accessible_project_ids=accessible,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# =====================================================================
 # 4. Gap list (severity-sorted, paginated)
 # =====================================================================
 

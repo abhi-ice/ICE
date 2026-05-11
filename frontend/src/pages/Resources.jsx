@@ -1,7 +1,9 @@
 // Resources — generic CRUD pages for crews/equipment/people/certifications.
 // Each one uses the CrudList component with a config below.
+import { useEffect, useState } from "react";
 import CrudList from "../components/CrudList";
 import { useProjects } from "../lib/projects";
+import api from "../lib/api";
 
 const TRADE_OPTIONS = [
   "general", "concrete", "masonry", "steel", "framing", "drywall",
@@ -18,6 +20,26 @@ const EQUIPMENT_TYPES = [
 
 
 export function CrewsPage() {
+  // Bucket H Phase 4 fix #2 -- home_project_id dropdown sourced from
+  // the tenant's project list. Static fetch on mount; updates are
+  // rare so we don't bother re-loading on each form open.
+  const [projectOptions, setProjectOptions] = useState([
+    { value: "", label: "(unassigned)" },
+  ]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/projects`)
+      .then((r) => {
+        if (cancelled) return;
+        const list = Array.isArray(r.data) ? r.data : [];
+        setProjectOptions([
+          { value: "", label: "(unassigned)" },
+          ...list.map((p) => ({ value: p.id, label: p.name || p.id.slice(0, 8) })),
+        ]);
+      })
+      .catch(() => { /* keep the default; non-blocking */ });
+    return () => { cancelled = true; };
+  }, []);
   return (
     <CrudList
       title="Crews"
@@ -32,15 +54,32 @@ export function CrewsPage() {
         { key: "name", label: "Name" },
         { key: "trade", label: "Trade" },
         { key: "target_size", label: "Target size" },
-        { key: "current_size", label: "Current" },
-        { key: "external_company", label: "External" },
-        { key: "status", label: "Status", render: (r) => <span className="pill pill-green capitalize">{r.status}</span> },
+        // Bucket H Phase 4 -- supply-side fields surfaced in the table.
+        { key: "default_headcount", label: "Default headcount",
+          render: (r) => r.default_headcount ?? r.target_size },
+        { key: "company_name", label: "Company",
+          render: (r) => r.company_name || "—" },
+        { key: "home_project_id", label: "Home project",
+          render: (r) => r.home_project_id
+            ? (projectOptions.find((o) => o.value === r.home_project_id)?.label
+                || r.home_project_id.slice(0, 8))
+            : "—" },
+        { key: "status", label: "Status",
+          render: (r) => <span className="pill pill-green capitalize">{r.status}</span> },
       ]}
       formFields={[
         { key: "crew_code", label: "Crew code", required: true, default: "" },
         { key: "name", label: "Crew name", required: true },
         { key: "trade", label: "Trade", type: "select", options: TRADE_OPTIONS, required: true },
         { key: "target_size", label: "Target size (workers)", type: "number", default: 4 },
+        // Bucket H Phase 4 fix #2 -- resource-leveling supply fields.
+        { key: "default_headcount",
+          label: "Default headcount (defaults to target size if blank)",
+          type: "number" },
+        { key: "company_name",
+          label: "Company name (external vendor; blank for self-perform)" },
+        { key: "home_project_id", label: "Home project (pre-commitment)",
+          type: "select", options: projectOptions },
         { key: "hourly_burdened_cost", label: "Hourly burdened cost (USD)", type: "number" },
         { key: "notes", label: "Notes", type: "textarea" },
       ]}

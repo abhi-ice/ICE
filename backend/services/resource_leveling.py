@@ -375,6 +375,99 @@ async def get_project_demand_breakdown(
     }
 
 
+async def get_crew_utilization_rollup(
+    *, tenant_id: str, start: date, end: date,
+    accessible_project_ids: Optional[list[str]] = None,
+) -> list[dict]:
+    """Bucket H Phase 4 fix -- per-crew aggregates over a date window.
+
+    Returns one row per crew in the tenant:
+      {crew: {id, name, trade, company_name, default_headcount,
+              home_project_id, status},
+       avg_utilization_pct: float (0-100; weekday-only baseline),
+       over_committed_days: int,
+       under_utilized_days: int,
+       total_committed_hours: float,
+       total_available_hours: float}
+
+    Utilization = committed / total per weekday (holidays excluded
+    from the denominator). avg_utilization_pct is the simple mean
+    across working days. Over-committed = committed > total. Under-
+    utilized = committed < 50% of total (per spec).
+
+    accessible_project_ids: if supplied (non-admin caller), filters
+    crews to ones whose home_project_id is in the set OR null
+    (unassigned crews remain visible).
+    """
+    _validate_range(start, end)
+    db = get_db()
+    crew_q: dict = {"tenant_id": tenant_id, "status": {"$ne": "archived"}}
+    if accessible_project_ids is not None:
+        crew_q["$or"] = [
+            {"home_project_id": {"$in": list(accessible_project_ids)}},
+            {"home_project_id": None},
+            {"home_project_id": {"$exists": False}},
+        ]
+    crews = await db.crews.find(
+        crew_q,
+        {"_id": 0, "id": 1, "name": 1, "trade": 1, "company_name": 1,
+         "default_headcount": 1, "target_size": 1, "home_project_id": 1,
+         "status": 1},
+    ).to_list(length=None)
+
+    out: list[dict] = []
+    for c in crews:
+        rows = await db.crew_capacity.find(
+            {"tenant_id": tenant_id, "crew_id": c["id"],
+             "date": {"$gte": start.isoformat(), "$lte": end.isoformat()}},
+            {"_id": 0, "total_headcount": 1, "committed_headcount": 1,
+             "available_headcount": 1, "hours_per_person": 1, "is_holiday": 1},
+        ).to_list(length=None)
+        working_days = [r for r in rows if not r.get("is_holiday")]
+        total_avail_h = 0.0
+        total_committed_h = 0.0
+        over = 0
+        under = 0
+        util_sum = 0.0
+        util_n = 0
+        for r in working_days:
+            total = int(r.get("total_headcount") or 0)
+            committed = int(r.get("committed_headcount") or 0)
+            hours = float(r.get("hours_per_person") or 8.0)
+            total_avail_h += total * hours
+            total_committed_h += committed * hours
+            if total > 0:
+                ratio = committed / total
+                util_sum += ratio
+                util_n += 1
+                if committed > total:
+                    over += 1
+                elif ratio < 0.5:
+                    under += 1
+        avg_util = (util_sum / util_n * 100.0) if util_n else 0.0
+        out.append({
+            "crew": {
+                "id": c["id"], "name": c.get("name"), "trade": c.get("trade"),
+                "company_name": c.get("company_name"),
+                "default_headcount": c.get("default_headcount"),
+                "target_size": c.get("target_size"),
+                "home_project_id": c.get("home_project_id"),
+                "status": c.get("status"),
+            },
+            "avg_utilization_pct": round(avg_util, 1),
+            "over_committed_days": over,
+            "under_utilized_days": under,
+            "total_committed_hours": round(total_committed_h, 1),
+            "total_available_hours": round(total_avail_h, 1),
+            "working_days_in_window": util_n,
+        })
+    # Sort: over-committed first, then by under-utilized, then name.
+    out.sort(key=lambda r: (-r["over_committed_days"],
+                              -r["under_utilized_days"],
+                              (r["crew"].get("name") or "").lower()))
+    return out
+
+
 async def get_crew_commitment_breakdown(
     *, tenant_id: str, crew_id: str, start: date, end: date,
 ) -> dict:
@@ -591,7 +684,9 @@ async def recompute_capacity_for_crew(
     )
     today = date.today()
     horizon = today + timedelta(days=horizon_days - 1)
-    is_archived = (crew is None) or (crew.get("status") == "archived")
+    # Bucket H Phase 4 -- soft-delete via /crud/crews/{id} sets
+    # status="deleted"; treat as archived for capacity recompute.
+    is_archived = (crew is None) or (crew.get("status") in ("archived", "deleted"))
     written = 0
     zeroed = 0
     now_iso = datetime.now(timezone.utc).isoformat()

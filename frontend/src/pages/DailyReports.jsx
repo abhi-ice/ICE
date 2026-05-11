@@ -515,7 +515,7 @@ function DailyReportDetail({ id, onBack }) {
 
       {/* CREW SUMMARY (presence) */}
       <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
-        projectId={project.id} grid={grid} />
+        projectId={project.id} grid={grid} reportDate={report.report_date} />
 
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
@@ -731,8 +731,32 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
 
 const PRESENCE_SHIFTS = ["first", "second", "third", "weekend", "holiday", "off_hours"];
 
-function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [] }) {
+function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [], reportDate }) {
   const [draft, setDraft] = useState({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
+  // Bucket H Phase 4 -- demand-vs-actual comparison. Fetch per-project
+  // demand for this DR's date, group by trade, render alongside actual
+  // headcount totals from presence rows.
+  const [demandByTrade, setDemandByTrade] = useState(null);
+  useEffect(() => {
+    if (!projectId || !reportDate) { setDemandByTrade(null); return; }
+    api.get(`/resource-leveling/projects/${projectId}/demand`, {
+      params: { date_range_start: reportDate, date_range_end: reportDate },
+    }).then((r) => {
+      const matrix = r.data?.matrix || {};
+      const byTrade = {};
+      Object.entries(matrix).forEach(([trade, byDate]) => {
+        const slot = byDate[reportDate];
+        if (slot && slot.demanded > 0) byTrade[trade] = slot;
+      });
+      setDemandByTrade(byTrade);
+    }).catch(() => setDemandByTrade(null));
+  }, [projectId, reportDate]);
+  const actualByTrade = rows.reduce((acc, r) => {
+    const t = r.trade;
+    if (!t) return acc;
+    acc[t] = (acc[t] || 0) + (r.headcount || 0);
+    return acc;
+  }, {});
   // Bucket C3b Phase 3 — detailed roster toggle. When on, the table
   // shows zone / shift / activity columns and the add-row form gets the
   // same fields. Remembered per session via localStorage so users who
@@ -796,6 +820,55 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
           </button>
         </div>
       }>
+      {/* Bucket H Phase 4 -- demand-vs-actual comparison. Only rendered
+          when the project has declared trade demand on this DR's date.
+          Each row shows trade / demanded / actual / delta with color
+          tone. Clicking a row routes to Resource Leveling. */}
+      {demandByTrade && Object.keys(demandByTrade).length > 0 && (
+        <div data-testid="dr-presence-demand-vs-actual"
+          className="mb-2 p-2 rounded bg-slate-50 border border-slate-200 text-xs">
+          <div className="flex items-center gap-2 mb-1 text-slate-700">
+            <Users className="h-3 w-3" />
+            <strong>Demand vs actual today</strong>
+            <Link to={`/resource-leveling?project_id=${projectId}`}
+              className="ml-auto text-blue-600 hover:underline">
+              Open Resource Leveling →
+            </Link>
+          </div>
+          <table className="w-full text-xs">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="text-left">Trade</th>
+                <th className="text-right">Demanded</th>
+                <th className="text-right">Actual</th>
+                <th className="text-right">Delta</th>
+                <th className="text-left">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(demandByTrade).map(([trade, info]) => {
+                const actual = actualByTrade[trade] || 0;
+                const delta = actual - info.demanded;
+                const tone = delta >= 0 ? "text-emerald-700"
+                  : delta >= -1 ? "text-amber-700"
+                  : "text-rose-700 font-semibold";
+                const label = delta >= 0 ? "fully staffed"
+                  : delta >= -1 ? "1 short"
+                  : `${Math.abs(delta)} short`;
+                return (
+                  <tr key={trade} data-testid={`dr-presence-trade-${trade}`} className="border-t border-slate-100">
+                    <td className="py-0.5">{trade}{info.on_cp && <span className="ml-1 text-rose-600 text-[10px]">CP</span>}</td>
+                    <td className="text-right tabular-nums">{info.demanded}</td>
+                    <td className="text-right tabular-nums">{actual}</td>
+                    <td className={`text-right tabular-nums ${tone}`}>{delta >= 0 ? `+${delta}` : delta}</td>
+                    <td className={tone}>{label}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="dense-table">
           <thead>

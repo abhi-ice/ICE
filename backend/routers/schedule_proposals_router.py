@@ -336,6 +336,30 @@ async def approve_proposal(
     except Exception:
         pass
 
+    # Bucket H Phase 4 hook -- the schedule import is a major demand
+    # event for resource leveling. Walks every task on the project and
+    # rebuilds the next-90-day crew_demands window. BackgroundTask
+    # because the rebuild can touch a few hundred tasks on a large
+    # project; the approval response should stay fast.
+    async def _bg_recompute_demand(tenant_id: str, pid: str):
+        try:
+            from services.resource_leveling import recompute_demand_for_project
+            from audit import write_audit
+            result = await recompute_demand_for_project(
+                tenant_id=tenant_id, project_id=pid,
+            )
+            await write_audit(
+                tenant_id=tenant_id, table_name="crew_demands",
+                op="RESOURCE_LEVELING_RECOMPUTED",
+                record_id=pid, before=None,
+                after={"trigger": "schedule_import",
+                        "project_id": pid, "result": result},
+                actor_id=None, request_id=f"sched_import_{pid}",
+            )
+        except Exception:
+            pass
+    bg.add_task(_bg_recompute_demand, ctx["tenant_id"], project_id)
+
     # Bucket C3c Phase 1 — schedule version diff against prior approved
     # proposal. Runs as BackgroundTask so the approval response stays fast
     # (diff walks both schedules and writes audit; can take seconds on

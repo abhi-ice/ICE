@@ -93,16 +93,19 @@ export default function ResourceLeveling() {
     if (filters.trade) params.trade = filters.trade;
     if (filters.project_id) params.project_id = filters.project_id;
     try {
-      const [d, g, c] = await Promise.all([
+      // Phase 4 fix #1 -- crew utilization rollup served by the backend
+      // (real numbers: avg_utilization_pct, over_committed_days, etc.).
+      const [d, g, u] = await Promise.all([
         api.get(`/resource-leveling/dashboard`, { params }),
         api.get(`/resource-leveling/gaps`, { params: { ...params, limit: 100 } }),
-        api.get(`/resources/crews`),
+        api.get(`/resource-leveling/crew-utilization-rollup`, {
+          params: { date_range_start: params.date_range_start,
+                     date_range_end: params.date_range_end },
+        }),
       ]);
       setDashboard(d.data);
       setGaps(g.data);
-      // Build crew utilization rollup client-side from the dashboard data.
-      const allCrews = Array.isArray(c.data) ? c.data : [];
-      setCrews(buildCrewUtilization(allCrews, d.data));
+      setCrews(Array.isArray(u.data) ? u.data : []);
     } catch (e) {
       setError(e.response?.data?.detail || e.message || "Load failed");
       // Don't blow away partial data per spec Phase 3.3 error spec.
@@ -620,6 +623,8 @@ function CrewUtilTab({ crews, onCrewClick, onReallocate, loading }) {
             <th className="p-2 text-left">Company</th>
             <th className="p-2 text-right">Headcount</th>
             <th className="p-2 text-right">Avg util %</th>
+            <th className="p-2 text-right">Committed h</th>
+            <th className="p-2 text-right">Available h</th>
             <th className="p-2 text-right">Over-committed days</th>
             <th className="p-2 text-right">Under-utilized days</th>
             <th className="p-2"></th>
@@ -634,15 +639,19 @@ function CrewUtilTab({ crews, onCrewClick, onReallocate, loading }) {
               <td className="p-2 text-slate-600">{row.crew.trade}</td>
               <td className="p-2 text-slate-600">{row.crew.company_name || "—"}</td>
               <td className="p-2 text-right">{row.crew.default_headcount ?? row.crew.target_size}</td>
-              <td className="p-2 text-right font-mono">{row.avgUtil}%</td>
+              <td className="p-2 text-right font-mono">
+                <UtilizationCell pct={row.avg_utilization_pct} />
+              </td>
+              <td className="p-2 text-right font-mono text-xs">{row.total_committed_hours?.toFixed(0) ?? 0}</td>
+              <td className="p-2 text-right font-mono text-xs">{row.total_available_hours?.toFixed(0) ?? 0}</td>
               <td className="p-2 text-right">
-                {row.overCommittedDays > 0
-                  ? <span className="text-rose-700 font-semibold">{row.overCommittedDays}</span>
+                {row.over_committed_days > 0
+                  ? <span className="text-rose-700 font-semibold">{row.over_committed_days}</span>
                   : <span className="text-slate-400">0</span>}
               </td>
               <td className="p-2 text-right">
-                {row.underUtilizedDays > 0
-                  ? <span className="text-amber-700">{row.underUtilizedDays}</span>
+                {row.under_utilized_days > 0
+                  ? <span className="text-amber-700">{row.under_utilized_days}</span>
                   : <span className="text-slate-400">0</span>}
               </td>
               <td className="p-2 text-right">
@@ -654,6 +663,16 @@ function CrewUtilTab({ crews, onCrewClick, onReallocate, loading }) {
       </table>
     </div>
   );
+}
+
+function UtilizationCell({ pct }) {
+  const v = Number(pct || 0);
+  let tone = "text-slate-600";
+  if (v > 100) tone = "text-rose-700 font-semibold";
+  else if (v > 85) tone = "text-amber-700 font-semibold";
+  else if (v >= 50) tone = "text-emerald-700";
+  else if (v > 0) tone = "text-amber-600";
+  return <span className={tone}>{v.toFixed(0)}%</span>;
 }
 
 // =====================================================================
@@ -1023,23 +1042,6 @@ function futureISO(days) {
   return d.toISOString().slice(0, 10);
 }
 
-// Build per-crew utilization summary from the dashboard payload.
-// Returns [{crew, avgUtil, overCommittedDays, underUtilizedDays}].
-// We approximate utilization by walking the dashboard cells -- the
-// service exposes supply per trade per date, not per crew; the per-
-// crew breakdown is available on the crew calendar endpoint. For
-// the rollup we use the crew list + dashboard supply totals so we
-// avoid N+1 calls (50 crews x 90 days would be expensive).
-function buildCrewUtilization(allCrews, dashboard) {
-  if (!Array.isArray(allCrews) || !dashboard) return [];
-  // Without per-crew daily commitment data we can only approximate.
-  // For Phase 3 we surface the per-crew profile attributes + zeros
-  // for over/under-committed days; clicking a row opens the crew
-  // calendar modal which has the real per-day numbers.
-  return allCrews.map((c) => ({
-    crew: c,
-    avgUtil: 0,
-    overCommittedDays: 0,
-    underUtilizedDays: 0,
-  }));
-}
+// Phase 4 fix #1 -- buildCrewUtilization placeholder removed. The
+// real rollup comes from GET /resource-leveling/crew-utilization-
+// rollup; see CrewUtilTab above for the row shape.

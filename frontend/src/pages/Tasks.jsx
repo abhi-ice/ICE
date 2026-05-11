@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle } from "lucide-react";
+import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -12,6 +12,72 @@ const EMPTY = {
   planned_start: "", planned_finish: "", duration_days: "",
   predecessors: "", is_milestone: false,
 };
+
+// Bucket H Phase 4 -- per-task gap indicator. Fetches the resource-
+// leveling dashboard for the active project + 60-day window once;
+// builds a task_id -> worst-severity-cell-attribution map so the
+// Tasks table can render a small Users icon on at-risk rows.
+function useTaskGapIndicator(projectId) {
+  const [byTaskId, setByTaskId] = useState({});
+  useEffect(() => {
+    if (!projectId) { setByTaskId({}); return; }
+    const today = new Date();
+    const end = new Date();
+    end.setDate(today.getDate() + 60);
+    const startIso = today.toISOString().slice(0, 10);
+    const endIso = end.toISOString().slice(0, 10);
+    api.get(`/resource-leveling/dashboard`, {
+      params: { date_range_start: startIso, date_range_end: endIso,
+                 project_id: projectId },
+    }).then((r) => {
+      const out = {};
+      const severityRank = { major: 3, moderate: 2, minor: 1 };
+      const cells = r.data?.cells || {};
+      Object.entries(cells).forEach(([trade, byDate]) => {
+        Object.entries(byDate).forEach(([dateIso, cell]) => {
+          if (!["minor", "moderate", "major"].includes(cell.severity)) return;
+          for (const tid of (cell.contributing_task_ids || [])) {
+            const existing = out[tid];
+            const cur = severityRank[cell.severity] || 0;
+            const prev = existing ? (severityRank[existing.severity] || 0) : 0;
+            if (cur > prev) {
+              out[tid] = {
+                severity: cell.severity,
+                trade,
+                date: dateIso,
+                is_critical_path: !!cell.is_critical_path,
+                gap: cell.gap,
+                gap_id: cell.id,
+              };
+            }
+          }
+        });
+      });
+      setByTaskId(out);
+    }).catch(() => setByTaskId({}));
+  }, [projectId]);
+  return byTaskId;
+}
+
+function TaskGapIcon({ gap }) {
+  if (!gap) return null;
+  const tone = gap.is_critical_path
+    ? "text-rose-700 bg-rose-100 border-rose-300"
+    : gap.severity === "major"
+      ? "text-rose-700 bg-rose-50 border-rose-200"
+      : gap.severity === "moderate"
+        ? "text-orange-800 bg-orange-50 border-orange-200"
+        : "text-amber-800 bg-amber-50 border-amber-200";
+  return (
+    <Link to={`/resource-leveling?tab=gaps&trade=${encodeURIComponent(gap.trade)}`}
+      title={`${gap.trade} shortage on ${gap.date} (gap ${gap.gap}${gap.is_critical_path ? ", on CP" : ""}). Click to open Resource Leveling.`}
+      data-testid={`task-gap-icon-${gap.gap_id}`}
+      className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded border text-[10px] font-mono ${tone}`}>
+      <Users className="h-3 w-3" />
+      <span className="hidden md:inline">{gap.severity[0].toUpperCase()}</span>
+    </Link>
+  );
+}
 
 export default function Tasks() {
   const { activeId, projects } = useProjects();
@@ -23,6 +89,8 @@ export default function Tasks() {
   const [form, setForm] = useState(EMPTY);
   // Bucket C1 Phase 3 — only one blocker popover open at a time.
   const [openBlockerId, setOpenBlockerId] = useState(null);
+  // Bucket H Phase 4 -- per-task resource-leveling gap indicator.
+  const gapByTaskId = useTaskGapIndicator(activeId);
   const project = projects.find((p) => p.id === activeId);
 
   const load = () => activeId && api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data));
@@ -195,6 +263,7 @@ export default function Tasks() {
               <th title="Open blockers (delays / RFIs / field-issues linked to this task). Click to see them.">Blockers</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
               <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
+              <th title="Resource gap. Surfaces when the master schedule's trade demand exceeds crew supply on at least one day in this task's date range.">Gap</th>
               <th></th>
             </tr>
           </thead>
@@ -233,6 +302,7 @@ export default function Tasks() {
                 <td className="tabular-nums text-xs" title="Days of slack before this task delays the project finish">
                   {t.total_float_days ?? "—"}
                 </td>
+                <td><TaskGapIcon gap={gapByTaskId[t.id]} /></td>
                 <td className="text-right">
                   <button data-testid={`edit-task-${t.activity_code}`} onClick={() => openEdit(t)} title="Edit" className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100">
                     <Pencil className="h-3.5 w-3.5" />

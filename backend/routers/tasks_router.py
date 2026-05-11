@@ -20,8 +20,56 @@ class BulkDeletePayload(StrictModel):
     task_ids: list[str]
 
 
+# Bucket H Phase 4 hook -- helper that triggers a resource-leveling
+# demand recompute for the date span of one task. Idempotent + best-
+# effort; failures don't propagate to the calling handler.
+def _affected_dates_for_task(task: dict) -> list:
+    """Return the list of dates between planned_start and planned_finish
+    inclusive, or [] if either is missing or malformed."""
+    from datetime import date as _date
+    ps = task.get("planned_start")
+    pf = task.get("planned_finish")
+    if not ps or not pf:
+        return []
+    try:
+        s = _date.fromisoformat(str(ps)[:10])
+        e = _date.fromisoformat(str(pf)[:10])
+    except Exception:
+        return []
+    if e < s:
+        return []
+    out = []
+    d = s
+    while d <= e:
+        out.append(d)
+        d += __import__("datetime").timedelta(days=1)
+    return out
+
+
+async def _bg_recompute_demand_dates(tenant_id: str, project_id: str, dates: list):
+    """BackgroundTask body: calls the leveling service. Audit-logged."""
+    try:
+        from services.resource_leveling import recompute_demand_for_dates
+        from audit import write_audit
+        result = await recompute_demand_for_dates(
+            tenant_id=tenant_id, project_id=project_id, dates=dates,
+        )
+        await write_audit(
+            tenant_id=tenant_id, table_name="crew_demands",
+            op="RESOURCE_LEVELING_RECOMPUTED",
+            record_id=project_id, before=None,
+            after={"trigger": "task_mutation",
+                    "project_id": project_id,
+                    "date_count": len(dates), "result": result},
+            actor_id=None, request_id=f"task_mut_{project_id}",
+        )
+    except Exception:
+        pass
+
+
 @router.post("/tasks", response_model=Task)
-async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
+async def create_task(payload: TaskCreate, bg: BackgroundTasks,
+                       ctx: dict = Depends(require_tenant)):
     db = get_db()
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
     if not proj:
@@ -57,6 +105,15 @@ async def create_task(payload: TaskCreate, ctx: dict = Depends(require_tenant)):
         record_id=doc["id"], before=None, after=doc,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Bucket H Phase 4 -- if the task declares trade demand, recompute
+    # the affected dates' crew_demands. Tasks without required_trade
+    # or required_headcount produce no demand, so the hook is a no-op
+    # for them (recompute_demand_for_dates handles the missing fields).
+    if doc.get("required_trade") and int(doc.get("required_headcount") or 0) > 0:
+        dates = _affected_dates_for_task(doc)
+        if dates:
+            bg.add_task(_bg_recompute_demand_dates,
+                         ctx["tenant_id"], doc["project_id"], dates)
     return Task(**doc)
 
 
@@ -129,6 +186,19 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ct
     # Trigger CPM recompute (debounced via BackgroundTasks — substitution for Celery debounce)
     if any(k in updates for k in ("planned_start", "planned_finish", "duration_days", "predecessors")):
         bg.add_task(compute_cpm, ctx["tenant_id"], before["project_id"])
+    # Bucket H Phase 4 -- recompute demand if any demand-affecting field
+    # moved. Union of pre + post date ranges so dates that USED to have
+    # demand but no longer do also get cleared.
+    demand_keys = {"required_trade", "required_headcount", "required_hours",
+                    "planned_start", "planned_finish", "is_critical_path",
+                    "status"}
+    if any(k in updates for k in demand_keys):
+        union_dates = set(_affected_dates_for_task(before))
+        union_dates.update(_affected_dates_for_task(after))
+        if union_dates:
+            bg.add_task(_bg_recompute_demand_dates,
+                         ctx["tenant_id"], before["project_id"],
+                         sorted(union_dates))
 
     # Auto-release escrow if a marketplace bid was tied to this activity and
     # pct_complete just crossed the milestone (master prompt §19).
@@ -171,17 +241,33 @@ async def _auto_release_for_task(tenant_id: str, task_id: str, actor_id: str):
 
 
 @router.post("/projects/{project_id}/tasks/bulk-delete")
-async def bulk_delete(project_id: str, payload: BulkDeletePayload, ctx: dict = Depends(require_tenant)):
+async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: BackgroundTasks,
+                       ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # Bucket H Phase 4 -- collect affected dates before the soft-delete
+    # so the demand recompute hook can clean up cleared rows.
+    before_tasks = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id,
+                                            "id": {"$in": payload.task_ids}}),
+        {"_id": 0, "id": 1, "planned_start": 1, "planned_finish": 1,
+         "required_trade": 1, "required_headcount": 1},
+    ).to_list(length=None)
     res = await db.tasks.update_many(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "id": {"$in": payload.task_ids}}),
         {"$set": {"status": "deleted"}},
     )
+    union_dates: set = set()
+    for t in before_tasks:
+        if t.get("required_trade") and int(t.get("required_headcount") or 0) > 0:
+            union_dates.update(_affected_dates_for_task(t))
+    if union_dates:
+        bg.add_task(_bg_recompute_demand_dates,
+                     ctx["tenant_id"], project_id, sorted(union_dates))
     return {"deleted": res.modified_count}
 
 
 @router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str, ctx: dict = Depends(require_tenant)):
+async def delete_task(task_id: str, bg: BackgroundTasks, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
     if not before:
@@ -193,6 +279,12 @@ async def delete_task(task_id: str, ctx: dict = Depends(require_tenant)):
         record_id=task_id, before=before, after={"status": "deleted"},
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Bucket H Phase 4 -- clear demand on the deleted task's date span.
+    if before.get("required_trade") and int(before.get("required_headcount") or 0) > 0:
+        dates = _affected_dates_for_task(before)
+        if dates:
+            bg.add_task(_bg_recompute_demand_dates,
+                         ctx["tenant_id"], before["project_id"], dates)
     return {"ok": True}
 
 

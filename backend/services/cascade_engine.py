@@ -297,4 +297,33 @@ async def recompute_all_cascades(tenant_id: str, project_id: str) -> dict:
             # Audit failure must not crash the recompute.
             pass
 
+    # Bucket H Phase 4 -- post-cascade hook. The cascade may have
+    # walked projected_finish forward on dozens of tasks; resource
+    # demand needs to follow. We refresh the project's full 90-day
+    # window rather than computing per-task affected dates, because
+    # the cascade typically touches a big set and the math is
+    # idempotent. Best-effort: cascade success isn't blocked by a
+    # leveling miss.
+    try:
+        from services.resource_leveling import recompute_demand_for_project
+        from audit import write_audit as _wa
+        result = await recompute_demand_for_project(
+            tenant_id=tenant_id, project_id=project_id,
+        )
+        try:
+            await _wa(
+                tenant_id=tenant_id, table_name="crew_demands",
+                op="RESOURCE_LEVELING_RECOMPUTED",
+                record_id=project_id, before=None,
+                after={"trigger": "cpm_cascade",
+                        "project_id": project_id, "result": result},
+                actor_id=None, request_id=f"cascade_{project_id}",
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return {"open_gates": len(ges), "computed": computed, "notified": notified}
+
     return {"open_gates": len(ges), "computed": computed, "notified": notified}
