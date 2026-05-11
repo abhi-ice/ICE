@@ -53,6 +53,12 @@ MIGRATIONS = [
     # Translates ids via daily_report_activities.schedule_activity_id,
     # drops the old field everywhere, drops legacy indexes. Idempotent.
     "migrations.007_dr_activity_to_task",
+    # Bucket H Phase 1 (2026-05-08) -- Resource Leveling setup. Adds
+    # required_trade/headcount/hours to tasks, default_headcount/
+    # company_name/home_project_id to crews, and backfills 90 days of
+    # crew_capacity + crew_demands. Pass E smoke-verifies gap
+    # computation walks supply + demand cleanly. Idempotent.
+    "migrations.008_resource_leveling_setup",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

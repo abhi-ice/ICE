@@ -305,6 +305,19 @@ class TaskCreate(StrictModel):
     created_in_field: bool = False
     requires_pm_review: bool = False
     created_from_daily_report_id: Optional[str] = None
+    # Bucket H Phase 1 (2026-05-08) -- resource-leveling demand fields.
+    # required_trade names the trade that must staff this activity
+    # (e.g., "Plumber"). required_headcount is how many of that trade
+    # are needed concurrently. required_hours is total trade-hours for
+    # the activity (used by the leveling engine to compute daily
+    # demand = required_headcount when day in [planned_start..
+    # planned_finish], or required_hours / duration_days for finer
+    # granularity). All three are optional; activities without them
+    # produce no demand (the leveling engine skips them rather than
+    # fabricating numbers).
+    required_trade: Optional[str] = None
+    required_headcount: Optional[int] = None
+    required_hours: Optional[float] = None
 
 
 class TaskUpdate(StrictModel):
@@ -328,6 +341,12 @@ class TaskUpdate(StrictModel):
     trade_code: Optional[str] = None
     crew_id: Optional[str] = None
     location_id: Optional[str] = None
+    # Bucket H Phase 1 -- patchable demand fields. Changing any of
+    # these triggers a demand recompute on the affected date range
+    # (Phase 4 wires the trigger).
+    required_trade: Optional[str] = None
+    required_headcount: Optional[int] = None
+    required_hours: Optional[float] = None
 
 
 class CrewAssignmentEntry(ReadModel):
@@ -402,6 +421,11 @@ class Task(ReadModel):
     # Bucket C1 Phase 4 — CPM walk-forward result. None until first
     # delay open / status compute writes it.
     projected_finish_date: Optional[date] = None
+    # Bucket H Phase 1 -- resource-leveling demand fields. Optional;
+    # tasks without these produce no demand (leveling engine skips).
+    required_trade: Optional[str] = None
+    required_headcount: Optional[int] = None
+    required_hours: Optional[float] = None
 
 
 # ---------- Daily reports ----------
@@ -685,6 +709,35 @@ class CrewCreate(StrictModel):
     hourly_burdened_cost: Optional[float] = None
     target_size: int = 4
     notes: Optional[str] = None
+    # Bucket H Phase 1 (2026-05-08) -- resource-leveling supply fields.
+    # default_headcount = the baseline supply pool this crew contributes
+    # to the cross-project capacity model (separate from target_size,
+    # which is a planning-target attribute). company_name lets the
+    # leveling UI group crews by external vendor for sub-contracted
+    # work. home_project_id marks pre-commitments so the leveling
+    # engine can prefer that crew to that project when feasible.
+    default_headcount: Optional[int] = None
+    company_name: Optional[str] = None
+    home_project_id: Optional[str] = None
+
+
+class CrewUpdate(StrictModel):
+    """Bucket H Phase 1 -- crew update payload. All optional; PATCH
+    flows through this so the resource-leveling fields stay editable
+    post-create. trade is patchable but a change triggers capacity
+    recomputation downstream (Phase 4)."""
+    crew_code: Optional[str] = None
+    name: Optional[str] = None
+    trade: Optional[str] = None
+    foreman_person_id: Optional[str] = None
+    home_yard_address: Optional[str] = None
+    hourly_burdened_cost: Optional[float] = None
+    target_size: Optional[int] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    default_headcount: Optional[int] = None
+    company_name: Optional[str] = None
+    home_project_id: Optional[str] = None
 
 
 class Crew(ReadModel):
@@ -700,6 +753,126 @@ class Crew(ReadModel):
     status: str = "active"
     notes: Optional[str] = None
     created_at: datetime
+    # Bucket H Phase 1 -- resource-leveling supply fields.
+    default_headcount: Optional[int] = None
+    company_name: Optional[str] = None
+    home_project_id: Optional[str] = None
+
+
+# ============================================================
+# Bucket H Phase 1 (2026-05-08) -- Resource Leveling Engine
+# ============================================================
+# Two new collections backing the cross-project capacity / demand /
+# gap model:
+#
+#   crew_capacity  -- per (crew, date) supply row. Total headcount,
+#                     how many are committed elsewhere, what's left.
+#   crew_demands   -- per (project, trade, date) demand row, derived
+#                     from schedule_activities with required_trade +
+#                     required_headcount populated. Each demand row
+#                     lists the contributing task ids so the
+#                     dashboard can drill back to the source.
+#
+# Gap = sum(supply.available_headcount over trade,date) - sum(demand
+# .demanded_headcount over trade,date). Gap is NOT persisted in
+# Phase 1 -- computed on read by the service. Phase 5 may cache if
+# read-time scan becomes a bottleneck.
+#
+# computed_from enum distinguishes baseline rows (manual_entry or
+# migration backfill) from rows reconciled to actuals via daily_
+# presence (presence_recorded) or from a fresh schedule import
+# (schedule_derived). Lets the UI flag "this is a guess" vs "this
+# is reality."
+
+CrewCapacitySource = Literal["manual_entry", "schedule_derived",
+                              "presence_recorded"]
+
+
+class CrewCapacityCreate(StrictModel):
+    """Phase 2 will own the upload endpoint that produces these rows;
+    Phase 1 just defines the shape so the migration can backfill."""
+    crew_id: str
+    date: date
+    total_headcount: int = Field(..., ge=0)
+    committed_headcount: int = Field(default=0, ge=0)
+    hours_per_person: float = Field(default=8.0, ge=0)
+    is_holiday: bool = False
+    notes: Optional[str] = None
+    computed_from: CrewCapacitySource = "manual_entry"
+
+
+class CrewCapacityUpdate(StrictModel):
+    """Phase 2 capacity override flow. total_headcount + is_holiday +
+    notes are patchable; the rest is recomputed by the service."""
+    total_headcount: Optional[int] = Field(default=None, ge=0)
+    committed_headcount: Optional[int] = Field(default=None, ge=0)
+    hours_per_person: Optional[float] = Field(default=None, ge=0)
+    is_holiday: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class CrewCapacity(ReadModel):
+    id: str
+    tenant_id: str
+    crew_id: str
+    # Denormalized for display + filtering -- avoids per-row joins on
+    # the dashboard. Kept in sync by the recompute triggers (Phase 4).
+    trade: str
+    company_name: Optional[str] = None
+    date: date
+    total_headcount: int
+    committed_headcount: int = 0
+    available_headcount: int = 0   # = total - committed; computed
+    hours_per_person: float = 8.0
+    is_holiday: bool = False
+    notes: Optional[str] = None
+    computed_at: datetime
+    computed_from: CrewCapacitySource = "manual_entry"
+
+
+class CrewDemandCreate(StrictModel):
+    """Phase 2 will own the recompute endpoint; Phase 1 just defines
+    the shape so the migration can backfill from schedule_activities."""
+    project_id: str
+    date: date
+    trade: str
+    demanded_headcount: int = Field(..., ge=0)
+    source_task_ids: List[str] = Field(default_factory=list)
+    hours_demanded: float = Field(default=0.0, ge=0)
+    is_critical_path: bool = False
+
+
+class CrewDemand(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    date: date
+    trade: str
+    demanded_headcount: int
+    source_task_ids: List[str] = Field(default_factory=list)
+    hours_demanded: float = 0.0
+    is_critical_path: bool = False
+    computed_at: datetime
+
+
+# Gap rows are not persisted in Phase 1. The service computes them
+# on read via supply - demand aggregates. If read-time scan becomes
+# a bottleneck (50+ crews × 90 days × N trades), Phase 5 may add a
+# materialized crew_gaps collection.
+GapSeverity = Literal["none", "surplus", "minor", "moderate", "major"]
+
+
+class GapRow(ReadModel):
+    """Phase 2 service return shape. Not persisted in Phase 1."""
+    trade: str
+    date: date
+    supply: int
+    demand: int
+    gap: int                            # demand - supply (positive = shortage)
+    severity: GapSeverity
+    is_critical_path: bool = False      # any contributing task on CP
+    contributing_project_ids: List[str] = Field(default_factory=list)
+    contributing_crew_ids: List[str] = Field(default_factory=list)
 
 
 class EquipmentCreate(StrictModel):
