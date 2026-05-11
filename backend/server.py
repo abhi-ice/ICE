@@ -286,6 +286,34 @@ async def _ensure_indexes():
         name="act_recorded_ttl",
     )
 
+    # Bucket G Phase 1 (2026-05-11) -- field_suggestions indexes.
+    # Drives the Jigsaw widget (per-entity lookup), the review queue
+    # (per-user role + status), and the Phase 5 per-source stats
+    # roll-up. NO TTL -- expiration is a status flip + audit op
+    # (services.field_suggestions.expire_stale_pending), not a row
+    # drop, so the audit chain has evidence of every suggestion.
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("entity_type", 1),
+         ("entity_id", 1), ("status", 1)],
+        name="fs_tenant_entity_status",
+    )
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("status", 1), ("created_at", -1)],
+        name="fs_tenant_status_created",
+    )
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("suggested_by", 1)],
+        name="fs_tenant_source",
+    )
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("authorized_confirmer_roles", 1)],
+        name="fs_tenant_roles",
+    )
+    await db.field_suggestions.create_index(
+        [("created_at", -1)],
+        name="fs_created_at",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

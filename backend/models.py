@@ -2447,3 +2447,143 @@ class PostSubmitEditPayload(StrictModel):
     the underlying record after permission/reason checks."""
     edit_reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
     updates: dict = Field(..., description="Field name -> new value")
+
+
+# ============================================================
+# Bucket G Phase 1 (2026-05-11) — Jigsaw Pre-fill UX framework
+# ============================================================
+# Per Sid's V1 Product Flow diagram, every field across every form has
+# three lifecycle states:
+#   - solid green  = human confirmed
+#   - light green  = AI suggested, pending confirmation
+#   - gray         = missing, action item
+# `field_suggestions` is the cross-entity ledger that drives the
+# light-green state. The same row is referenced by the Jigsaw frontend
+# widget regardless of which form is rendering: DR narrative, RFI
+# subject, QC severity, schedule task trade -- one collection, one
+# suggestion lifecycle, one audit trail.
+
+# Entity types eligible for field suggestions. Add new ones here as
+# downstream buckets land; the service module rejects unknown types
+# at create time so we never accumulate orphans pointing at made-up
+# collections.
+FieldSuggestionEntityType = Literal[
+    "daily_report",
+    "daily_report_activity",
+    "delay",
+    "rfi",
+    "qc_issue",
+    "safety_event",
+    "coordination_event",
+    "delivery",
+    "photo_tag",
+    "submittal",
+    "schedule_activity",
+]
+
+# Who produced the suggestion. Stays as an open list (we expect new AI
+# producers across future buckets); each name maps to a per-source
+# acceptance-rate row in Phase 5 stats so we can identify low-quality
+# producers and tune them or back them off.
+FieldSuggestionSource = Literal[
+    "ai_copilot",
+    "ai_photo_vision",
+    "ai_rfi_drafter",
+    "ai_qc_analyzer",
+    "ai_safety_analyzer",
+    "ai_schedule_analyzer",
+    "system_inference",
+    "calibration_rag",
+]
+
+FieldSuggestionStatus = Literal[
+    "pending", "confirmed", "rejected", "superseded", "expired",
+]
+
+
+# Authorized-confirmer role defaults per entity_type. The service
+# module looks these up when a producer creates a suggestion without
+# explicit authorized_confirmer_roles. Admins ALWAYS confirm anything;
+# the per-entity list is who else can confirm.
+#
+# `submittal_tech` is forward-defined: it's a role being added in
+# Bucket J for the submittal review workflow. Listing it here so the
+# constant doesn't change shape mid-bucket; before Bucket J ships,
+# nobody has the role so the entry is effectively a no-op.
+FIELD_SUGGESTION_DEFAULT_ROLES: dict[str, list[str]] = {
+    "daily_report":          ["super", "pm", "admin"],
+    "daily_report_activity": ["super", "pm", "admin"],
+    "delay":                 ["super", "pm", "admin"],
+    "rfi":                   ["pm", "admin"],
+    "qc_issue":              ["super", "pm", "admin"],
+    "safety_event":          ["super", "pm", "admin", "foreman"],
+    "coordination_event":    ["super", "pm", "admin"],
+    "delivery":              ["super", "pm", "admin"],
+    "photo_tag":             ["super", "pm", "admin", "foreman"],
+    "submittal":             ["pm", "admin", "submittal_tech"],
+    "schedule_activity":     ["pm", "admin", "pe"],
+}
+
+
+class FieldSuggestionCreate(StrictModel):
+    """Create payload. AI producers call this via the service module
+    rather than the HTTP endpoint, but the endpoint is exposed for
+    admins + system clients."""
+    project_id: str
+    entity_type: FieldSuggestionEntityType
+    entity_id: str
+    field_path: str = Field(..., min_length=1, max_length=200,
+                              description="Dotted path, e.g. 'narrative', 'severity', 'owner_attribution'")
+    suggested_value: Any = Field(...,
+                                   description="JSON-encodable value the AI suggests")
+    suggested_by: FieldSuggestionSource
+    confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    authorized_confirmer_roles: Optional[list[str]] = Field(
+        default=None,
+        description="Override the per-entity default role list. Falls back to FIELD_SUGGESTION_DEFAULT_ROLES.",
+    )
+    source_context: Optional[str] = Field(
+        default=None, max_length=500,
+        description="Freeform breadcrumb, e.g. 'photo_tray_id=X', 'rfi_template=Y'.",
+    )
+
+
+class FieldSuggestion(ReadModel):
+    """The persisted shape. Status moves pending -> confirmed | rejected |
+    superseded | expired. Once terminal it never moves back; AI re-runs
+    create a NEW suggestion + supersede the prior."""
+    id: str
+    tenant_id: str
+    project_id: str
+    entity_type: FieldSuggestionEntityType
+    entity_id: str
+    field_path: str
+    suggested_value: Any
+    suggested_by: FieldSuggestionSource
+    confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    status: FieldSuggestionStatus = "pending"
+    confirmed_by: Optional[str] = None
+    confirmed_at: Optional[datetime] = None
+    rejected_by: Optional[str] = None
+    rejected_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+    authorized_confirmer_roles: List[str] = Field(default_factory=list)
+    source_context: Optional[str] = None
+    superseded_by_suggestion_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FieldSuggestionRejectPayload(StrictModel):
+    reason: str = Field(..., min_length=10, max_length=500)
+
+
+class FieldSuggestionBulkConfirmPayload(StrictModel):
+    """Power-user bulk operation. Phase 5 caps at 50 ids per call so
+    one request can't tie up the worker on a 1000-row backlog."""
+    suggestion_ids: List[str] = Field(..., min_length=1, max_length=50)
+
+
+class FieldSuggestionBulkRejectPayload(StrictModel):
+    suggestion_ids: List[str] = Field(..., min_length=1, max_length=50)
+    reason: str = Field(..., min_length=10, max_length=500)

@@ -75,6 +75,12 @@ MIGRATIONS = [
     # user_overridden_at_tag_time so gallery + TIA Section 8 indicators
     # don't drift when the tray is later edited. Idempotent via $exists.
     "migrations.011_photo_override_snapshot",
+    # Bucket G Phase 1 (2026-05-11) -- Jigsaw Pre-fill UX setup.
+    # Creates the field_suggestions collection + 5 indexes + writes a
+    # single FIELD_SUGGESTIONS_INITIALIZED audit op per tenant. No
+    # data backfill (suggestions are runtime). Idempotent via per-
+    # tenant audit existence check.
+    "migrations.012_field_suggestions_setup",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
