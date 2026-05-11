@@ -47,6 +47,9 @@ import VoiceLogin from "./pages/VoiceLogin";
 import MobileForeman from "./pages/MobileForeman";
 import { AuditLog, AiAgentsPage, Settings, WeeklyReports } from "./pages/SystemPages";
 import EditRequestsQueue from "./pages/EditRequestsQueue";
+// Bucket H Phase 3 (2026-05-08) -- new pages.
+import ResourceLeveling from "./pages/ResourceLeveling";
+import ProjectAccess from "./pages/ProjectAccess";
 import "./App.css";
 
 function Guard({ children }) {
@@ -131,6 +134,9 @@ export default function App() {
             <Route path="compliance" element={<ComplianceFull />} />
             <Route path="audit-log" element={<AuditLog />} />
             <Route path="edit-requests" element={<EditRequestsQueue />} />
+            {/* Bucket H Phase 3 -- Resource Leveling dashboard + Project Access. */}
+            <Route path="resource-leveling" element={<ResourceLeveling />} />
+            <Route path="project-access" element={<ProjectAccess />} />
             <Route path="settings" element={<Settings />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

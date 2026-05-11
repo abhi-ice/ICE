@@ -855,6 +855,36 @@ class CrewDemand(ReadModel):
     computed_at: datetime
 
 
+# Bucket H Phase 3 (2026-05-08) -- per-project membership table.
+# Backs the RBAC scoping rules in resource_leveling_router (super
+# sees only projects where they're a member with role pm/super/
+# foreman; PM sees projects where role_on_project=pm; etc.). Also
+# powers the new Project Access management page.
+ProjectMemberRole = Literal["pm", "super", "foreman", "viewer"]
+
+
+class ProjectMemberCreate(StrictModel):
+    project_id: str
+    user_id: str
+    role_on_project: ProjectMemberRole = "viewer"
+
+
+class ProjectMemberUpdate(StrictModel):
+    """Only role_on_project is mutable. project_id + user_id changes
+    are explicit add+remove flows."""
+    role_on_project: ProjectMemberRole
+
+
+class ProjectMember(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    user_id: str
+    role_on_project: ProjectMemberRole
+    added_at: datetime
+    added_by: Optional[str] = None
+
+
 # Gap rows are not persisted in Phase 1. The service computes them
 # on read via supply - demand aggregates. If read-time scan becomes
 # a bottleneck (50+ crews × 90 days × N trades), Phase 5 may add a

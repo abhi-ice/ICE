@@ -16,6 +16,11 @@ export const SIDEBAR_SECTIONS = [
       { label: "Getting started", path: "/getting-started", icon: BookOpen, testid: "sidebar-getting-started" },
       { label: "Projects", path: "/projects", icon: FolderKanban, testid: "sidebar-projects" },
       { label: "Master doc", path: "/master-doc", icon: Building2, testid: "sidebar-master-doc" },
+      // Bucket H Phase 3 (2026-05-08) -- admin/PM project member
+      // management; backs per-project RBAC. Read-tier users can
+      // still see this in the sidebar but the page will surface
+      // 403/empty state if they aren't admin or a PM on any project.
+      { label: "Project Access", path: "/project-access", icon: ShieldCheck, testid: "sidebar-project-access" },
     ],
   },
   {
@@ -46,6 +51,10 @@ export const SIDEBAR_SECTIONS = [
       { label: "Polygon editor", path: "/polygon-editor", icon: MapPin, testid: "sidebar-polygon-editor" },
       { label: "Spatial 3D", path: "/spatial-3d", icon: Box, testid: "sidebar-spatial-3d" },
       { label: "Productivity", path: "/productivity", icon: Activity, testid: "sidebar-productivity" },
+      // Bucket H Phase 3 (2026-05-08) -- cross-project crew supply/
+      // demand/gap dashboard. Per-project RBAC scopes what the
+      // user sees. Read tier admin/pm/super/foreman/viewer.
+      { label: "Resource Leveling", path: "/resource-leveling", icon: Users, testid: "sidebar-resource-leveling" },
     ],
   },
   {

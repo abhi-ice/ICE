@@ -36,7 +36,10 @@ from models import (
     CrewCapacity, CrewCapacityCreate, CrewCapacityUpdate,
     CrewDemand, GapRow, StrictModel, gen_id, utc_now,
 )
-from auth import require_tenant, role_required
+from auth import (
+    require_tenant, role_required,
+    get_accessible_project_ids, has_project_access,
+)
 from audit import write_audit
 from services import resource_leveling as svc
 
@@ -61,9 +64,9 @@ router = APIRouter(prefix="/resource-leveling", tags=["resource-leveling"])
 # means tenant-wide for PM+admin since there's no project-membership
 # table). We document this explicitly rather than fake it.
 
-ROLE_READ = {"admin", "pm", "super", "foreman", "viewer"}
-ROLE_WRITE_CAPACITY = {"admin", "pm"}
-ROLE_WRITE_REALLOCATION = {"admin", "pm"}
+ROLE_READ = {"admin", "pm", "super", "foreman", "viewer", "px", "pe"}
+ROLE_WRITE_CAPACITY = {"admin", "pm", "px"}
+ROLE_WRITE_REALLOCATION = {"admin", "pm", "px"}
 
 
 def _user_role(ctx: dict) -> str:
@@ -139,14 +142,43 @@ async def get_dashboard(
     ctx: dict = Depends(require_tenant),
 ):
     """Returns the heat map payload: {trades, dates, cells, summary}.
-    Default window = next 14 days. Tenant-scoped automatically."""
+    Default window = next 14 days. Tenant-scoped automatically; per-
+    project RBAC narrows to the caller's accessible projects."""
     _enforce_read(ctx)
     start, end = _parse_range(date_range_start, date_range_end, default_window_days=14)
+    requested_filter = _parse_csv(project_id)
+    accessible = await get_accessible_project_ids(
+        tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+        user_role=(ctx["user"].get("role") or ""),
+    )
+    # Build effective filter: intersect requested filter with accessible
+    # set. None (admin) = no scoping; explicit empty = no access.
+    if accessible is None:
+        effective_filter = requested_filter
+    else:
+        if not accessible:
+            # Scoped user with no project memberships -> empty dashboard.
+            return {"trades": [], "dates": [], "cells": {},
+                    "summary": {"total_cells": 0, "shortage_cells": 0,
+                                  "surplus_cells": 0, "balanced_cells": 0,
+                                  "cp_shortage_cells": 0,
+                                  "trades_in_scope": 0,
+                                  "date_range_start": start.isoformat(),
+                                  "date_range_end": end.isoformat(),
+                                  "rbac_scope_empty": True}}
+        if requested_filter:
+            allowed_set = set(accessible)
+            effective_filter = [p for p in requested_filter if p in allowed_set]
+            if not effective_filter:
+                # User filtered to projects they can't see.
+                raise HTTPException(403, "No accessible projects in the requested filter")
+        else:
+            effective_filter = accessible
     try:
         return await svc.get_cross_project_view(
             tenant_id=ctx["tenant_id"], start=start, end=end,
             trade_filter=_parse_csv(trade),
-            project_filter=_parse_csv(project_id),
+            project_filter=effective_filter,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -165,13 +197,43 @@ async def get_crew_calendar(
 ):
     _enforce_read(ctx)
     start, end = _parse_range(date_range_start, date_range_end, default_window_days=14)
+    # Per-project RBAC: if the crew's home_project_id is set, gate on
+    # the user's access to that project. Crews without a home project
+    # are visible to any role that has at least one project membership
+    # (or to admins). This keeps cross-project leveling visibility for
+    # PMs while restricting foremen to their own crew's project.
+    db = get_db()
+    crew = await db.crews.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": crew_id}),
+        {"_id": 0, "id": 1, "home_project_id": 1},
+    )
+    if not crew:
+        raise HTTPException(404, "Crew not found")
+    home_pid = crew.get("home_project_id")
+    if home_pid:
+        ok = await has_project_access(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=(ctx["user"].get("role") or ""),
+            project_id=home_pid,
+        )
+        if not ok:
+            # Leak-resistant 404 (don't confirm crew exists if you
+            # can't access it).
+            raise HTTPException(404, "Crew not found")
+    else:
+        accessible = await get_accessible_project_ids(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=(ctx["user"].get("role") or ""),
+        )
+        # Scoped user with no memberships -> denied.
+        if accessible is not None and not accessible:
+            raise HTTPException(404, "Crew not found")
     try:
         return await svc.get_crew_commitment_breakdown(
             tenant_id=ctx["tenant_id"], crew_id=crew_id,
             start=start, end=end,
         )
     except LookupError:
-        # Tenant-leak-resistant: cross-tenant crew_id returns 404.
         raise HTTPException(404, "Crew not found")
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -197,6 +259,15 @@ async def get_project_demand(
     )
     if not proj:
         # Tenant-leak-resistant 404.
+        raise HTTPException(404, "Project not found")
+    # Per-project RBAC. Cross-membership returns 404 (not 403) so we
+    # don't leak project existence to non-members.
+    ok = await has_project_access(
+        tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+        user_role=(ctx["user"].get("role") or ""),
+        project_id=project_id,
+    )
+    if not ok:
         raise HTTPException(404, "Project not found")
     try:
         breakdown = await svc.get_project_demand_breakdown(
@@ -234,8 +305,16 @@ async def list_gaps(
                 422, f"unknown severity value(s): {bad}. "
                      f"Must be one of minor, moderate, major",
             )
+    # Per-project RBAC: gaps are computed across the user's accessible
+    # projects. The list_gaps service doesn't yet accept a project
+    # filter (it walks supply tenant-wide), so we post-filter on
+    # contributing_project_ids if the user is scoped.
+    accessible = await get_accessible_project_ids(
+        tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+        user_role=(ctx["user"].get("role") or ""),
+    )
     try:
-        return await svc.list_gaps(
+        result = await svc.list_gaps(
             tenant_id=ctx["tenant_id"], start=start, end=end,
             severity_filter=sev_list,
             trade_filter=_parse_csv(trade),
@@ -243,6 +322,19 @@ async def list_gaps(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    if accessible is None:
+        return result
+    if not accessible:
+        return {"total": 0, "offset": offset, "limit": limit, "rows": [],
+                 "rbac_scope_empty": True}
+    allowed = set(accessible)
+    filtered_rows = [
+        r for r in result["rows"]
+        if not r.get("contributing_project_ids")
+        or any(p in allowed for p in r["contributing_project_ids"])
+    ]
+    return {"total": len(filtered_rows), "offset": offset, "limit": limit,
+            "rows": filtered_rows}
 
 
 # =====================================================================
@@ -255,13 +347,29 @@ async def gap_suggestions(gap_id: str, ctx: dict = Depends(require_tenant)):
     Returns the gap row + rule-based resolution options."""
     _enforce_read(ctx)
     try:
-        return await svc.find_gap_resolution_options(
+        result = await svc.find_gap_resolution_options(
             tenant_id=ctx["tenant_id"], gap_id=gap_id,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     except LookupError as exc:
         raise HTTPException(404, str(exc))
+    # Per-project RBAC: scoped users only see suggestions on gaps
+    # whose contributing projects they can access. If none of the
+    # gap's contributing projects intersect the user's access set,
+    # 404 (leak-resistant).
+    accessible = await get_accessible_project_ids(
+        tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+        user_role=(ctx["user"].get("role") or ""),
+    )
+    if accessible is None:
+        return result
+    if not accessible:
+        raise HTTPException(404, "Gap not found")
+    contrib = result.get("gap", {}).get("contributing_project_ids") or []
+    if contrib and not any(p in set(accessible) for p in contrib):
+        raise HTTPException(404, "Gap not found")
+    return result
 
 
 # =====================================================================
@@ -297,10 +405,21 @@ async def override_capacity(
     db = get_db()
     crew = await db.crews.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.crew_id}),
-        {"_id": 0, "id": 1, "trade": 1, "company_name": 1},
+        {"_id": 0, "id": 1, "trade": 1, "company_name": 1, "home_project_id": 1},
     )
     if not crew:
         raise HTTPException(404, "Crew not found")
+    # Per-project RBAC: a PM can only override capacity on crews
+    # whose home_project_id they manage. Admins skip the check.
+    home_pid = crew.get("home_project_id")
+    if home_pid:
+        ok = await has_project_access(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=(ctx["user"].get("role") or ""),
+            project_id=home_pid,
+        )
+        if not ok:
+            raise HTTPException(404, "Crew not found")
     now_iso = utc_now().isoformat()
     written = 0
     rows_before: list[dict] = []
@@ -509,6 +628,16 @@ async def commit_reallocation(
     payload: ReallocationPayload, ctx: dict = Depends(require_tenant),
 ):
     _enforce_write_reallocation(ctx)
+    # Per-project RBAC: caller must have access to BOTH source and
+    # target projects. Source can be None for a pool-to-project move.
+    role = (ctx["user"].get("role") or "")
+    for pid in filter(None, [payload.from_project_id, payload.to_project_id]):
+        ok = await has_project_access(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=role, project_id=pid,
+        )
+        if not ok:
+            raise HTTPException(404, "Project not found")
     try:
         result = await svc.commit_reallocation(
             tenant_id=ctx["tenant_id"], crew_id=payload.crew_id,

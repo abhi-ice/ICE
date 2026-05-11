@@ -146,6 +146,76 @@ def role_required(ctx: dict, roles: list[str]) -> None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Role {user_role} not in {roles}")
 
 
+# Bucket H Phase 3 (2026-05-08) -- per-project RBAC helper.
+#
+# Returns the list of project ids the current user can see, or None
+# if they have all-access (admin). Returns [] if the user is scoped
+# but has no project memberships -- endpoints translate to either
+# an empty response or a 404 depending on context.
+#
+# Role rules per the Phase 3 spec:
+#   admin    -> None (all projects in tenant)
+#   pm       -> projects where role_on_project = pm
+#   super    -> projects where role_on_project in {pm, super, foreman}
+#   foreman  -> any membership (own crew / own project)
+#   viewer   -> any membership (read-only)
+#   other    -> [] (no access; restrictive default)
+
+# Map user.role -> set of project_members.role_on_project values
+# they're permitted to see. None means all-access.
+_PROJECT_ACCESS_ROLES: dict[str, Optional[set[str]]] = {
+    "admin":   None,
+    "pm":      {"pm"},
+    "super":   {"pm", "super", "foreman"},
+    "foreman": {"pm", "super", "foreman", "viewer"},
+    "viewer":  {"pm", "super", "foreman", "viewer"},
+    # legacy tenant-user roles (px, pe) map per migration 009:
+    "px":      {"pm"},                                # treated like pm
+    "pe":      {"pm", "super", "foreman"},            # treated like super
+}
+
+
+async def get_accessible_project_ids(
+    *, tenant_id: str, user_id: str, user_role: str,
+) -> Optional[list[str]]:
+    """Returns list of project ids the user can see, or None on
+    admin all-access. Empty list = scoped but no memberships."""
+    role = (user_role or "").lower()
+    if role == "admin":
+        return None
+    allowed = _PROJECT_ACCESS_ROLES.get(role)
+    if allowed is None and role != "admin":
+        # Unknown role -> deny.
+        return []
+    db = get_db()
+    rows = await db.project_members.find(
+        {"tenant_id": tenant_id, "user_id": user_id,
+         "role_on_project": {"$in": list(allowed)}},
+        {"_id": 0, "project_id": 1},
+    ).to_list(length=None)
+    return [r["project_id"] for r in rows]
+
+
+async def has_project_access(
+    *, tenant_id: str, user_id: str, user_role: str, project_id: str,
+) -> bool:
+    """Quick per-project check. Admin always True."""
+    accessible = await get_accessible_project_ids(
+        tenant_id=tenant_id, user_id=user_id, user_role=user_role,
+    )
+    if accessible is None:
+        return True
+    return project_id in accessible
+
+
+def can_manage_project_members(user_role: str) -> bool:
+    """Only admins + PMs can add/remove/change project members.
+    Note: PM scope is still tenant-wide for THIS check -- they can
+    manage members on projects where they themselves have role_on_
+    project=pm. The router cross-checks before mutating."""
+    return (user_role or "").lower() in ("admin", "pm")
+
+
 def decode_token(token: str) -> dict:
     try:
         return pyjwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])

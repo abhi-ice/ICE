@@ -52,6 +52,7 @@ from routers.gating_entities_router import router as gating_entities_router  # n
 from routers.coordination_router import router as coordination_router  # noqa: E402
 from routers.edit_requests_router import router as edit_requests_router  # noqa: E402
 from routers.resource_leveling_router import router as resource_leveling_router  # noqa: E402
+from routers.project_members_router import router as project_members_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -302,6 +303,7 @@ api_router.include_router(gating_entities_router)
 api_router.include_router(coordination_router)
 api_router.include_router(edit_requests_router)
 api_router.include_router(resource_leveling_router)
+api_router.include_router(project_members_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

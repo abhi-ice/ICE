@@ -59,6 +59,11 @@ MIGRATIONS = [
     # crew_capacity + crew_demands. Pass E smoke-verifies gap
     # computation walks supply + demand cleanly. Idempotent.
     "migrations.008_resource_leveling_setup",
+    # Bucket H Phase 3 (2026-05-08) -- per-project membership backfill.
+    # Adds project_members rows for every tenant_user x project tuple
+    # so the RBAC scoping rules have data to filter against. Admins
+    # skipped (they're tenant-wide). Idempotent via unique index.
+    "migrations.009_project_members_backfill",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
