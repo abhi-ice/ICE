@@ -16,6 +16,9 @@ import { toast } from "../ui/sonner";
 // Bucket D Corrective (2026-05-08) -- master-schedule task picker
 // replaces the per-DR DrActivityPicker for coordination linkage.
 import TaskPicker from "./TaskPicker";
+// Bucket G Phase 3 (2026-05-11) -- Jigsaw pre-fill wrapper.
+import JigsawField from "./JigsawField";
+import { getUser } from "../../lib/auth";
 
 const CHANNELS = ["email", "phone", "in_person", "formal_letter",
                    "text_message", "meeting", "system_notification"];
@@ -104,6 +107,9 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
     } finally { setBusy(false); }
   };
 
+  const userRole = (getUser()?.role || "").toLowerCase();
+  const entityId = initial?.id || null;
+
   return (
     <div data-testid="coordination-event-form" className="space-y-3 text-sm">
       <div className="grid grid-cols-3 gap-3">
@@ -116,11 +122,15 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
         <div>
           <label className="text-xs text-slate-500 uppercase tracking-wide">Channel</label>
-          <select data-testid="coord-channel" value={form.channel}
-            onChange={(e) => set("channel", e.target.value)}
-            className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
-            {CHANNELS.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
-          </select>
+          <JigsawField entityType="coordination_event" entityId={entityId}
+            fieldPath="channel" userRole={userRole} fieldLabel="channel"
+            onConfirm={(v) => set("channel", String(v ?? form.channel))}>
+            <select data-testid="coord-channel" value={form.channel}
+              onChange={(e) => set("channel", e.target.value)}
+              className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
+              {CHANNELS.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
+            </select>
+          </JigsawField>
         </div>
         <div>
           <label className="text-xs text-slate-500 uppercase tracking-wide">Direction</label>
@@ -175,11 +185,15 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-slate-500 uppercase tracking-wide">Topic</label>
-          <select data-testid="coord-topic" value={form.topic}
-            onChange={(e) => set("topic", e.target.value)}
-            className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
-            {TOPICS.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
-          </select>
+          <JigsawField entityType="coordination_event" entityId={entityId}
+            fieldPath="topic" userRole={userRole} fieldLabel="topic"
+            onConfirm={(v) => set("topic", String(v ?? form.topic))}>
+            <select data-testid="coord-topic" value={form.topic}
+              onChange={(e) => set("topic", e.target.value)}
+              className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
+              {TOPICS.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
+            </select>
+          </JigsawField>
         </div>
         <div>
           <label className="text-xs text-slate-500 uppercase tracking-wide">Outcome</label>
@@ -203,10 +217,14 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       <div>
         <label className="text-xs text-slate-500 uppercase tracking-wide">Summary *</label>
-        <input data-testid="coord-summary" value={form.summary}
-          onChange={(e) => set("summary", e.target.value)}
-          placeholder="One-line: 'No second-shift work in FCC suite this Friday — email coming.'"
-          className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
+        <JigsawField entityType="coordination_event" entityId={entityId}
+          fieldPath="summary" userRole={userRole} fieldLabel="summary"
+          onConfirm={(v) => set("summary", String(v ?? form.summary))}>
+          <input data-testid="coord-summary" value={form.summary}
+            onChange={(e) => set("summary", e.target.value)}
+            placeholder="One-line: 'No second-shift work in FCC suite this Friday — email coming.'"
+            className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
+        </JigsawField>
       </div>
 
       {!abbreviated && (

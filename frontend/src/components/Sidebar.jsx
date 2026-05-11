@@ -7,7 +7,10 @@ import api from "../lib/api";
 const COLLAPSE_KEY = "ice.sidebar.collapsed";
 
 export default function Sidebar() {
-  const [badges, setBadges] = useState({ approvals: 0, rfis: 0, submittals: 0, work_items: 0, aging: 0, edit_requests: 0 });
+  const [badges, setBadges] = useState({
+    approvals: 0, rfis: 0, submittals: 0, work_items: 0,
+    aging: 0, edit_requests: 0, suggestions: 0,
+  });
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
     catch { return {}; }
@@ -19,10 +22,19 @@ export default function Sidebar() {
         // Addition 4 -- include edit_requests/pending-count alongside
         // the existing approvals + aging fetches. Endpoint returns the
         // user's pending count (admin/PM see all, others see own).
-        const [{ data: pa }, { data: aging }, editReq] = await Promise.all([
+        //
+        // Bucket G Phase 3 (2026-05-11) -- pending Jigsaw suggestions
+        // for the current user. Hits the same endpoint the Review
+        // Queue uses; we ask for one page (limit=50) so the badge
+        // shows current-page count + an "N+" hint when the cursor is
+        // non-null. Fail-soft on any error so the sidebar stays alive
+        // even if the suggestions backend is down.
+        const [{ data: pa }, { data: aging }, editReq, sugg] = await Promise.all([
           api.get("/approvals/pending-count"),
           api.get("/aging-summary"),
           api.get("/edit-requests/pending-count").catch(() => ({ data: { pending: 0 } })),
+          api.get("/users/current/pending-suggestions?limit=50")
+              .catch(() => ({ data: { rows: [], next_cursor: null } })),
         ]);
         // Followup-fix 2 (2026-05-07): backend now returns working-day
         // aware counts under _wd suffix. Read those first; fall back to
@@ -33,11 +45,19 @@ export default function Sidebar() {
         const wis = aging.work_items_over_7wd ?? aging.work_items_over_7d ?? 0;
         const apvs = aging.approvals_over_3wd ?? aging.approvals_over_3d ?? 0;
         const total = rfis + submittals + wis + apvs;
+        const suggRows = sugg?.data?.rows || [];
+        // Roll the pending-suggestions count into the approvals badge
+        // (Sid: no new sidebar -- the Pending suggestions tab lives
+        // inside Approvals, so the badge should reflect both). The
+        // dedicated "suggestions" key is also exposed for any future
+        // standalone badge call site.
+        const approvalsCount = (pa.count || 0) + suggRows.length;
         setBadges({
-          approvals: pa.count || 0,
+          approvals: approvalsCount,
           rfis, submittals, work_items: wis,
           aging: total,
           edit_requests: (editReq?.data?.pending) || 0,
+          suggestions: suggRows.length,
         });
       } catch {}
     };

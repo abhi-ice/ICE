@@ -25,6 +25,32 @@ import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
+// Bucket G Phase 3 (2026-05-11) -- Jigsaw pre-fill wrapper around each
+// FieldEditor. The locked-edit modal is always edit-mode (eventId
+// known), so suggestions can bind cleanly. The wrapper covers every
+// post-submit-edit surface on DR -- including the RFI / QC / safety /
+// delivery / coordination event types that the spec called out for
+// Jigsaw wrapping, since they all reach this modal.
+import JigsawField from "./JigsawField";
+import { getUser } from "../../lib/auth";
+
+// Map this modal's eventType keys to the field_suggestions entity_type
+// vocabulary. The keys here mirror what the call sites in
+// DailyReports.jsx pass; new event types route through "unknown" and
+// JigsawField degrades gracefully (no suggestion will match).
+const EVENT_TYPE_TO_ENTITY = {
+  delay:        "delay",
+  rfi:          "rfi",
+  qc:           "qc_issue",
+  qc_issue:     "qc_issue",
+  safety:       "safety_event",
+  safety_event: "safety_event",
+  coordination: "coordination_event",
+  coordination_event: "coordination_event",
+  delivery:     "delivery",
+  photo:        "photo_tag",
+  activity:     "daily_report_activity",
+};
 
 const REASON_MIN = 10;
 
@@ -136,7 +162,9 @@ export default function LockedEventEditModal({
             </div>
             {fields.map((f) => (
               <FieldEditor key={f.key} f={f} value={values[f.key]}
-                onChange={(v) => setValues({ ...values, [f.key]: v })} />
+                onChange={(v) => setValues({ ...values, [f.key]: v })}
+                entityType={EVENT_TYPE_TO_ENTITY[eventType] || eventType}
+                entityId={eventId} />
             ))}
             <div>
               <label className="field-label">Edit reason *</label>
@@ -194,20 +222,42 @@ export default function LockedEventEditModal({
   );
 }
 
-function FieldEditor({ f, value, onChange }) {
+function FieldEditor({ f, value, onChange, entityType, entityId }) {
   const id = `locked-edit-${f.key}`;
+  const userRole = (getUser()?.role || "").toLowerCase();
+  // For numeric fields, coerce the AI-suggested value through Number()
+  // so the input renders correctly + onChange semantics stay numeric.
+  const wrap = (input) => (
+    <JigsawField
+      entityType={entityType} entityId={entityId}
+      fieldPath={f.key} userRole={userRole}
+      fieldLabel={f.label}
+      onConfirm={(v) => {
+        if (f.type === "number") {
+          const n = Number(v);
+          onChange(Number.isFinite(n) ? n : (v ?? ""));
+        } else {
+          onChange(v ?? "");
+        }
+      }}
+    >
+      {input}
+    </JigsawField>
+  );
   if (f.type === "select") {
     return (
       <div>
         <label className="field-label">{f.label}</label>
-        <select data-testid={id} value={value ?? ""}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-          <option value="">— select —</option>
-          {(f.options || []).map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+        {wrap(
+          <select data-testid={id} value={value ?? ""}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
+            <option value="">— select —</option>
+            {(f.options || []).map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        )}
       </div>
     );
   }
@@ -215,19 +265,23 @@ function FieldEditor({ f, value, onChange }) {
     return (
       <div>
         <label className="field-label">{f.label}</label>
-        <textarea data-testid={id} value={value ?? ""}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
+        {wrap(
+          <textarea data-testid={id} value={value ?? ""}
+            onChange={(e) => onChange(e.target.value)}
+            className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
+        )}
       </div>
     );
   }
   return (
     <div>
       <label className="field-label">{f.label}</label>
-      <input data-testid={id} type={f.type || "text"}
-        value={value ?? ""}
-        onChange={(e) => onChange(f.type === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
-        className="w-full h-9 px-3 rounded border border-slate-200 text-sm" />
+      {wrap(
+        <input data-testid={id} type={f.type || "text"}
+          value={value ?? ""}
+          onChange={(e) => onChange(f.type === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
+          className="w-full h-9 px-3 rounded border border-slate-200 text-sm" />
+      )}
     </div>
   );
 }

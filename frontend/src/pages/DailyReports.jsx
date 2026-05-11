@@ -36,6 +36,8 @@ import {
 // AI analysis lands (3-5s wait). Imported as a default export from
 // the photos sub-package.
 import TagWizard from "../components/photos/TagWizard";
+// Bucket G Phase 3 -- Jigsaw pre-fill widget on the DR narrative.
+import JigsawField from "../components/forms/JigsawField";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -2199,12 +2201,18 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
     catch (e) { toast.error(e.response?.data?.detail || "Save failed"); }
     finally { setBusy(false); }
   };
+  // Bucket G Phase 3 (2026-05-11) -- Jigsaw pre-fill on the DR narrative.
+  const userRole = (typeof window !== "undefined" && JSON.parse(localStorage.getItem("ice.user") || "null")?.role || "").toLowerCase();
   return (
     <PanelShell icon={ClipboardList} title="Daily notes / narrative" testid="dr-notes-panel">
-      <textarea data-testid="dr-notes-textarea" disabled={locked} value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Free-text notes that go on the PDF (visitors, accidents-near-misses summary, manpower changes, etc.)"
-        className="w-full h-28 px-3 py-2 rounded border border-slate-200 text-sm" />
+      <JigsawField entityType="daily_report" entityId={dailyReportId}
+        fieldPath="notes" userRole={userRole} fieldLabel="notes"
+        onConfirm={(v) => setText(String(v ?? ""))}>
+        <textarea data-testid="dr-notes-textarea" disabled={locked} value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Free-text notes that go on the PDF (visitors, accidents-near-misses summary, manpower changes, etc.)"
+          className="w-full h-28 px-3 py-2 rounded border border-slate-200 text-sm" />
+      </JigsawField>
       {!locked && (
         <div className="flex justify-end mt-2">
           <button data-testid="dr-notes-save" onClick={save} disabled={busy}
