@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import {
@@ -11,8 +11,16 @@ import {
 // Per Sid: no new sidebar entries. Pending-suggestions tab lives
 // inside the existing Approvals page since both are "review the
 // AI/system proposals and approve/reject" flows.
+//
+// Phase 4 enhancement: read ?tab + ?entity_type + ?source + ?project
+// from the URL so deep links (e.g. from the Tasks page schedule
+// suggestions banner) land on the right tab with the right filters
+// already applied.
 export default function Approvals() {
-  const [tab, setTab] = useState("approvals");
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState(
+    () => (params.get("tab") === "suggestions" ? "suggestions" : "approvals"),
+  );
   return (
     <div data-testid="approvals-page" className="space-y-4">
       <div className="flex items-center gap-2">
@@ -179,6 +187,7 @@ const ENTITY_ROUTES = {
 
 function PendingSuggestionsQueue() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [rows, setRows] = useState([]);
   const [counts, setCounts] = useState({});
   const [loading, setLoading] = useState(false);
@@ -186,9 +195,14 @@ function PendingSuggestionsQueue() {
   const [cursor, setCursor] = useState(null);
   const [pageCursors, setPageCursors] = useState([null]);
   const [pageIdx, setPageIdx] = useState(0);
-  // Filters
-  const [entityFilter, setEntityFilter] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("");
+  // Phase 4 -- seed filters from URL deep-link so the Tasks-page
+  // banner can land users on a pre-filtered queue.
+  const [entityFilter, setEntityFilter] = useState(
+    () => params.get("entity_type") || "",
+  );
+  const [sourceFilter, setSourceFilter] = useState(
+    () => params.get("source") || "",
+  );
   const [sortBy, setSortBy] = useState("created_at");
   const [selected, setSelected] = useState(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -198,13 +212,16 @@ function PendingSuggestionsQueue() {
   const load = async (nextCursor = null) => {
     setLoading(true); setError(null);
     try {
-      const params = {
+      const qp = {
         limit: 50,
         sort_by: sortBy,
       };
-      if (entityFilter) params.entity_type = entityFilter;
-      if (nextCursor) params.cursor = nextCursor;
-      const { data } = await api.get("/users/current/pending-suggestions", { params });
+      if (entityFilter) qp.entity_type = entityFilter;
+      // Phase 4 -- project-scoped deep link from Tasks page banner.
+      const projectFromUrl = params.get("project");
+      if (projectFromUrl) qp.project_id = projectFromUrl;
+      if (nextCursor) qp.cursor = nextCursor;
+      const { data } = await api.get("/users/current/pending-suggestions", { params: qp });
       let r = data?.rows || [];
       // Client-side source filter (server doesn't filter by source).
       if (sourceFilter) r = r.filter((x) => x.suggested_by === sourceFilter);

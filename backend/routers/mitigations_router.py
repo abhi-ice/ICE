@@ -389,6 +389,41 @@ async def record_outcome(
     updates["outcome_recorded_at"] = now_iso
     updates["updated_at"] = now_iso
 
+    # Bucket G Phase 4 (2026-05-11) -- calibration_rag feedback loop.
+    # When this mitigation was chosen via a confirmed AI suggestion
+    # (delay.chosen_mitigation_id was an ai_suggestion that the user
+    # accepted in the JigsawField widget), stamp the suggestion_id on
+    # the outcome so the calibration RAG corpus can roll up:
+    #   (suggestion -> mitigation -> actual outcome metrics)
+    # That tuple is what future fine-tuning learns from. Best-effort;
+    # never blocks the outcome record.
+    try:
+        delay_id = m.get("linked_delay_id")
+        if delay_id:
+            sugg = await db.field_suggestions.find_one(
+                tenant_filter(ctx["tenant_id"], {
+                    "entity_type": "delay",
+                    "entity_id": delay_id,
+                    "field_path": "chosen_mitigation_id",
+                    "status": "confirmed",
+                    "suggested_value": mitigation_id,
+                    "suggested_by": "calibration_rag",
+                }),
+                {"_id": 0, "id": 1, "suggested_by": 1, "confidence_score": 1},
+            )
+            if sugg:
+                updates["feedback_to_suggestion_id"] = sugg["id"]
+                updates["feedback_source"] = sugg.get("suggested_by")
+                updates["feedback_initial_confidence"] = (
+                    sugg.get("confidence_score")
+                )
+    except Exception:
+        import logging
+        logging.getLogger("mitigations_router").warning(
+            "calibration_rag feedback stamp failed; outcome still recorded",
+            exc_info=True,
+        )
+
     await db.mitigations.update_one(
         {"tenant_id": ctx["tenant_id"], "id": mitigation_id},
         {"$set": updates},

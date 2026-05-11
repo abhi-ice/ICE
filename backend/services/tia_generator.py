@@ -301,14 +301,136 @@ async def _gather_data(
         # ops in the audit extract so counsel can see the approval
         # workflow alongside the EVENT_EDITED_POST_SUBMIT entries.
         "edit_requests",
+        # Bucket G Phase 4 (2026-05-11) -- field_suggestions lifecycle
+        # ops give counsel the full "AI suggested X, human confirmed
+        # Y" trail per Sid's federal-audit requirement.
+        "field_suggestions",
     ]
     audit_entries = await db.audit_log.find(
         {"tenant_id": tenant_id,
          "table_name": {"$in": relevant_tables},
          "created_at": {"$gte": start_iso, "$lte": end_iso + "T23:59:59Z"}},
         {"_id": 0, "id": 1, "created_at": 1, "table_name": 1, "op": 1,
-         "record_id": 1, "actor_id": 1, "hash": 1, "prev_hash": 1},
+         "record_id": 1, "actor_id": 1, "hash": 1, "prev_hash": 1,
+         # Pull the after-body so Section 12a (Phase 4) can render the
+         # suggestion lifecycle without a per-row second fetch.
+         "after": 1},
     ).sort("created_at", 1).to_list(20000)
+
+    # ---- Bucket G Phase 4 -- field_suggestion lifecycle timeline ----
+    # Walks the audit entries, groups by record_id (= suggestion id),
+    # and builds a per-suggestion lineage: created -> [confirmed |
+    # rejected | superseded | expired]. Lets Section 12a render the
+    # "AI suggested X on date, human confirmed Y on date" timeline
+    # counsel needs as audit evidence.
+    suggestion_lifecycle: dict[str, dict] = {}
+    for entry in audit_entries:
+        op = entry.get("op") or ""
+        if not op.startswith("FIELD_SUGGESTION_"):
+            continue
+        sid = entry.get("record_id")
+        if not sid:
+            continue
+        bucket = suggestion_lifecycle.setdefault(sid, {
+            "suggestion_id": sid,
+            "events": [],
+            "created_at": None, "terminal_at": None, "terminal_op": None,
+            "entity_type": None, "entity_id": None,
+            "field_path": None, "suggested_value": None,
+            "suggested_by": None, "confidence_score": None,
+            "confirmed_by": None, "user_role": None,
+            "rejection_reason": None,
+        })
+        bucket["events"].append({
+            "op": op, "when": entry.get("created_at"),
+            "actor_id": entry.get("actor_id"),
+            "after": entry.get("after") or {},
+        })
+        after = entry.get("after") or {}
+        if op == "FIELD_SUGGESTION_CREATED":
+            bucket["created_at"] = entry.get("created_at")
+            bucket["entity_type"] = after.get("entity_type")
+            bucket["entity_id"] = after.get("entity_id")
+            bucket["field_path"] = after.get("field_path")
+            bucket["suggested_by"] = after.get("suggested_by")
+            bucket["confidence_score"] = after.get("confidence_score")
+        elif op == "FIELD_SUGGESTION_CONFIRMED":
+            bucket["terminal_at"] = entry.get("created_at")
+            bucket["terminal_op"] = "confirmed"
+            bucket["confirmed_by"] = (
+                after.get("confirmed_by") or entry.get("actor_id")
+            )
+            bucket["user_role"] = after.get("user_role")
+            if after.get("suggested_value") is not None:
+                bucket["suggested_value"] = after.get("suggested_value")
+            if after.get("field_path"):
+                bucket["field_path"] = after.get("field_path")
+            if after.get("entity_type"):
+                bucket["entity_type"] = after.get("entity_type")
+            if after.get("entity_id"):
+                bucket["entity_id"] = after.get("entity_id")
+        elif op == "FIELD_SUGGESTION_REJECTED":
+            bucket["terminal_at"] = entry.get("created_at")
+            bucket["terminal_op"] = "rejected"
+            bucket["rejection_reason"] = after.get("reason")
+            bucket["user_role"] = after.get("user_role")
+            if after.get("field_path"):
+                bucket["field_path"] = after.get("field_path")
+            if after.get("entity_type"):
+                bucket["entity_type"] = after.get("entity_type")
+            if after.get("entity_id"):
+                bucket["entity_id"] = after.get("entity_id")
+        elif op == "FIELD_SUGGESTION_SUPERSEDED":
+            if bucket["terminal_op"] is None:
+                bucket["terminal_at"] = entry.get("created_at")
+                bucket["terminal_op"] = "superseded"
+        elif op == "FIELD_SUGGESTION_EXPIRED":
+            if bucket["terminal_op"] is None:
+                bucket["terminal_at"] = entry.get("created_at")
+                bucket["terminal_op"] = "expired"
+            if after.get("entity_type"):
+                bucket["entity_type"] = after.get("entity_type")
+            if after.get("field_path"):
+                bucket["field_path"] = after.get("field_path")
+
+    # Sort lifecycle rows by created_at then by terminal_at so the
+    # rendered timeline reads in temporal order. Also enrich with
+    # the current persisted suggestion row when available so we can
+    # surface suggested_value even on rows where the CONFIRMED audit
+    # entry didn't include it (CONFIRMED in Phase 1 captures the
+    # value, but older audit rows might not).
+    lifecycle_list = sorted(
+        suggestion_lifecycle.values(),
+        key=lambda b: (b.get("created_at") or b.get("terminal_at") or ""),
+    )
+    if lifecycle_list:
+        sids = [b["suggestion_id"] for b in lifecycle_list
+                 if b.get("suggestion_id")]
+        if sids:
+            sugg_rows = await db.field_suggestions.find(
+                tenant_filter(tenant_id, {"id": {"$in": sids}}),
+                {"_id": 0, "id": 1, "suggested_value": 1,
+                 "confidence_score": 1, "suggested_by": 1,
+                 "entity_type": 1, "entity_id": 1,
+                 "field_path": 1},
+            ).to_list(length=None)
+            by_id = {r["id"]: r for r in sugg_rows}
+            for b in lifecycle_list:
+                src = by_id.get(b.get("suggestion_id"))
+                if not src:
+                    continue
+                if b.get("suggested_value") is None:
+                    b["suggested_value"] = src.get("suggested_value")
+                if b.get("confidence_score") is None:
+                    b["confidence_score"] = src.get("confidence_score")
+                if not b.get("suggested_by"):
+                    b["suggested_by"] = src.get("suggested_by")
+                if not b.get("entity_type"):
+                    b["entity_type"] = src.get("entity_type")
+                if not b.get("entity_id"):
+                    b["entity_id"] = src.get("entity_id")
+                if not b.get("field_path"):
+                    b["field_path"] = src.get("field_path")
 
     return {
         "_meta": {
@@ -339,6 +461,9 @@ async def _gather_data(
         "section_10_constraint_captures": constraints,
         "section_11_calendar_reconciliation": calendar_rows,
         "section_12_audit_log_extract": audit_entries,
+        # Bucket G Phase 4 -- field_suggestions lifecycle timeline.
+        # Section 12a in the rendered output.
+        "section_12a_field_suggestion_lifecycle": lifecycle_list,
         "section_13_daily_presence": presence,
     }
 
@@ -591,6 +716,83 @@ def _render_docx(data: dict) -> bytes:
         ("record_id", "Record"), ("actor_id", "Actor"), ("hash", "Hash"),
     ])
 
+    # SECTION 12a -- field_suggestions lifecycle timeline.
+    # Counsel needs the "AI suggested X / human did Y" trail. We
+    # render one bullet per suggestion in chronological order with
+    # source, confidence, suggested value, and the human terminal
+    # decision (confirmed / rejected with reason / superseded /
+    # expired). Bucket G Phase 4.
+    H("12a. AI Suggestion Lifecycle (Jigsaw audit trail)", level=2)
+    lifecycle = data.get("section_12a_field_suggestion_lifecycle") or []
+    P(
+        f"{len(lifecycle)} AI suggestion(s) in range. Each row shows "
+        f"the AI's proposal and the human-confirmation outcome -- the "
+        f"federal-audit evidence chain for AI-assisted decisions."
+    )
+    if not lifecycle:
+        empty()
+    else:
+        for b in lifecycle:
+            sid = b.get("suggestion_id") or "—"
+            entity = (b.get("entity_type") or "—").replace("_", " ")
+            field_path = b.get("field_path") or "—"
+            source = b.get("suggested_by") or "—"
+            conf = b.get("confidence_score")
+            conf_str = (
+                f", conf {conf:.2f}" if isinstance(conf, (int, float)) else ""
+            )
+            val = b.get("suggested_value")
+            if isinstance(val, (dict, list)):
+                val_str = json.dumps(val, default=str)[:160]
+            else:
+                val_str = str(val) if val is not None else "—"
+            created_at = (b.get("created_at") or "")[:19]
+            terminal_op = b.get("terminal_op")
+            terminal_at = (b.get("terminal_at") or "")[:19]
+
+            # Build the line. Two paragraphs per suggestion: the AI
+            # proposal + the human terminal decision.
+            p = doc.add_paragraph(style="List Bullet")
+            r0 = p.add_run(f"[{sid[:8]}] ")
+            r0.bold = True
+            p.add_run(
+                f"{entity}.{field_path} -- AI suggested '{val_str}' "
+                f"on {created_at} (source: {source}{conf_str})."
+            )
+            decision = doc.add_paragraph()
+            decision.paragraph_format.left_indent = Pt(18)
+            if terminal_op == "confirmed":
+                r1 = decision.add_run("Confirmed")
+                r1.font.color.rgb = RGBColor(0x0A, 0x6E, 0x3A)  # emerald
+                r1.bold = True
+                actor = b.get("confirmed_by") or "—"
+                role = b.get("user_role")
+                decision.add_run(
+                    f" by {str(actor)[:36]}"
+                    + (f" ({role})" if role else "")
+                    + (f" at {terminal_at}." if terminal_at else ".")
+                )
+            elif terminal_op == "rejected":
+                r1 = decision.add_run("Rejected")
+                r1.font.color.rgb = RGBColor(0xB1, 0x2A, 0x2A)  # rose
+                r1.bold = True
+                reason = b.get("rejection_reason") or "(no reason recorded)"
+                decision.add_run(
+                    f" at {terminal_at}. Reason: {reason[:240]}"
+                )
+            elif terminal_op == "superseded":
+                r1 = decision.add_run("Superseded by newer AI suggestion")
+                r1.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+                decision.add_run(f" at {terminal_at}.")
+            elif terminal_op == "expired":
+                r1 = decision.add_run("Auto-expired (30+ days pending)")
+                r1.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+                decision.add_run(f" at {terminal_at}.")
+            else:
+                r1 = decision.add_run("Pending (no terminal decision yet)")
+                r1.italic = True
+                r1.font.color.rgb = RGBColor(0xB8, 0x80, 0x00)
+
     # Daily presence appendix (numbered 13 to keep canonical 12 above)
     H("Appendix A. Daily Presence Roster")
     table(data.get("section_13_daily_presence") or [], [
@@ -709,6 +911,71 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
     mitigations_html = _section("Mitigations",
                                   data["section_5_mitigations"] or [], _mit_row)
 
+    # Bucket G Phase 4 -- field_suggestion lifecycle rows. Two-line
+    # format per row: AI proposal + human terminal decision. Mirrors
+    # the DOCX Section 12a.
+    def _sugg_row(i, b):
+        sid = html.escape(str(b.get("suggestion_id") or "")[:8])
+        entity = html.escape(str(b.get("entity_type") or "").replace("_", " "))
+        field_path = html.escape(str(b.get("field_path") or ""))
+        source = html.escape(str(b.get("suggested_by") or ""))
+        conf = b.get("confidence_score")
+        conf_str = (
+            f" · conf {conf:.2f}" if isinstance(conf, (int, float)) else ""
+        )
+        val = b.get("suggested_value")
+        if isinstance(val, (dict, list)):
+            val_str = json.dumps(val, default=str)[:160]
+        else:
+            val_str = str(val) if val is not None else "—"
+        val_str = html.escape(val_str)
+        created_at = html.escape(str(b.get("created_at") or "")[:19])
+        terminal_op = b.get("terminal_op")
+        terminal_at = html.escape(str(b.get("terminal_at") or "")[:19])
+        decision_html = ""
+        if terminal_op == "confirmed":
+            actor = html.escape(str(b.get("confirmed_by") or "—")[:36])
+            role = b.get("user_role") or ""
+            role_str = f" ({html.escape(str(role))})" if role else ""
+            decision_html = (
+                "<span class='sugg-confirmed'>Confirmed</span>"
+                f" by {actor}{role_str} at {terminal_at}."
+            )
+        elif terminal_op == "rejected":
+            reason = html.escape(str(b.get("rejection_reason") or "(no reason)")[:240])
+            decision_html = (
+                f"<span class='sugg-rejected'>Rejected</span>"
+                f" at {terminal_at}. Reason: {reason}"
+            )
+        elif terminal_op == "superseded":
+            decision_html = (
+                f"<span class='sugg-superseded'>Superseded by newer "
+                f"AI suggestion</span> at {terminal_at}."
+            )
+        elif terminal_op == "expired":
+            decision_html = (
+                f"<span class='sugg-superseded'>Auto-expired</span> at {terminal_at}."
+            )
+        else:
+            decision_html = (
+                "<span class='sugg-pending'>Pending</span> "
+                "(no terminal decision yet)."
+            )
+        return (
+            f"<li>"
+            f"<b>[{sid}]</b> {entity}.{field_path} — "
+            f"AI suggested <i>'{val_str}'</i> on {created_at} "
+            f"(source: {source}{conf_str}).<br>"
+            f"<span class='sugg-decision'>{decision_html}</span>"
+            f"</li>"
+        )
+
+    suggestions_html = _section(
+        "AI Suggestion Lifecycle (12a) — Jigsaw audit trail",
+        data.get("section_12a_field_suggestion_lifecycle") or [],
+        _sugg_row,
+    )
+
     css = """
       body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #1a2845; }
       h1 { font-size: 18pt; margin-bottom: 4pt; }
@@ -720,6 +987,11 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
       .privilege { background: #fff5e6; border: 1px solid #d97757; padding: 6pt 10pt; margin: 8pt 0; font-size: 9pt; }
       .hash { color: #999; font-family: monospace; font-size: 8pt; }
       .ai-line { color: #555; font-size: 9pt; margin-top: 2pt; padding-left: 8pt; border-left: 2px solid #d97757; }
+      .sugg-decision { color: #444; padding-left: 12pt; font-size: 9pt; display: block; margin-top: 2pt; }
+      .sugg-confirmed { color: #0a6e3a; font-weight: bold; }
+      .sugg-rejected { color: #b12a2a; font-weight: bold; }
+      .sugg-superseded { color: #888; font-weight: bold; }
+      .sugg-pending { color: #b88000; font-style: italic; }
     """
     privilege_block = (
         "<div class='privilege'><b>Privileged work product (counsel privileged).</b> "
@@ -746,6 +1018,7 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
       {diffs_html}
       {photos_html}
       {mitigations_html}
+      {suggestions_html}
     </body></html>
     """
     return HTML(string=body).write_pdf()

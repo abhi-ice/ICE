@@ -10,6 +10,10 @@ export default function Sidebar() {
   const [badges, setBadges] = useState({
     approvals: 0, rfis: 0, submittals: 0, work_items: 0,
     aging: 0, edit_requests: 0, suggestions: 0,
+    // Bucket G Phase 4: when the suggestions feed has more rows than
+    // the badge fetch could read, we show "N+" so a 50-task schedule
+    // import doesn't undercount.
+    suggestions_more: false,
   });
   const [collapsed, setCollapsed] = useState(() => {
     try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
@@ -23,17 +27,19 @@ export default function Sidebar() {
         // the existing approvals + aging fetches. Endpoint returns the
         // user's pending count (admin/PM see all, others see own).
         //
-        // Bucket G Phase 3 (2026-05-11) -- pending Jigsaw suggestions
-        // for the current user. Hits the same endpoint the Review
-        // Queue uses; we ask for one page (limit=50) so the badge
-        // shows current-page count + an "N+" hint when the cursor is
-        // non-null. Fail-soft on any error so the sidebar stays alive
-        // even if the suggestions backend is down.
+        // Bucket G Phase 3 + 4 (2026-05-11) -- pending Jigsaw
+        // suggestions for the current user. Phase 4 bumps the fetch
+        // limit from 50 -> 500 (the server's hard cap) so a single
+        // schedule import dropping 50-100 trade suggestions counts
+        // accurately. When the server still has more rows beyond
+        // that page (next_cursor non-null), the sidebar renders
+        // "N+" instead of just N. Fail-soft on any error so the
+        // sidebar stays alive even if the suggestions backend hiccups.
         const [{ data: pa }, { data: aging }, editReq, sugg] = await Promise.all([
           api.get("/approvals/pending-count"),
           api.get("/aging-summary"),
           api.get("/edit-requests/pending-count").catch(() => ({ data: { pending: 0 } })),
-          api.get("/users/current/pending-suggestions?limit=50")
+          api.get("/users/current/pending-suggestions?limit=500")
               .catch(() => ({ data: { rows: [], next_cursor: null } })),
         ]);
         // Followup-fix 2 (2026-05-07): backend now returns working-day
@@ -46,6 +52,7 @@ export default function Sidebar() {
         const apvs = aging.approvals_over_3wd ?? aging.approvals_over_3d ?? 0;
         const total = rfis + submittals + wis + apvs;
         const suggRows = sugg?.data?.rows || [];
+        const suggHasMore = Boolean(sugg?.data?.next_cursor);
         // Roll the pending-suggestions count into the approvals badge
         // (Sid: no new sidebar -- the Pending suggestions tab lives
         // inside Approvals, so the badge should reflect both). The
@@ -58,6 +65,7 @@ export default function Sidebar() {
           aging: total,
           edit_requests: (editReq?.data?.pending) || 0,
           suggestions: suggRows.length,
+          suggestions_more: suggHasMore,
         });
       } catch {}
     };
@@ -103,6 +111,12 @@ export default function Sidebar() {
                   {section.items.map((item) => {
                     const Icon = item.icon;
                     const badge = item.badgeKey ? badges[item.badgeKey] : 0;
+                    // Bucket G Phase 4: the approvals badge rolls in
+                    // pending suggestions; show "N+" when there are
+                    // more suggestion rows beyond what we fetched.
+                    const badgeMore = item.badgeKey === "approvals"
+                      ? badges.suggestions_more
+                      : false;
                     return (
                       <NavLink
                         key={item.path}
@@ -117,8 +131,11 @@ export default function Sidebar() {
                           <span
                             data-testid={`sidebar-${item.badgeKey}-badge`}
                             className="ml-auto inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[18px]"
+                            title={badgeMore
+                              ? `${badge}+ pending (more available beyond first page)`
+                              : `${badge} pending`}
                           >
-                            {badge}
+                            {badge}{badgeMore ? "+" : ""}
                           </span>
                         )}
                       </NavLink>

@@ -673,6 +673,35 @@ _OSHA_CLASS_BY_CONCERN = [
 ]
 
 
+# Bucket G Phase 4 (2026-05-11) -- body_part + mechanism inference.
+# Same keyword vocabulary as the OSHA-class map; we just map to
+# different vocabularies for the safety_event form. Defaults are
+# permissive ("unspecified" / "other") so the suggestion still
+# gives the PM something to confirm without forcing a hard guess.
+_BODY_PART_BY_CONCERN = [
+    (("fall", "height", "no harness"),               "multiple"),
+    (("electrical", "exposed wire", "live circuit"), "torso/hand"),
+    (("ppe", "hard hat"),                             "head"),
+    (("safety glasses", "eye"),                       "eyes"),
+    (("rebar", "exposed steel"),                      "torso"),
+    (("scaffold", "platform"),                        "multiple"),
+    (("fire", "ignition", "flammable",
+       "extinguisher"),                              "torso/hand"),
+]
+
+_MECHANISM_BY_CONCERN = [
+    (("fall", "height", "no harness", "scaffold"),    "fall_from_elevation"),
+    (("electrical", "exposed wire",
+       "live circuit"),                              "electric_shock"),
+    (("fire", "ignition", "flammable",
+       "extinguisher"),                              "fire_explosion"),
+    (("ppe", "hard hat", "safety glasses",
+       "high-vis", "hi-vis"),                         "struck_by"),
+    (("trench", "excavation", "shoring"),             "caught_in_collapse"),
+    (("rebar", "exposed steel"),                      "struck_by"),
+]
+
+
 def _infer_osha_classification(concerns: list[str]) -> str:
     for c in concerns or []:
         lc = (c or "").lower()
@@ -680,6 +709,29 @@ def _infer_osha_classification(concerns: list[str]) -> str:
             if any(k in lc for k in keywords):
                 return klass
     return "general"
+
+
+def _infer_body_part(concerns: list[str]) -> str:
+    """Body-part inference. Returns 'unspecified' when no keyword
+    matches; the suggestion still surfaces so the PM gets a prompt
+    even if the AI guess is generic."""
+    for c in concerns or []:
+        lc = (c or "").lower()
+        for keywords, part in _BODY_PART_BY_CONCERN:
+            if any(k in lc for k in keywords):
+                return part
+    return "unspecified"
+
+
+def _infer_mechanism(concerns: list[str]) -> str:
+    """Mechanism inference matching the safety_event.mechanism enum
+    vocabulary."""
+    for c in concerns or []:
+        lc = (c or "").lower()
+        for keywords, mech in _MECHANISM_BY_CONCERN:
+            if any(k in lc for k in keywords):
+                return mech
+    return "other"
 
 
 async def _create_photo_ai_field_suggestions(
@@ -721,24 +773,36 @@ async def _create_photo_ai_field_suggestions(
                 actor_id=actor_id, request_id=request_id,
             )
 
-    # ---- Safety concerns -> safety_event.osha_classification ----
+    # ---- Safety concerns -> safety_event.osha_classification +
+    # body_part + mechanism (Bucket G Phase 4 extension) ----
     if ref_field == "safety_event_id":
         concerns = list(tray.get("ai_safety_concerns_detected") or [])
-        if concerns and not event_doc.get("osha_classification"):
-            klass = _infer_osha_classification(concerns)
-            await fs.create_suggestion(
-                tenant_id=tenant_id, project_id=project_id,
-                entity_type="safety_event", entity_id=ref_id,
-                field_path="osha_classification",
-                suggested_value=klass,
-                suggested_by="ai_photo_vision",
-                confidence_score=float(confidence),
-                source_context=(
-                    f"photo_tray_id={tray.get('id')}; "
-                    f"concerns={','.join(concerns[:5])}"
-                ),
-                actor_id=actor_id, request_id=request_id,
-            )
+        if concerns:
+            # Trio of suggestions on the safety event. Each lands as its
+            # own field_suggestions row so the safety form can light up
+            # each input independently in the Jigsaw widget. Skip any
+            # field that already carries a human-supplied value.
+            trio = [
+                ("osha_classification", _infer_osha_classification(concerns)),
+                ("body_part",           _infer_body_part(concerns)),
+                ("mechanism",           _infer_mechanism(concerns)),
+            ]
+            for fpath, val in trio:
+                if event_doc.get(fpath):
+                    continue
+                await fs.create_suggestion(
+                    tenant_id=tenant_id, project_id=project_id,
+                    entity_type="safety_event", entity_id=ref_id,
+                    field_path=fpath,
+                    suggested_value=val,
+                    suggested_by="ai_photo_vision",
+                    confidence_score=float(confidence),
+                    source_context=(
+                        f"photo_tray_id={tray.get('id')}; "
+                        f"concerns={','.join(concerns[:5])}"
+                    ),
+                    actor_id=actor_id, request_id=request_id,
+                )
 
     # ---- Trade -> entity.trade where the entity has a trade field.
     # delays, rfis, qc_issues don't carry trade directly; only
