@@ -72,6 +72,8 @@ REGISTERED_SOURCES: set[str] = {
     "ai_copilot", "ai_photo_vision", "ai_rfi_drafter",
     "ai_qc_analyzer", "ai_safety_analyzer", "ai_schedule_analyzer",
     "system_inference", "calibration_rag",
+    # Bucket E Phase 4 -- submittal classifier producer.
+    "ai_submittal_classifier",
 }
 
 # Expiration window: pending suggestions auto-rejected after this many

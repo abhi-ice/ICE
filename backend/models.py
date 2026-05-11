@@ -2525,6 +2525,11 @@ FieldSuggestionSource = Literal[
     "ai_schedule_analyzer",
     "system_inference",
     "calibration_rag",
+    # Bucket E Phase 4 (2026-05-11) -- submittal classifier producer.
+    # Scans uploaded submittal PDF text via pdfplumber + filename
+    # heuristics; suggests spec_section_id, discipline, type at
+    # confidence 0.7-0.85.
+    "ai_submittal_classifier",
 ]
 
 FieldSuggestionStatus = Literal[

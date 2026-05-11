@@ -69,6 +69,82 @@ async def _gather_data(
         tenant_filter(tenant_id, gq), {"_id": 0},
     ).to_list(5000)
 
+    # ---- Bucket E Phase 4b -- enrich gating_entities of type
+    # "submittal" with SLA + aging + cycle metrics. Counsel needs
+    # this on Section 9 so the report shows "A/E delayed submittal
+    # SUB-0042 by 8 working days, breaching SLA on 2026-04-22".
+    sub_ids = [
+        g.get("entity_id") for g in gating_entities
+        if g.get("entity_type") == "submittal" and g.get("entity_id")
+    ]
+    if sub_ids:
+        sub_rows = await db.submittals.find(
+            tenant_filter(tenant_id, {"id": {"$in": sub_ids}}),
+            {"_id": 0, "id": 1, "submittal_number": 1,
+             "aging_days": 1, "aging_working_days": 1,
+             "sla_status": 1, "sla_breach_reason": 1,
+             "review_cycle_count": 1,
+             "total_review_calendar_days": 1,
+             "total_review_working_days": 1,
+             "must_approve_by": 1, "urgency_flag": 1,
+             "is_overdue": 1, "overdue_days": 1,
+             "a_e_review_due_at": 1, "submitted_to_ae_at": 1,
+             "discipline": 1, "type": 1},
+        ).to_list(length=None)
+        sub_by_id = {s["id"]: s for s in sub_rows}
+        for g in gating_entities:
+            if g.get("entity_type") != "submittal":
+                continue
+            s = sub_by_id.get(g.get("entity_id"))
+            if not s:
+                continue
+            g["sla_aging_days"] = s.get("aging_days")
+            g["sla_aging_working_days"] = s.get("aging_working_days")
+            g["sla_status"] = s.get("sla_status")
+            g["sla_breach_reason"] = s.get("sla_breach_reason")
+            g["review_cycle_count"] = s.get("review_cycle_count")
+            g["total_review_calendar_days"] = s.get(
+                "total_review_calendar_days",
+            )
+            g["total_review_working_days"] = s.get(
+                "total_review_working_days",
+            )
+            g["must_approve_by"] = s.get("must_approve_by")
+            g["urgency_flag"] = s.get("urgency_flag")
+            g["submittal_number"] = s.get("submittal_number")
+            g["discipline"] = s.get("discipline")
+            g["submittal_type"] = s.get("type")
+
+    # ---- Bucket E Phase 4b -- Section 9a Submittal Review Events
+    # Timeline. Pulls chain-of-custody events across the project in
+    # range, sorted chronologically. Federal claim defense:
+    # "Counsel wants to see every touch on every submittal."
+    submittal_review_events = await db.submittal_review_events.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id,
+            "performed_at": {
+                "$gte": start_iso,
+                "$lte": end_iso + "T23:59:59Z",
+            },
+        }),
+        {"_id": 0},
+    ).sort("performed_at", 1).to_list(length=20000)
+    # Enrich events with submittal_number for readability.
+    if submittal_review_events:
+        sids = list({e.get("submittal_id") for e in submittal_review_events
+                     if e.get("submittal_id")})
+        if sids:
+            sub_lookup = await db.submittals.find(
+                tenant_filter(tenant_id, {"id": {"$in": sids}}),
+                {"_id": 0, "id": 1, "submittal_number": 1, "title": 1},
+            ).to_list(length=None)
+            sub_lkp = {s["id"]: s for s in sub_lookup}
+            for ev in submittal_review_events:
+                s = sub_lkp.get(ev.get("submittal_id"))
+                if s:
+                    ev["submittal_number"] = s.get("submittal_number")
+                    ev["submittal_title"] = s.get("title")
+
     # ---- Constraint captures from daily_report_activities ----
     # Pull DR ids in range first, then activities pointing at them.
     drs = await db.daily_reports.find(
@@ -458,6 +534,8 @@ async def _gather_data(
         "section_7_schedule_update_diffs": schedule_diffs,
         "section_8_photo_evidence_pack": photos,
         "section_9_gating_entities": gating_entities,
+        # Bucket E Phase 4b -- chronological submittal review chain.
+        "section_9a_submittal_review_events": submittal_review_events,
         "section_10_constraint_captures": constraints,
         "section_11_calendar_reconciliation": calendar_rows,
         "section_12_audit_log_extract": audit_entries,
@@ -679,7 +757,38 @@ def _render_docx(data: dict) -> bytes:
         ("display_label", "Label"), ("submitted_at", "Submitted"),
         ("status", "Status"), ("owner_attribution", "Owner"),
         ("is_over_sla", "Over SLA"),
+        # Bucket E Phase 4b -- submittal SLA enrichment columns. Empty
+        # cells render naturally for non-submittal entity types.
+        ("sla_aging_days", "Aging (cal)"),
+        ("sla_aging_working_days", "Aging (wd)"),
+        ("sla_status", "SLA"),
+        ("review_cycle_count", "Cycles"),
+        ("must_approve_by", "Must approve by"),
+        ("urgency_flag", "Urgent"),
         ("edits_summary", "Post-submit edits"),
+    ])
+
+    # Bucket E Phase 4b -- Section 9a Submittal Review Events Timeline.
+    # Chronological dump of every chain-of-custody event across the
+    # project in range. Counsel evidence for "A/E delayed submittal X
+    # by Y working days".
+    H("9a. Submittal Review Events Timeline", level=2)
+    sub_events = data.get("section_9a_submittal_review_events") or []
+    P(
+        f"{len(sub_events)} submittal review event(s) in range. "
+        f"Each row shows the chain-of-custody hop with the elapsed-day "
+        f"delta from the prior event on the same submittal."
+    )
+    table(sub_events, [
+        ("performed_at", "When"),
+        ("submittal_number", "Sub #"),
+        ("event_type", "Event"),
+        ("status_before", "Was"),
+        ("status_after", "Now"),
+        ("calendar_days_elapsed", "Δ cal days"),
+        ("working_days_elapsed", "Δ wd"),
+        ("performed_by", "Actor"),
+        ("notes", "Notes"),
     ])
 
     # SECTION 10

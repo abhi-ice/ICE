@@ -54,6 +54,7 @@ from routers.edit_requests_router import router as edit_requests_router  # noqa:
 from routers.resource_leveling_router import router as resource_leveling_router  # noqa: E402
 from routers.project_members_router import router as project_members_router  # noqa: E402
 from routers.field_suggestions_router import router as field_suggestions_router  # noqa: E402
+from routers.submittal_sla_router import router as submittal_sla_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -468,6 +469,90 @@ async def lifespan(app: FastAPI):
     app.state.field_suggestions_expire_task = _asyncio.create_task(
         _periodic_suggestion_expire(),
     )
+
+    # Bucket E Phase 4e (2026-05-11) -- recurring submittal SLA breach
+    # detection. Scans all tenants every 6 hours. Each tenant's open
+    # submittals get checked for now > due_date; breached rows flip
+    # sla_status, fire SUBMITTAL_SLA_BREACHED audit, write a chain
+    # event, and cascade-flag any linked task via gating_entities.
+    # Boot pass also runs once on startup so a downtime window
+    # doesn't leave breaches sitting silent.
+    async def _periodic_submittal_breach_detect():
+        from services.submittal_sla import detect_breaches
+        SLEEP_S = 6 * 3600
+        while True:
+            try:
+                await _asyncio.sleep(SLEEP_S)
+                # Walk every active tenant.
+                db = get_db()
+                tenants = await db.tenants.find(
+                    {"status": {"$ne": "archived"}},
+                    {"_id": 0, "id": 1},
+                ).to_list(length=None)
+                total_new = 0
+                for t in tenants:
+                    try:
+                        out = await detect_breaches(
+                            tenant_id=t.get("id"),
+                            actor_id=None,
+                            request_id="submittal_sla_breach_periodic",
+                        )
+                        total_new += out.get("newly_breached", 0)
+                    except Exception as exc:
+                        logger.warning(
+                            "submittal SLA breach detect failed for tenant %s: %s",
+                            t.get("id"), exc,
+                        )
+                if total_new:
+                    logger.info(
+                        "submittal_sla periodic breach scan: "
+                        "tenants=%s newly_breached=%s",
+                        len(tenants), total_new,
+                    )
+            except _asyncio.CancelledError:
+                logger.info("submittal_sla periodic scan cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "submittal_sla periodic scan tick failed "
+                    "(non-fatal): %s", exc,
+                )
+
+    # Boot pass -- catch breaches accumulated during downtime.
+    try:
+        from services.submittal_sla import detect_breaches as _detect_breaches_boot
+        db = get_db()
+        tenants = await db.tenants.find(
+            {"status": {"$ne": "archived"}},
+            {"_id": 0, "id": 1},
+        ).to_list(length=None)
+        for t in tenants:
+            try:
+                out = await _detect_breaches_boot(
+                    tenant_id=t.get("id"),
+                    actor_id=None,
+                    request_id="submittal_sla_boot",
+                )
+                if out.get("newly_breached"):
+                    logger.info(
+                        "submittal_sla boot breach scan: tenant=%s "
+                        "newly_breached=%s cascade_flagged=%s",
+                        t.get("id"), out.get("newly_breached"),
+                        out.get("cascade_flagged_tasks"),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "submittal_sla boot breach detect failed for "
+                    "tenant %s: %s", t.get("id"), exc,
+                )
+    except Exception as exc:
+        logger.warning(
+            "submittal_sla boot breach scan failed (non-fatal): %s", exc,
+        )
+
+    app.state.submittal_sla_breach_task = _asyncio.create_task(
+        _periodic_submittal_breach_detect(),
+    )
     yield
     # Cancel the recurring task before closing the DB so the next
     # tick doesn't hit a closed connection.
@@ -476,6 +561,13 @@ async def lifespan(app: FastAPI):
         task.cancel()
         try:
             await task
+        except Exception:
+            pass
+    sla_task = getattr(app.state, "submittal_sla_breach_task", None)
+    if sla_task and not sla_task.done():
+        sla_task.cancel()
+        try:
+            await sla_task
         except Exception:
             pass
     await close_db()
@@ -553,6 +645,7 @@ api_router.include_router(edit_requests_router)
 api_router.include_router(resource_leveling_router)
 api_router.include_router(project_members_router)
 api_router.include_router(field_suggestions_router)
+api_router.include_router(submittal_sla_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

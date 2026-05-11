@@ -85,6 +85,21 @@ const AUDIT_OP_GROUPS = [
       "FIELD_SUGGESTIONS_SCHEDULE_TRADE_INFERENCE",
     ],
   },
+  // Bucket E Phase 5 (2026-05-11) -- Submittal SLA op family. Lets
+  // compliance + admins audit SLA breach + chain-of-custody events
+  // without grepping the audit feed.
+  {
+    label: "Submittal SLA",
+    ops: [
+      "SUBMITTAL_SLA_INITIALIZED",
+      "SUBMITTAL_SLA_BREACHED",
+      "SUBMITTAL_SLA_PAUSED",
+      "SUBMITTAL_SLA_RESUMED",
+      "SUBMITTAL_SLA_REVIEW_EVENT_RECORDED",
+      "SUBMITTAL_SLA_REVIEWER_ASSIGNED",
+      "SUBMITTAL_SLA_AGING_RECOMPUTED",
+    ],
+  },
 ];
 
 // AuditLog page — append-only, with hash-chain integrity check button.
@@ -1003,6 +1018,69 @@ export function AiHelpPanel({ onClose }) {
                 are available beyond the badge's fetched page. The Tasks page
                 also shows a per-project banner after a schedule import drops
                 AI trade suggestions in bulk.
+              </p>
+            </section>
+          </div>
+
+          {/* Bucket E Phase 5d (2026-05-11) -- Submittal SLA section.
+              Four sub-sections covering the workflow + computed
+              fields counsel + PMs need to understand. */}
+          <div className="border-t border-slate-200 pt-3 mt-2"
+            data-testid="ai-help-submittal-sla-section">
+            <div className="text-sm font-semibold text-slate-900 inline-flex items-center gap-1.5 mb-2">
+              <FileText className="h-3.5 w-3.5 text-blue-700" />
+              Submittal A/E Review SLA
+            </div>
+            <section>
+              <div className="font-medium text-slate-900">Working vs calendar days</div>
+              <p>
+                Default is <b>14 working days</b> per FAR 52.236-15 / GSAM.
+                Working days skip weekends, 2026 federal holidays, and project
+                no-work days declared on daily reports. Calendar-day mode is
+                an admin override on the project (some contracts spell SLA
+                as calendar). Per-submittal override available when a
+                contract specifies a different SLA for a specific submittal
+                type.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">SLA pills + breach detection</div>
+              <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                <li><b className="text-emerald-700">On track</b> — more than 3 calendar days from due_date</li>
+                <li><b className="text-amber-700">Approaching</b> — within 3 calendar days</li>
+                <li><b className="text-rose-700">Breached</b> — past due_date</li>
+                <li><b className="text-slate-700">Paused</b> — SLA clock stopped by PM/admin</li>
+              </ul>
+              <p className="mt-1">
+                Breach detection runs every 6 hours (boot + recurring). Flipping
+                to breached fires <code className="px-1 mx-0.5 bg-slate-100 rounded">SUBMITTAL_SLA_BREACHED</code>
+                audit + chain event, and cascade-flags any linked task via
+                gating_entities.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">must_approve_by logic</div>
+              <p>
+                Computed backward from the linked task's <code>planned_start</code>
+                minus the <code>procurement_lead_time_days</code> on the
+                submittal. When the AI projects the current SLA pace would
+                miss this date, <code>urgency_flag</code> goes true and the
+                register highlights the row in rose. Helps PMs spot
+                procurement risk before the schedule slip locks in.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Reviewer assignment + chain of custody</div>
+              <p>
+                PM or admin assigns a reviewer via the per-row Edit dialog;
+                the assignee gets the submittal in their queue. Every chain
+                hop (submitted_to_ae → ae_review_started → ae_review_completed
+                → forwarded_to_sub → returned_from_sub → disposition) records
+                a <code className="px-1 mx-0.5 bg-slate-100 rounded">submittal_review_events</code>
+                row with calendar + working day deltas vs. the prior event.
+                This drives TIA Section 9a (Submittal Review Events Timeline)
+                — counsel's evidence for "A/E held this submittal N working
+                days, blocking task X".
               </p>
             </section>
           </div>

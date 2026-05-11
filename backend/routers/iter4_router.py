@@ -6,7 +6,7 @@
 
 All endpoints respect tenant isolation via tenant_filter().
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from typing import Optional, Literal
 from pydantic import Field
 from database import get_db, tenant_filter
@@ -153,7 +153,10 @@ async def _next_submittal_number(db, tenant_id: str, project_id: str) -> str:
 
 
 @router.post("/submittals", response_model=Submittal)
-async def create_submittal(payload: SubmittalCreate, ctx: dict = Depends(require_tenant)):
+async def create_submittal(
+    payload: SubmittalCreate, bg: BackgroundTasks,
+    ctx: dict = Depends(require_tenant),
+):
     db = get_db()
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0, "id": 1})
     if not proj:
@@ -170,6 +173,19 @@ async def create_submittal(payload: SubmittalCreate, ctx: dict = Depends(require
         "auto_generated": False,
         "created_by": ctx["user"]["id"],
         "created_at": utc_now().isoformat(),
+        # Bucket E Phase 1 -- ensure register-depth defaults stamp
+        # on fresh rows (matches migration 013 pass B).
+        "revision_number": 0, "superseded_by": None,
+        "must_approve_by": None, "urgency_flag": False,
+        "review_cycle_count": 0,
+        "total_review_calendar_days": 0, "total_review_working_days": 0,
+        "submitted_to_ae_at": None, "a_e_review_started_at": None,
+        "a_e_review_due_at": None, "a_e_review_completed_at": None,
+        "received_back_at": None, "forwarded_to_sub_at": None,
+        "sla_status": "n_a", "sla_breach_reason": None,
+        "sla_uses_calendar_days_override": None,
+        "aging_days": None, "aging_working_days": None,
+        "is_overdue": False, "overdue_days": None,
     })
     await db.submittals.insert_one(doc.copy())
     # Bucket C3a Phase 1 — auto-create gating_entities row.
@@ -184,6 +200,55 @@ async def create_submittal(payload: SubmittalCreate, ctx: dict = Depends(require
         {"$set": {"gating_entity_id": ge["id"]}},
     )
     doc["gating_entity_id"] = ge["id"]
+
+    # Bucket E Phase 4c (2026-05-11) -- ai_submittal_classifier hook.
+    # Filename-based classification fires synchronously (fast); PDF
+    # text extraction (heavier) happens via BG task. Both create
+    # field_suggestions in the Jigsaw framework so the register
+    # form lights up with discipline + type + spec_section_code
+    # pending-confirmation pills.
+    title_as_filename = doc.get("title") or ""
+    async def _bg_classify(tid: str, pid: str, sid: str, filename: str,
+                            actor: str, req_id: str):
+        try:
+            from services.submittal_classifier import classify_and_suggest
+            await classify_and_suggest(
+                tenant_id=tid, project_id=pid, submittal_id=sid,
+                filename=filename,
+                pdf_bytes=None,   # PDF attach flow lands the bytes via separate route
+                actor_id=actor, request_id=req_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger("iter4_router").warning(
+                "submittal_classifier BG task failed", exc_info=True,
+            )
+    bg.add_task(
+        _bg_classify, ctx["tenant_id"], doc["project_id"],
+        doc["id"], title_as_filename,
+        ctx["user"]["id"], ctx["request_id"],
+    )
+
+    # Bucket E Phase 2 -- if a schedule_activity_id was supplied,
+    # compute must_approve_by inline so the register surfaces the
+    # urgency flag immediately. Recompute pass also fires after the
+    # submittal is later submitted-to-ae.
+    if doc.get("schedule_activity_id") and doc.get("procurement_lead_time_days"):
+        try:
+            from services import submittal_sla
+            await submittal_sla.recompute_aging_for_submittal(
+                tenant_id=ctx["tenant_id"], submittal_id=doc["id"],
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+            row = await db.submittals.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": doc["id"]}),
+                {"_id": 0},
+            )
+            if row:
+                doc = row
+        except Exception:
+            pass
+
     return Submittal(**doc)
 
 
@@ -226,11 +291,53 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
         row = await db.submittals.find_one(tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"_id": 0})
         if not row: raise HTTPException(404)
         return Submittal(**row)
+    # Bucket E Phase 2 (2026-05-11) -- auto-trigger record_review_event
+    # on status transitions. The map below mirrors _STATUS_TRANSITIONS
+    # on the service module; we fire the right event_type so the
+    # chain-of-custody log + audit chain stay synchronized.
+    before_row = await db.submittals.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": submittal_id}),
+        {"_id": 0, "status": 1},
+    )
+    before_status = (before_row or {}).get("status")
+    new_status = updates.get("status")
     res = await db.submittals.update_one(
         tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"$set": updates},
     )
     if not res.matched_count:
         raise HTTPException(404, "Submittal not found")
+    if new_status and new_status != before_status:
+        # Map status -> event_type. submitted/in_review carry the SLA
+        # start + review-started semantics; the disposition statuses
+        # carry the corresponding terminal event.
+        _STATUS_TO_EVENT = {
+            "submitted":          "submitted_to_ae",
+            "in_review":          "ae_review_started",
+            "approved":           "approved",
+            "approved_as_noted":  "approved_as_noted",
+            "rejected":           "rejected",
+            "revise_resubmit":    "revise_resubmit",
+            "closed":             "closed",
+        }
+        event_type = _STATUS_TO_EVENT.get(new_status)
+        if event_type:
+            try:
+                from services import submittal_sla
+                await submittal_sla.record_review_event(
+                    tenant_id=ctx["tenant_id"],
+                    submittal_id=submittal_id,
+                    event_type=event_type,
+                    performed_by=ctx["user"]["id"],
+                    notes=f"Status transition via PATCH /submittals/{submittal_id[:8]}: "
+                          f"{before_status} -> {new_status}",
+                    request_id=ctx["request_id"],
+                )
+            except Exception:
+                import logging
+                logging.getLogger("iter4_router").warning(
+                    "submittal SLA auto-event on status change failed",
+                    exc_info=True,
+                )
     row = await db.submittals.find_one(tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"_id": 0})
     # Bucket C3a Phase 1 — mirror status / response timestamp onto the
     # gating_entities CPM node.
