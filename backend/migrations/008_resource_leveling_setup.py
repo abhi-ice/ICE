@@ -204,7 +204,7 @@ async def run() -> None:
                     "is_holiday": holiday,
                     "notes": None,
                     "computed_at": now.isoformat(),
-                    "computed_from": "manual_entry",
+                    "computed_from": "migration_backfill",
                 }
                 await db.crew_capacity.insert_one(doc.copy())
                 pass_c["added"] += 1

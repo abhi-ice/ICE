@@ -785,7 +785,7 @@ class Crew(ReadModel):
 # is reality."
 
 CrewCapacitySource = Literal["manual_entry", "schedule_derived",
-                              "presence_recorded"]
+                              "presence_recorded", "migration_backfill"]
 
 
 class CrewCapacityCreate(StrictModel):
