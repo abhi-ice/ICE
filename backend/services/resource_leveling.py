@@ -732,7 +732,7 @@ async def recompute_capacity_for_crew(
         existing = await db.crew_capacity.find_one(
             {"crew_id": crew_id, "date": d.isoformat()},
             {"_id": 0, "id": 1, "committed_headcount": 1, "notes": 1,
-             "computed_from": 1},
+             "computed_from": 1, "presence_locked": 1},
         )
         if existing:
             committed = int(existing.get("committed_headcount") or 0)
@@ -741,6 +741,10 @@ async def recompute_capacity_for_crew(
             # Preserve user-entered overrides.
             if existing.get("computed_from") == "manual_entry":
                 # Keep manual-entry rows intact.
+                continue
+            # Bucket H Phase 5 -- presence-locked rows are historical
+            # truth (DR submitted with actuals); never overwrite.
+            if existing.get("presence_locked"):
                 continue
             if existing.get("notes"):
                 update_doc["notes"] = existing["notes"]
@@ -1009,3 +1013,131 @@ async def commit_reallocation(
 def _gen_id() -> str:
     import uuid
     return uuid.uuid4().hex
+
+
+# =====================================================================
+# Bucket H Phase 5 -- presence-actualized capacity
+# =====================================================================
+# When the super logs `daily_presence` for a trade on a DR date, what
+# actually showed up becomes the source of truth for that day's
+# committed_headcount. This service writes the actualization across
+# the matching crews and flips computed_from to presence_recorded so
+# future recomputes know NOT to overwrite (locked when DR submitted).
+
+async def actualize_capacity_from_presence(
+    *, tenant_id: str, project_id: str, presence_date: date,
+    trade: str, headcount: int, company_name: Optional[str] = None,
+    locked: bool = False, actor_id: Optional[str] = None,
+) -> dict:
+    """Stamp the matching crew_capacity row for (trade, date) with the
+    actual headcount that showed up. Returns {updated_count, picked_
+    crew_id, before, after}.
+
+    Pick rule:
+      1. Crews with home_project_id == project_id + matching trade
+         (+ matching company_name if supplied). Prefer this set.
+      2. Crews with no home_project_id (general pool) + matching
+         trade + company.
+      3. First crew matching trade (+ company).
+      4. If none: silently no-op (returns {updated_count: 0}).
+    locked=True flips a `presence_locked` flag on the row so the
+    Phase 4 recompute_capacity_for_crew skips overwriting it.
+    """
+    db = get_db()
+    base_q = {"tenant_id": tenant_id, "trade": trade,
+              "status": {"$ne": "deleted"}}
+    if company_name:
+        base_q["company_name"] = company_name
+    # Try preferred (home project) first.
+    crew = await db.crews.find_one(
+        {**base_q, "home_project_id": project_id},
+        {"_id": 0, "id": 1},
+    )
+    if not crew:
+        crew = await db.crews.find_one(
+            {**base_q, "$or": [
+                {"home_project_id": None},
+                {"home_project_id": {"$exists": False}},
+            ]},
+            {"_id": 0, "id": 1},
+        )
+    if not crew:
+        crew = await db.crews.find_one(base_q, {"_id": 0, "id": 1})
+    if not crew:
+        return {"updated_count": 0, "picked_crew_id": None,
+                 "reason": "no_matching_crew"}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = await db.crew_capacity.find_one(
+        {"tenant_id": tenant_id, "crew_id": crew["id"],
+         "date": presence_date.isoformat()},
+        {"_id": 0},
+    )
+    if not row:
+        # No capacity row yet -- create one. This can happen if the
+        # DR's date is past the 90-day backfill window or the crew
+        # was created after the migration ran.
+        # Use the crew's default_headcount as total; committed = actual.
+        full_crew = await db.crews.find_one(
+            {"id": crew["id"]},
+            {"_id": 0, "trade": 1, "company_name": 1,
+             "default_headcount": 1, "target_size": 1},
+        ) or {}
+        total = int(full_crew.get("default_headcount")
+                     or full_crew.get("target_size") or 0)
+        committed = min(max(int(headcount), 0), total) if total else int(headcount)
+        new_doc = {
+            "id": _gen_id(),
+            "tenant_id": tenant_id,
+            "crew_id": crew["id"],
+            "trade": full_crew.get("trade") or trade,
+            "company_name": full_crew.get("company_name"),
+            "date": presence_date.isoformat(),
+            "total_headcount": max(total, committed),
+            "committed_headcount": committed,
+            "available_headcount": max(0, max(total, committed) - committed),
+            "hours_per_person": 8.0,
+            "is_holiday": False,
+            "notes": "actualized from presence",
+            "computed_at": now_iso,
+            "computed_from": "presence_recorded",
+            "presence_locked": locked,
+        }
+        await db.crew_capacity.insert_one(new_doc.copy())
+        return {"updated_count": 1, "picked_crew_id": crew["id"],
+                "before": None, "after": new_doc}
+
+    # Existing row: update committed + computed_from, recompute available.
+    total = int(row.get("total_headcount") or 0)
+    committed = min(max(int(headcount), 0), total) if total else int(headcount)
+    after_doc = {
+        "committed_headcount": committed,
+        "available_headcount": max(0, total - committed),
+        "computed_at": now_iso,
+        "computed_from": "presence_recorded",
+        "presence_locked": locked or bool(row.get("presence_locked")),
+    }
+    await db.crew_capacity.update_one(
+        {"id": row["id"]}, {"$set": after_doc},
+    )
+    return {"updated_count": 1, "picked_crew_id": crew["id"],
+            "before": {k: row.get(k) for k in
+                        ("committed_headcount", "available_headcount",
+                          "computed_from", "presence_locked")},
+            "after": after_doc}
+
+
+async def lock_capacity_for_dr_submit(
+    *, tenant_id: str, project_id: str, dr_date: date,
+) -> dict:
+    """Phase 5 -- DR submit locks the actualized capacity rows for
+    that date so subsequent recomputes don't overwrite truth with
+    derived values. Returns {locked_count}."""
+    db = get_db()
+    res = await db.crew_capacity.update_many(
+        {"tenant_id": tenant_id,
+         "date": dr_date.isoformat(),
+         "computed_from": "presence_recorded"},
+        {"$set": {"presence_locked": True}},
+    )
+    return {"locked_count": int(res.modified_count or 0)}

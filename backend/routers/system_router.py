@@ -93,9 +93,28 @@ async def decide_approval(approval_id: str, payload: ApprovalDecision, ctx: dict
 
 # --- Audit log ---
 @router.get("/audit-log")
-async def list_audit(limit: int = 200, ctx: dict = Depends(require_tenant)):
+async def list_audit(
+    limit: int = 200,
+    op: Optional[str] = None,          # CSV: filter by op label(s)
+    table_name: Optional[str] = None,  # exact match
+    ctx: dict = Depends(require_tenant),
+):
+    """Bucket H Phase 5 -- op + table filters for the Audit Log page.
+    Both optional; default is "last 200 entries this tenant." Tenant-
+    scoped via tenant_filter() so cross-tenant entries never leak."""
     db = get_db()
-    docs = await db.audit_log.find(tenant_filter(ctx["tenant_id"]), {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    q = dict(tenant_filter(ctx["tenant_id"]))
+    if op:
+        ops = [p.strip() for p in op.split(",") if p.strip()]
+        if ops:
+            q["op"] = {"$in": ops} if len(ops) > 1 else ops[0]
+    if table_name:
+        q["table_name"] = table_name
+    if limit < 1:
+        limit = 200
+    if limit > 1000:
+        limit = 1000
+    docs = await db.audit_log.find(q, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
     return docs
 
 

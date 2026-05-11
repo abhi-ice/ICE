@@ -25,6 +25,8 @@ POST /api/resource-leveling/commit-reallocation
 """
 from __future__ import annotations
 
+import logging
+import time
 from datetime import date, timedelta, datetime, timezone
 from typing import Optional, Literal
 
@@ -42,6 +44,8 @@ from auth import (
 )
 from audit import write_audit
 from services import resource_leveling as svc
+
+log = logging.getLogger("resource_leveling_router")
 
 router = APIRouter(prefix="/resource-leveling", tags=["resource-leveling"])
 
@@ -145,6 +149,9 @@ async def get_dashboard(
     Default window = next 14 days. Tenant-scoped automatically; per-
     project RBAC narrows to the caller's accessible projects."""
     _enforce_read(ctx)
+    # Bucket H Phase 5 -- timing log per spec Section 5.2. Records
+    # window span + payload size so deploy-side perf can be tracked.
+    t0 = time.perf_counter()
     start, end = _parse_range(date_range_start, date_range_end, default_window_days=14)
     requested_filter = _parse_csv(project_id)
     accessible = await get_accessible_project_ids(
@@ -175,13 +182,27 @@ async def get_dashboard(
         else:
             effective_filter = accessible
     try:
-        return await svc.get_cross_project_view(
+        result = await svc.get_cross_project_view(
             tenant_id=ctx["tenant_id"], start=start, end=end,
             trade_filter=_parse_csv(trade),
             project_filter=effective_filter,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # Log latency + cardinality so deploy-side perf can be tracked.
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    window_days = (end - start).days + 1
+    trade_count = len(result.get("trades") or [])
+    cell_count = (result.get("summary") or {}).get("total_cells", 0)
+    log.info(
+        "dashboard tenant=%s window_days=%d trades=%d cells=%d ms=%d",
+        ctx["tenant_id"][:8], window_days, trade_count, cell_count, elapsed_ms,
+    )
+    # Echo timing in the payload so the UI can render it (optional;
+    # frontend may surface as a small debug pill in dev mode).
+    result["_meta"] = {"elapsed_ms": elapsed_ms,
+                        "window_days": window_days}
+    return result
 
 
 # =====================================================================

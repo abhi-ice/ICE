@@ -14,47 +14,85 @@ const EMPTY = {
 };
 
 // Bucket H Phase 4 -- per-task gap indicator. Fetches the resource-
-// leveling dashboard for the active project + 60-day window once;
-// builds a task_id -> worst-severity-cell-attribution map so the
-// Tasks table can render a small Users icon on at-risk rows.
+// leveling dashboard for the active project + 60-day window and
+// builds a task_id -> worst-severity-cell-attribution map.
+//
+// Phase 5 (pulled-forward fix #2): refetches every 5 minutes while
+// the Tasks tab is visible. Pauses on visibilitychange=hidden so a
+// backgrounded tab doesn't ping the backend, and triggers an
+// immediate refetch on return-to-foreground so the user sees fresh
+// numbers when they switch back from another window.
+const GAP_POLL_INTERVAL_MS = 5 * 60 * 1000;   // 5 minutes
+
 function useTaskGapIndicator(projectId) {
   const [byTaskId, setByTaskId] = useState({});
   useEffect(() => {
-    if (!projectId) { setByTaskId({}); return; }
-    const today = new Date();
-    const end = new Date();
-    end.setDate(today.getDate() + 60);
-    const startIso = today.toISOString().slice(0, 10);
-    const endIso = end.toISOString().slice(0, 10);
-    api.get(`/resource-leveling/dashboard`, {
-      params: { date_range_start: startIso, date_range_end: endIso,
-                 project_id: projectId },
-    }).then((r) => {
-      const out = {};
-      const severityRank = { major: 3, moderate: 2, minor: 1 };
-      const cells = r.data?.cells || {};
-      Object.entries(cells).forEach(([trade, byDate]) => {
-        Object.entries(byDate).forEach(([dateIso, cell]) => {
-          if (!["minor", "moderate", "major"].includes(cell.severity)) return;
-          for (const tid of (cell.contributing_task_ids || [])) {
-            const existing = out[tid];
-            const cur = severityRank[cell.severity] || 0;
-            const prev = existing ? (severityRank[existing.severity] || 0) : 0;
-            if (cur > prev) {
-              out[tid] = {
-                severity: cell.severity,
-                trade,
-                date: dateIso,
-                is_critical_path: !!cell.is_critical_path,
-                gap: cell.gap,
-                gap_id: cell.id,
-              };
-            }
-          }
+    if (!projectId) { setByTaskId({}); return undefined; }
+    let cancelled = false;
+    const fetchOnce = async () => {
+      const today = new Date();
+      const end = new Date();
+      end.setDate(today.getDate() + 60);
+      const startIso = today.toISOString().slice(0, 10);
+      const endIso = end.toISOString().slice(0, 10);
+      try {
+        const r = await api.get(`/resource-leveling/dashboard`, {
+          params: { date_range_start: startIso, date_range_end: endIso,
+                     project_id: projectId },
         });
-      });
-      setByTaskId(out);
-    }).catch(() => setByTaskId({}));
+        if (cancelled) return;
+        const out = {};
+        const severityRank = { major: 3, moderate: 2, minor: 1 };
+        const cells = r.data?.cells || {};
+        Object.entries(cells).forEach(([trade, byDate]) => {
+          Object.entries(byDate).forEach(([dateIso, cell]) => {
+            if (!["minor", "moderate", "major"].includes(cell.severity)) return;
+            for (const tid of (cell.contributing_task_ids || [])) {
+              const existing = out[tid];
+              const cur = severityRank[cell.severity] || 0;
+              const prev = existing ? (severityRank[existing.severity] || 0) : 0;
+              if (cur > prev) {
+                out[tid] = {
+                  severity: cell.severity,
+                  trade, date: dateIso,
+                  is_critical_path: !!cell.is_critical_path,
+                  gap: cell.gap, gap_id: cell.id,
+                };
+              }
+            }
+          });
+        });
+        setByTaskId(out);
+      } catch {
+        if (!cancelled) setByTaskId({});
+      }
+    };
+    // Initial fetch.
+    fetchOnce();
+    // Polling: recurring setTimeout (re-armed after each fetch) so we
+    // don't stack pending requests on a slow network. Skipped when
+    // document.hidden -- visibilitychange handler resumes on focus.
+    let timerId = null;
+    const scheduleNext = () => {
+      if (cancelled) return;
+      timerId = setTimeout(async () => {
+        if (cancelled || document.hidden) return;
+        await fetchOnce();
+        scheduleNext();
+      }, GAP_POLL_INTERVAL_MS);
+    };
+    scheduleNext();
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      if (timerId) clearTimeout(timerId);
+      fetchOnce().then(scheduleNext);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      if (timerId) clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [projectId]);
   return byTaskId;
 }

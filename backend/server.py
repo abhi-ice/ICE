@@ -198,6 +198,34 @@ async def _ensure_indexes():
             [("tenant_id", 1), ("project_id", 1), ("linked_task_ids", 1)],
         )
 
+    # Bucket H Phase 5 (2026-05-08) -- resource-leveling read indexes.
+    # Per spec Section 5.2:
+    #   crew_capacity (tenant_id, trade, date)        -> per-trade supply rollup
+    #   crew_capacity (tenant_id, crew_id, date)      -> per-crew calendar
+    #   crew_demands  (tenant_id, trade, date)        -> per-trade demand rollup
+    #   crew_demands  (tenant_id, project_id, date)   -> per-project demand profile
+    # All four cover the read paths in services/resource_leveling.py
+    # without forcing a collection scan. createIndex is idempotent so
+    # re-running this on a deploy where indexes already exist is a
+    # no-op. project_members indexes are created by migration 009
+    # (kept there to keep "schema setup" with the table backfill).
+    await db.crew_capacity.create_index(
+        [("tenant_id", 1), ("trade", 1), ("date", 1)],
+        name="cc_tenant_trade_date",
+    )
+    await db.crew_capacity.create_index(
+        [("tenant_id", 1), ("crew_id", 1), ("date", 1)],
+        name="cc_tenant_crew_date",
+    )
+    await db.crew_demands.create_index(
+        [("tenant_id", 1), ("trade", 1), ("date", 1)],
+        name="cd_tenant_trade_date",
+    )
+    await db.crew_demands.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("date", 1)],
+        name="cd_tenant_project_date",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

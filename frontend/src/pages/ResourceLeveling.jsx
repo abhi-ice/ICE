@@ -815,6 +815,24 @@ function ReallocationForm({ onClose, onCommitted }) {
     if (form.headcount < 1) {
       toast.error("Headcount must be at least 1"); return;
     }
+    // Bucket H Phase 5 (5.6) -- confirmation before commit.
+    // Reallocation writes to crew_capacity audit-logged; review the
+    // summary before sending. Browser-native confirm is enough for
+    // this destructive flow; over-commits surface in a separate banner.
+    const crewName = crews.find((c) => c.id === form.crew_id)?.name || "this crew";
+    const toName = projects.find((p) => p.id === form.to_project_id)?.name || "the target project";
+    const fromName = form.from_project_id
+      ? (projects.find((p) => p.id === form.from_project_id)?.name || "another project")
+      : "the unassigned pool";
+    const dayCount = (() => {
+      try {
+        const a = new Date(form.date_range_start);
+        const b = new Date(form.date_range_end);
+        return Math.max(1, Math.round((b - a) / 86400000) + 1);
+      } catch { return 1; }
+    })();
+    const msg = `Reallocate ${form.headcount} from "${crewName}" to "${toName}" for ${dayCount} day${dayCount === 1 ? "" : "s"} (from "${fromName}")?\n\nThis writes to the audit log and updates committed headcount on each affected date.`;
+    if (!window.confirm(msg)) return;
     setBusy(true);
     try {
       const r = await api.post(`/resource-leveling/commit-reallocation`, {

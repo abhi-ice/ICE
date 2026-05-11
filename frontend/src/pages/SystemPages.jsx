@@ -3,11 +3,72 @@ import api from "../lib/api";
 import { ShieldCheck, Bot, FileText, History, ShoppingBasket, FileBarChart, Settings as SettingsIcon, MapPin } from "lucide-react";
 import { useProjects } from "../lib/projects";
 
+// Bucket H Phase 5 (2026-05-08) -- audit op filter dropdown options.
+// Grouped for legibility; "(all)" sentinel left as empty string so the
+// query-param wire format stays clean. New RBAC + resource-leveling
+// ops are listed in the resource_leveling group per spec.
+const AUDIT_OP_GROUPS = [
+  {
+    label: "Common",
+    ops: ["INSERT", "UPDATE", "DELETE"],
+  },
+  {
+    label: "Daily reports",
+    ops: ["SUPPLEMENT_FILED", "EVENT_EDITED_POST_SUBMIT",
+           "EDIT_REQUEST_FILED", "EDIT_REQUEST_APPROVED",
+           "EDIT_REQUEST_DENIED", "NO_WORK_DAY_SUBMITTED",
+           "DR_AS_PARENT_ORPHAN_DROP"],
+  },
+  {
+    label: "Photos",
+    ops: ["PHOTO_TAG_CREATED", "PHOTO_CLASS_CHANGE",
+           "PHOTO_TRAY_ARCHIVE"],
+  },
+  {
+    label: "QC + cascade",
+    ops: ["QC_REWORK_DELAY_CREATED", "QC_REWORK_OUTCOME_RECORDED",
+           "QC_REWORK_CASCADE_FAILED", "CASCADE_RECOMPUTE_BATCH",
+           "GATING_ENTITY_DELETE"],
+  },
+  {
+    label: "RBAC (project membership)",
+    ops: ["PROJECT_MEMBER_ADDED", "PROJECT_MEMBER_REMOVED",
+           "PROJECT_MEMBER_ROLE_CHANGED", "PROJECT_MEMBER_BACKFILL"],
+  },
+  {
+    label: "Resource leveling",
+    ops: ["CREW_CAPACITY_OVERRIDE", "RESOURCE_LEVELING_RECOMPUTED",
+           "RESOURCE_LEVELING_RECOMPUTE_FAILED", "CREW_REALLOCATED",
+           "RESOURCE_LEVELING_BACKFILL",
+           "CAPACITY_ACTUALIZED_FROM_PRESENCE"],
+  },
+  {
+    label: "Auth + admin",
+    ops: ["ADMIN_PASSWORD_RESET", "OPERATOR_PASSWORD_RESET",
+           "LINKAGE_FIELD_MIGRATED", "RESET_BOUNDARY"],
+  },
+];
+
 // AuditLog page — append-only, with hash-chain integrity check button.
 export function AuditLog() {
   const [rows, setRows] = useState([]);
   const [verify, setVerify] = useState(null);
-  useEffect(() => { api.get("/audit-log?limit=200").then(({ data }) => setRows(data)); }, []);
+  // Phase 5 -- op + table filters with query-param wiring.
+  const [opFilter, setOpFilter] = useState("");
+  const [tableFilter, setTableFilter] = useState("");
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const params = { limit: 200 };
+      if (opFilter) params.op = opFilter;
+      if (tableFilter) params.table_name = tableFilter;
+      const { data } = await api.get("/audit-log", { params });
+      setRows(Array.isArray(data) ? data : []);
+    } catch { setRows([]); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [opFilter, tableFilter]);
   const check = async () => {
     const { data } = await api.get("/audit-log/verify");
     setVerify(data);
@@ -28,6 +89,39 @@ export function AuditLog() {
           {verify.valid ? `✓ Chain valid. Verified ${verify.entries_checked} entries.` : `✗ Chain broken at ${verify.broken_at}`}
         </div>
       )}
+      {/* Phase 5 -- filter row. */}
+      <div className="flex flex-wrap items-end gap-2 p-2 bg-slate-50 border border-slate-200 rounded text-sm">
+        <div>
+          <label className="text-[10px] uppercase text-slate-500 block">Op</label>
+          <select data-testid="audit-filter-op" value={opFilter}
+            onChange={(e) => setOpFilter(e.target.value)}
+            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
+            <option value="">— all ops —</option>
+            {AUDIT_OP_GROUPS.map((g) => (
+              <optgroup key={g.label} label={g.label}>
+                {g.ops.map((op) => <option key={op} value={op}>{op}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] uppercase text-slate-500 block">Table name</label>
+          <input data-testid="audit-filter-table" value={tableFilter}
+            onChange={(e) => setTableFilter(e.target.value)}
+            placeholder="e.g. crew_capacity"
+            className="h-8 px-2 rounded border border-slate-300 text-xs w-48" />
+        </div>
+        {(opFilter || tableFilter) && (
+          <button onClick={() => { setOpFilter(""); setTableFilter(""); }}
+            data-testid="audit-filter-clear"
+            className="h-8 px-3 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">
+            Clear
+          </button>
+        )}
+        <div className="ml-auto text-xs text-slate-500">
+          {loading ? "Loading…" : `${rows.length} entr${rows.length === 1 ? "y" : "ies"}`}
+        </div>
+      </div>
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         <table className="w-full dense-table">
           <thead><tr><th>When</th><th>Op</th><th>Table</th><th>Record</th><th>Actor</th><th>Hash</th></tr></thead>
