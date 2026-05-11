@@ -86,6 +86,21 @@ class Tenant(ReadModel):
     cmmc_level: str = "none"
     work_item_label: str = "Field Issue"
     created_at: datetime
+    # Bucket F Phase 1 (2026-05-08) -- AI usage gate + monthly budget.
+    # ai_enabled is a tenant-wide kill switch (admin can turn off all
+    # photo AI for the tenant). budget tracking lets ops admins cap
+    # spend per month with auto-pause + warning at 80%.
+    ai_enabled: bool = True
+    ai_monthly_budget_usd: float = 100.0
+    ai_current_month_spend_usd: float = 0.0
+    ai_current_month_resets_at: Optional[datetime] = None
+
+
+class TenantAiBudgetUpdate(StrictModel):
+    """Admin-only patch payload for tenant AI budget + kill switch.
+    Both fields optional so partial updates are allowed."""
+    ai_enabled: Optional[bool] = None
+    ai_monthly_budget_usd: Optional[float] = Field(default=None, ge=0)
 
 
 class UserRegister(StrictModel):
@@ -165,6 +180,12 @@ class ProjectCreate(StrictModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: CalendarBasis = "calendar_days"
+    # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
+    # is_cui=true blocks photo AI analysis for compliance; ai_enabled
+    # is a per-project off switch independent of the tenant-level
+    # ai_enabled. Both default safe: false / true.
+    is_cui: bool = False
+    ai_enabled: bool = True
 
 
 class ProjectUpdate(StrictModel):
@@ -186,6 +207,9 @@ class ProjectUpdate(StrictModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: Optional[CalendarBasis] = None
+    # Bucket F Phase 1 -- editable AI gate.
+    is_cui: Optional[bool] = None
+    ai_enabled: Optional[bool] = None
 
 
 class Project(ReadModel):
@@ -214,6 +238,9 @@ class Project(ReadModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: Optional[str] = "calendar_days"
+    # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
+    is_cui: bool = False
+    ai_enabled: bool = True
 
 
 # ---------- Locations / floors ----------
@@ -1546,13 +1573,48 @@ class Photo(ReadModel):
     # supplement badge renders without a per-row fetch. Server-enriched
     # in /context bundle and /photos list (extend other lists if needed).
     parent_daily_report_date: Optional[str] = None
+    # Bucket F Phase 1 (2026-05-08) -- AI suggestion lineage on the
+    # tag row. Stamped by the tag-create endpoint when the user
+    # accepts an AI suggestion from the tray. created_via_ai_
+    # suggestion=true means the user clicked "Accept all" or saved
+    # without changing AI-supplied fields; false means manual tag.
+    created_via_ai_suggestion: bool = False
+    ai_suggestion_id: Optional[str] = None
+    ai_confidence_at_tag_time: Optional[float] = Field(default=None, ge=0, le=1)
 
 
 # ============================================================
 # Bucket D Phase 1 — Photo tray (staging area before tagging)
+# Bucket F Phase 1 (2026-05-08) — AI analysis fields
 # ============================================================
 PhotoCaptureSource = Literal["mobile_camera", "manual_upload", "drawing_pin"]
 PhotoTrayStatus = Literal["untagged", "partially_tagged", "fully_tagged", "archived"]
+
+# Bucket F Phase 1 -- AI analysis lifecycle.
+#   pending          -- upload landed, queued for analysis
+#   analyzing        -- service is mid-call to Claude Vision
+#   complete         -- analysis returned + persisted
+#   failed           -- service errored (see ai_failure_reason)
+#   skipped          -- CUI project / AI disabled / tenant ai_enabled=false
+#                       / pre-existing tray rows from migration
+#   rejected_by_user -- user explicitly rejected the suggestion
+#   budget_paused    -- tenant budget hit; admin must raise cap
+PhotoAiAnalysisStatus = Literal[
+    "pending", "analyzing", "complete", "failed", "skipped",
+    "rejected_by_user", "budget_paused",
+]
+
+# Conservative class subset the AI suggests. Tagging UI can still
+# pick any value from the broader PhotoClass enum -- AI just stays
+# in the high-signal lane.
+PhotoAiSuggestedClass = Literal[
+    "progress", "discovery", "damage", "quality", "other",
+]
+
+PhotoAiSuggestedEventType = Literal[
+    "delay", "rfi", "qc_issue", "safety_event",
+    "coordination_event", "delivery", "none",
+]
 
 
 class PhotoTrayCreate(StrictModel):
@@ -1591,6 +1653,27 @@ class PhotoTray(ReadModel):
     height: Optional[int] = None
     file_size_bytes: Optional[int] = None
     status: PhotoTrayStatus = "untagged"
+    # Bucket F Phase 1 -- AI analysis fields. Default "pending" on
+    # fresh upload; migration 010 stamps "skipped" on legacy rows so
+    # we never accidentally bill for analyzing pre-AI photos. Every
+    # AI write goes through services/photo_ai.py.
+    ai_analysis_status: PhotoAiAnalysisStatus = "pending"
+    ai_analysis_started_at: Optional[datetime] = None
+    ai_analysis_completed_at: Optional[datetime] = None
+    ai_suggested_class: Optional[PhotoAiSuggestedClass] = None
+    ai_suggested_caption: Optional[str] = None
+    ai_suggested_event_type: Optional[PhotoAiSuggestedEventType] = None
+    ai_suggested_trade: Optional[str] = None
+    ai_confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    ai_raw_response: Optional[dict] = None
+    ai_model_version: Optional[str] = None
+    ai_user_overridden: bool = False
+    ai_user_override_reason: Optional[str] = None
+    ai_safety_concerns_detected: List[str] = Field(default_factory=list)
+    ai_failure_reason: Optional[str] = None
+    ai_cost_tokens_input: Optional[int] = None
+    ai_cost_tokens_output: Optional[int] = None
+    ai_reused_from_phash: bool = False
 
 
 class PhotoTagCreate(StrictModel):
@@ -1608,6 +1691,14 @@ class PhotoTagCreate(StrictModel):
     drawing_pin_id: Optional[str] = None
     photo_class: PhotoClass = "progress"
     tag_caption: Optional[str] = None
+    # Bucket F Phase 1 -- AI lineage on the tag itself. Phase 2's tag
+    # endpoint stamps these from the tray row when the user accepts
+    # an AI suggestion. Lets TIA Section 8 distinguish AI-suggested
+    # tags from user-authored ones + lets Calibration RAG roll up
+    # override patterns by suggestion ancestry.
+    created_via_ai_suggestion: bool = False
+    ai_suggestion_id: Optional[str] = None
+    ai_confidence_at_tag_time: Optional[float] = Field(default=None, ge=0, le=1)
 
 
 # ---------- Work items / field issues ----------

@@ -64,6 +64,12 @@ MIGRATIONS = [
     # so the RBAC scoping rules have data to filter against. Admins
     # skipped (they're tenant-wide). Idempotent via unique index.
     "migrations.009_project_members_backfill",
+    # Bucket F Phase 1 (2026-05-08) -- Photo AI setup. Stamps
+    # ai_analysis_status="skipped" on pre-existing photo_tray rows
+    # (no billable backfill), adds AI lineage fields on photos,
+    # is_cui + ai_enabled on projects, monthly budget on tenants.
+    # Idempotent via $exists checks.
+    "migrations.010_photo_ai_setup",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

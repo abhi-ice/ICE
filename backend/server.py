@@ -226,6 +226,35 @@ async def _ensure_indexes():
         name="cd_tenant_project_date",
     )
 
+    # Bucket F Phase 1 (2026-05-08) -- Photo AI read indexes.
+    # Per spec:
+    #   photo_tray (tenant_id, ai_analysis_status, uploaded_at)
+    #     -> batch_analyze_pending walks pending rows in upload order
+    #   photo_tray (tenant_id, ai_suggested_class)
+    #     -> Photos page filter "show only AI-classified discovery"
+    #   photo_tray (tenant_id, phash, ai_analysis_status)
+    #     -> find_dedup_source: O(1) lookup of completed rows with
+    #        matching pHash. Avoids a full-tray scan on every upload.
+    #   photos (tenant_id, created_via_ai_suggestion)
+    #     -> tag-row queries "which tags came from AI suggestions"
+    #        for TIA Section 8 + Calibration RAG.
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("ai_analysis_status", 1), ("uploaded_at", 1)],
+        name="pt_tenant_aistatus_uploadedat",
+    )
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("ai_suggested_class", 1)],
+        name="pt_tenant_aisuggestedclass",
+    )
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("phash", 1), ("ai_analysis_status", 1)],
+        name="pt_tenant_phash_aistatus",
+    )
+    await db.photos.create_index(
+        [("tenant_id", 1), ("created_via_ai_suggestion", 1)],
+        name="ph_tenant_createdviaai",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
