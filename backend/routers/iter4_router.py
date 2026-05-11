@@ -62,6 +62,21 @@ class SubmittalCreate(StrictModel):
     sub_responsible: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     drawings_affected: list[str] = Field(default_factory=list)
+    # Bucket E Phase 1 (2026-05-11) -- register depth. Discipline lives
+    # on the submittal so the register can filter (Civil / Structural
+    # / Architectural / Mechanical / Electrical / Plumbing / etc.);
+    # accepts free text since divisions are project-specific.
+    discipline: Optional[str] = None
+    type_other_description: Optional[str] = None
+    # Procurement lead time -- super or PM enters this; drives
+    # must_approve_by computation working backward from the linked
+    # task's planned_start.
+    procurement_lead_time_days: Optional[int] = Field(default=None, ge=0)
+    # Per-submittal SLA override. None -> use the project default.
+    # Set when a contract specifies a different SLA for a specific
+    # submittal type (e.g. "fire protection submittals reviewed
+    # within 7 days").
+    sla_days_override: Optional[int] = Field(default=None, ge=1, le=365)
 
 
 class Submittal(ReadModel):
@@ -84,6 +99,52 @@ class Submittal(ReadModel):
     created_at: str
     # Bucket C3a Phase 1 — back-pointer to gating_entities CPM node.
     gating_entity_id: Optional[str] = None
+
+    # =========================================================
+    # Bucket E Phase 1 (2026-05-11) -- A/E Review SLA + register
+    # depth. All fields nullable / default safe so legacy rows
+    # deserialize cleanly until migration 013 backfills.
+    # =========================================================
+
+    # ----- Register depth -----
+    discipline: Optional[str] = None
+    revision_number: int = 0
+    superseded_by: Optional[str] = None       # newer submittal_id
+    type_other_description: Optional[str] = None
+    # Procurement lead time + must-approve-by (forward planning).
+    procurement_lead_time_days: Optional[int] = None
+    must_approve_by: Optional[str] = None     # computed at compute_sla()
+    urgency_flag: bool = False                # would miss must_approve_by
+    # Lead time on each cycle so the register can show "this is
+    # cycle 3" without a separate join.
+    review_cycle_count: int = 0
+    total_review_calendar_days: int = 0
+    total_review_working_days: int = 0
+
+    # ----- A/E review SLA chain timestamps -----
+    submitted_to_ae_at: Optional[str] = None
+    a_e_review_started_at: Optional[str] = None
+    a_e_review_due_at: Optional[str] = None
+    a_e_review_completed_at: Optional[str] = None
+    received_back_at: Optional[str] = None
+    forwarded_to_sub_at: Optional[str] = None
+    # SLA status -- "on_track" / "approaching" / "breached" / "n_a".
+    sla_status: Literal[
+        "n_a", "on_track", "approaching", "breached", "paused",
+    ] = "n_a"
+    sla_breach_reason: Optional[str] = None
+    # Per-submittal SLA override (defaults to project's
+    # submittal_review_sla_days when None).
+    sla_days_override: Optional[int] = None
+    # Whether THIS submittal's SLA is computed in calendar or
+    # working days. None -> inherit project setting.
+    sla_uses_calendar_days_override: Optional[bool] = None
+
+    # ----- Aging metrics (computed at read time / recompute) -----
+    aging_days: Optional[int] = None
+    aging_working_days: Optional[int] = None
+    is_overdue: bool = False
+    overdue_days: Optional[int] = None
 
 
 async def _next_submittal_number(db, tenant_id: str, project_id: str) -> str:
@@ -142,6 +203,19 @@ class SubmittalUpdate(StrictModel):
     approved_at: Optional[str] = None
     schedule_activity_id: Optional[str] = None
     spec_section_id: Optional[str] = None
+    # Bucket E Phase 1 (2026-05-11) -- register depth + SLA editable
+    # fields. The chain timestamps + computed aging metrics are
+    # written by services/submittal_sla.py (Phase 2); editable from
+    # this PATCH endpoint covers the human-supplied configuration.
+    title: Optional[str] = None
+    type: Optional[str] = None
+    type_other_description: Optional[str] = None
+    discipline: Optional[str] = None
+    procurement_lead_time_days: Optional[int] = Field(default=None, ge=0)
+    sla_days_override: Optional[int] = Field(default=None, ge=1, le=365)
+    sla_uses_calendar_days_override: Optional[bool] = None
+    drawings_affected: Optional[list[str]] = None
+    spec_section_code: Optional[str] = None
 
 
 @router.patch("/submittals/{submittal_id}", response_model=Submittal)

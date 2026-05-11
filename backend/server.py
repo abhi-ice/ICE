@@ -315,6 +315,44 @@ async def _ensure_indexes():
         name="fs_created_at",
     )
 
+    # Bucket E Phase 1 (2026-05-11) -- submittals SLA + chain-of-
+    # custody indexes. Same set as migration 013; declared here too
+    # so fresh deploys (never run migrations) get them on lifespan
+    # startup.
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("status", 1)],
+        name="sub_tenant_project_status",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("a_e_review_due_at", 1)],
+        name="sub_tenant_sla_due",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("is_overdue", 1), ("project_id", 1)],
+        name="sub_tenant_overdue",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("submitted_to_ae_at", -1)],
+        name="sub_tenant_submitted_to_ae",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("discipline", 1)],
+        name="sub_tenant_discipline",
+    )
+    # Chain-of-custody event collection.
+    await db.submittal_review_events.create_index(
+        [("tenant_id", 1), ("submittal_id", 1), ("performed_at", 1)],
+        name="sre_tenant_submittal_performed",
+    )
+    await db.submittal_review_events.create_index(
+        [("tenant_id", 1), ("event_type", 1), ("performed_at", -1)],
+        name="sre_tenant_event_performed",
+    )
+    await db.submittal_review_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("event_type", 1)],
+        name="sre_tenant_project_event",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

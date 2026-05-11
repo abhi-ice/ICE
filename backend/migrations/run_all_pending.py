@@ -81,6 +81,14 @@ MIGRATIONS = [
     # data backfill (suggestions are runtime). Idempotent via per-
     # tenant audit existence check.
     "migrations.012_field_suggestions_setup",
+    # Bucket E Phase 1 (2026-05-11) -- Submittals SLA + register
+    # depth. 14-day default A/E review SLA on every project, full
+    # register-depth defaults on every submittal, opportunistic
+    # aging backfill, indexes on submittals + submittal_review_
+    # events. Single SUBMITTAL_SLA_INITIALIZED audit op per affected
+    # tenant. Idempotent via per-field $exists checks + per-tenant
+    # audit existence check.
+    "migrations.013_submittals_sla_setup",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

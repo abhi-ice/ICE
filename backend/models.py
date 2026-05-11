@@ -151,6 +151,14 @@ ContractType = Literal["lump_sum", "cost_plus", "gmp", "unit_price", "tm"]
 # Calendar Reconciliation already cross-references this).
 CalendarBasis = Literal["calendar_days", "working_days"]
 
+# Bucket E Phase 1 (2026-05-11) -- default A/E review SLA per FAR
+# 52.236-15 / GSAM standard. Project model defaults to this; admin
+# can override per-project via ProjectUpdate.submittal_review_sla_
+# days. Per-submittal overrides live on the submittal row's
+# sla_days_override field. Hoisted up here so Project model
+# defaults can reference the constant without a forward-decl.
+SUBMITTAL_DEFAULT_SLA_DAYS = 14
+
 
 class ProjectCreate(StrictModel):
     name: str
@@ -186,6 +194,16 @@ class ProjectCreate(StrictModel):
     # ai_enabled. Both default safe: false / true.
     is_cui: bool = False
     ai_enabled: bool = True
+    # Bucket E Phase 1 (2026-05-11) -- A/E review SLA in days. Default
+    # 14 per FAR 52.236-15 / GSAM standard. Admin override at
+    # ProjectUpdate; contracts that mandate a different SLA for the
+    # whole project bump this once at project setup. Per-submittal
+    # overrides live on the submittal row's sla_days_override field.
+    submittal_review_sla_days: int = SUBMITTAL_DEFAULT_SLA_DAYS
+    # When true, SLA arithmetic uses calendar days (the spec's
+    # "admin override" knob from the scope clarification). When
+    # false (default), working days are used.
+    submittal_sla_uses_calendar_days: bool = False
 
 
 class ProjectUpdate(StrictModel):
@@ -210,6 +228,9 @@ class ProjectUpdate(StrictModel):
     # Bucket F Phase 1 -- editable AI gate.
     is_cui: Optional[bool] = None
     ai_enabled: Optional[bool] = None
+    # Bucket E Phase 1 (2026-05-11) -- editable SLA settings.
+    submittal_review_sla_days: Optional[int] = Field(default=None, ge=1, le=365)
+    submittal_sla_uses_calendar_days: Optional[bool] = None
 
 
 class Project(ReadModel):
@@ -241,6 +262,9 @@ class Project(ReadModel):
     # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
     is_cui: bool = False
     ai_enabled: bool = True
+    # Bucket E Phase 1 (2026-05-11) -- A/E review SLA settings.
+    submittal_review_sla_days: int = SUBMITTAL_DEFAULT_SLA_DAYS
+    submittal_sla_uses_calendar_days: bool = False
 
 
 # ---------- Locations / floors ----------
@@ -2594,3 +2618,86 @@ class FieldSuggestionBulkConfirmPayload(StrictModel):
 class FieldSuggestionBulkRejectPayload(StrictModel):
     suggestion_ids: List[str] = Field(..., min_length=1, max_length=50)
     reason: str = Field(..., min_length=10, max_length=500)
+
+
+# ============================================================
+# Bucket E Phase 1 (2026-05-11) — Submittals A/E Review SLA +
+# register depth.
+#
+# The Submittal Pydantic models live in routers/iter4_router.py for
+# historical reasons (they were added during iter4 before models.py
+# was the canonical home). This block adds the new SLA + register
+# depth vocabulary + the SubmittalReviewEvent chain-of-custody
+# model + the project-level SLA-day default so the new shapes are
+# discoverable from models.py going forward.
+#
+# The router extension is in iter4_router.py.
+# ============================================================
+
+# SUBMITTAL_DEFAULT_SLA_DAYS is hoisted to the top of the file (near
+# the other tenant/project literals) so the Project Pydantic model
+# can reference it without a forward-declaration.
+
+# Common federal-construction submittal types. Free-text override
+# stays available via submittal.type_other_description -- the enum
+# is the dropdown vocab, not a hard schema constraint.
+SubmittalTypeEnum = Literal[
+    "product_data", "shop_drawing", "sample", "mock_up",
+    "certifications", "test_reports", "o_m_manual", "as_built",
+    "closeout", "other",
+]
+
+# Chain-of-custody event vocabulary. Federal claim defense requires
+# a complete audit trail of who touched the submittal when, with
+# elapsed-day deltas at each step. Phase 2 wires the recorder.
+SubmittalReviewEventType = Literal[
+    "submitted_to_ae",         # Super forwarded the sub package to A/E.
+    "ae_review_started",       # A/E acknowledged receipt + opened review.
+    "ae_review_completed",     # A/E returned the package with disposition.
+    "forwarded_to_sub",        # GC forwarded A/E's response to the sub.
+    "returned_from_sub",       # Sub returned a revised submittal.
+    "sla_breached",            # Computed event when SLA deadline passed.
+    "supplement_filed",        # Late info filed against a closed submittal.
+    "approved",                # Disposition: approved (no exceptions).
+    "approved_as_noted",       # Disposition: approved with markup.
+    "rejected",                # Disposition: rejected, full resubmit needed.
+    "revise_resubmit",         # Disposition: revise + resubmit per markup.
+    "closed",                  # Final closeout / archive.
+]
+
+
+class SubmittalReviewEventCreate(StrictModel):
+    """Payload for recording a review-chain event. Phase 2 exposes
+    this via POST /submittals/{id}/review-events. event_type drives
+    which status_after gets stamped on the parent submittal (e.g.
+    submitted_to_ae -> status=submitted)."""
+    submittal_id: str
+    event_type: SubmittalReviewEventType
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    # Optional override of the per-row performed_at -- defaults to
+    # server-now if absent. Lets users back-date a missed entry
+    # (audit logged regardless).
+    performed_at: Optional[datetime] = None
+
+
+class SubmittalReviewEvent(ReadModel):
+    """One row in the submittal_review_events collection. Indexed
+    by (tenant_id, submittal_id, performed_at) for chronological
+    chain reads, and (tenant_id, event_type, performed_at) for
+    breach reporting rollups."""
+    id: str
+    tenant_id: str
+    project_id: str
+    submittal_id: str
+    event_type: SubmittalReviewEventType
+    performed_by: Optional[str] = None      # user_id; None for system events
+    performed_at: datetime
+    status_before: Optional[str] = None
+    status_after: Optional[str] = None
+    notes: Optional[str] = None
+    # Computed deltas vs. the prior event on this submittal so the
+    # TIA timeline can show "A/E held this for N working days" at a
+    # glance without re-joining the full chain.
+    calendar_days_elapsed: Optional[int] = None
+    working_days_elapsed: Optional[int] = None
+    created_at: datetime
