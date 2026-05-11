@@ -28,7 +28,7 @@ import io
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, Query, Response
 
 from database import get_db, tenant_filter
 from auth import require_tenant
@@ -135,6 +135,7 @@ async def upload_to_tray(
     project_id: str = Form(...),
     capture_source: str = Form("manual_upload"),
     file: UploadFile = File(...),
+    bg: BackgroundTasks = None,                # Bucket F Phase 2 -- AI auto-trigger
     ctx: dict = Depends(require_tenant),
 ):
     """Multipart upload -- writes bytes to storage, extracts EXIF +
@@ -184,6 +185,20 @@ async def upload_to_tray(
         actor_id=ctx["user"]["id"],
     )
     now_iso = utc_now().isoformat()
+    # Bucket F Phase 2 -- pre-check CUI/AI gates so we can decide
+    # whether to stamp pending or skipped on the freshly created
+    # tray row. The auto-trigger BackgroundTask also re-checks at
+    # service entry (belt + suspenders).
+    from services.photo_ai import check_cui_safety
+    safety = await check_cui_safety(
+        tenant_id=ctx["tenant_id"], project_id=project_id,
+    )
+    if safety.get("safe_to_analyze"):
+        initial_ai_status = "pending"
+        initial_ai_failure_reason = None
+    else:
+        initial_ai_status = "skipped"
+        initial_ai_failure_reason = safety.get("reason")
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -202,6 +217,12 @@ async def upload_to_tray(
         "height": meta["height"],
         "file_size_bytes": len(body),
         "status": "untagged",
+        # Bucket F Phase 2 -- AI fields stamped at insert time.
+        "ai_analysis_status": initial_ai_status,
+        "ai_failure_reason": initial_ai_failure_reason,
+        "ai_user_overridden": False,
+        "ai_safety_concerns_detected": [],
+        "ai_reused_from_phash": False,
     }
     await db.photo_tray.insert_one(doc.copy())
     await write_audit(
@@ -211,9 +232,28 @@ async def upload_to_tray(
             "project_id": project_id, "capture_source": capture_source,
             "phash": meta["phash"], "sha256": meta["sha256"],
             "size_bytes": len(body),
+            "ai_analysis_status": initial_ai_status,
         },
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Bucket F Phase 2 -- fire AI analysis as a BackgroundTask.
+    # Only when status=pending (CUI/AI-disabled paths stamped skipped
+    # above; no point spawning a task that would just re-check + bail).
+    if initial_ai_status == "pending" and bg is not None:
+        from services.photo_ai import analyze_photo as _analyze
+        async def _run_ai(tenant_id: str, tray_id: str, actor_id: str):
+            try:
+                await _analyze(tenant_id=tenant_id, tray_id=tray_id,
+                                actor_id=actor_id)
+            except Exception as exc:
+                # The service catches its own errors and stamps the row;
+                # this catch is the last line of defense so a runtime
+                # crash here doesn't take the worker down.
+                import logging
+                logging.getLogger("photo_tray_router").warning(
+                    "auto-trigger AI failed: %s", exc,
+                )
+        bg.add_task(_run_ai, ctx["tenant_id"], doc["id"], ctx["user"]["id"])
     return PhotoTray(**doc)
 
 
@@ -599,3 +639,312 @@ async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     return {"ok": True, "tray_photo_id": tray_id}
+
+
+# =====================================================================
+# Bucket F Phase 2 (2026-05-08) -- Photo AI endpoints
+# =====================================================================
+# 7 endpoints + RBAC permission matrix. Per spec:
+#   Super:   trigger single + view/override/reject own project
+#   Foreman: trigger single + view/override/reject own crew's photos
+#   PM:      single + batch + view/override/reject + stats own projects
+#   Admin:   all
+#   Viewer:  view own projects only
+# Cross-tenant URL -> 404 (leak-resistant; never 403).
+
+from auth import has_project_access, can_manage_project_members  # noqa: E402
+from models import StrictModel as _AiStrictModel  # alias to avoid name clash
+from pydantic import Field as _AiField
+
+
+class _AiAnalyzePayload(_AiStrictModel):
+    """No payload fields -- the tray_id is in the URL. Kept as a model
+    so swagger surfaces the empty body explicitly."""
+    pass
+
+
+class _AiBatchPayload(_AiStrictModel):
+    project_id: Optional[str] = None
+    limit: int = _AiField(default=10, ge=1, le=10)
+
+
+class _AiRejectPayload(_AiStrictModel):
+    reason: str = _AiField(..., min_length=10, max_length=500)
+
+
+class _AiOverridePayload(_AiStrictModel):
+    """Override one or more AI-suggested fields. All optional; pass
+    only the fields the user actually changed. override_reason
+    required (min 5 chars)."""
+    photo_class: Optional[str] = None
+    caption: Optional[str] = None
+    event_type: Optional[str] = None
+    trade: Optional[str] = None
+    override_reason: str = _AiField(..., min_length=5, max_length=500)
+
+
+# Permission helpers -- shared across the 4 mutating endpoints.
+_ROLE_VIEW = {"admin", "pm", "px", "super", "foreman", "viewer", "pe"}
+_ROLE_TRIGGER_SINGLE = {"admin", "pm", "px", "super", "foreman", "pe"}
+_ROLE_BATCH = {"admin", "pm", "px"}
+_ROLE_OVERRIDE_REJECT = {"admin", "pm", "px", "super", "foreman", "pe"}
+_ROLE_STATS = {"admin", "pm", "px"}
+_ROLE_BUDGET = {"admin"}
+
+
+def _user_role(ctx: dict) -> str:
+    return (ctx.get("user") or {}).get("role") or ""
+
+
+async def _enforce_tray_access(ctx: dict, tray: dict,
+                                  required_role_set: set[str]) -> None:
+    """Check role tier + per-project membership for a tray-row
+    mutation. Cross-tenant rows surface as 404 upstream; this fires
+    on tenant-matched rows only."""
+    role = _user_role(ctx)
+    if role not in required_role_set:
+        raise HTTPException(
+            403,
+            f"Role {role!r} cannot perform this action on AI suggestions",
+        )
+    if role == "admin":
+        return
+    ok = await has_project_access(
+        tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+        user_role=role, project_id=tray.get("project_id"),
+    )
+    if not ok:
+        # Leak-resistant 404.
+        raise HTTPException(404, "Tray photo not found")
+
+
+# (1) POST /api/photo-tray/{id}/analyze
+@router.post("/photo-tray/{tray_id}/analyze")
+async def analyze_single(
+    tray_id: str, _payload: Optional[_AiAnalyzePayload] = None,
+    ctx: dict = Depends(require_tenant),
+):
+    """Manually trigger / re-trigger AI analysis on one tray row.
+    Useful for retrying failed rows or re-running after override."""
+    db = get_db()
+    tray = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+        {"_id": 0},
+    )
+    if not tray:
+        raise HTTPException(404, "Tray photo not found")
+    await _enforce_tray_access(ctx, tray, _ROLE_TRIGGER_SINGLE)
+    # Reset status to pending so analyze_photo's atomic flip can fire.
+    await db.photo_tray.update_one(
+        {"id": tray_id},
+        {"$set": {"ai_analysis_status": "pending",
+                   "ai_failure_reason": None}},
+    )
+    from services.photo_ai import analyze_photo as _analyze
+    return await _analyze(
+        tenant_id=ctx["tenant_id"], tray_id=tray_id,
+        actor_id=ctx["user"]["id"],
+    )
+
+
+# (2) POST /api/photo-tray/batch-analyze (admin/PM only)
+@router.post("/photo-tray/batch-analyze")
+async def analyze_batch(
+    payload: _AiBatchPayload, ctx: dict = Depends(require_tenant),
+):
+    role = _user_role(ctx)
+    if role not in _ROLE_BATCH:
+        raise HTTPException(
+            403, f"Role {role!r} cannot run batch AI analysis (admin/pm only)",
+        )
+    # Per-project RBAC if project_id is specified.
+    if payload.project_id and role != "admin":
+        ok = await has_project_access(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=role, project_id=payload.project_id,
+        )
+        if not ok:
+            raise HTTPException(404, "Project not found")
+    from services.photo_ai import batch_analyze_pending
+    result = await batch_analyze_pending(
+        tenant_id=ctx["tenant_id"],
+        project_id=payload.project_id, limit=payload.limit,
+    )
+    return result
+
+
+# (3) POST /api/photo-tray/{id}/reject-ai
+@router.post("/photo-tray/{tray_id}/reject-ai")
+async def reject_ai(
+    tray_id: str, payload: _AiRejectPayload,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    tray = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+        {"_id": 0},
+    )
+    if not tray:
+        raise HTTPException(404, "Tray photo not found")
+    await _enforce_tray_access(ctx, tray, _ROLE_OVERRIDE_REJECT)
+    from services.photo_ai import reject_analysis
+    res = await reject_analysis(
+        tenant_id=ctx["tenant_id"], tray_id=tray_id,
+        reason=payload.reason, actor_id=ctx["user"]["id"],
+    )
+    if not res.get("ok"):
+        raise HTTPException(422, res.get("reason") or "reject failed")
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photo_tray",
+        op="PHOTO_AI_REJECTED",
+        record_id=tray_id, before={"ai_status": tray.get("ai_analysis_status")},
+        after={"reason": payload.reason,
+                "rejected_by": ctx["user"]["id"]},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return res
+
+
+# (4) POST /api/photo-tray/{id}/override-ai
+@router.post("/photo-tray/{tray_id}/override-ai")
+async def override_ai(
+    tray_id: str, payload: _AiOverridePayload,
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    tray = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+        {"_id": 0},
+    )
+    if not tray:
+        raise HTTPException(404, "Tray photo not found")
+    await _enforce_tray_access(ctx, tray, _ROLE_OVERRIDE_REJECT)
+    overrides: dict = {}
+    if payload.photo_class is not None:
+        overrides["photo_class"] = payload.photo_class
+    if payload.caption is not None:
+        overrides["caption"] = payload.caption
+    if payload.event_type is not None:
+        overrides["event_type"] = payload.event_type
+    if payload.trade is not None:
+        overrides["trade"] = payload.trade
+    if not overrides:
+        raise HTTPException(422, "no override fields supplied")
+    from services.photo_ai import override_analysis
+    res = await override_analysis(
+        tenant_id=ctx["tenant_id"], tray_id=tray_id, fields=overrides,
+        override_reason=payload.override_reason,
+        actor_id=ctx["user"]["id"],
+    )
+    if not res.get("ok"):
+        raise HTTPException(422, res.get("reason") or "override failed")
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photo_tray",
+        op="PHOTO_AI_OVERRIDDEN",
+        record_id=tray_id,
+        before=res.get("ai_originals"),
+        after={"user_overrides": res.get("user_overrides"),
+                "override_reason": payload.override_reason,
+                "overridden_by": ctx["user"]["id"]},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    # Also persist (original_ai, user_correction, reason) tuple to
+    # the photo_ai_calibration collection for Phase 4 calibration RAG.
+    try:
+        await db.photo_ai_calibration.insert_one({
+            "id": gen_id(),
+            "tenant_id": ctx["tenant_id"],
+            "tray_id": tray_id,
+            "project_id": tray.get("project_id"),
+            "original_ai": res.get("ai_originals"),
+            "user_correction": res.get("user_overrides"),
+            "reason": payload.override_reason,
+            "actor_id": ctx["user"]["id"],
+            "created_at": utc_now().isoformat(),
+        })
+    except Exception:
+        pass
+    return res
+
+
+# (5) GET /api/photo-tray/{id}/ai-analysis
+@router.get("/photo-tray/{tray_id}/ai-analysis")
+async def get_ai_analysis(
+    tray_id: str, ctx: dict = Depends(require_tenant),
+):
+    """Returns just the AI fields off a tray row + the lock state.
+    Frontend polls this every 3s while status is pending/analyzing."""
+    db = get_db()
+    tray = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+        {"_id": 0},
+    )
+    if not tray:
+        raise HTTPException(404, "Tray photo not found")
+    await _enforce_tray_access(ctx, tray, _ROLE_VIEW)
+    return {
+        "tray_id": tray_id,
+        "ai_analysis_status": tray.get("ai_analysis_status"),
+        "ai_analysis_started_at": tray.get("ai_analysis_started_at"),
+        "ai_analysis_completed_at": tray.get("ai_analysis_completed_at"),
+        "ai_suggested_class": tray.get("ai_suggested_class"),
+        "ai_suggested_caption": tray.get("ai_suggested_caption"),
+        "ai_suggested_event_type": tray.get("ai_suggested_event_type"),
+        "ai_suggested_trade": tray.get("ai_suggested_trade"),
+        "ai_confidence_score": tray.get("ai_confidence_score"),
+        "ai_safety_concerns_detected": tray.get("ai_safety_concerns_detected") or [],
+        "ai_failure_reason": tray.get("ai_failure_reason"),
+        "ai_model_version": tray.get("ai_model_version"),
+        "ai_user_overridden": bool(tray.get("ai_user_overridden")),
+        "ai_user_override_reason": tray.get("ai_user_override_reason"),
+        "ai_reused_from_phash": bool(tray.get("ai_reused_from_phash")),
+        "ai_cost_tokens_input": tray.get("ai_cost_tokens_input"),
+        "ai_cost_tokens_output": tray.get("ai_cost_tokens_output"),
+    }
+
+
+# (6) GET /api/projects/{id}/photo-ai-stats (PM/admin)
+@router.get("/projects/{project_id}/photo-ai-stats")
+async def get_project_ai_stats(
+    project_id: str, days: int = 30,
+    ctx: dict = Depends(require_tenant),
+):
+    role = _user_role(ctx)
+    if role not in _ROLE_STATS:
+        raise HTTPException(
+            403,
+            f"Role {role!r} cannot view AI stats (admin/pm only)",
+        )
+    # Cross-tenant project -> 404.
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "id": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    if role != "admin":
+        ok = await has_project_access(
+            tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
+            user_role=role, project_id=project_id,
+        )
+        if not ok:
+            raise HTTPException(404, "Project not found")
+    if days < 1 or days > 365:
+        raise HTTPException(422, "days must be 1..365")
+    from services.photo_ai import get_analysis_stats
+    return await get_analysis_stats(
+        tenant_id=ctx["tenant_id"],
+        project_id=project_id, days=days,
+    )
+
+
+# (7) GET /api/tenants/current/ai-budget (admin)
+@router.get("/tenants/current/ai-budget")
+async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- AI budget surfaces tenant-level spend",
+        )
+    from services.photo_ai import check_budget
+    return await check_budget(tenant_id=ctx["tenant_id"])

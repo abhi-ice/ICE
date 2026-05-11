@@ -255,6 +255,23 @@ async def _ensure_indexes():
         name="ph_tenant_createdviaai",
     )
 
+    # Bucket F Phase 2 (2026-05-08) -- photo_ai_locks unique index +
+    # TTL. The $setOnInsert dedup-race lock relies on the unique
+    # (tenant_id, phash) constraint to atomically pick a winner; the
+    # TTL sweeps stale locks after 60s so a crashed analyze can never
+    # permanently block a pHash. expireAfterSeconds is applied to
+    # locked_at via a separate single-field index per Mongo's rules
+    # (TTL must be a single field).
+    await db.photo_ai_locks.create_index(
+        [("tenant_id", 1), ("phash", 1)],
+        unique=True, name="pal_tenant_phash_unique",
+    )
+    await db.photo_ai_locks.create_index(
+        [("locked_at", 1)],
+        expireAfterSeconds=60,
+        name="pal_locked_at_ttl",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
