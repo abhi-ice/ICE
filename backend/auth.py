@@ -172,7 +172,62 @@ _PROJECT_ACCESS_ROLES: dict[str, Optional[set[str]]] = {
     # legacy tenant-user roles (px, pe) map per migration 009:
     "px":      {"pm"},                                # treated like pm
     "pe":      {"pm", "super", "foreman"},            # treated like super
+    # Bucket J Phase 2 (2026-05-11) -- specialty roles. Both see
+    # every project they have membership on (any role_on_project
+    # tier counts), so cross-project specialists can navigate
+    # their workload without admin per-project chasing.
+    "submittal_tech":      {"pm", "super", "foreman", "viewer",
+                              "submittal_tech"},
+    "scheduling_engineer": {"pm", "super", "foreman", "viewer",
+                              "scheduling_engineer"},
 }
+
+
+# Bucket J Phase 2 -- role -> write-capability flags. Each helper
+# returns True iff the role is allowed to write to that surface.
+# The tenant-wide admin role bypasses all of these.
+def role_can_write_submittals(user_role: str) -> bool:
+    """submittal_tech + pm + admin can write submittals; everyone
+    else is read-only on the surface."""
+    return (user_role or "").lower() in {
+        "admin", "pm", "submittal_tech",
+    }
+
+
+def role_can_write_schedule(user_role: str) -> bool:
+    """scheduling_engineer + pm + admin + pe (alias) can write
+    tasks / schedule proposals."""
+    return (user_role or "").lower() in {
+        "admin", "pm", "pe", "scheduling_engineer",
+    }
+
+
+def role_can_write_field_events(user_role: str) -> bool:
+    """Anything in the daily-ops surface (delays, RFIs, QC,
+    safety, deliveries, coord, photos, daily_reports).
+    submittal_tech + scheduling_engineer are READ-ONLY here per
+    spec."""
+    return (user_role or "").lower() in {
+        "admin", "pm", "super", "foreman",
+    }
+
+
+def role_can_commit_reallocation(user_role: str) -> bool:
+    """Resource leveling reallocation commit. submittal_tech +
+    scheduling_engineer can VIEW but cannot commit; only admin +
+    pm + super can write."""
+    return (user_role or "").lower() in {
+        "admin", "pm", "super",
+    }
+
+
+def role_can_recompute_resource_leveling(user_role: str) -> bool:
+    """Read + recompute access. scheduling_engineer can recompute
+    (their core workflow) but not commit; submittal_tech is
+    read-only."""
+    return (user_role or "").lower() in {
+        "admin", "pm", "super", "scheduling_engineer", "pe",
+    }
 
 
 async def get_accessible_project_ids(

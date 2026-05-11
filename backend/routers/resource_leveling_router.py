@@ -68,9 +68,20 @@ router = APIRouter(prefix="/resource-leveling", tags=["resource-leveling"])
 # means tenant-wide for PM+admin since there's no project-membership
 # table). We document this explicitly rather than fake it.
 
-ROLE_READ = {"admin", "pm", "super", "foreman", "viewer", "px", "pe"}
+ROLE_READ = {
+    "admin", "pm", "super", "foreman", "viewer", "px", "pe",
+    # Bucket J Phase 2 (2026-05-11) -- specialty roles get full read
+    # on the resource leveling dashboard (their workflows depend on
+    # crew calendar + project demand context).
+    "submittal_tech", "scheduling_engineer",
+}
 ROLE_WRITE_CAPACITY = {"admin", "pm", "px"}
+# Reallocation commit: scheduling_engineer + submittal_tech can VIEW
+# but cannot commit (per Bucket J spec). admin / pm / px-tier only.
 ROLE_WRITE_REALLOCATION = {"admin", "pm", "px"}
+# Recompute access: scheduling_engineer joins recompute (core workflow)
+# but stays out of commit. submittal_tech is read-only.
+ROLE_RECOMPUTE = {"admin", "pm", "px", "scheduling_engineer", "pe"}
 
 
 def _user_role(ctx: dict) -> str:
@@ -604,7 +615,14 @@ async def trigger_recompute(
     bg: BackgroundTasks,
     ctx: dict = Depends(require_tenant),
 ):
-    _enforce_write_capacity(ctx)
+    # Bucket J Phase 2 -- recompute tier (scheduling_engineer joins).
+    role = _user_role(ctx).lower()
+    if role not in ROLE_RECOMPUTE:
+        raise HTTPException(
+            403,
+            f"Role {role!r} cannot trigger recompute "
+            f"(scheduling_engineer / pm / pe / admin only)",
+        )
     # If a date range is supplied AND >7 days, hand off to background.
     # Otherwise execute inline so the dashboard can refresh immediately.
     inline = True

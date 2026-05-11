@@ -157,6 +157,18 @@ async def create_submittal(
     payload: SubmittalCreate, bg: BackgroundTasks,
     ctx: dict = Depends(require_tenant),
 ):
+    # Bucket J Phase 2 (2026-05-11) -- submittal_tech + pm + admin
+    # are the write tier for submittals. super stays read-only here
+    # per spec (super logs field events but doesn't author the
+    # formal submittal package).
+    from auth import role_can_write_submittals
+    user_role = (ctx["user"].get("role") or "").lower()
+    if not role_can_write_submittals(user_role):
+        raise HTTPException(
+            403,
+            f"Role {user_role!r} cannot create submittals "
+            f"(submittal_tech / pm / admin only)",
+        )
     db = get_db()
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0, "id": 1})
     if not proj:
@@ -285,6 +297,15 @@ class SubmittalUpdate(StrictModel):
 
 @router.patch("/submittals/{submittal_id}", response_model=Submittal)
 async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dict = Depends(require_tenant)):
+    # Bucket J Phase 2 -- write gate (submittal_tech / pm / admin).
+    from auth import role_can_write_submittals
+    user_role = (ctx["user"].get("role") or "").lower()
+    if not role_can_write_submittals(user_role):
+        raise HTTPException(
+            403,
+            f"Role {user_role!r} cannot edit submittals "
+            f"(submittal_tech / pm / admin only)",
+        )
     db = get_db()
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:

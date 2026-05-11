@@ -11,18 +11,25 @@ import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 
+// Bucket J Phase 3 (2026-05-11) -- specialty roles join the dropdown.
+// submittal_tech + scheduling_engineer carry write power on their
+// specialty surfaces; everywhere else they're read-only.
 const ROLES = [
-  { value: "pm",      label: "PM (full access + member management)" },
-  { value: "super",   label: "Superintendent" },
-  { value: "foreman", label: "Foreman" },
-  { value: "viewer",  label: "Viewer (read-only)" },
+  { value: "pm",                  label: "PM (full access + member management)" },
+  { value: "super",               label: "Superintendent" },
+  { value: "foreman",             label: "Foreman" },
+  { value: "viewer",              label: "Viewer (read-only)" },
+  { value: "submittal_tech",      label: "Submittal Tech (write submittals only)" },
+  { value: "scheduling_engineer", label: "Scheduling Engineer (write schedule only)" },
 ];
 
 const ROLE_PILL = {
-  pm:      "bg-blue-100 text-blue-900",
-  super:   "bg-emerald-100 text-emerald-900",
-  foreman: "bg-amber-100 text-amber-900",
-  viewer:  "bg-slate-100 text-slate-700",
+  pm:                  "bg-blue-100 text-blue-900",
+  super:               "bg-emerald-100 text-emerald-900",
+  foreman:             "bg-amber-100 text-amber-900",
+  viewer:              "bg-slate-100 text-slate-700",
+  submittal_tech:      "bg-violet-100 text-violet-900",
+  scheduling_engineer: "bg-sky-100 text-sky-900",
 };
 
 export default function ProjectAccess() {

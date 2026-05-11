@@ -56,6 +56,7 @@ from routers.project_members_router import router as project_members_router  # n
 from routers.field_suggestions_router import router as field_suggestions_router  # noqa: E402
 from routers.submittal_sla_router import router as submittal_sla_router  # noqa: E402
 from routers.recovery_reports_router import router as recovery_reports_router  # noqa: E402
+from routers.exhibit_exports_router import router as exhibit_exports_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -756,6 +757,7 @@ api_router.include_router(project_members_router)
 api_router.include_router(field_suggestions_router)
 api_router.include_router(submittal_sla_router)
 api_router.include_router(recovery_reports_router)
+api_router.include_router(exhibit_exports_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

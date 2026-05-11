@@ -39,14 +39,16 @@ router = APIRouter(tags=["submittal-sla"])
 
 
 # ---------------------------------------------------------------------
-# Role tiers. Most workflow actions allowed for super/pm/admin (the
-# super may submit + record receipts; the pm + admin assign reviewers
-# + pause SLA). detect_breaches + recompute-aging are admin-only since
-# they touch every row.
+# Role tiers. submittal_tech (Bucket J) joins pm + admin as the write
+# tier for submittal review events + reviewer assignment + pause/
+# resume. super stays on record-events (they're the field-level
+# acknowledger). detect_breaches + recompute-aging stay admin-only.
 # ---------------------------------------------------------------------
-_ROLE_RECORD = {"admin", "pm", "super"}
+_ROLE_RECORD = {"admin", "pm", "super", "submittal_tech"}
+_ROLE_PAUSE_ASSIGN = {"admin", "pm", "submittal_tech"}
 _ROLE_ADMIN_BG = {"admin"}
-_ROLE_VIEW = {"admin", "pm", "super", "px", "pe", "foreman", "viewer"}
+_ROLE_VIEW = {"admin", "pm", "super", "px", "pe", "foreman", "viewer",
+              "submittal_tech", "scheduling_engineer"}
 
 
 def _user_role(ctx: dict) -> str:
@@ -170,7 +172,7 @@ async def pause_sla_endpoint(
     submittal_id: str, payload: _PausePayload,
     ctx: dict = Depends(require_tenant),
 ):
-    if _user_role(ctx) not in {"admin", "pm"}:
+    if _user_role(ctx) not in _ROLE_PAUSE_ASSIGN:
         raise HTTPException(
             403, "Only PM / admin can pause the SLA clock",
         )
@@ -193,7 +195,7 @@ async def pause_sla_endpoint(
 async def resume_sla_endpoint(
     submittal_id: str, ctx: dict = Depends(require_tenant),
 ):
-    if _user_role(ctx) not in {"admin", "pm"}:
+    if _user_role(ctx) not in _ROLE_PAUSE_ASSIGN:
         raise HTTPException(
             403, "Only PM / admin can resume the SLA clock",
         )
@@ -220,7 +222,7 @@ async def assign_reviewer_endpoint(
     submittal_id: str, payload: _AssignReviewerPayload,
     ctx: dict = Depends(require_tenant),
 ):
-    if _user_role(ctx) not in {"admin", "pm"}:
+    if _user_role(ctx) not in _ROLE_PAUSE_ASSIGN:
         raise HTTPException(
             403, "Only PM / admin can assign submittal reviewers",
         )

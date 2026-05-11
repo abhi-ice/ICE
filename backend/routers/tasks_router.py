@@ -70,6 +70,15 @@ async def _bg_recompute_demand_dates(tenant_id: str, project_id: str, dates: lis
 @router.post("/tasks", response_model=Task)
 async def create_task(payload: TaskCreate, bg: BackgroundTasks,
                        ctx: dict = Depends(require_tenant)):
+    # Bucket J Phase 2 (2026-05-11) -- scheduling_engineer + pm + pe
+    # + admin are the write tier for schedule activities. super +
+    # foreman are read-only on tasks per spec.
+    from auth import role_can_write_schedule
+    if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(
+            403,
+            "Only scheduling_engineer / pm / pe / admin can create tasks",
+        )
     db = get_db()
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
     if not proj:
@@ -160,6 +169,13 @@ async def get_task(task_id: str, ctx: dict = Depends(require_tenant)):
 
 @router.patch("/tasks/{task_id}", response_model=Task)
 async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ctx: dict = Depends(require_tenant)):
+    # Bucket J Phase 2 -- schedule write gate.
+    from auth import role_can_write_schedule
+    if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(
+            403,
+            "Only scheduling_engineer / pm / pe / admin can edit tasks",
+        )
     db = get_db()
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:
@@ -268,6 +284,13 @@ async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: Backgroun
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, bg: BackgroundTasks, ctx: dict = Depends(require_tenant)):
+    # Bucket J Phase 2 -- schedule write gate.
+    from auth import role_can_write_schedule
+    if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(
+            403,
+            "Only scheduling_engineer / pm / pe / admin can delete tasks",
+        )
     db = get_db()
     before = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
     if not before:

@@ -94,6 +94,12 @@ MIGRATIONS = [
     # backfill. Single RECOVERY_REPORTS_INITIALIZED audit op per
     # tenant. Idempotent via per-tenant audit existence check.
     "migrations.014_recovery_reports_setup",
+    # Bucket J Phase 1 (2026-05-11) -- role enum extension. Enables
+    # submittal_tech + scheduling_engineer as valid tenant_users.role
+    # + project_members.role_on_project values. No automatic role
+    # assignment; existing users keep current role. ROLE_ENUM_EXTENDED
+    # audit op per tenant; idempotent.
+    "migrations.015_role_enum_extended",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

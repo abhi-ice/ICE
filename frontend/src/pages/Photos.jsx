@@ -9,7 +9,7 @@ import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
-import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload, Sparkles, Edit3, HelpCircle } from "lucide-react";
+import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload, Sparkles, Edit3, HelpCircle, Download, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
 import { getToken, getUser } from "../lib/auth";
@@ -120,6 +120,9 @@ export default function Photos() {
             className="h-9 px-2 rounded border border-slate-300 bg-white text-slate-600 text-sm inline-flex items-center gap-1 hover:bg-slate-50">
             <HelpCircle className="h-3.5 w-3.5" /> AI help
           </button>
+          {/* Bucket K Phase 3 (2026-05-11) -- photo evidence pack
+              export. Project-scoped; respects the current filter row. */}
+          <PhotoEvidenceExport projectId={activeId} filters={filters} />
           {/* Bucket D Fix G [3/4] -- "+ New" routes to today's DR's
               photos panel (consistent with all other galleries). The
               upload+tag flow lives on the Photo Tray page; the link
@@ -417,4 +420,68 @@ function PhotoImage({ photoId }) {
   }, [photoId]);
   if (!url) return <div className="w-full h-full grid place-items-center text-slate-300"><FileImage className="h-8 w-8" /></div>;
   return <img src={url} alt="" className="w-full h-full object-cover" />;
+}
+
+
+// Bucket K Phase 3 (2026-05-11) -- photo evidence pack export dropdown.
+// Project-scoped; passes current Photos page filters through to the
+// backend export endpoint so users get the exhibit pack matching
+// what they see on screen.
+function PhotoEvidenceExport({ projectId, filters }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const downloadFmt = async (fmt) => {
+    if (!projectId) {
+      toast.error("Pick a project first");
+      return;
+    }
+    setBusy(true);
+    setOpen(false);
+    try {
+      const params = { format: fmt };
+      if (filters?.photo_class) params.photo_class = filters.photo_class;
+      if (filters?.evidentiary_only) params.evidentiary_only = true;
+      const res = await api.get(
+        `/projects/${projectId}/photo-evidence-pack/export`,
+        { params, responseType: "blob" },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      const ext = fmt === "zip" ? "zip" : fmt;
+      a.href = url;
+      a.download = `photo_evidence_pack_${projectId.slice(0, 8)}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`${fmt.toUpperCase()} evidence pack ready`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Export failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="relative">
+      <button data-testid="photos-export-toggle"
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy || !projectId}
+        title="Generate exhibit-ready photo evidence pack"
+        className="h-9 px-3 rounded border border-slate-300 bg-white text-slate-700 text-sm inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Download className="h-3.5 w-3.5" />}
+        Evidence pack
+      </button>
+      {open && (
+        <div data-testid="photos-export-menu"
+          className="absolute right-0 mt-1 w-32 bg-white border border-slate-200 rounded shadow-lg z-10">
+          {["pdf", "docx", "zip"].map((fmt) => (
+            <button key={fmt} onClick={() => downloadFmt(fmt)}
+              data-testid={`photos-export-${fmt}`}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50">
+              {fmt.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }

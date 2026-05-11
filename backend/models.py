@@ -63,7 +63,18 @@ LINKAGE_MIN_ERR = (
 # ---------- Tenants & users ----------
 TenantType = Literal["general_contractor", "subcontractor", "owner", "architect_engineer", "agency"]
 TenantStatus = Literal["active", "trial", "suspended", "archived"]
-UserRole = Literal["px", "pm", "super", "pe", "foreman", "admin", "viewer"]
+# Bucket J Phase 1 (2026-05-11) -- role enum extension.
+# submittal_tech: full read on member projects; full write on
+#   submittals (forward-defined in Bucket G FIELD_SUGGESTION_
+#   DEFAULT_ROLES['submittal'] + Bucket E auto-trigger map).
+# scheduling_engineer: full read on member projects; full write
+#   on tasks/schedule_proposals. Distinct from "pe" (which has
+#   historically been treated as super-tier); scheduling_engineer
+#   focuses specifically on schedule arithmetic.
+UserRole = Literal[
+    "px", "pm", "super", "pe", "foreman", "admin", "viewer",
+    "submittal_tech", "scheduling_engineer",
+]
 
 
 class TenantCreate(StrictModel):
@@ -911,7 +922,14 @@ class CrewDemand(ReadModel):
 # sees only projects where they're a member with role pm/super/
 # foreman; PM sees projects where role_on_project=pm; etc.). Also
 # powers the new Project Access management page.
-ProjectMemberRole = Literal["pm", "super", "foreman", "viewer"]
+# Bucket J Phase 1 -- ProjectMemberRole gains the two new specialty
+# roles. role_on_project lets an admin tenant grant a user a
+# specialty role on a specific project without giving them
+# tenant-wide privileges.
+ProjectMemberRole = Literal[
+    "pm", "super", "foreman", "viewer",
+    "submittal_tech", "scheduling_engineer",
+]
 
 
 class ProjectMemberCreate(StrictModel):
@@ -2557,7 +2575,9 @@ FIELD_SUGGESTION_DEFAULT_ROLES: dict[str, list[str]] = {
     "delivery":              ["super", "pm", "admin"],
     "photo_tag":             ["super", "pm", "admin", "foreman"],
     "submittal":             ["pm", "admin", "submittal_tech"],
-    "schedule_activity":     ["pm", "admin", "pe"],
+    # Bucket J Phase 2 -- scheduling_engineer joins pe as a
+    # schedule-activity confirmer. "pe" stays as a historical alias.
+    "schedule_activity":     ["pm", "admin", "pe", "scheduling_engineer"],
 }
 
 

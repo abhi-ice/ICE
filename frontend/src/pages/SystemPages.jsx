@@ -116,7 +116,81 @@ const AUDIT_OP_GROUPS = [
       "RECOVERY_REPORT_DELETED",
     ],
   },
+  // Bucket J Phase 1 (2026-05-11) -- role enum extension audit op.
+  // Recorded once per tenant via migration 015; surfaces here so
+  // compliance can confirm the new role values were enabled.
+  {
+    label: "Roles",
+    ops: ["ROLE_ENUM_EXTENDED"],
+  },
+  // Bucket K (2026-05-11) -- standalone exhibit export ops. Counsel
+  // can trace who pulled which audit / photo pack with what filters.
+  {
+    label: "Exhibit exports",
+    ops: ["AUDIT_EXTRACT_EXPORTED", "PHOTO_EVIDENCE_PACK_EXPORTED"],
+  },
 ];
+
+// Bucket K Phase 3 (2026-05-11) -- audit extract export dropdown.
+// Lives on the AuditLog page; project-scoped via useProjects.
+function AuditExtractExport({ opFilter, tableFilter }) {
+  const { activeId } = useProjects();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const downloadFmt = async (fmt) => {
+    if (!activeId) {
+      toast.error("Pick a project first");
+      return;
+    }
+    setBusy(true);
+    setOpen(false);
+    try {
+      const params = { format: fmt };
+      if (opFilter) params.op_filter = opFilter;
+      if (tableFilter) params.entity_type = tableFilter;
+      const res = await api.get(
+        `/projects/${activeId}/audit-extract/export`,
+        { params, responseType: "blob" },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `audit_extract_${activeId.slice(0, 8)}.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`${fmt.toUpperCase()} export ready`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Export failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="relative">
+      <button data-testid="audit-export-toggle"
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy || !activeId}
+        className="h-9 px-3 rounded border border-slate-200 bg-white text-sm inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Download className="h-3.5 w-3.5" />}
+        Export
+      </button>
+      {open && (
+        <div data-testid="audit-export-menu"
+          className="absolute right-0 mt-1 w-32 bg-white border border-slate-200 rounded shadow-lg z-10">
+          {["csv", "json", "docx"].map((fmt) => (
+            <button key={fmt} onClick={() => downloadFmt(fmt)}
+              data-testid={`audit-export-${fmt}`}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50">
+              {fmt.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // AuditLog page — append-only, with hash-chain integrity check button.
 export function AuditLog() {
@@ -144,14 +218,21 @@ export function AuditLog() {
   };
   return (
     <div data-testid="audit-page" className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <History className="h-5 w-5" />
           <h1 className="text-2xl font-semibold">Audit log</h1>
         </div>
-        <button data-testid="verify-chain" onClick={check} className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm">
-          Verify hash chain
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Bucket K Phase 3 (2026-05-11) -- exhibit export buttons.
+              Project-scoped: requires an active project. Filters
+              from the current view propagate via the export call. */}
+          <AuditExtractExport opFilter={opFilter} tableFilter={tableFilter} />
+          <button data-testid="verify-chain" onClick={check}
+            className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm">
+            Verify hash chain
+          </button>
+        </div>
       </div>
       {verify && (
         <div data-testid="verify-result" className={`p-3 border rounded text-sm ${verify.valid ? "bg-emerald-50 text-emerald-800 border-emerald-200" : "bg-red-50 text-red-800 border-red-200"}`}>
@@ -1157,6 +1238,154 @@ export function AiHelpPanel({ onClose }) {
                 producer (~$0.01–0.05 per report). Other types are
                 $0 (numeric only). All AI costs roll into the
                 existing Bucket F budget tracking.
+              </p>
+            </section>
+          </div>
+
+          {/* Bucket J Phase 4 (2026-05-11) -- Roles & Permissions
+              section. 8 roles total after the J extension. */}
+          <div className="border-t border-slate-200 pt-3 mt-2"
+            data-testid="ai-help-roles-section">
+            <div className="text-sm font-semibold text-slate-900 inline-flex items-center gap-1.5 mb-2">
+              <ShieldCheck className="h-3.5 w-3.5 text-blue-700" />
+              Roles & Permissions
+            </div>
+            <p className="mb-1.5">
+              The platform supports 8 user roles. Tenant role wins
+              over project role -- e.g., an admin tenant role keeps
+              admin powers on every project regardless of project_
+              members.role_on_project. Project membership controls
+              VISIBILITY for non-admin roles.
+            </p>
+            <table className="w-full text-[11px] border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200 text-slate-500">
+                  <th className="text-left px-1 py-1">Role</th>
+                  <th className="text-left px-1 py-1">Reads</th>
+                  <th className="text-left px-1 py-1">Writes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b border-slate-100">
+                  <td className="px-1 py-1 font-medium">admin</td>
+                  <td className="px-1 py-1">All projects, all surfaces</td>
+                  <td className="px-1 py-1">All surfaces; audit reset; role mgmt</td>
+                </tr>
+                <tr className="border-b border-slate-100">
+                  <td className="px-1 py-1 font-medium">pm</td>
+                  <td className="px-1 py-1">Member projects (pm tier)</td>
+                  <td className="px-1 py-1">All field events + submittals + reports on member projects</td>
+                </tr>
+                <tr className="border-b border-slate-100">
+                  <td className="px-1 py-1 font-medium">super</td>
+                  <td className="px-1 py-1">Member projects (super tier)</td>
+                  <td className="px-1 py-1">Daily reports, photos, delays, RFIs, QC, safety, deliveries, coord</td>
+                </tr>
+                <tr className="border-b border-slate-100">
+                  <td className="px-1 py-1 font-medium">foreman</td>
+                  <td className="px-1 py-1">Member projects (foreman tier)</td>
+                  <td className="px-1 py-1">Daily reports + photos only</td>
+                </tr>
+                <tr className="border-b border-slate-100">
+                  <td className="px-1 py-1 font-medium">viewer</td>
+                  <td className="px-1 py-1">Member projects (any tier)</td>
+                  <td className="px-1 py-1">Nothing -- read-only</td>
+                </tr>
+                <tr className="border-b border-slate-100">
+                  <td className="px-1 py-1 font-medium">pe</td>
+                  <td className="px-1 py-1">Member projects (super-equiv)</td>
+                  <td className="px-1 py-1">Same as super (legacy alias)</td>
+                </tr>
+                <tr className="border-b border-slate-100 bg-blue-50">
+                  <td className="px-1 py-1 font-medium">submittal_tech</td>
+                  <td className="px-1 py-1">All member projects</td>
+                  <td className="px-1 py-1"><b>Submittals only</b> (create, edit, submit to A/E, record events, assign reviewer, pause/resume SLA)</td>
+                </tr>
+                <tr className="border-b border-slate-100 bg-blue-50">
+                  <td className="px-1 py-1 font-medium">scheduling_engineer</td>
+                  <td className="px-1 py-1">All member projects</td>
+                  <td className="px-1 py-1"><b>Tasks + schedule_proposals + schedule_imports + recompute</b> (no reallocation commit)</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="text-[10px] text-slate-500 mt-1.5">
+              Bucket J Phase 1 added submittal_tech +
+              scheduling_engineer. Existing users keep their current
+              role; admins assign the new values via the Project
+              Access page.
+            </p>
+          </div>
+
+          {/* Bucket K Phase 4 (2026-05-11) -- Exhibit Exports
+              section. Covers when to use each export type. */}
+          <div className="border-t border-slate-200 pt-3 mt-2"
+            data-testid="ai-help-exhibit-exports-section">
+            <div className="text-sm font-semibold text-slate-900 inline-flex items-center gap-1.5 mb-2">
+              <Download className="h-3.5 w-3.5 text-blue-700" />
+              Exhibit Exports
+            </div>
+            <section>
+              <div className="font-medium text-slate-900">Audit Extract</div>
+              <p>
+                Filtered audit_log dump with SHA-256 hash chain
+                integrity proof. Three formats:
+              </p>
+              <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                <li><b>CSV</b> — flat table for lawyer spreadsheet review.</li>
+                <li><b>JSON</b> — structured payload for programmatic use.</li>
+                <li><b>DOCX</b> — lawyer-readable narrative with chain
+                  banner at top + filter summary + tabular rows.</li>
+              </ul>
+              <p className="mt-1">
+                Filters: date range (max 1 year), op (multi-select),
+                actor (multi-select), entity_type, entity_id. Chain
+                gaps from filtering are flagged but don't fail the
+                export.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Photo Evidence Pack</div>
+              <p>
+                Filtered photos with cryptographic chain-of-custody
+                manifest. Three formats:
+              </p>
+              <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                <li><b>PDF</b> — per-photo evidence cards with
+                  metadata block (timestamp, GPS, SHA-256, pHash,
+                  class, AI suggestion, linked event).</li>
+                <li><b>DOCX</b> — Word version of the same.</li>
+                <li><b>ZIP</b> — raw photo bytes + manifest.json
+                  signed with chain_of_custody_hash.</li>
+              </ul>
+              <p className="mt-1">
+                CUI projects: AI metadata is automatically redacted
+                per the Bucket F gate; ZIP includes a CUI notice
+                file. Filters: date range, photo_class, evidentiary_
+                only.
+              </p>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">When to use</div>
+              <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                <li>Counsel preparing a claim packet</li>
+                <li>Internal review of AI activity (audit extract
+                  filtered to a single AI source)</li>
+                <li>Federal agency request for evidence
+                  reconstruction</li>
+                <li>Subcontractor dispute requiring photo evidence</li>
+                <li>OSHA recordable investigation</li>
+              </ul>
+            </section>
+            <section>
+              <div className="font-medium text-slate-900">Performance + audit</div>
+              <p>
+                Both exports cached 5 minutes per (project, filter
+                hash). Each pull fires
+                <code className="px-1 mx-0.5 bg-slate-100 rounded">AUDIT_EXTRACT_EXPORTED</code>
+                or
+                <code className="px-1 mx-0.5 bg-slate-100 rounded">PHOTO_EVIDENCE_PACK_EXPORTED</code>
+                so the export action itself is logged. Admin / PM
+                only.
               </p>
             </section>
           </div>
