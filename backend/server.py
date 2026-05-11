@@ -51,6 +51,12 @@ from routers.mitigations_router import router as mitigations_router  # noqa: E40
 from routers.gating_entities_router import router as gating_entities_router  # noqa: E402
 from routers.coordination_router import router as coordination_router  # noqa: E402
 from routers.edit_requests_router import router as edit_requests_router  # noqa: E402
+from routers.resource_leveling_router import router as resource_leveling_router  # noqa: E402
+from routers.project_members_router import router as project_members_router  # noqa: E402
+from routers.field_suggestions_router import router as field_suggestions_router  # noqa: E402
+from routers.submittal_sla_router import router as submittal_sla_router  # noqa: E402
+from routers.recovery_reports_router import router as recovery_reports_router  # noqa: E402
+from routers.exhibit_exports_router import router as exhibit_exports_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -196,6 +202,180 @@ async def _ensure_indexes():
             [("tenant_id", 1), ("project_id", 1), ("linked_task_ids", 1)],
         )
 
+    # Bucket H Phase 5 (2026-05-08) -- resource-leveling read indexes.
+    # Per spec Section 5.2:
+    #   crew_capacity (tenant_id, trade, date)        -> per-trade supply rollup
+    #   crew_capacity (tenant_id, crew_id, date)      -> per-crew calendar
+    #   crew_demands  (tenant_id, trade, date)        -> per-trade demand rollup
+    #   crew_demands  (tenant_id, project_id, date)   -> per-project demand profile
+    # All four cover the read paths in services/resource_leveling.py
+    # without forcing a collection scan. createIndex is idempotent so
+    # re-running this on a deploy where indexes already exist is a
+    # no-op. project_members indexes are created by migration 009
+    # (kept there to keep "schema setup" with the table backfill).
+    await db.crew_capacity.create_index(
+        [("tenant_id", 1), ("trade", 1), ("date", 1)],
+        name="cc_tenant_trade_date",
+    )
+    await db.crew_capacity.create_index(
+        [("tenant_id", 1), ("crew_id", 1), ("date", 1)],
+        name="cc_tenant_crew_date",
+    )
+    await db.crew_demands.create_index(
+        [("tenant_id", 1), ("trade", 1), ("date", 1)],
+        name="cd_tenant_trade_date",
+    )
+    await db.crew_demands.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("date", 1)],
+        name="cd_tenant_project_date",
+    )
+
+    # Bucket F Phase 1 (2026-05-08) -- Photo AI read indexes.
+    # Per spec:
+    #   photo_tray (tenant_id, ai_analysis_status, uploaded_at)
+    #     -> batch_analyze_pending walks pending rows in upload order
+    #   photo_tray (tenant_id, ai_suggested_class)
+    #     -> Photos page filter "show only AI-classified discovery"
+    #   photo_tray (tenant_id, phash, ai_analysis_status)
+    #     -> find_dedup_source: O(1) lookup of completed rows with
+    #        matching pHash. Avoids a full-tray scan on every upload.
+    #   photos (tenant_id, created_via_ai_suggestion)
+    #     -> tag-row queries "which tags came from AI suggestions"
+    #        for TIA Section 8 + Calibration RAG.
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("ai_analysis_status", 1), ("uploaded_at", 1)],
+        name="pt_tenant_aistatus_uploadedat",
+    )
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("ai_suggested_class", 1)],
+        name="pt_tenant_aisuggestedclass",
+    )
+    await db.photo_tray.create_index(
+        [("tenant_id", 1), ("phash", 1), ("ai_analysis_status", 1)],
+        name="pt_tenant_phash_aistatus",
+    )
+    await db.photos.create_index(
+        [("tenant_id", 1), ("created_via_ai_suggestion", 1)],
+        name="ph_tenant_createdviaai",
+    )
+
+    # Bucket F Phase 2 (2026-05-08) -- photo_ai_locks unique index +
+    # TTL. The $setOnInsert dedup-race lock relies on the unique
+    # (tenant_id, phash) constraint to atomically pick a winner; the
+    # TTL sweeps stale locks after 60s so a crashed analyze can never
+    # permanently block a pHash. expireAfterSeconds is applied to
+    # locked_at via a separate single-field index per Mongo's rules
+    # (TTL must be a single field).
+    await db.photo_ai_locks.create_index(
+        [("tenant_id", 1), ("phash", 1)],
+        unique=True, name="pal_tenant_phash_unique",
+    )
+    await db.photo_ai_locks.create_index(
+        [("locked_at", 1)],
+        expireAfterSeconds=60,
+        name="pal_locked_at_ttl",
+    )
+
+    # Bucket F Phase 5 (2026-05-11) -- ai_call_timings TTL + lookup
+    # indexes. Timing rows feed the P50/P95/P99 dashboard. TTL retains
+    # 90 days; that's enough for trend lines but not so much that the
+    # collection bloats.
+    await db.ai_call_timings.create_index(
+        [("tenant_id", 1), ("recorded_at", -1)],
+        name="act_tenant_recorded",
+    )
+    await db.ai_call_timings.create_index(
+        [("recorded_at", 1)],
+        expireAfterSeconds=90 * 24 * 3600,  # 90 days
+        name="act_recorded_ttl",
+    )
+
+    # Bucket G Phase 1 (2026-05-11) -- field_suggestions indexes.
+    # Drives the Jigsaw widget (per-entity lookup), the review queue
+    # (per-user role + status), and the Phase 5 per-source stats
+    # roll-up. NO TTL -- expiration is a status flip + audit op
+    # (services.field_suggestions.expire_stale_pending), not a row
+    # drop, so the audit chain has evidence of every suggestion.
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("entity_type", 1),
+         ("entity_id", 1), ("status", 1)],
+        name="fs_tenant_entity_status",
+    )
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("status", 1), ("created_at", -1)],
+        name="fs_tenant_status_created",
+    )
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("suggested_by", 1)],
+        name="fs_tenant_source",
+    )
+    await db.field_suggestions.create_index(
+        [("tenant_id", 1), ("authorized_confirmer_roles", 1)],
+        name="fs_tenant_roles",
+    )
+    await db.field_suggestions.create_index(
+        [("created_at", -1)],
+        name="fs_created_at",
+    )
+
+    # Bucket E Phase 1 (2026-05-11) -- submittals SLA + chain-of-
+    # custody indexes. Same set as migration 013; declared here too
+    # so fresh deploys (never run migrations) get them on lifespan
+    # startup.
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("status", 1)],
+        name="sub_tenant_project_status",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("a_e_review_due_at", 1)],
+        name="sub_tenant_sla_due",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("is_overdue", 1), ("project_id", 1)],
+        name="sub_tenant_overdue",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("submitted_to_ae_at", -1)],
+        name="sub_tenant_submitted_to_ae",
+    )
+    await db.submittals.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("discipline", 1)],
+        name="sub_tenant_discipline",
+    )
+    # Chain-of-custody event collection.
+    await db.submittal_review_events.create_index(
+        [("tenant_id", 1), ("submittal_id", 1), ("performed_at", 1)],
+        name="sre_tenant_submittal_performed",
+    )
+    await db.submittal_review_events.create_index(
+        [("tenant_id", 1), ("event_type", 1), ("performed_at", -1)],
+        name="sre_tenant_event_performed",
+    )
+    await db.submittal_review_events.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("event_type", 1)],
+        name="sre_tenant_project_event",
+    )
+
+    # Bucket I (2026-05-11) -- recovery_reports indexes. Mirror
+    # migration 014 so fresh deploys get them on lifespan startup.
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("project_id", 1), ("generated_at", -1)],
+        name="rr_tenant_project_generated",
+    )
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("report_type", 1), ("status", 1)],
+        name="rr_tenant_type_status",
+    )
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("project_id", 1),
+         ("report_type", 1), ("idempotency_key", 1)],
+        name="rr_tenant_project_type_idem",
+    )
+    await db.recovery_reports.create_index(
+        [("tenant_id", 1), ("status", 1), ("generated_at", -1)],
+        name="rr_tenant_status_generated",
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -227,7 +407,279 @@ async def lifespan(app: FastAPI):
         logger.info("Object storage initialized")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
+    # Bucket F Phase 3 -- pending-row sweeper on startup. Catches photos
+    # that were uploaded during a worker outage and stuck in `pending`
+    # because the in-process BackgroundTask never ran. Tenant-wide
+    # sweep (no tenant filter) so a multi-tenant deploy heals everyone
+    # on the same boot. Cap at 100 rows so startup isn't blocked by
+    # a big backlog; the admin-only /photo-tray/sweep-stuck-pending
+    # endpoint can drain the rest.
+    try:
+        from services.photo_ai import sweep_stuck_pending
+        sweep_result = await sweep_stuck_pending(
+            tenant_id=None, older_than_minutes=5, limit=100,
+        )
+        if sweep_result.get("swept"):
+            logger.info(
+                "Photo AI startup sweep: %s rows touched (complete=%s, "
+                "skipped=%s, failed=%s, budget_paused=%s, tenants=%s)",
+                sweep_result.get("swept"), sweep_result.get("complete"),
+                sweep_result.get("skipped"), sweep_result.get("failed"),
+                sweep_result.get("budget_paused"),
+                sweep_result.get("tenants_touched"),
+            )
+    except Exception as e:
+        logger.warning("Photo AI startup sweep failed (non-fatal): %s", e)
+
+    # Bucket G Phase 5 (2026-05-11) -- field_suggestions expiration
+    # sweep. Pending suggestions older than EXPIRATION_DAYS (30) get
+    # flipped to "expired" with rejection_reason set. Audit fires
+    # FIELD_SUGGESTION_EXPIRED. Stops zombie suggestions from
+    # cluttering the Review Queue forever.
+    #
+    # Boot pass: cap at 1000 rows so a backlog can't slow startup.
+    # Recurring pass: every 6 hours via asyncio task. Cancelled on
+    # shutdown via the lifespan exit path below.
+    try:
+        from services.field_suggestions import expire_stale_pending
+        boot_sweep = await expire_stale_pending(
+            tenant_id=None, older_than_days=30, limit=1000,
+        )
+        if boot_sweep.get("swept"):
+            logger.info(
+                "field_suggestions boot expiration sweep: swept=%s "
+                "expired=%s tenants_touched=%s failures=%s",
+                boot_sweep.get("swept"), boot_sweep.get("expired"),
+                boot_sweep.get("tenants_touched"),
+                boot_sweep.get("failures"),
+            )
+    except Exception as e:
+        logger.warning(
+            "field_suggestions boot expiration sweep failed (non-fatal): %s",
+            e,
+        )
+
+    # Recurring 6-hour expiration sweep. asyncio.create_task so it
+    # runs alongside the API server without blocking request handling.
+    # The task ref is stashed on app.state so the shutdown path can
+    # cancel it cleanly.
+    import asyncio as _asyncio
+
+    async def _periodic_suggestion_expire():
+        from services.field_suggestions import expire_stale_pending as _exp
+        SLEEP_S = 6 * 3600
+        while True:
+            try:
+                await _asyncio.sleep(SLEEP_S)
+                res = await _exp(tenant_id=None, older_than_days=30, limit=5000)
+                if res.get("expired"):
+                    logger.info(
+                        "field_suggestions periodic sweep: "
+                        "swept=%s expired=%s tenants=%s",
+                        res.get("swept"), res.get("expired"),
+                        res.get("tenants_touched"),
+                    )
+            except _asyncio.CancelledError:
+                logger.info("field_suggestions periodic sweep cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "field_suggestions periodic sweep tick failed "
+                    "(non-fatal): %s", exc,
+                )
+
+    app.state.field_suggestions_expire_task = _asyncio.create_task(
+        _periodic_suggestion_expire(),
+    )
+
+    # Bucket E Phase 4e (2026-05-11) -- recurring submittal SLA breach
+    # detection. Scans all tenants every 6 hours. Each tenant's open
+    # submittals get checked for now > due_date; breached rows flip
+    # sla_status, fire SUBMITTAL_SLA_BREACHED audit, write a chain
+    # event, and cascade-flag any linked task via gating_entities.
+    # Boot pass also runs once on startup so a downtime window
+    # doesn't leave breaches sitting silent.
+    async def _periodic_submittal_breach_detect():
+        from services.submittal_sla import detect_breaches
+        SLEEP_S = 6 * 3600
+        while True:
+            try:
+                await _asyncio.sleep(SLEEP_S)
+                # Walk every active tenant.
+                db = get_db()
+                tenants = await db.tenants.find(
+                    {"status": {"$ne": "archived"}},
+                    {"_id": 0, "id": 1},
+                ).to_list(length=None)
+                total_new = 0
+                for t in tenants:
+                    try:
+                        out = await detect_breaches(
+                            tenant_id=t.get("id"),
+                            actor_id=None,
+                            request_id="submittal_sla_breach_periodic",
+                        )
+                        total_new += out.get("newly_breached", 0)
+                    except Exception as exc:
+                        logger.warning(
+                            "submittal SLA breach detect failed for tenant %s: %s",
+                            t.get("id"), exc,
+                        )
+                if total_new:
+                    logger.info(
+                        "submittal_sla periodic breach scan: "
+                        "tenants=%s newly_breached=%s",
+                        len(tenants), total_new,
+                    )
+            except _asyncio.CancelledError:
+                logger.info("submittal_sla periodic scan cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "submittal_sla periodic scan tick failed "
+                    "(non-fatal): %s", exc,
+                )
+
+    # Boot pass -- catch breaches accumulated during downtime.
+    try:
+        from services.submittal_sla import detect_breaches as _detect_breaches_boot
+        db = get_db()
+        tenants = await db.tenants.find(
+            {"status": {"$ne": "archived"}},
+            {"_id": 0, "id": 1},
+        ).to_list(length=None)
+        for t in tenants:
+            try:
+                out = await _detect_breaches_boot(
+                    tenant_id=t.get("id"),
+                    actor_id=None,
+                    request_id="submittal_sla_boot",
+                )
+                if out.get("newly_breached"):
+                    logger.info(
+                        "submittal_sla boot breach scan: tenant=%s "
+                        "newly_breached=%s cascade_flagged=%s",
+                        t.get("id"), out.get("newly_breached"),
+                        out.get("cascade_flagged_tasks"),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "submittal_sla boot breach detect failed for "
+                    "tenant %s: %s", t.get("id"), exc,
+                )
+    except Exception as exc:
+        logger.warning(
+            "submittal_sla boot breach scan failed (non-fatal): %s", exc,
+        )
+
+    app.state.submittal_sla_breach_task = _asyncio.create_task(
+        _periodic_submittal_breach_detect(),
+    )
+
+    # Bucket I (2026-05-11) -- Friday Recovery Report auto-generation.
+    # Every Friday at 21:00 UTC (which is 4-5pm in CONUS time zones)
+    # the BG task scans every active project (skipping CUI projects
+    # per Bucket F gate) and drops a draft friday_recovery report.
+    # PM sees the draft in the Reports Generator tab + can finalize.
+    # Tenants can opt out via tenant.recovery_reports_auto_friday
+    # = false (default True for non-CUI tenants).
+    async def _periodic_friday_recovery():
+        from services.recovery_report import generate_friday_recovery
+        from datetime import datetime, timezone, timedelta
+        # Sleep loop with a 30-min granularity. Each tick checks if
+        # we just crossed Friday 21:00 UTC; if so, fire generation.
+        # last_fire_ts prevents double-fire if the worker restarts
+        # within a 30-min window.
+        last_fire_ts: dict[str, str] = {}  # project_id -> week_key
+        while True:
+            try:
+                await _asyncio.sleep(30 * 60)   # 30 min
+                now = datetime.now(timezone.utc)
+                if now.weekday() != 4:          # Mon=0 ... Fri=4
+                    continue
+                if now.hour < 21:               # Run from 21:00 UTC on
+                    continue
+                week_key = now.strftime("%Y-W%V")
+                db = get_db()
+                # All active tenants.
+                tenants = await db.tenants.find(
+                    {"status": {"$ne": "archived"}},
+                    {"_id": 0, "id": 1,
+                     "recovery_reports_auto_friday": 1},
+                ).to_list(length=None)
+                for t in tenants:
+                    if t.get("recovery_reports_auto_friday") is False:
+                        continue
+                    tid = t.get("id")
+                    if not tid:
+                        continue
+                    # Pull active non-CUI projects.
+                    projects = await db.projects.find(
+                        tenant_filter(tid, {
+                            "status": {"$in": ["active", "mobilization"]},
+                            "is_cui": {"$ne": True},
+                        }),
+                        {"_id": 0, "id": 1, "name": 1},
+                    ).to_list(length=None)
+                    for p in projects:
+                        pid = p.get("id")
+                        if not pid:
+                            continue
+                        key = f"{tid}|{pid}|{week_key}"
+                        if last_fire_ts.get(key):
+                            continue
+                        try:
+                            await generate_friday_recovery(
+                                tenant_id=tid, project_id=pid,
+                                actor_id=None,
+                                request_id=f"friday_auto_{week_key}",
+                                idempotency_key=f"friday_auto_{week_key}",
+                            )
+                            last_fire_ts[key] = week_key
+                        except Exception as exc:
+                            logger.warning(
+                                "Friday auto-gen failed for project %s: %s",
+                                pid, exc,
+                            )
+                logger.info(
+                    "Friday recovery auto-gen tick: tenants=%s",
+                    len(tenants),
+                )
+            except _asyncio.CancelledError:
+                logger.info("Friday auto-gen task cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Friday auto-gen tick failed (non-fatal): %s", exc,
+                )
+
+    app.state.friday_recovery_task = _asyncio.create_task(
+        _periodic_friday_recovery(),
+    )
     yield
+    # Cancel the recurring task before closing the DB so the next
+    # tick doesn't hit a closed connection.
+    task = getattr(app.state, "field_suggestions_expire_task", None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except Exception:
+            pass
+    sla_task = getattr(app.state, "submittal_sla_breach_task", None)
+    if sla_task and not sla_task.done():
+        sla_task.cancel()
+        try:
+            await sla_task
+        except Exception:
+            pass
+    friday_task = getattr(app.state, "friday_recovery_task", None)
+    if friday_task and not friday_task.done():
+        friday_task.cancel()
+        try:
+            await friday_task
+        except Exception:
+            pass
     await close_db()
 
 
@@ -300,6 +752,12 @@ api_router.include_router(mitigations_router)
 api_router.include_router(gating_entities_router)
 api_router.include_router(coordination_router)
 api_router.include_router(edit_requests_router)
+api_router.include_router(resource_leveling_router)
+api_router.include_router(project_members_router)
+api_router.include_router(field_suggestions_router)
+api_router.include_router(submittal_sla_router)
+api_router.include_router(recovery_reports_router)
+api_router.include_router(exhibit_exports_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

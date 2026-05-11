@@ -69,6 +69,82 @@ async def _gather_data(
         tenant_filter(tenant_id, gq), {"_id": 0},
     ).to_list(5000)
 
+    # ---- Bucket E Phase 4b -- enrich gating_entities of type
+    # "submittal" with SLA + aging + cycle metrics. Counsel needs
+    # this on Section 9 so the report shows "A/E delayed submittal
+    # SUB-0042 by 8 working days, breaching SLA on 2026-04-22".
+    sub_ids = [
+        g.get("entity_id") for g in gating_entities
+        if g.get("entity_type") == "submittal" and g.get("entity_id")
+    ]
+    if sub_ids:
+        sub_rows = await db.submittals.find(
+            tenant_filter(tenant_id, {"id": {"$in": sub_ids}}),
+            {"_id": 0, "id": 1, "submittal_number": 1,
+             "aging_days": 1, "aging_working_days": 1,
+             "sla_status": 1, "sla_breach_reason": 1,
+             "review_cycle_count": 1,
+             "total_review_calendar_days": 1,
+             "total_review_working_days": 1,
+             "must_approve_by": 1, "urgency_flag": 1,
+             "is_overdue": 1, "overdue_days": 1,
+             "a_e_review_due_at": 1, "submitted_to_ae_at": 1,
+             "discipline": 1, "type": 1},
+        ).to_list(length=None)
+        sub_by_id = {s["id"]: s for s in sub_rows}
+        for g in gating_entities:
+            if g.get("entity_type") != "submittal":
+                continue
+            s = sub_by_id.get(g.get("entity_id"))
+            if not s:
+                continue
+            g["sla_aging_days"] = s.get("aging_days")
+            g["sla_aging_working_days"] = s.get("aging_working_days")
+            g["sla_status"] = s.get("sla_status")
+            g["sla_breach_reason"] = s.get("sla_breach_reason")
+            g["review_cycle_count"] = s.get("review_cycle_count")
+            g["total_review_calendar_days"] = s.get(
+                "total_review_calendar_days",
+            )
+            g["total_review_working_days"] = s.get(
+                "total_review_working_days",
+            )
+            g["must_approve_by"] = s.get("must_approve_by")
+            g["urgency_flag"] = s.get("urgency_flag")
+            g["submittal_number"] = s.get("submittal_number")
+            g["discipline"] = s.get("discipline")
+            g["submittal_type"] = s.get("type")
+
+    # ---- Bucket E Phase 4b -- Section 9a Submittal Review Events
+    # Timeline. Pulls chain-of-custody events across the project in
+    # range, sorted chronologically. Federal claim defense:
+    # "Counsel wants to see every touch on every submittal."
+    submittal_review_events = await db.submittal_review_events.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id,
+            "performed_at": {
+                "$gte": start_iso,
+                "$lte": end_iso + "T23:59:59Z",
+            },
+        }),
+        {"_id": 0},
+    ).sort("performed_at", 1).to_list(length=20000)
+    # Enrich events with submittal_number for readability.
+    if submittal_review_events:
+        sids = list({e.get("submittal_id") for e in submittal_review_events
+                     if e.get("submittal_id")})
+        if sids:
+            sub_lookup = await db.submittals.find(
+                tenant_filter(tenant_id, {"id": {"$in": sids}}),
+                {"_id": 0, "id": 1, "submittal_number": 1, "title": 1},
+            ).to_list(length=None)
+            sub_lkp = {s["id"]: s for s in sub_lookup}
+            for ev in submittal_review_events:
+                s = sub_lkp.get(ev.get("submittal_id"))
+                if s:
+                    ev["submittal_number"] = s.get("submittal_number")
+                    ev["submittal_title"] = s.get("title")
+
     # ---- Constraint captures from daily_report_activities ----
     # Pull DR ids in range first, then activities pointing at them.
     drs = await db.daily_reports.find(
@@ -126,6 +202,24 @@ async def _gather_data(
         tenant_filter(tenant_id, mq), {"_id": 0},
     ).to_list(5000)
 
+    # Bucket I (2026-05-11) -- pull finalized recovery_reports as
+    # mitigation evidence. Each report's recovery_actions list feeds
+    # into mitigation evidence: counsel sees "AI proposed action X,
+    # PM finalized the report on date Y, here's the chain". Filter to
+    # finalized reports in the period so drafts don't pollute counsel
+    # output.
+    recovery_reports = await db.recovery_reports.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id,
+            "status": "finalized",
+            "finalized_at": {
+                "$gte": start_iso,
+                "$lte": end_iso + "T23:59:59Z",
+            },
+        }),
+        {"_id": 0},
+    ).sort("finalized_at", 1).to_list(length=500)
+
     # ---- Photos: only evidentiary classes (discovery, damage) per spec ----
     pq2: dict = {"project_id": project_id,
                  "photo_class": {"$in": ["discovery", "damage"]}}
@@ -137,11 +231,80 @@ async def _gather_data(
          "evidentiary_flag": 1, "sha256_hash": 1, "device_timestamp": 1,
          "server_received_timestamp": 1, "timestamp_mismatch_flag": 1,
          "drawing_pin_id": 1, "pin_x": 1, "pin_y": 1, "pin_drawing_id": 1,
-         "location_id": 1, "created_at": 1, "schedule_activity_id": 1},
+         "location_id": 1, "created_at": 1, "schedule_activity_id": 1,
+         # Bucket F Phase 4 -- AI lineage on the tag row. The tray row is
+         # the authoritative source for the *suggestion* fields; the tag
+         # row carries lineage flags (created_via_ai_suggestion +
+         # ai_suggestion_id + ai_confidence_at_tag_time) so counsel can
+         # see "this tag was authored from AI suggestion X with
+         # confidence Y at tag time".
+         "tray_photo_id": 1, "created_via_ai_suggestion": 1,
+         "ai_suggestion_id": 1, "ai_confidence_at_tag_time": 1},
     ).to_list(5000)
     photos = [p for p in photos
               if (p.get("device_timestamp") or p.get("server_received_timestamp") or p.get("created_at") or "")[:10] >= start_iso
               and (p.get("device_timestamp") or p.get("server_received_timestamp") or p.get("created_at") or "")[:10] <= end_iso]
+
+    # ---- Bucket F Phase 4 -- enrich evidentiary photos with AI metadata
+    # from the linked tray row. Counsel needs to see what the AI
+    # suggested, what the user kept vs. overrode, and any safety
+    # concerns the model flagged. We pull the tray rows in one batch
+    # then merge by tray_photo_id.
+    tray_ids = [p.get("tray_photo_id") for p in photos if p.get("tray_photo_id")]
+    tray_by_id: dict[str, dict] = {}
+    if tray_ids:
+        tray_rows = await db.photo_tray.find(
+            tenant_filter(tenant_id, {"id": {"$in": tray_ids}}),
+            {"_id": 0, "id": 1, "ai_analysis_status": 1,
+             "ai_suggested_class": 1, "ai_suggested_caption": 1,
+             "ai_suggested_event_type": 1, "ai_suggested_trade": 1,
+             "ai_confidence_score": 1, "ai_user_overridden": 1,
+             "ai_user_override_reason": 1, "ai_safety_concerns_detected": 1,
+             "ai_model_version": 1, "ai_reused_from_phash": 1},
+        ).to_list(length=5000)
+        tray_by_id = {t["id"]: t for t in tray_rows}
+    for p in photos:
+        tray = tray_by_id.get(p.get("tray_photo_id") or "")
+        if not tray:
+            # No tray row (legacy photo, pre-AI upload, or skipped CUI).
+            # Stamp empty AI fields so renderers can branch uniformly.
+            p["ai_analysis_status"] = None
+            p["ai_suggested_class"] = None
+            p["ai_suggested_caption"] = None
+            p["ai_suggested_event_type"] = None
+            p["ai_suggested_trade"] = None
+            p["ai_confidence_score"] = None
+            p["ai_user_overridden"] = False
+            p["ai_user_override_reason"] = None
+            p["ai_safety_concerns_detected"] = []
+            p["ai_reused_from_phash"] = False
+            continue
+        p["ai_analysis_status"] = tray.get("ai_analysis_status")
+        p["ai_suggested_class"] = tray.get("ai_suggested_class")
+        p["ai_suggested_caption"] = tray.get("ai_suggested_caption")
+        p["ai_suggested_event_type"] = tray.get("ai_suggested_event_type")
+        p["ai_suggested_trade"] = tray.get("ai_suggested_trade")
+        p["ai_confidence_score"] = tray.get("ai_confidence_score")
+        p["ai_user_overridden"] = bool(tray.get("ai_user_overridden"))
+        p["ai_user_override_reason"] = tray.get("ai_user_override_reason")
+        p["ai_safety_concerns_detected"] = list(
+            tray.get("ai_safety_concerns_detected") or []
+        )
+        p["ai_reused_from_phash"] = bool(tray.get("ai_reused_from_phash"))
+        # Compose a per-row override-detail string in the form the spec
+        # requires: "AI suggested X; user marked as Y, reason: Z" --
+        # the docx + pdf renderers read this directly so the override
+        # narrative is single-sourced.
+        if p["ai_user_overridden"]:
+            suggested_class = p.get("ai_suggested_class") or "—"
+            user_class = p.get("photo_class") or "—"
+            reason = p.get("ai_user_override_reason") or "(no reason recorded)"
+            p["ai_override_detail"] = (
+                f"AI suggested {suggested_class}; user marked as {user_class}, "
+                f"reason: {reason}"
+            )
+        else:
+            p["ai_override_detail"] = ""
 
     # ---- Schedule update diffs ----
     sd_q: dict = {"project_id": project_id,
@@ -232,14 +395,136 @@ async def _gather_data(
         # ops in the audit extract so counsel can see the approval
         # workflow alongside the EVENT_EDITED_POST_SUBMIT entries.
         "edit_requests",
+        # Bucket G Phase 4 (2026-05-11) -- field_suggestions lifecycle
+        # ops give counsel the full "AI suggested X, human confirmed
+        # Y" trail per Sid's federal-audit requirement.
+        "field_suggestions",
     ]
     audit_entries = await db.audit_log.find(
         {"tenant_id": tenant_id,
          "table_name": {"$in": relevant_tables},
          "created_at": {"$gte": start_iso, "$lte": end_iso + "T23:59:59Z"}},
         {"_id": 0, "id": 1, "created_at": 1, "table_name": 1, "op": 1,
-         "record_id": 1, "actor_id": 1, "hash": 1, "prev_hash": 1},
+         "record_id": 1, "actor_id": 1, "hash": 1, "prev_hash": 1,
+         # Pull the after-body so Section 12a (Phase 4) can render the
+         # suggestion lifecycle without a per-row second fetch.
+         "after": 1},
     ).sort("created_at", 1).to_list(20000)
+
+    # ---- Bucket G Phase 4 -- field_suggestion lifecycle timeline ----
+    # Walks the audit entries, groups by record_id (= suggestion id),
+    # and builds a per-suggestion lineage: created -> [confirmed |
+    # rejected | superseded | expired]. Lets Section 12a render the
+    # "AI suggested X on date, human confirmed Y on date" timeline
+    # counsel needs as audit evidence.
+    suggestion_lifecycle: dict[str, dict] = {}
+    for entry in audit_entries:
+        op = entry.get("op") or ""
+        if not op.startswith("FIELD_SUGGESTION_"):
+            continue
+        sid = entry.get("record_id")
+        if not sid:
+            continue
+        bucket = suggestion_lifecycle.setdefault(sid, {
+            "suggestion_id": sid,
+            "events": [],
+            "created_at": None, "terminal_at": None, "terminal_op": None,
+            "entity_type": None, "entity_id": None,
+            "field_path": None, "suggested_value": None,
+            "suggested_by": None, "confidence_score": None,
+            "confirmed_by": None, "user_role": None,
+            "rejection_reason": None,
+        })
+        bucket["events"].append({
+            "op": op, "when": entry.get("created_at"),
+            "actor_id": entry.get("actor_id"),
+            "after": entry.get("after") or {},
+        })
+        after = entry.get("after") or {}
+        if op == "FIELD_SUGGESTION_CREATED":
+            bucket["created_at"] = entry.get("created_at")
+            bucket["entity_type"] = after.get("entity_type")
+            bucket["entity_id"] = after.get("entity_id")
+            bucket["field_path"] = after.get("field_path")
+            bucket["suggested_by"] = after.get("suggested_by")
+            bucket["confidence_score"] = after.get("confidence_score")
+        elif op == "FIELD_SUGGESTION_CONFIRMED":
+            bucket["terminal_at"] = entry.get("created_at")
+            bucket["terminal_op"] = "confirmed"
+            bucket["confirmed_by"] = (
+                after.get("confirmed_by") or entry.get("actor_id")
+            )
+            bucket["user_role"] = after.get("user_role")
+            if after.get("suggested_value") is not None:
+                bucket["suggested_value"] = after.get("suggested_value")
+            if after.get("field_path"):
+                bucket["field_path"] = after.get("field_path")
+            if after.get("entity_type"):
+                bucket["entity_type"] = after.get("entity_type")
+            if after.get("entity_id"):
+                bucket["entity_id"] = after.get("entity_id")
+        elif op == "FIELD_SUGGESTION_REJECTED":
+            bucket["terminal_at"] = entry.get("created_at")
+            bucket["terminal_op"] = "rejected"
+            bucket["rejection_reason"] = after.get("reason")
+            bucket["user_role"] = after.get("user_role")
+            if after.get("field_path"):
+                bucket["field_path"] = after.get("field_path")
+            if after.get("entity_type"):
+                bucket["entity_type"] = after.get("entity_type")
+            if after.get("entity_id"):
+                bucket["entity_id"] = after.get("entity_id")
+        elif op == "FIELD_SUGGESTION_SUPERSEDED":
+            if bucket["terminal_op"] is None:
+                bucket["terminal_at"] = entry.get("created_at")
+                bucket["terminal_op"] = "superseded"
+        elif op == "FIELD_SUGGESTION_EXPIRED":
+            if bucket["terminal_op"] is None:
+                bucket["terminal_at"] = entry.get("created_at")
+                bucket["terminal_op"] = "expired"
+            if after.get("entity_type"):
+                bucket["entity_type"] = after.get("entity_type")
+            if after.get("field_path"):
+                bucket["field_path"] = after.get("field_path")
+
+    # Sort lifecycle rows by created_at then by terminal_at so the
+    # rendered timeline reads in temporal order. Also enrich with
+    # the current persisted suggestion row when available so we can
+    # surface suggested_value even on rows where the CONFIRMED audit
+    # entry didn't include it (CONFIRMED in Phase 1 captures the
+    # value, but older audit rows might not).
+    lifecycle_list = sorted(
+        suggestion_lifecycle.values(),
+        key=lambda b: (b.get("created_at") or b.get("terminal_at") or ""),
+    )
+    if lifecycle_list:
+        sids = [b["suggestion_id"] for b in lifecycle_list
+                 if b.get("suggestion_id")]
+        if sids:
+            sugg_rows = await db.field_suggestions.find(
+                tenant_filter(tenant_id, {"id": {"$in": sids}}),
+                {"_id": 0, "id": 1, "suggested_value": 1,
+                 "confidence_score": 1, "suggested_by": 1,
+                 "entity_type": 1, "entity_id": 1,
+                 "field_path": 1},
+            ).to_list(length=None)
+            by_id = {r["id"]: r for r in sugg_rows}
+            for b in lifecycle_list:
+                src = by_id.get(b.get("suggestion_id"))
+                if not src:
+                    continue
+                if b.get("suggested_value") is None:
+                    b["suggested_value"] = src.get("suggested_value")
+                if b.get("confidence_score") is None:
+                    b["confidence_score"] = src.get("confidence_score")
+                if not b.get("suggested_by"):
+                    b["suggested_by"] = src.get("suggested_by")
+                if not b.get("entity_type"):
+                    b["entity_type"] = src.get("entity_type")
+                if not b.get("entity_id"):
+                    b["entity_id"] = src.get("entity_id")
+                if not b.get("field_path"):
+                    b["field_path"] = src.get("field_path")
 
     return {
         "_meta": {
@@ -263,13 +548,21 @@ async def _gather_data(
         "section_3_cpm_cascade_analysis": cascade_snapshots,
         "section_4_owner_attribution_summary": _summarize_attribution(delays, gating_entities),
         "section_5_mitigations": mitigations,
+        # Bucket I -- finalized recovery reports landing as
+        # mitigation evidence (Section 5a in the render).
+        "section_5a_recovery_reports": recovery_reports,
         "section_6_coordination_events": coord,
         "section_7_schedule_update_diffs": schedule_diffs,
         "section_8_photo_evidence_pack": photos,
         "section_9_gating_entities": gating_entities,
+        # Bucket E Phase 4b -- chronological submittal review chain.
+        "section_9a_submittal_review_events": submittal_review_events,
         "section_10_constraint_captures": constraints,
         "section_11_calendar_reconciliation": calendar_rows,
         "section_12_audit_log_extract": audit_entries,
+        # Bucket G Phase 4 -- field_suggestions lifecycle timeline.
+        # Section 12a in the rendered output.
+        "section_12a_field_suggestion_lifecycle": lifecycle_list,
         "section_13_daily_presence": presence,
     }
 
@@ -417,6 +710,48 @@ def _render_docx(data: dict) -> bytes:
         ("actual_time_recovered_days", "Actual Δ"),
     ])
 
+    # Bucket I -- Section 5a finalized recovery reports. Each is
+    # counsel evidence: AI proposed action X, PM finalized on Y. We
+    # render the report list + the action breakdown so counsel can
+    # cross-reference any disputed action with its source report.
+    recovery_reports_list = data.get("section_5a_recovery_reports") or []
+    H("5a. Recovery Reports (finalized)", level=2)
+    P(
+        f"{len(recovery_reports_list)} finalized recovery report(s) "
+        f"in range. Each captures the AI's recovery-action proposal "
+        f"and the PM's confirmation -- defensible evidence chain."
+    )
+    if not recovery_reports_list:
+        empty()
+    else:
+        table(recovery_reports_list, [
+            ("audit_op_label", "Label"),
+            ("report_type", "Type"),
+            ("period_start", "From"),
+            ("period_end", "To"),
+            ("finalized_at", "Finalized"),
+            ("finalized_by", "By"),
+            ("is_degraded", "AI degraded?"),
+        ])
+        # Per-report recovery action listing.
+        for rep in recovery_reports_list:
+            actions = rep.get("recovery_actions") or []
+            if not actions:
+                continue
+            sub = doc.add_paragraph()
+            r0 = sub.add_run(
+                f"  Actions for {rep.get('audit_op_label') or rep.get('id', '')[:8]}:",
+            )
+            r0.bold = True
+            for a in actions[:20]:
+                bullet = doc.add_paragraph(style="List Bullet")
+                bullet.add_run(
+                    f"{a.get('action', '')[:200]} "
+                    f"(owner: {a.get('owner') or '—'}, "
+                    f"due: {a.get('due_date') or '—'}, "
+                    f"conf: {int((a.get('confidence') or 0) * 100)}%)"
+                )
+
     # SECTION 6
     H("6. Coordination Event Log Extract")
     table(data["section_6_coordination_events"] or [], [
@@ -437,14 +772,46 @@ def _render_docx(data: dict) -> bytes:
 
     # SECTION 8
     H("8. Photo Evidence Pack (discovery + damage)")
-    table(data["section_8_photo_evidence_pack"] or [], [
+    photo_rows = data["section_8_photo_evidence_pack"] or []
+    # Bucket F Phase 4 -- expanded photo table with AI lineage columns.
+    # Counsel needs to see (a) what the AI suggested at upload time,
+    # (b) confidence the suggestion was made with, (c) whether the
+    # user overrode and what the user wrote instead, and (d) safety
+    # concerns the model flagged. The override-detail copy renders as
+    # a separate paragraph block under the table for any photo whose
+    # tag was authored over an AI suggestion AND ai_user_overridden=true.
+    table(photo_rows, [
         ("id", "ID"), ("photo_class", "Class"), ("caption", "Caption"),
         ("device_timestamp", "Device ts"),
         ("server_received_timestamp", "Server ts"),
         ("timestamp_mismatch_flag", "TS mismatch"),
         ("sha256_hash", "SHA-256"),
+        ("ai_suggested_class", "AI class"),
+        ("ai_suggested_caption", "AI caption"),
+        ("ai_confidence_score", "AI conf."),
+        ("ai_user_overridden", "User override"),
+        ("ai_safety_concerns_detected", "AI safety flags"),
+        ("created_via_ai_suggestion", "AI-authored tag"),
+        ("ai_reused_from_phash", "Analysis reused"),
         ("edits_summary", "Post-submit edits"),
     ])
+    # Per-photo override-detail block: only renders when a photo's tag
+    # was authored over an AI suggestion AND the user changed at least
+    # one suggested field. Renders one bullet per affected photo with
+    # the exact spec-required copy.
+    overrides = [p for p in photo_rows if p.get("ai_user_overridden")]
+    if overrides:
+        H("8a. AI Suggestion Overrides", level=2)
+        P(
+            f"{len(overrides)} photo(s) where the user changed an AI-suggested "
+            f"value at tag time. The original AI suggestion and the user-recorded "
+            f"reason are preserved verbatim for cross-examination purposes."
+        )
+        for p in overrides:
+            para = doc.add_paragraph(style="List Bullet")
+            r0 = para.add_run(f"Photo {p.get('id') or '—'}: ")
+            r0.bold = True
+            para.add_run(p.get("ai_override_detail") or "")
 
     # SECTION 9
     H("9. Gating Entities Log (RFI / Submittal / Field Issue)")
@@ -453,7 +820,38 @@ def _render_docx(data: dict) -> bytes:
         ("display_label", "Label"), ("submitted_at", "Submitted"),
         ("status", "Status"), ("owner_attribution", "Owner"),
         ("is_over_sla", "Over SLA"),
+        # Bucket E Phase 4b -- submittal SLA enrichment columns. Empty
+        # cells render naturally for non-submittal entity types.
+        ("sla_aging_days", "Aging (cal)"),
+        ("sla_aging_working_days", "Aging (wd)"),
+        ("sla_status", "SLA"),
+        ("review_cycle_count", "Cycles"),
+        ("must_approve_by", "Must approve by"),
+        ("urgency_flag", "Urgent"),
         ("edits_summary", "Post-submit edits"),
+    ])
+
+    # Bucket E Phase 4b -- Section 9a Submittal Review Events Timeline.
+    # Chronological dump of every chain-of-custody event across the
+    # project in range. Counsel evidence for "A/E delayed submittal X
+    # by Y working days".
+    H("9a. Submittal Review Events Timeline", level=2)
+    sub_events = data.get("section_9a_submittal_review_events") or []
+    P(
+        f"{len(sub_events)} submittal review event(s) in range. "
+        f"Each row shows the chain-of-custody hop with the elapsed-day "
+        f"delta from the prior event on the same submittal."
+    )
+    table(sub_events, [
+        ("performed_at", "When"),
+        ("submittal_number", "Sub #"),
+        ("event_type", "Event"),
+        ("status_before", "Was"),
+        ("status_after", "Now"),
+        ("calendar_days_elapsed", "Δ cal days"),
+        ("working_days_elapsed", "Δ wd"),
+        ("performed_by", "Actor"),
+        ("notes", "Notes"),
     ])
 
     # SECTION 10
@@ -489,6 +887,83 @@ def _render_docx(data: dict) -> bytes:
         ("created_at", "When"), ("table_name", "Table"), ("op", "Op"),
         ("record_id", "Record"), ("actor_id", "Actor"), ("hash", "Hash"),
     ])
+
+    # SECTION 12a -- field_suggestions lifecycle timeline.
+    # Counsel needs the "AI suggested X / human did Y" trail. We
+    # render one bullet per suggestion in chronological order with
+    # source, confidence, suggested value, and the human terminal
+    # decision (confirmed / rejected with reason / superseded /
+    # expired). Bucket G Phase 4.
+    H("12a. AI Suggestion Lifecycle (Jigsaw audit trail)", level=2)
+    lifecycle = data.get("section_12a_field_suggestion_lifecycle") or []
+    P(
+        f"{len(lifecycle)} AI suggestion(s) in range. Each row shows "
+        f"the AI's proposal and the human-confirmation outcome -- the "
+        f"federal-audit evidence chain for AI-assisted decisions."
+    )
+    if not lifecycle:
+        empty()
+    else:
+        for b in lifecycle:
+            sid = b.get("suggestion_id") or "—"
+            entity = (b.get("entity_type") or "—").replace("_", " ")
+            field_path = b.get("field_path") or "—"
+            source = b.get("suggested_by") or "—"
+            conf = b.get("confidence_score")
+            conf_str = (
+                f", conf {conf:.2f}" if isinstance(conf, (int, float)) else ""
+            )
+            val = b.get("suggested_value")
+            if isinstance(val, (dict, list)):
+                val_str = json.dumps(val, default=str)[:160]
+            else:
+                val_str = str(val) if val is not None else "—"
+            created_at = (b.get("created_at") or "")[:19]
+            terminal_op = b.get("terminal_op")
+            terminal_at = (b.get("terminal_at") or "")[:19]
+
+            # Build the line. Two paragraphs per suggestion: the AI
+            # proposal + the human terminal decision.
+            p = doc.add_paragraph(style="List Bullet")
+            r0 = p.add_run(f"[{sid[:8]}] ")
+            r0.bold = True
+            p.add_run(
+                f"{entity}.{field_path} -- AI suggested '{val_str}' "
+                f"on {created_at} (source: {source}{conf_str})."
+            )
+            decision = doc.add_paragraph()
+            decision.paragraph_format.left_indent = Pt(18)
+            if terminal_op == "confirmed":
+                r1 = decision.add_run("Confirmed")
+                r1.font.color.rgb = RGBColor(0x0A, 0x6E, 0x3A)  # emerald
+                r1.bold = True
+                actor = b.get("confirmed_by") or "—"
+                role = b.get("user_role")
+                decision.add_run(
+                    f" by {str(actor)[:36]}"
+                    + (f" ({role})" if role else "")
+                    + (f" at {terminal_at}." if terminal_at else ".")
+                )
+            elif terminal_op == "rejected":
+                r1 = decision.add_run("Rejected")
+                r1.font.color.rgb = RGBColor(0xB1, 0x2A, 0x2A)  # rose
+                r1.bold = True
+                reason = b.get("rejection_reason") or "(no reason recorded)"
+                decision.add_run(
+                    f" at {terminal_at}. Reason: {reason[:240]}"
+                )
+            elif terminal_op == "superseded":
+                r1 = decision.add_run("Superseded by newer AI suggestion")
+                r1.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+                decision.add_run(f" at {terminal_at}.")
+            elif terminal_op == "expired":
+                r1 = decision.add_run("Auto-expired (30+ days pending)")
+                r1.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+                decision.add_run(f" at {terminal_at}.")
+            else:
+                r1 = decision.add_run("Pending (no terminal decision yet)")
+                r1.italic = True
+                r1.font.color.rgb = RGBColor(0xB8, 0x80, 0x00)
 
     # Daily presence appendix (numbered 13 to keep canonical 12 above)
     H("Appendix A. Daily Presence Roster")
@@ -555,7 +1030,41 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
         ts = html.escape(str(p.get("device_timestamp") or p.get("server_received_timestamp") or ""))
         cap = html.escape(str(p.get("caption") or "")[:80])
         sha = html.escape(str(p.get("sha256_hash") or "")[:16])
-        return f"<li>[{cls}] {ts} — {cap} <span class='hash'>sha256:{sha}…</span></li>"
+        # Bucket F Phase 4 -- inline AI lineage on each row. The block
+        # is rendered as a sub-paragraph so the index stays scannable
+        # but counsel can see the AI provenance without flipping to
+        # the .docx.
+        ai_bits: list[str] = []
+        if p.get("ai_suggested_class"):
+            conf = p.get("ai_confidence_score")
+            conf_s = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
+            ai_bits.append(
+                f"AI suggested: {html.escape(str(p.get('ai_suggested_class')))}{conf_s}"
+            )
+        if p.get("ai_user_overridden"):
+            ai_bits.append(
+                "<b>user overrode</b> — " + html.escape(str(
+                    p.get("ai_override_detail")
+                    or "(no override detail recorded)"
+                )[:240])
+            )
+        if p.get("ai_safety_concerns_detected"):
+            flags = ", ".join(p["ai_safety_concerns_detected"][:5])
+            ai_bits.append(
+                f"safety flags: {html.escape(flags)}"
+            )
+        if p.get("ai_reused_from_phash"):
+            ai_bits.append("analysis reused from prior upload")
+        ai_html = ""
+        if ai_bits:
+            ai_html = (
+                "<div class='ai-line'>" + " · ".join(ai_bits) + "</div>"
+            )
+        return (
+            f"<li>[{cls}] {ts} — {cap} "
+            f"<span class='hash'>sha256:{sha}…</span>"
+            f"{ai_html}</li>"
+        )
 
     def _mit_row(i, m):
         label = html.escape(str(m.get("strategy_name") or m.get("scenario_label") or m.get("id"))[:120])
@@ -574,6 +1083,71 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
     mitigations_html = _section("Mitigations",
                                   data["section_5_mitigations"] or [], _mit_row)
 
+    # Bucket G Phase 4 -- field_suggestion lifecycle rows. Two-line
+    # format per row: AI proposal + human terminal decision. Mirrors
+    # the DOCX Section 12a.
+    def _sugg_row(i, b):
+        sid = html.escape(str(b.get("suggestion_id") or "")[:8])
+        entity = html.escape(str(b.get("entity_type") or "").replace("_", " "))
+        field_path = html.escape(str(b.get("field_path") or ""))
+        source = html.escape(str(b.get("suggested_by") or ""))
+        conf = b.get("confidence_score")
+        conf_str = (
+            f" · conf {conf:.2f}" if isinstance(conf, (int, float)) else ""
+        )
+        val = b.get("suggested_value")
+        if isinstance(val, (dict, list)):
+            val_str = json.dumps(val, default=str)[:160]
+        else:
+            val_str = str(val) if val is not None else "—"
+        val_str = html.escape(val_str)
+        created_at = html.escape(str(b.get("created_at") or "")[:19])
+        terminal_op = b.get("terminal_op")
+        terminal_at = html.escape(str(b.get("terminal_at") or "")[:19])
+        decision_html = ""
+        if terminal_op == "confirmed":
+            actor = html.escape(str(b.get("confirmed_by") or "—")[:36])
+            role = b.get("user_role") or ""
+            role_str = f" ({html.escape(str(role))})" if role else ""
+            decision_html = (
+                "<span class='sugg-confirmed'>Confirmed</span>"
+                f" by {actor}{role_str} at {terminal_at}."
+            )
+        elif terminal_op == "rejected":
+            reason = html.escape(str(b.get("rejection_reason") or "(no reason)")[:240])
+            decision_html = (
+                f"<span class='sugg-rejected'>Rejected</span>"
+                f" at {terminal_at}. Reason: {reason}"
+            )
+        elif terminal_op == "superseded":
+            decision_html = (
+                f"<span class='sugg-superseded'>Superseded by newer "
+                f"AI suggestion</span> at {terminal_at}."
+            )
+        elif terminal_op == "expired":
+            decision_html = (
+                f"<span class='sugg-superseded'>Auto-expired</span> at {terminal_at}."
+            )
+        else:
+            decision_html = (
+                "<span class='sugg-pending'>Pending</span> "
+                "(no terminal decision yet)."
+            )
+        return (
+            f"<li>"
+            f"<b>[{sid}]</b> {entity}.{field_path} — "
+            f"AI suggested <i>'{val_str}'</i> on {created_at} "
+            f"(source: {source}{conf_str}).<br>"
+            f"<span class='sugg-decision'>{decision_html}</span>"
+            f"</li>"
+        )
+
+    suggestions_html = _section(
+        "AI Suggestion Lifecycle (12a) — Jigsaw audit trail",
+        data.get("section_12a_field_suggestion_lifecycle") or [],
+        _sugg_row,
+    )
+
     css = """
       body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; color: #1a2845; }
       h1 { font-size: 18pt; margin-bottom: 4pt; }
@@ -584,6 +1158,12 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
       .empty { color: #888; font-style: italic; }
       .privilege { background: #fff5e6; border: 1px solid #d97757; padding: 6pt 10pt; margin: 8pt 0; font-size: 9pt; }
       .hash { color: #999; font-family: monospace; font-size: 8pt; }
+      .ai-line { color: #555; font-size: 9pt; margin-top: 2pt; padding-left: 8pt; border-left: 2px solid #d97757; }
+      .sugg-decision { color: #444; padding-left: 12pt; font-size: 9pt; display: block; margin-top: 2pt; }
+      .sugg-confirmed { color: #0a6e3a; font-weight: bold; }
+      .sugg-rejected { color: #b12a2a; font-weight: bold; }
+      .sugg-superseded { color: #888; font-weight: bold; }
+      .sugg-pending { color: #b88000; font-style: italic; }
     """
     privilege_block = (
         "<div class='privilege'><b>Privileged work product (counsel privileged).</b> "
@@ -610,6 +1190,7 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
       {diffs_html}
       {photos_html}
       {mitigations_html}
+      {suggestions_html}
     </body></html>
     """
     return HTML(string=body).write_pdf()

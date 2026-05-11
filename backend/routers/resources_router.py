@@ -1,5 +1,5 @@
 """Resources: crews, equipment, people, certifications."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from datetime import date, timedelta
 from typing import Optional
 from database import get_db, tenant_filter
@@ -13,15 +13,41 @@ from auth import require_tenant
 router = APIRouter(tags=["resources"])
 
 
+# Bucket H Phase 4 -- background helper used by crew create + the
+# generic /crud/crews/{id} PATCH/DELETE path in iter8_router. Seeds
+# the 90-day capacity window for a newly created or updated crew, or
+# zeroes out future capacity for an archived/deleted crew.
+async def _bg_recompute_capacity(tenant_id: str, crew_id: str):
+    try:
+        from services.resource_leveling import recompute_capacity_for_crew
+        from audit import write_audit
+        result = await recompute_capacity_for_crew(
+            tenant_id=tenant_id, crew_id=crew_id,
+        )
+        await write_audit(
+            tenant_id=tenant_id, table_name="crew_capacity",
+            op="RESOURCE_LEVELING_RECOMPUTED",
+            record_id=crew_id, before=None,
+            after={"trigger": "crew_mutation",
+                    "crew_id": crew_id, "result": result},
+            actor_id=None, request_id=f"crew_mut_{crew_id}",
+        )
+    except Exception:
+        pass
+
+
 # --- Crews ---
 @router.post("/crews", response_model=Crew)
-async def create_crew(payload: CrewCreate, ctx: dict = Depends(require_tenant)):
+async def create_crew(payload: CrewCreate, bg: BackgroundTasks,
+                       ctx: dict = Depends(require_tenant)):
     db = get_db()
     if await db.crews.find_one(tenant_filter(ctx["tenant_id"], {"crew_code": payload.crew_code}), {"_id": 0}):
         raise HTTPException(409, "Crew code already exists")
     doc = payload.model_dump(mode="json")
     doc.update({"id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "active", "created_at": utc_now().isoformat()})
     await db.crews.insert_one(doc.copy())
+    # Bucket H Phase 4 -- seed 90 days of capacity for the new crew.
+    bg.add_task(_bg_recompute_capacity, ctx["tenant_id"], doc["id"])
     return Crew(**doc)
 
 

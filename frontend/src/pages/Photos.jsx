@@ -9,12 +9,13 @@ import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
-import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload } from "lucide-react";
+import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload, Sparkles, Edit3, HelpCircle, Download, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
-import { getToken } from "../lib/auth";
+import { getToken, getUser } from "../lib/auth";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { localTodayISO } from "../lib/dateUtil";
+import { AiHelpPanel } from "./SystemPages";
 
 const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
                         "safety", "coordination", "closeout"];
@@ -62,6 +63,20 @@ export default function Photos() {
     affected_activity_id: "",
   });
   const project = projects.find((p) => p.id === activeId);
+  // Bucket F Phase 3 -- AI stats card. Admin / PM only. Fetched from
+  // the per-project endpoint added in Phase 2.
+  const user = getUser();
+  const showAiStats = ["admin", "pm", "px"].includes((user?.role || "").toLowerCase());
+  const [aiStats, setAiStats] = useState(null);
+  const [aiStatsLoading, setAiStatsLoading] = useState(false);
+  useEffect(() => {
+    if (!showAiStats || !activeId) { setAiStats(null); return; }
+    setAiStatsLoading(true);
+    api.get(`/projects/${activeId}/photo-ai-stats`, { params: { days: 30 } })
+      .then((r) => setAiStats(r.data))
+      .catch(() => setAiStats(null))
+      .finally(() => setAiStatsLoading(false));
+  }, [showAiStats, activeId]);
 
   const load = async () => {
     if (!activeId) return;
@@ -80,6 +95,13 @@ export default function Photos() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [activeId, filters]);
 
+  // Bucket F Phase 5 -- detect budget_paused state from the per-
+  // project AI stats. Surfaces a page-level banner so users don't
+  // have to drill into individual tray photos to understand why
+  // their new uploads aren't being analyzed.
+  const budgetPausedCount = (aiStats?.by_status?.budget_paused) || 0;
+  const [helpOpen, setHelpOpen] = useState(false);
+
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see photos.</div>;
 
   return (
@@ -93,6 +115,14 @@ export default function Photos() {
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
         <div className="flex items-center gap-2">
+          <button data-testid="photos-ai-help"
+            onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
+            className="h-9 px-2 rounded border border-slate-300 bg-white text-slate-600 text-sm inline-flex items-center gap-1 hover:bg-slate-50">
+            <HelpCircle className="h-3.5 w-3.5" /> AI help
+          </button>
+          {/* Bucket K Phase 3 (2026-05-11) -- photo evidence pack
+              export. Project-scoped; respects the current filter row. */}
+          <PhotoEvidenceExport projectId={activeId} filters={filters} />
           {/* Bucket D Fix G [3/4] -- "+ New" routes to today's DR's
               photos panel (consistent with all other galleries). The
               upload+tag flow lives on the Photo Tray page; the link
@@ -107,11 +137,34 @@ export default function Photos() {
         </div>
       </header>
 
+      {budgetPausedCount > 0 && (
+        <div data-testid="photos-budget-paused-banner"
+          className="mb-4 bg-rose-50 border border-rose-300 rounded p-3 text-sm text-rose-900 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <div className="font-medium">
+              AI analyses paused — monthly budget reached.
+            </div>
+            <div className="text-xs mt-0.5">
+              {budgetPausedCount} tray photo(s) on this project are queued
+              waiting for the budget reset (1st of next month) or for an admin
+              to raise the cap in{" "}
+              <Link to="/settings" className="underline">Settings → AI Usage</Link>.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 mb-4">
         <strong>Gallery view.</strong> Each card is a tag connecting a photo to one event on
         a specific daily report. The same image may appear multiple times if tagged to
         multiple events. Upload + tag from the <Link to="/photo-tray" className="underline">Photo tray</Link>.
       </div>
+
+      {/* Bucket F Phase 3 -- AI stats card (admin / PM only). */}
+      {showAiStats && (
+        <AiStatsCard stats={aiStats} loading={aiStatsLoading} />
+      )}
 
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <Filter className="h-4 w-4 text-slate-500 mb-2" />
@@ -159,6 +212,9 @@ export default function Photos() {
           {photos.map((p) => <PhotoCard key={p.id} photo={p} projectId={activeId} />)}
         </div>
       )}
+
+      {/* Bucket F Phase 5 -- in-app AI help (same panel as Settings tab). */}
+      {helpOpen && <AiHelpPanel onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }
@@ -183,6 +239,30 @@ function PhotoCard({ photo, projectId }) {
         {photo.timestamp_mismatch_flag && (
           <span title="Device/server timestamp mismatch" className="absolute bottom-1 right-1 bg-amber-500 text-white rounded p-0.5">
             <AlertTriangle className="h-2.5 w-2.5" />
+          </span>
+        )}
+        {/* Bucket F Phase 3 + Phase 5 pull-forward Risk #1 -- AI
+            lineage indicator. Sparkles icon on photos created via an
+            AI suggestion. user_overridden_at_tag_time (denormalized
+            snapshot at tag time per migration 011) determines whether
+            the override pencil renders, so the indicator stays
+            accurate even if the tray row is later edited or
+            archived. Hover shows confidence captured at tag time. */}
+        {photo.created_via_ai_suggestion && (
+          <span data-testid={`photo-ai-${photo.id}`}
+            title={
+              (photo.user_overridden_at_tag_time
+                ? `AI suggestion (overridden at tag time)`
+                : `AI-suggested tag`)
+              + (photo.ai_confidence_at_tag_time != null
+                  ? ` · ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
+                  : "")
+            }
+            className="absolute top-1 right-6 bg-blue-600 text-white rounded px-1 py-0.5 text-[8px] inline-flex items-center gap-0.5">
+            <Sparkles className="h-2.5 w-2.5" /> AI
+            {photo.user_overridden_at_tag_time && (
+              <Edit3 className="h-2.5 w-2.5" />
+            )}
           </span>
         )}
       </div>
@@ -234,6 +314,95 @@ function PhotoNewButton({ projectId }) {
   );
 }
 
+// Bucket F Phase 3 -- AI usage stats card. Admin / PM only. 30-day
+// rollup from /api/projects/{id}/photo-ai-stats. Renders 6 metrics
+// + top safety concerns + estimated cost.
+function AiStatsCard({ stats, loading }) {
+  if (loading) {
+    return (
+      <div data-testid="ai-stats-loading"
+        className="bg-white border border-slate-200 rounded p-3 mb-4 text-xs text-slate-500">
+        Loading AI usage stats…
+      </div>
+    );
+  }
+  if (!stats || stats.uploaded_in_window === 0) {
+    return (
+      <div data-testid="ai-stats-empty"
+        className="bg-white border border-slate-200 rounded p-3 mb-4 text-xs text-slate-500 inline-flex items-center gap-2">
+        <Sparkles className="h-3 w-3" />
+        No AI activity in the last 30 days on this project.
+      </div>
+    );
+  }
+  return (
+    <div data-testid="ai-stats-card"
+      className="bg-white border border-slate-200 rounded p-3 mb-4">
+      <div className="flex items-center gap-2 mb-2">
+        <Sparkles className="h-4 w-4 text-blue-700" />
+        <div className="font-medium text-sm">AI usage · last 30 days</div>
+        <div className="ml-auto text-[10px] text-slate-500">
+          Window: {stats.window_days}d · {stats.uploaded_in_window} uploaded
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+        <StatTile label="Analyzed" value={stats.analyzed_in_window} />
+        <StatTile label="Avg confidence"
+          value={`${Math.round((stats.avg_confidence_score || 0) * 100)}%`} />
+        <StatTile label="Override rate"
+          value={`${Math.round((stats.override_rate || 0) * 100)}%`} />
+        <StatTile label="Rejection rate"
+          value={`${Math.round((stats.rejection_rate || 0) * 100)}%`} />
+        <StatTile label="Tokens (out/in)"
+          value={`${stats.output_tokens_total || 0}/${stats.input_tokens_total || 0}`} />
+        <StatTile label="Est cost"
+          value={`$${(stats.estimated_cost_usd || 0).toFixed(2)}`} />
+      </div>
+      {Array.isArray(stats.top_safety_concerns) && stats.top_safety_concerns.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase text-slate-500 mb-1">
+            Top safety concerns
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {stats.top_safety_concerns.map((c, i) => (
+              <span key={i} data-testid={`ai-stats-safety-${i}`}
+                className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-200">
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {c.concern} <span className="text-rose-700">({c.count})</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {Object.keys(stats.failure_reasons || {}).length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase text-slate-500 mb-1">
+            Failed analyses by reason
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(stats.failure_reasons).map(([reason, count]) => (
+              <span key={reason}
+                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                {reason} <span className="text-slate-500">({count})</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatTile({ label, value }) {
+  return (
+    <div className="p-2 rounded border border-slate-200 bg-slate-50">
+      <div className="text-[10px] uppercase text-slate-500">{label}</div>
+      <div className="text-sm font-semibold text-slate-900 tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+
 function PhotoImage({ photoId }) {
   const [url, setUrl] = useState(null);
   useEffect(() => {
@@ -251,4 +420,68 @@ function PhotoImage({ photoId }) {
   }, [photoId]);
   if (!url) return <div className="w-full h-full grid place-items-center text-slate-300"><FileImage className="h-8 w-8" /></div>;
   return <img src={url} alt="" className="w-full h-full object-cover" />;
+}
+
+
+// Bucket K Phase 3 (2026-05-11) -- photo evidence pack export dropdown.
+// Project-scoped; passes current Photos page filters through to the
+// backend export endpoint so users get the exhibit pack matching
+// what they see on screen.
+function PhotoEvidenceExport({ projectId, filters }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const downloadFmt = async (fmt) => {
+    if (!projectId) {
+      toast.error("Pick a project first");
+      return;
+    }
+    setBusy(true);
+    setOpen(false);
+    try {
+      const params = { format: fmt };
+      if (filters?.photo_class) params.photo_class = filters.photo_class;
+      if (filters?.evidentiary_only) params.evidentiary_only = true;
+      const res = await api.get(
+        `/projects/${projectId}/photo-evidence-pack/export`,
+        { params, responseType: "blob" },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      const ext = fmt === "zip" ? "zip" : fmt;
+      a.href = url;
+      a.download = `photo_evidence_pack_${projectId.slice(0, 8)}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`${fmt.toUpperCase()} evidence pack ready`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Export failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="relative">
+      <button data-testid="photos-export-toggle"
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy || !projectId}
+        title="Generate exhibit-ready photo evidence pack"
+        className="h-9 px-3 rounded border border-slate-300 bg-white text-slate-700 text-sm inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Download className="h-3.5 w-3.5" />}
+        Evidence pack
+      </button>
+      {open && (
+        <div data-testid="photos-export-menu"
+          className="absolute right-0 mt-1 w-32 bg-white border border-slate-200 rounded shadow-lg z-10">
+          {["pdf", "docx", "zip"].map((fmt) => (
+            <button key={fmt} onClick={() => downloadFmt(fmt)}
+              data-testid={`photos-export-${fmt}`}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50">
+              {fmt.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }

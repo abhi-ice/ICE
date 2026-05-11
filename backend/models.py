@@ -63,7 +63,18 @@ LINKAGE_MIN_ERR = (
 # ---------- Tenants & users ----------
 TenantType = Literal["general_contractor", "subcontractor", "owner", "architect_engineer", "agency"]
 TenantStatus = Literal["active", "trial", "suspended", "archived"]
-UserRole = Literal["px", "pm", "super", "pe", "foreman", "admin", "viewer"]
+# Bucket J Phase 1 (2026-05-11) -- role enum extension.
+# submittal_tech: full read on member projects; full write on
+#   submittals (forward-defined in Bucket G FIELD_SUGGESTION_
+#   DEFAULT_ROLES['submittal'] + Bucket E auto-trigger map).
+# scheduling_engineer: full read on member projects; full write
+#   on tasks/schedule_proposals. Distinct from "pe" (which has
+#   historically been treated as super-tier); scheduling_engineer
+#   focuses specifically on schedule arithmetic.
+UserRole = Literal[
+    "px", "pm", "super", "pe", "foreman", "admin", "viewer",
+    "submittal_tech", "scheduling_engineer",
+]
 
 
 class TenantCreate(StrictModel):
@@ -86,6 +97,21 @@ class Tenant(ReadModel):
     cmmc_level: str = "none"
     work_item_label: str = "Field Issue"
     created_at: datetime
+    # Bucket F Phase 1 (2026-05-08) -- AI usage gate + monthly budget.
+    # ai_enabled is a tenant-wide kill switch (admin can turn off all
+    # photo AI for the tenant). budget tracking lets ops admins cap
+    # spend per month with auto-pause + warning at 80%.
+    ai_enabled: bool = True
+    ai_monthly_budget_usd: float = 100.0
+    ai_current_month_spend_usd: float = 0.0
+    ai_current_month_resets_at: Optional[datetime] = None
+
+
+class TenantAiBudgetUpdate(StrictModel):
+    """Admin-only patch payload for tenant AI budget + kill switch.
+    Both fields optional so partial updates are allowed."""
+    ai_enabled: Optional[bool] = None
+    ai_monthly_budget_usd: Optional[float] = Field(default=None, ge=0)
 
 
 class UserRegister(StrictModel):
@@ -136,6 +162,14 @@ ContractType = Literal["lump_sum", "cost_plus", "gmp", "unit_price", "tm"]
 # Calendar Reconciliation already cross-references this).
 CalendarBasis = Literal["calendar_days", "working_days"]
 
+# Bucket E Phase 1 (2026-05-11) -- default A/E review SLA per FAR
+# 52.236-15 / GSAM standard. Project model defaults to this; admin
+# can override per-project via ProjectUpdate.submittal_review_sla_
+# days. Per-submittal overrides live on the submittal row's
+# sla_days_override field. Hoisted up here so Project model
+# defaults can reference the constant without a forward-decl.
+SUBMITTAL_DEFAULT_SLA_DAYS = 14
+
 
 class ProjectCreate(StrictModel):
     name: str
@@ -165,6 +199,22 @@ class ProjectCreate(StrictModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: CalendarBasis = "calendar_days"
+    # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
+    # is_cui=true blocks photo AI analysis for compliance; ai_enabled
+    # is a per-project off switch independent of the tenant-level
+    # ai_enabled. Both default safe: false / true.
+    is_cui: bool = False
+    ai_enabled: bool = True
+    # Bucket E Phase 1 (2026-05-11) -- A/E review SLA in days. Default
+    # 14 per FAR 52.236-15 / GSAM standard. Admin override at
+    # ProjectUpdate; contracts that mandate a different SLA for the
+    # whole project bump this once at project setup. Per-submittal
+    # overrides live on the submittal row's sla_days_override field.
+    submittal_review_sla_days: int = SUBMITTAL_DEFAULT_SLA_DAYS
+    # When true, SLA arithmetic uses calendar days (the spec's
+    # "admin override" knob from the scope clarification). When
+    # false (default), working days are used.
+    submittal_sla_uses_calendar_days: bool = False
 
 
 class ProjectUpdate(StrictModel):
@@ -186,6 +236,12 @@ class ProjectUpdate(StrictModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: Optional[CalendarBasis] = None
+    # Bucket F Phase 1 -- editable AI gate.
+    is_cui: Optional[bool] = None
+    ai_enabled: Optional[bool] = None
+    # Bucket E Phase 1 (2026-05-11) -- editable SLA settings.
+    submittal_review_sla_days: Optional[int] = Field(default=None, ge=1, le=365)
+    submittal_sla_uses_calendar_days: Optional[bool] = None
 
 
 class Project(ReadModel):
@@ -214,6 +270,12 @@ class Project(ReadModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: Optional[str] = "calendar_days"
+    # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
+    is_cui: bool = False
+    ai_enabled: bool = True
+    # Bucket E Phase 1 (2026-05-11) -- A/E review SLA settings.
+    submittal_review_sla_days: int = SUBMITTAL_DEFAULT_SLA_DAYS
+    submittal_sla_uses_calendar_days: bool = False
 
 
 # ---------- Locations / floors ----------
@@ -305,6 +367,19 @@ class TaskCreate(StrictModel):
     created_in_field: bool = False
     requires_pm_review: bool = False
     created_from_daily_report_id: Optional[str] = None
+    # Bucket H Phase 1 (2026-05-08) -- resource-leveling demand fields.
+    # required_trade names the trade that must staff this activity
+    # (e.g., "Plumber"). required_headcount is how many of that trade
+    # are needed concurrently. required_hours is total trade-hours for
+    # the activity (used by the leveling engine to compute daily
+    # demand = required_headcount when day in [planned_start..
+    # planned_finish], or required_hours / duration_days for finer
+    # granularity). All three are optional; activities without them
+    # produce no demand (the leveling engine skips them rather than
+    # fabricating numbers).
+    required_trade: Optional[str] = None
+    required_headcount: Optional[int] = None
+    required_hours: Optional[float] = None
 
 
 class TaskUpdate(StrictModel):
@@ -328,6 +403,12 @@ class TaskUpdate(StrictModel):
     trade_code: Optional[str] = None
     crew_id: Optional[str] = None
     location_id: Optional[str] = None
+    # Bucket H Phase 1 -- patchable demand fields. Changing any of
+    # these triggers a demand recompute on the affected date range
+    # (Phase 4 wires the trigger).
+    required_trade: Optional[str] = None
+    required_headcount: Optional[int] = None
+    required_hours: Optional[float] = None
 
 
 class CrewAssignmentEntry(ReadModel):
@@ -402,6 +483,11 @@ class Task(ReadModel):
     # Bucket C1 Phase 4 — CPM walk-forward result. None until first
     # delay open / status compute writes it.
     projected_finish_date: Optional[date] = None
+    # Bucket H Phase 1 -- resource-leveling demand fields. Optional;
+    # tasks without these produce no demand (leveling engine skips).
+    required_trade: Optional[str] = None
+    required_headcount: Optional[int] = None
+    required_hours: Optional[float] = None
 
 
 # ---------- Daily reports ----------
@@ -685,6 +771,35 @@ class CrewCreate(StrictModel):
     hourly_burdened_cost: Optional[float] = None
     target_size: int = 4
     notes: Optional[str] = None
+    # Bucket H Phase 1 (2026-05-08) -- resource-leveling supply fields.
+    # default_headcount = the baseline supply pool this crew contributes
+    # to the cross-project capacity model (separate from target_size,
+    # which is a planning-target attribute). company_name lets the
+    # leveling UI group crews by external vendor for sub-contracted
+    # work. home_project_id marks pre-commitments so the leveling
+    # engine can prefer that crew to that project when feasible.
+    default_headcount: Optional[int] = None
+    company_name: Optional[str] = None
+    home_project_id: Optional[str] = None
+
+
+class CrewUpdate(StrictModel):
+    """Bucket H Phase 1 -- crew update payload. All optional; PATCH
+    flows through this so the resource-leveling fields stay editable
+    post-create. trade is patchable but a change triggers capacity
+    recomputation downstream (Phase 4)."""
+    crew_code: Optional[str] = None
+    name: Optional[str] = None
+    trade: Optional[str] = None
+    foreman_person_id: Optional[str] = None
+    home_yard_address: Optional[str] = None
+    hourly_burdened_cost: Optional[float] = None
+    target_size: Optional[int] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    default_headcount: Optional[int] = None
+    company_name: Optional[str] = None
+    home_project_id: Optional[str] = None
 
 
 class Crew(ReadModel):
@@ -700,6 +815,163 @@ class Crew(ReadModel):
     status: str = "active"
     notes: Optional[str] = None
     created_at: datetime
+    # Bucket H Phase 1 -- resource-leveling supply fields.
+    default_headcount: Optional[int] = None
+    company_name: Optional[str] = None
+    home_project_id: Optional[str] = None
+
+
+# ============================================================
+# Bucket H Phase 1 (2026-05-08) -- Resource Leveling Engine
+# ============================================================
+# Two new collections backing the cross-project capacity / demand /
+# gap model:
+#
+#   crew_capacity  -- per (crew, date) supply row. Total headcount,
+#                     how many are committed elsewhere, what's left.
+#   crew_demands   -- per (project, trade, date) demand row, derived
+#                     from schedule_activities with required_trade +
+#                     required_headcount populated. Each demand row
+#                     lists the contributing task ids so the
+#                     dashboard can drill back to the source.
+#
+# Gap = sum(supply.available_headcount over trade,date) - sum(demand
+# .demanded_headcount over trade,date). Gap is NOT persisted in
+# Phase 1 -- computed on read by the service. Phase 5 may cache if
+# read-time scan becomes a bottleneck.
+#
+# computed_from enum distinguishes baseline rows (manual_entry or
+# migration backfill) from rows reconciled to actuals via daily_
+# presence (presence_recorded) or from a fresh schedule import
+# (schedule_derived). Lets the UI flag "this is a guess" vs "this
+# is reality."
+
+CrewCapacitySource = Literal["manual_entry", "schedule_derived",
+                              "presence_recorded", "migration_backfill"]
+
+
+class CrewCapacityCreate(StrictModel):
+    """Phase 2 will own the upload endpoint that produces these rows;
+    Phase 1 just defines the shape so the migration can backfill."""
+    crew_id: str
+    date: date
+    total_headcount: int = Field(..., ge=0)
+    committed_headcount: int = Field(default=0, ge=0)
+    hours_per_person: float = Field(default=8.0, ge=0)
+    is_holiday: bool = False
+    notes: Optional[str] = None
+    computed_from: CrewCapacitySource = "manual_entry"
+
+
+class CrewCapacityUpdate(StrictModel):
+    """Phase 2 capacity override flow. total_headcount + is_holiday +
+    notes are patchable; the rest is recomputed by the service."""
+    total_headcount: Optional[int] = Field(default=None, ge=0)
+    committed_headcount: Optional[int] = Field(default=None, ge=0)
+    hours_per_person: Optional[float] = Field(default=None, ge=0)
+    is_holiday: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class CrewCapacity(ReadModel):
+    id: str
+    tenant_id: str
+    crew_id: str
+    # Denormalized for display + filtering -- avoids per-row joins on
+    # the dashboard. Kept in sync by the recompute triggers (Phase 4).
+    trade: str
+    company_name: Optional[str] = None
+    date: date
+    total_headcount: int
+    committed_headcount: int = 0
+    available_headcount: int = 0   # = total - committed; computed
+    hours_per_person: float = 8.0
+    is_holiday: bool = False
+    notes: Optional[str] = None
+    computed_at: datetime
+    computed_from: CrewCapacitySource = "manual_entry"
+
+
+class CrewDemandCreate(StrictModel):
+    """Phase 2 will own the recompute endpoint; Phase 1 just defines
+    the shape so the migration can backfill from schedule_activities."""
+    project_id: str
+    date: date
+    trade: str
+    demanded_headcount: int = Field(..., ge=0)
+    source_task_ids: List[str] = Field(default_factory=list)
+    hours_demanded: float = Field(default=0.0, ge=0)
+    is_critical_path: bool = False
+
+
+class CrewDemand(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    date: date
+    trade: str
+    demanded_headcount: int
+    source_task_ids: List[str] = Field(default_factory=list)
+    hours_demanded: float = 0.0
+    is_critical_path: bool = False
+    computed_at: datetime
+
+
+# Bucket H Phase 3 (2026-05-08) -- per-project membership table.
+# Backs the RBAC scoping rules in resource_leveling_router (super
+# sees only projects where they're a member with role pm/super/
+# foreman; PM sees projects where role_on_project=pm; etc.). Also
+# powers the new Project Access management page.
+# Bucket J Phase 1 -- ProjectMemberRole gains the two new specialty
+# roles. role_on_project lets an admin tenant grant a user a
+# specialty role on a specific project without giving them
+# tenant-wide privileges.
+ProjectMemberRole = Literal[
+    "pm", "super", "foreman", "viewer",
+    "submittal_tech", "scheduling_engineer",
+]
+
+
+class ProjectMemberCreate(StrictModel):
+    project_id: str
+    user_id: str
+    role_on_project: ProjectMemberRole = "viewer"
+
+
+class ProjectMemberUpdate(StrictModel):
+    """Only role_on_project is mutable. project_id + user_id changes
+    are explicit add+remove flows."""
+    role_on_project: ProjectMemberRole
+
+
+class ProjectMember(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    user_id: str
+    role_on_project: ProjectMemberRole
+    added_at: datetime
+    added_by: Optional[str] = None
+
+
+# Gap rows are not persisted in Phase 1. The service computes them
+# on read via supply - demand aggregates. If read-time scan becomes
+# a bottleneck (50+ crews × 90 days × N trades), Phase 5 may add a
+# materialized crew_gaps collection.
+GapSeverity = Literal["none", "surplus", "minor", "moderate", "major"]
+
+
+class GapRow(ReadModel):
+    """Phase 2 service return shape. Not persisted in Phase 1."""
+    trade: str
+    date: date
+    supply: int
+    demand: int
+    gap: int                            # demand - supply (positive = shortage)
+    severity: GapSeverity
+    is_critical_path: bool = False      # any contributing task on CP
+    contributing_project_ids: List[str] = Field(default_factory=list)
+    contributing_crew_ids: List[str] = Field(default_factory=list)
 
 
 class EquipmentCreate(StrictModel):
@@ -1343,13 +1615,55 @@ class Photo(ReadModel):
     # supplement badge renders without a per-row fetch. Server-enriched
     # in /context bundle and /photos list (extend other lists if needed).
     parent_daily_report_date: Optional[str] = None
+    # Bucket F Phase 1 (2026-05-08) -- AI suggestion lineage on the
+    # tag row. Stamped by the tag-create endpoint when the user
+    # accepts an AI suggestion from the tray. created_via_ai_
+    # suggestion=true means the user clicked "Accept all" or saved
+    # without changing AI-supplied fields; false means manual tag.
+    created_via_ai_suggestion: bool = False
+    ai_suggestion_id: Optional[str] = None
+    ai_confidence_at_tag_time: Optional[float] = Field(default=None, ge=0, le=1)
+    # Bucket F Phase 5 (2026-05-11) -- pull-forward from Phase 3 Risk #1.
+    # Snapshots tray.ai_user_overridden AT the moment of tag creation so
+    # the gallery indicator stays accurate even if the tray row is later
+    # archived or its override state changes. Without this snapshot the
+    # "AI badge" on a tagged photo can drift from the truth as users
+    # re-touch suggestions.
+    user_overridden_at_tag_time: bool = False
 
 
 # ============================================================
 # Bucket D Phase 1 — Photo tray (staging area before tagging)
+# Bucket F Phase 1 (2026-05-08) — AI analysis fields
 # ============================================================
 PhotoCaptureSource = Literal["mobile_camera", "manual_upload", "drawing_pin"]
 PhotoTrayStatus = Literal["untagged", "partially_tagged", "fully_tagged", "archived"]
+
+# Bucket F Phase 1 -- AI analysis lifecycle.
+#   pending          -- upload landed, queued for analysis
+#   analyzing        -- service is mid-call to Claude Vision
+#   complete         -- analysis returned + persisted
+#   failed           -- service errored (see ai_failure_reason)
+#   skipped          -- CUI project / AI disabled / tenant ai_enabled=false
+#                       / pre-existing tray rows from migration
+#   rejected_by_user -- user explicitly rejected the suggestion
+#   budget_paused    -- tenant budget hit; admin must raise cap
+PhotoAiAnalysisStatus = Literal[
+    "pending", "analyzing", "complete", "failed", "skipped",
+    "rejected_by_user", "budget_paused",
+]
+
+# Conservative class subset the AI suggests. Tagging UI can still
+# pick any value from the broader PhotoClass enum -- AI just stays
+# in the high-signal lane.
+PhotoAiSuggestedClass = Literal[
+    "progress", "discovery", "damage", "quality", "other",
+]
+
+PhotoAiSuggestedEventType = Literal[
+    "delay", "rfi", "qc_issue", "safety_event",
+    "coordination_event", "delivery", "none",
+]
 
 
 class PhotoTrayCreate(StrictModel):
@@ -1388,6 +1702,27 @@ class PhotoTray(ReadModel):
     height: Optional[int] = None
     file_size_bytes: Optional[int] = None
     status: PhotoTrayStatus = "untagged"
+    # Bucket F Phase 1 -- AI analysis fields. Default "pending" on
+    # fresh upload; migration 010 stamps "skipped" on legacy rows so
+    # we never accidentally bill for analyzing pre-AI photos. Every
+    # AI write goes through services/photo_ai.py.
+    ai_analysis_status: PhotoAiAnalysisStatus = "pending"
+    ai_analysis_started_at: Optional[datetime] = None
+    ai_analysis_completed_at: Optional[datetime] = None
+    ai_suggested_class: Optional[PhotoAiSuggestedClass] = None
+    ai_suggested_caption: Optional[str] = None
+    ai_suggested_event_type: Optional[PhotoAiSuggestedEventType] = None
+    ai_suggested_trade: Optional[str] = None
+    ai_confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    ai_raw_response: Optional[dict] = None
+    ai_model_version: Optional[str] = None
+    ai_user_overridden: bool = False
+    ai_user_override_reason: Optional[str] = None
+    ai_safety_concerns_detected: List[str] = Field(default_factory=list)
+    ai_failure_reason: Optional[str] = None
+    ai_cost_tokens_input: Optional[int] = None
+    ai_cost_tokens_output: Optional[int] = None
+    ai_reused_from_phash: bool = False
 
 
 class PhotoTagCreate(StrictModel):
@@ -1405,6 +1740,17 @@ class PhotoTagCreate(StrictModel):
     drawing_pin_id: Optional[str] = None
     photo_class: PhotoClass = "progress"
     tag_caption: Optional[str] = None
+    # Bucket F Phase 1 -- AI lineage on the tag itself. Phase 2's tag
+    # endpoint stamps these from the tray row when the user accepts
+    # an AI suggestion. Lets TIA Section 8 distinguish AI-suggested
+    # tags from user-authored ones + lets Calibration RAG roll up
+    # override patterns by suggestion ancestry.
+    created_via_ai_suggestion: bool = False
+    ai_suggestion_id: Optional[str] = None
+    ai_confidence_at_tag_time: Optional[float] = Field(default=None, ge=0, le=1)
+    # Bucket F Phase 5 -- snapshot of tray.ai_user_overridden at tag
+    # time. Sets the user_overridden_at_tag_time field on Photo (above).
+    user_overridden_at_tag_time: bool = False
 
 
 # ---------- Work items / field issues ----------
@@ -1701,6 +2047,13 @@ class RfiDraftRequest(StrictModel):
     subject: str
     context: str
     schedule_activity_id: Optional[str] = None
+    # Bucket G Phase 2 -- when an existing RFI shell is being drafted
+    # into (frontend has already inserted a placeholder RFI), passing
+    # its id wires the AI output through the field_suggestions
+    # framework as light-green pre-fills for body + linked_task_ids.
+    # Optional: legacy callers that just want the draft text don't
+    # need to change.
+    rfi_id: Optional[str] = None
 
 
 # ============================================================
@@ -2143,3 +2496,332 @@ class PostSubmitEditPayload(StrictModel):
     the underlying record after permission/reason checks."""
     edit_reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
     updates: dict = Field(..., description="Field name -> new value")
+
+
+# ============================================================
+# Bucket G Phase 1 (2026-05-11) — Jigsaw Pre-fill UX framework
+# ============================================================
+# Per Sid's V1 Product Flow diagram, every field across every form has
+# three lifecycle states:
+#   - solid green  = human confirmed
+#   - light green  = AI suggested, pending confirmation
+#   - gray         = missing, action item
+# `field_suggestions` is the cross-entity ledger that drives the
+# light-green state. The same row is referenced by the Jigsaw frontend
+# widget regardless of which form is rendering: DR narrative, RFI
+# subject, QC severity, schedule task trade -- one collection, one
+# suggestion lifecycle, one audit trail.
+
+# Entity types eligible for field suggestions. Add new ones here as
+# downstream buckets land; the service module rejects unknown types
+# at create time so we never accumulate orphans pointing at made-up
+# collections.
+FieldSuggestionEntityType = Literal[
+    "daily_report",
+    "daily_report_activity",
+    "delay",
+    "rfi",
+    "qc_issue",
+    "safety_event",
+    "coordination_event",
+    "delivery",
+    "photo_tag",
+    "submittal",
+    "schedule_activity",
+]
+
+# Who produced the suggestion. Stays as an open list (we expect new AI
+# producers across future buckets); each name maps to a per-source
+# acceptance-rate row in Phase 5 stats so we can identify low-quality
+# producers and tune them or back them off.
+FieldSuggestionSource = Literal[
+    "ai_copilot",
+    "ai_photo_vision",
+    "ai_rfi_drafter",
+    "ai_qc_analyzer",
+    "ai_safety_analyzer",
+    "ai_schedule_analyzer",
+    "system_inference",
+    "calibration_rag",
+    # Bucket E Phase 4 (2026-05-11) -- submittal classifier producer.
+    # Scans uploaded submittal PDF text via pdfplumber + filename
+    # heuristics; suggests spec_section_id, discipline, type at
+    # confidence 0.7-0.85.
+    "ai_submittal_classifier",
+]
+
+FieldSuggestionStatus = Literal[
+    "pending", "confirmed", "rejected", "superseded", "expired",
+]
+
+
+# Authorized-confirmer role defaults per entity_type. The service
+# module looks these up when a producer creates a suggestion without
+# explicit authorized_confirmer_roles. Admins ALWAYS confirm anything;
+# the per-entity list is who else can confirm.
+#
+# `submittal_tech` is forward-defined: it's a role being added in
+# Bucket J for the submittal review workflow. Listing it here so the
+# constant doesn't change shape mid-bucket; before Bucket J ships,
+# nobody has the role so the entry is effectively a no-op.
+FIELD_SUGGESTION_DEFAULT_ROLES: dict[str, list[str]] = {
+    "daily_report":          ["super", "pm", "admin"],
+    "daily_report_activity": ["super", "pm", "admin"],
+    "delay":                 ["super", "pm", "admin"],
+    "rfi":                   ["pm", "admin"],
+    "qc_issue":              ["super", "pm", "admin"],
+    "safety_event":          ["super", "pm", "admin", "foreman"],
+    "coordination_event":    ["super", "pm", "admin"],
+    "delivery":              ["super", "pm", "admin"],
+    "photo_tag":             ["super", "pm", "admin", "foreman"],
+    "submittal":             ["pm", "admin", "submittal_tech"],
+    # Bucket J Phase 2 -- scheduling_engineer joins pe as a
+    # schedule-activity confirmer. "pe" stays as a historical alias.
+    "schedule_activity":     ["pm", "admin", "pe", "scheduling_engineer"],
+}
+
+
+class FieldSuggestionCreate(StrictModel):
+    """Create payload. AI producers call this via the service module
+    rather than the HTTP endpoint, but the endpoint is exposed for
+    admins + system clients."""
+    project_id: str
+    entity_type: FieldSuggestionEntityType
+    entity_id: str
+    field_path: str = Field(..., min_length=1, max_length=200,
+                              description="Dotted path, e.g. 'narrative', 'severity', 'owner_attribution'")
+    suggested_value: Any = Field(...,
+                                   description="JSON-encodable value the AI suggests")
+    suggested_by: FieldSuggestionSource
+    confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    authorized_confirmer_roles: Optional[list[str]] = Field(
+        default=None,
+        description="Override the per-entity default role list. Falls back to FIELD_SUGGESTION_DEFAULT_ROLES.",
+    )
+    source_context: Optional[str] = Field(
+        default=None, max_length=500,
+        description="Freeform breadcrumb, e.g. 'photo_tray_id=X', 'rfi_template=Y'.",
+    )
+
+
+class FieldSuggestion(ReadModel):
+    """The persisted shape. Status moves pending -> confirmed | rejected |
+    superseded | expired. Once terminal it never moves back; AI re-runs
+    create a NEW suggestion + supersede the prior."""
+    id: str
+    tenant_id: str
+    project_id: str
+    entity_type: FieldSuggestionEntityType
+    entity_id: str
+    field_path: str
+    suggested_value: Any
+    suggested_by: FieldSuggestionSource
+    confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    status: FieldSuggestionStatus = "pending"
+    confirmed_by: Optional[str] = None
+    confirmed_at: Optional[datetime] = None
+    rejected_by: Optional[str] = None
+    rejected_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+    authorized_confirmer_roles: List[str] = Field(default_factory=list)
+    source_context: Optional[str] = None
+    superseded_by_suggestion_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FieldSuggestionRejectPayload(StrictModel):
+    reason: str = Field(..., min_length=10, max_length=500)
+
+
+class FieldSuggestionBulkConfirmPayload(StrictModel):
+    """Power-user bulk operation. Phase 5 caps at 50 ids per call so
+    one request can't tie up the worker on a 1000-row backlog."""
+    suggestion_ids: List[str] = Field(..., min_length=1, max_length=50)
+
+
+class FieldSuggestionBulkRejectPayload(StrictModel):
+    suggestion_ids: List[str] = Field(..., min_length=1, max_length=50)
+    reason: str = Field(..., min_length=10, max_length=500)
+
+
+# ============================================================
+# Bucket E Phase 1 (2026-05-11) — Submittals A/E Review SLA +
+# register depth.
+#
+# The Submittal Pydantic models live in routers/iter4_router.py for
+# historical reasons (they were added during iter4 before models.py
+# was the canonical home). This block adds the new SLA + register
+# depth vocabulary + the SubmittalReviewEvent chain-of-custody
+# model + the project-level SLA-day default so the new shapes are
+# discoverable from models.py going forward.
+#
+# The router extension is in iter4_router.py.
+# ============================================================
+
+# SUBMITTAL_DEFAULT_SLA_DAYS is hoisted to the top of the file (near
+# the other tenant/project literals) so the Project Pydantic model
+# can reference it without a forward-declaration.
+
+# Common federal-construction submittal types. Free-text override
+# stays available via submittal.type_other_description -- the enum
+# is the dropdown vocab, not a hard schema constraint.
+SubmittalTypeEnum = Literal[
+    "product_data", "shop_drawing", "sample", "mock_up",
+    "certifications", "test_reports", "o_m_manual", "as_built",
+    "closeout", "other",
+]
+
+# Chain-of-custody event vocabulary. Federal claim defense requires
+# a complete audit trail of who touched the submittal when, with
+# elapsed-day deltas at each step. Phase 2 wires the recorder.
+SubmittalReviewEventType = Literal[
+    "submitted_to_ae",         # Super forwarded the sub package to A/E.
+    "ae_review_started",       # A/E acknowledged receipt + opened review.
+    "ae_review_completed",     # A/E returned the package with disposition.
+    "forwarded_to_sub",        # GC forwarded A/E's response to the sub.
+    "returned_from_sub",       # Sub returned a revised submittal.
+    "sla_breached",            # Computed event when SLA deadline passed.
+    "supplement_filed",        # Late info filed against a closed submittal.
+    "approved",                # Disposition: approved (no exceptions).
+    "approved_as_noted",       # Disposition: approved with markup.
+    "rejected",                # Disposition: rejected, full resubmit needed.
+    "revise_resubmit",         # Disposition: revise + resubmit per markup.
+    "closed",                  # Final closeout / archive.
+]
+
+
+class SubmittalReviewEventCreate(StrictModel):
+    """Payload for recording a review-chain event. Phase 2 exposes
+    this via POST /submittals/{id}/review-events. event_type drives
+    which status_after gets stamped on the parent submittal (e.g.
+    submitted_to_ae -> status=submitted)."""
+    submittal_id: str
+    event_type: SubmittalReviewEventType
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    # Optional override of the per-row performed_at -- defaults to
+    # server-now if absent. Lets users back-date a missed entry
+    # (audit logged regardless).
+    performed_at: Optional[datetime] = None
+
+
+# ============================================================
+# Bucket I Phase 1 (2026-05-11) — Recovery Report Generator
+# ============================================================
+# Per Sid's Friday-cadence diagram: unify Weekly Rollup +
+# AI Recovery Suggestions + Calibration RAG into a single
+# Friday-end report. Generators are thin wrappers around existing
+# services -- NO duplicate aggregation logic.
+RecoveryReportType = Literal[
+    "weekly_variance",      # Mon-Sun variance vs. plan
+    "friday_recovery",      # Mon-Fri snapshot with recovery actions
+    "daily_variance",       # single-day deviation report
+    "project_health_summary",  # current-state snapshot, no period
+    "custom",               # caller supplies period_start + period_end
+]
+
+RecoveryReportStatus = Literal["draft", "finalized", "archived"]
+
+
+class RecoveryActionItem(StrictModel):
+    """One recovery action proposed by the AI / calibration RAG.
+    Embedded in RecoveryReport.recovery_actions."""
+    action: str = Field(..., max_length=500)
+    owner: Optional[str] = Field(default=None, max_length=120)
+    due_date: Optional[date] = None
+    rationale: Optional[str] = Field(default=None, max_length=2000)
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    # When the AI produced this action against a specific mitigation
+    # scenario, the source mitigation id lets us close the calibration
+    # RAG loop (Phase 3b) when its outcome is later recorded.
+    source_mitigation_id: Optional[str] = None
+    source_delay_id: Optional[str] = None
+
+
+class ExhibitArtifact(StrictModel):
+    """Stored export of the report (PDF / DOCX / JSON). One row per
+    format we've rendered. Re-renders overwrite the existing row for
+    that format."""
+    type: Literal["pdf", "docx", "json"]
+    storage_key: str
+    sha256: str
+    size_bytes: Optional[int] = None
+    generated_at: datetime
+
+
+class RecoveryReportCreate(StrictModel):
+    """POST /recovery-reports/generate payload. period_start +
+    period_end optional -- defaults derived from report_type."""
+    project_id: str
+    report_type: RecoveryReportType
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    # Idempotency key. Two generate calls with the same key on the
+    # same (tenant, project, type, period) return the existing
+    # report (per spec edge case).
+    idempotency_key: Optional[str] = Field(default=None, max_length=80)
+
+
+class RecoveryReport(ReadModel):
+    id: str
+    tenant_id: str
+    project_id: str
+    report_type: RecoveryReportType
+    generated_at: datetime
+    generated_by: Optional[str] = None        # user_id or None for system gen
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    # Snapshot of the source data the AI / aggregator saw at gen time.
+    # Locked at finalization so re-renders use the same numbers counsel
+    # can defend.
+    data_snapshot: dict = Field(default_factory=dict)
+    ai_narrative: Optional[str] = None
+    recovery_actions: List[RecoveryActionItem] = Field(default_factory=list)
+    variance_summary: dict = Field(default_factory=dict)
+    exhibit_artifacts: List[ExhibitArtifact] = Field(default_factory=list)
+    status: RecoveryReportStatus = "draft"
+    finalized_by: Optional[str] = None
+    finalized_at: Optional[datetime] = None
+    archived_by: Optional[str] = None
+    archived_at: Optional[datetime] = None
+    # Human-readable label for the audit log entry (e.g. "Friday
+    # Recovery Report 2026-W19").
+    audit_op_label: Optional[str] = None
+    # Phase 1 edge case: if the AI recovery service was unreachable
+    # during generation, we mark the report degraded so PMs know the
+    # narrative is missing. The aggregation numbers are still real.
+    is_degraded: bool = False
+    degraded_reason: Optional[str] = None
+    # Phase 3d -- AI budget cost tracking. Sum of token costs for
+    # this report's AI calls (mitigation suggestions + narrative).
+    ai_cost_estimate_usd: Optional[float] = None
+    idempotency_key: Optional[str] = None
+
+
+# Default authorized_confirmer_roles is admin-only since recovery
+# reports are sensitive (counsel evidence). PM is added via the
+# router's RBAC; this list governs who can FINALIZE the report.
+RECOVERY_REPORT_FINALIZER_ROLES = ["admin", "pm"]
+
+
+class SubmittalReviewEvent(ReadModel):
+    """One row in the submittal_review_events collection. Indexed
+    by (tenant_id, submittal_id, performed_at) for chronological
+    chain reads, and (tenant_id, event_type, performed_at) for
+    breach reporting rollups."""
+    id: str
+    tenant_id: str
+    project_id: str
+    submittal_id: str
+    event_type: SubmittalReviewEventType
+    performed_by: Optional[str] = None      # user_id; None for system events
+    performed_at: datetime
+    status_before: Optional[str] = None
+    status_after: Optional[str] = None
+    notes: Optional[str] = None
+    # Computed deltas vs. the prior event on this submittal so the
+    # TIA timeline can show "A/E held this for N working days" at a
+    # glance without re-joining the full chain.
+    calendar_days_elapsed: Optional[int] = None
+    working_days_elapsed: Optional[int] = None
+    created_at: datetime

@@ -13,6 +13,11 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
+// Bucket G Phase 4 (2026-05-11) -- Jigsaw pre-fill wrapper around the
+// AI report block + an inline display for the chosen_mitigation_id
+// suggestion produced by calibration_rag in Phase 2.
+import JigsawField from "../components/forms/JigsawField";
+import { getUser } from "../lib/auth";
 
 export default function DelayDetail() {
   const { id } = useParams();
@@ -182,14 +187,76 @@ export default function DelayDetail() {
             )}
           </div>
         </div>
-        {delay.ai_report ? (
-          <div data-testid="delay-ai-report" className="text-sm whitespace-pre-wrap leading-relaxed text-slate-800 bg-slate-50 rounded p-3 border border-slate-200">
-            {delay.ai_report}
-          </div>
-        ) : (
-          <div className="text-xs text-slate-400">No AI report yet. Click Generate to produce a structured narrative covering linked tasks, float impact, and recommendations.</div>
-        )}
+        {/* Bucket G Phase 4 -- wrap the AI report block in JigsawField
+            so when calibration_rag drops a fresh narrative suggestion,
+            the PM can Accept/Reject it inline + the audit trail captures
+            the human-confirmation step. Accept persists via Pp PATCH
+            because the suggestion landed on delay.ai_report. */}
+        <JigsawField
+          entityType="delay" entityId={id}
+          fieldPath="ai_report"
+          userRole={(getUser()?.role || "").toLowerCase()}
+          fieldLabel="ai_report"
+          renderSuggestedValue={(v) => (
+            <span className="whitespace-pre-wrap">
+              {String(v || "").slice(0, 400)}
+              {String(v || "").length > 400 && "…"}
+            </span>
+          )}
+          onConfirm={async (v) => {
+            // Persist the suggested narrative on the delay row when
+            // the PM accepts. Best-effort; if the patch fails we leave
+            // the audit confirmation intact and surface a toast.
+            try {
+              await api.patch(`/delays/${id}`, { ai_report: String(v || "") });
+              refresh();
+            } catch (e) {
+              toast.error(
+                e.response?.data?.detail || "Failed to apply AI narrative",
+              );
+            }
+          }}
+        >
+          {delay.ai_report ? (
+            <div data-testid="delay-ai-report" className="text-sm whitespace-pre-wrap leading-relaxed text-slate-800 bg-slate-50 rounded p-3 border border-slate-200">
+              {delay.ai_report}
+            </div>
+          ) : (
+            <div className="text-xs text-slate-400">No AI report yet. Click Generate to produce a structured narrative covering linked tasks, float impact, and recommendations.</div>
+          )}
+        </JigsawField>
       </div>
+
+      {/* Bucket G Phase 4 -- chosen_mitigation_id suggestion display.
+          calibration_rag dropped a Jigsaw pointer at the top-confidence
+          scenario after mitigation generation; surface it here so the
+          PM has the AI's pick visible alongside the 3 scenarios. */}
+      <JigsawField
+        entityType="delay" entityId={id}
+        fieldPath="chosen_mitigation_id"
+        userRole={(getUser()?.role || "").toLowerCase()}
+        fieldLabel="chosen_mitigation_id"
+        renderSuggestedValue={(v) => (
+          <code className="text-[10px]">scenario {String(v || "").slice(0, 8)}</code>
+        )}
+        onConfirm={async (v) => {
+          try {
+            // Mirrors the existing /choose endpoint on the mitigations
+            // router. The chosen scenario id IS the suggested value.
+            await api.post(`/mitigations/${v}/choose`);
+            refresh();
+            toast.success("AI-suggested mitigation chosen");
+          } catch (e) {
+            toast.error(
+              e.response?.data?.detail || "Failed to choose mitigation",
+            );
+          }
+        }}
+      >
+        {/* Pass-through anchor: the ScenariosSection below renders the
+            actual UI; we only need the Jigsaw chrome above it. */}
+        <div data-testid="delay-chosen-mitigation-anchor" />
+      </JigsawField>
 
       <ScenariosSection delayId={id} delayStatus={delay.status} />
 

@@ -14,6 +14,13 @@ import { Plus, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import api from "../../lib/api";
 import { localTodayISO } from "../../lib/dateUtil";
 import { toast } from "../ui/sonner";
+// Bucket G Phase 3 (2026-05-11) -- Jigsaw pre-fill wrapper. Renders
+// the AI-suggested chrome on edit-mode fields. On create-mode (no
+// initial.id) it passes through cleanly (no entity to bind against
+// yet). User role drives Accept/Reject role-gating via the
+// authorized_confirmer_roles list on each suggestion.
+import JigsawField from "./JigsawField";
+import { getUser } from "../../lib/auth";
 // Bucket D Corrective (2026-05-08) -- DrActivityPicker import removed.
 // The duplicate "Affected activities (optional)" picker that briefly
 // lived on this form (alongside the canonical "Linked tasks" picker
@@ -154,36 +161,56 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     } finally { setBusy(false); }
   };
 
+  const userRole = (getUser()?.role || "").toLowerCase();
+  // Per Sid: Jigsaw bindings are post-create only. Create-mode forms
+  // pass entityId=null which makes JigsawField a no-op identity wrap.
+  const entityId = initial?.id || null;
+
   return (
     <div data-testid="delay-form" className="space-y-3">
       <div>
         <label className="text-xs uppercase tracking-wide text-slate-500">What happened? *</label>
-        <textarea
-          data-testid="delay-form-description"
-          rows={4}
-          value={form.description}
-          onChange={(e) => setForm({ ...form, description: e.target.value })}
-          placeholder="Describe what caused the delay, who was affected, and any photos/observations on site"
-          className="mt-1 w-full p-2 rounded border border-slate-200 text-sm"
-        />
+        <JigsawField entityType="delay" entityId={entityId}
+          fieldPath="description" userRole={userRole}
+          fieldLabel="description"
+          onConfirm={(v) => setForm({ ...form, description: String(v ?? "") })}>
+          <textarea
+            data-testid="delay-form-description"
+            rows={4}
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            placeholder="Describe what caused the delay, who was affected, and any photos/observations on site"
+            className="mt-1 w-full p-2 rounded border border-slate-200 text-sm"
+          />
+        </JigsawField>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="text-xs uppercase tracking-wide text-slate-500">Severity</label>
-          <select data-testid="delay-form-severity" value={form.severity}
-            onChange={(e) => setForm({ ...form, severity: e.target.value })}
-            className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-            {SEVERITY_OPTS.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <JigsawField entityType="delay" entityId={entityId}
+            fieldPath="severity" userRole={userRole}
+            fieldLabel="severity"
+            onConfirm={(v) => setForm({ ...form, severity: String(v ?? form.severity) })}>
+            <select data-testid="delay-form-severity" value={form.severity}
+              onChange={(e) => setForm({ ...form, severity: e.target.value })}
+              className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
+              {SEVERITY_OPTS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </JigsawField>
         </div>
         <div>
           <label className="text-xs uppercase tracking-wide text-slate-500">Category</label>
-          <select data-testid="delay-form-category" value={form.reason_category}
-            onChange={(e) => setForm({ ...form, reason_category: e.target.value })}
-            className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-            {REASON_OPTS.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
-          </select>
+          <JigsawField entityType="delay" entityId={entityId}
+            fieldPath="reason_category" userRole={userRole}
+            fieldLabel="category"
+            onConfirm={(v) => setForm({ ...form, reason_category: String(v ?? form.reason_category) })}>
+            <select data-testid="delay-form-category" value={form.reason_category}
+              onChange={(e) => setForm({ ...form, reason_category: e.target.value })}
+              className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
+              {REASON_OPTS.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
+            </select>
+          </JigsawField>
         </div>
       </div>
 
@@ -196,25 +223,35 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           <label className="text-xs uppercase tracking-wide text-slate-500" title="Who is responsible for the delay event">
             Owner attribution
           </label>
-          <select data-testid="delay-form-owner-attribution" value={form.owner_attribution}
-            onChange={(e) => setForm({ ...form, owner_attribution: e.target.value })}
-            className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
-            {OWNER_ATTRIBUTION_OPTS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
+          <JigsawField entityType="delay" entityId={entityId}
+            fieldPath="owner_attribution" userRole={userRole}
+            fieldLabel="owner_attribution"
+            onConfirm={(v) => setForm({ ...form, owner_attribution: String(v ?? form.owner_attribution) })}>
+            <select data-testid="delay-form-owner-attribution" value={form.owner_attribution}
+              onChange={(e) => setForm({ ...form, owner_attribution: e.target.value })}
+              className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
+              {OWNER_ATTRIBUTION_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </JigsawField>
         </div>
         <div>
           <label className="text-xs uppercase tracking-wide text-slate-500" title="Why the delay occurred (matches gating-entity vocabulary)">
             Cause class
           </label>
-          <select data-testid="delay-form-cause-class" value={form.cause_class}
-            onChange={(e) => setForm({ ...form, cause_class: e.target.value })}
-            className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
-            {CAUSE_CLASS_OPTS.map((c) => (
-              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
-            ))}
-          </select>
+          <JigsawField entityType="delay" entityId={entityId}
+            fieldPath="cause_class" userRole={userRole}
+            fieldLabel="cause_class"
+            onConfirm={(v) => setForm({ ...form, cause_class: String(v ?? form.cause_class) })}>
+            <select data-testid="delay-form-cause-class" value={form.cause_class}
+              onChange={(e) => setForm({ ...form, cause_class: e.target.value })}
+              className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
+              {CAUSE_CLASS_OPTS.map((c) => (
+                <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+              ))}
+            </select>
+          </JigsawField>
         </div>
       </div>
 

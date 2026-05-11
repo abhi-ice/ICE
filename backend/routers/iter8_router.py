@@ -90,10 +90,19 @@ def _cfg(entity: str) -> dict:
 
 
 @router.patch("/crud/{entity}/{id}")
-async def crud_patch(entity: str, id: str, payload: dict, ctx: dict = Depends(require_tenant)):
+async def crud_patch(entity: str, id: str, payload: dict,
+                      bg: BackgroundTasks,
+                      ctx: dict = Depends(require_tenant)):
     cfg = _cfg(entity)
     db = get_db()
     coll = db[cfg["collection"]]
+    # Bucket H Phase 4 -- snapshot the before-state when entity=crews so
+    # we know if a supply-side field actually moved.
+    before = None
+    if entity == "crews":
+        before = await coll.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0},
+        )
     # Strip immutable fields
     for k in ("id", "tenant_id", "created_at", "created_by", "_id"):
         payload.pop(k, None)
@@ -107,6 +116,18 @@ async def crud_patch(entity: str, id: str, payload: dict, ctx: dict = Depends(re
     if not res.matched_count:
         raise HTTPException(404, f"{entity} {id} not found")
     doc = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
+    # Bucket H Phase 4 -- crew supply recompute on default_headcount /
+    # trade / status change. Background so the PATCH response stays
+    # snappy; recompute touches 90 capacity rows per crew.
+    if entity == "crews" and before is not None:
+        supply_keys = {"default_headcount", "target_size", "trade",
+                        "company_name", "home_project_id", "status"}
+        if any(k in payload for k in supply_keys):
+            try:
+                from routers.resources_router import _bg_recompute_capacity
+                bg.add_task(_bg_recompute_capacity, ctx["tenant_id"], id)
+            except Exception:
+                pass
     # Bucket C3a Phase 1 — keep gating_entities row in sync when status
     # changes through this generic CRUD path. Only fires for entity types
     # that have a gating CPM-node mapping. Status field name varies by
@@ -191,7 +212,8 @@ async def _cascade_gating_entity_on_delete(db, tenant_id: str, entity: str,
 
 
 @router.delete("/crud/{entity}/{id}")
-async def crud_delete(entity: str, id: str, ctx: dict = Depends(require_tenant)):
+async def crud_delete(entity: str, id: str, bg: BackgroundTasks,
+                       ctx: dict = Depends(require_tenant)):
     cfg = _cfg(entity)
     db = get_db()
     coll = db[cfg["collection"]]
@@ -214,6 +236,15 @@ async def crud_delete(entity: str, id: str, ctx: dict = Depends(require_tenant))
             record_id=id, before=before, after=after,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
         )
+        # Bucket H Phase 4 -- crew soft-delete: zero out future capacity,
+        # preserve historical (recompute_capacity_for_crew checks status
+        # and takes the archived branch). Background.
+        if entity == "crews":
+            try:
+                from routers.resources_router import _bg_recompute_capacity
+                bg.add_task(_bg_recompute_capacity, ctx["tenant_id"], id)
+            except Exception:
+                pass
         # Bucket C3a Phase 5 — cascade gating_entity + DR-row constraint
         # reset. Best-effort: failure here doesn't roll back the soft-
         # delete (the underlying row is already marked status=deleted

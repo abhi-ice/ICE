@@ -41,6 +41,8 @@ export default function CascadeDashboard() {
   const [lastComputed, setLastComputed] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Bucket H Phase 4 -- projected gap side panel data.
+  const [projectedGaps, setProjectedGaps] = useState({ topCells: [], summary: null });
 
   const load = async () => {
     if (!activeId) { setRows([]); return; }
@@ -54,7 +56,50 @@ export default function CascadeDashboard() {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
+  // Bucket H Phase 4 -- projected gap side panel. Pulls the resource-
+  // leveling dashboard for the project + 30-day window and surfaces
+  // the worst (severity, CP) cells. The cascade dashboard's central
+  // claim is "this open delay will push tasks N days forward"; the
+  // side panel answers "and those pushed tasks will produce these
+  // resource shortages."
+  const loadGaps = async () => {
+    if (!activeId) { setProjectedGaps({ topCells: [], summary: null }); return; }
+    try {
+      const today = new Date();
+      const end = new Date();
+      end.setDate(today.getDate() + 30);
+      const r = await api.get(`/resource-leveling/dashboard`, {
+        params: {
+          date_range_start: today.toISOString().slice(0, 10),
+          date_range_end: end.toISOString().slice(0, 10),
+          project_id: activeId,
+        },
+      });
+      const cells = r.data?.cells || {};
+      const sevRank = { major: 3, moderate: 2, minor: 1 };
+      const flat = [];
+      Object.entries(cells).forEach(([trade, byDate]) => {
+        Object.entries(byDate).forEach(([dateIso, cell]) => {
+          if (!["minor", "moderate", "major"].includes(cell.severity)) return;
+          flat.push({ trade, date: dateIso, ...cell });
+        });
+      });
+      flat.sort((a, b) => {
+        if (a.is_critical_path !== b.is_critical_path) {
+          return a.is_critical_path ? -1 : 1;
+        }
+        return (sevRank[b.severity] || 0) - (sevRank[a.severity] || 0);
+      });
+      setProjectedGaps({
+        topCells: flat.slice(0, 8),
+        summary: r.data?.summary || null,
+      });
+    } catch {
+      setProjectedGaps({ topCells: [], summary: null });
+    }
+  };
+
+  useEffect(() => { load(); loadGaps(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
 
   const refresh = async () => {
     if (!activeId) return;
@@ -98,6 +143,57 @@ export default function CascadeDashboard() {
           {refreshing ? "Recomputing…" : "Refresh"}
         </button>
       </header>
+
+      {/* Bucket H Phase 4 -- projected gap side panel. Surfaces when
+          the project has at least one shortage in the next 30 days so
+          PMs reading the cascade view see the downstream resource
+          impact alongside the CP-slip projection. */}
+      {projectedGaps.topCells.length > 0 && (
+        <div data-testid="cascade-projected-gap-panel"
+          className="mb-4 p-3 rounded border border-amber-200 bg-amber-50">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium text-amber-900">
+              Projected resource gaps (next 30 days)
+            </div>
+            <Link to={`/resource-leveling?project_id=${activeId}`}
+              className="text-xs text-blue-600 hover:underline">
+              Open Resource Leveling →
+            </Link>
+          </div>
+          <div className="text-[11px] text-amber-900 mb-2">
+            {projectedGaps.summary?.shortage_cells || 0} shortage cell{(projectedGaps.summary?.shortage_cells || 0) === 1 ? "" : "s"}
+            {projectedGaps.summary?.cp_shortage_cells > 0 && (
+              <span className="ml-1 text-rose-700 font-semibold">
+                · {projectedGaps.summary.cp_shortage_cells} on critical path
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-1">
+            {projectedGaps.topCells.map((cell) => {
+              const tone = cell.is_critical_path
+                ? "bg-rose-100 border-rose-300 text-rose-900"
+                : cell.severity === "major"
+                  ? "bg-rose-50 border-rose-200 text-rose-800"
+                  : cell.severity === "moderate"
+                    ? "bg-orange-100 border-orange-300 text-orange-900"
+                    : "bg-amber-100 border-amber-300 text-amber-900";
+              return (
+                <Link key={cell.id} to={`/resource-leveling?tab=gaps&trade=${encodeURIComponent(cell.trade)}`}
+                  data-testid={`cascade-gap-${cell.id}`}
+                  className={`block p-2 rounded border text-xs ${tone}`}>
+                  <div className="font-medium">{cell.trade}</div>
+                  <div className="text-[10px] font-mono">
+                    {cell.date} · supply {cell.supply} / demand {cell.demand} · gap +{cell.gap}
+                  </div>
+                  <div className="text-[10px] capitalize">
+                    {cell.severity}{cell.is_critical_path ? " · CP" : ""}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-sm text-slate-500">Loading…</div>

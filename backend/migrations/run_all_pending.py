@@ -53,6 +53,53 @@ MIGRATIONS = [
     # Translates ids via daily_report_activities.schedule_activity_id,
     # drops the old field everywhere, drops legacy indexes. Idempotent.
     "migrations.007_dr_activity_to_task",
+    # Bucket H Phase 1 (2026-05-08) -- Resource Leveling setup. Adds
+    # required_trade/headcount/hours to tasks, default_headcount/
+    # company_name/home_project_id to crews, and backfills 90 days of
+    # crew_capacity + crew_demands. Pass E smoke-verifies gap
+    # computation walks supply + demand cleanly. Idempotent.
+    "migrations.008_resource_leveling_setup",
+    # Bucket H Phase 3 (2026-05-08) -- per-project membership backfill.
+    # Adds project_members rows for every tenant_user x project tuple
+    # so the RBAC scoping rules have data to filter against. Admins
+    # skipped (they're tenant-wide). Idempotent via unique index.
+    "migrations.009_project_members_backfill",
+    # Bucket F Phase 1 (2026-05-08) -- Photo AI setup. Stamps
+    # ai_analysis_status="skipped" on pre-existing photo_tray rows
+    # (no billable backfill), adds AI lineage fields on photos,
+    # is_cui + ai_enabled on projects, monthly budget on tenants.
+    # Idempotent via $exists checks.
+    "migrations.010_photo_ai_setup",
+    # Bucket F Phase 5 (2026-05-11) -- pull-forward Risk #1. Snapshots
+    # the tray's ai_user_overridden flag onto each Photo tag row as
+    # user_overridden_at_tag_time so gallery + TIA Section 8 indicators
+    # don't drift when the tray is later edited. Idempotent via $exists.
+    "migrations.011_photo_override_snapshot",
+    # Bucket G Phase 1 (2026-05-11) -- Jigsaw Pre-fill UX setup.
+    # Creates the field_suggestions collection + 5 indexes + writes a
+    # single FIELD_SUGGESTIONS_INITIALIZED audit op per tenant. No
+    # data backfill (suggestions are runtime). Idempotent via per-
+    # tenant audit existence check.
+    "migrations.012_field_suggestions_setup",
+    # Bucket E Phase 1 (2026-05-11) -- Submittals SLA + register
+    # depth. 14-day default A/E review SLA on every project, full
+    # register-depth defaults on every submittal, opportunistic
+    # aging backfill, indexes on submittals + submittal_review_
+    # events. Single SUBMITTAL_SLA_INITIALIZED audit op per affected
+    # tenant. Idempotent via per-field $exists checks + per-tenant
+    # audit existence check.
+    "migrations.013_submittals_sla_setup",
+    # Bucket I (2026-05-11) -- Recovery Report Generator setup.
+    # Creates the recovery_reports collection + 4 indexes. No data
+    # backfill. Single RECOVERY_REPORTS_INITIALIZED audit op per
+    # tenant. Idempotent via per-tenant audit existence check.
+    "migrations.014_recovery_reports_setup",
+    # Bucket J Phase 1 (2026-05-11) -- role enum extension. Enables
+    # submittal_tech + scheduling_engineer as valid tenant_users.role
+    # + project_members.role_on_project values. No automatic role
+    # assignment; existing users keep current role. ROLE_ENUM_EXTENDED
+    # audit op per tenant; idempotent.
+    "migrations.015_role_enum_extended",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

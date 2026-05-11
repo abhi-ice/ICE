@@ -958,6 +958,37 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates}
     )
 
+    # Bucket H Phase 5 -- lock presence-actualized capacity rows for
+    # this DR's date so future leveling recomputes don't overwrite
+    # field-attested truth. presence_locked=True flag on each row;
+    # recompute_capacity_for_crew skips locked rows.
+    try:
+        from datetime import date as _date
+        from services.resource_leveling import lock_capacity_for_dr_submit
+        dr_date_str = before.get("report_date")
+        if dr_date_str:
+            dr_date_parsed = _date.fromisoformat(str(dr_date_str)[:10])
+            lock_res = await lock_capacity_for_dr_submit(
+                tenant_id=ctx["tenant_id"],
+                project_id=before.get("project_id"),
+                dr_date=dr_date_parsed,
+            )
+            if lock_res.get("locked_count"):
+                await write_audit(
+                    tenant_id=ctx["tenant_id"], table_name="crew_capacity",
+                    op="CAPACITY_ACTUALIZED_FROM_PRESENCE",
+                    record_id=daily_report_id, before=None,
+                    after={"action": "locked_on_dr_submit",
+                            "dr_date": dr_date_str,
+                            "rows_locked": lock_res["locked_count"]},
+                    actor_id=ctx["user"]["id"],
+                    request_id=ctx["request_id"],
+                )
+    except Exception:
+        # Lock failure doesn't undo the submit. The capacity row
+        # remains mutable; the next admin reallocation can re-lock.
+        pass
+
     # Bucket C1 Phase 1 — flip every provisional sync mark to confirmed.
     # This makes the write-backs that landed during the day part of the
     # field-attested record once the super submits the report.
@@ -1301,6 +1332,50 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
         record_id=doc["id"], before=None, after=doc,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Bucket H Phase 5 -- presence-actualized capacity flip (pulled
+    # forward from Phase 4 deferral #7). What actually showed up on
+    # site is the source of truth for committed_headcount + computed_
+    # from on the matching crew's capacity row for this date. Picks a
+    # representative crew (home_project_id match > general pool >
+    # first-trade-match); no-op if no crew matches. Locked-flip
+    # happens on DR submit -- this write keeps the row mutable so
+    # presence corrections during the day still go through.
+    try:
+        from datetime import date as _date
+        from services.resource_leveling import actualize_capacity_from_presence
+        from audit import write_audit as _wa
+        dr_date_str = dr.get("report_date")
+        if dr_date_str and doc.get("trade") and (doc.get("headcount") or 0) > 0:
+            dr_date_parsed = _date.fromisoformat(str(dr_date_str)[:10])
+            actual_res = await actualize_capacity_from_presence(
+                tenant_id=ctx["tenant_id"],
+                project_id=dr.get("project_id"),
+                presence_date=dr_date_parsed,
+                trade=doc["trade"],
+                headcount=int(doc["headcount"]),
+                company_name=doc.get("company_name"),
+                locked=False,
+                actor_id=ctx["user"]["id"],
+            )
+            if actual_res.get("updated_count"):
+                await _wa(
+                    tenant_id=ctx["tenant_id"], table_name="crew_capacity",
+                    op="CAPACITY_ACTUALIZED_FROM_PRESENCE",
+                    record_id=actual_res.get("picked_crew_id") or doc["id"],
+                    before=actual_res.get("before"),
+                    after={
+                        **(actual_res.get("after") or {}),
+                        "source_presence_id": doc["id"],
+                        "source_daily_report_id": daily_report_id,
+                        "trade": doc["trade"],
+                        "actualized_headcount": int(doc["headcount"]),
+                    },
+                    actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                )
+    except Exception:
+        # Don't fail the presence write if the actualization hook hiccups.
+        # The next leveling recompute will re-derive from default.
+        pass
     return DailyPresence(**doc)
 
 

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState, useCallback } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle } from "lucide-react";
+import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -12,6 +12,110 @@ const EMPTY = {
   planned_start: "", planned_finish: "", duration_days: "",
   predecessors: "", is_milestone: false,
 };
+
+// Bucket H Phase 4 -- per-task gap indicator. Fetches the resource-
+// leveling dashboard for the active project + 60-day window and
+// builds a task_id -> worst-severity-cell-attribution map.
+//
+// Phase 5 (pulled-forward fix #2): refetches every 5 minutes while
+// the Tasks tab is visible. Pauses on visibilitychange=hidden so a
+// backgrounded tab doesn't ping the backend, and triggers an
+// immediate refetch on return-to-foreground so the user sees fresh
+// numbers when they switch back from another window.
+const GAP_POLL_INTERVAL_MS = 5 * 60 * 1000;   // 5 minutes
+
+function useTaskGapIndicator(projectId) {
+  const [byTaskId, setByTaskId] = useState({});
+  useEffect(() => {
+    if (!projectId) { setByTaskId({}); return undefined; }
+    let cancelled = false;
+    const fetchOnce = async () => {
+      const today = new Date();
+      const end = new Date();
+      end.setDate(today.getDate() + 60);
+      const startIso = today.toISOString().slice(0, 10);
+      const endIso = end.toISOString().slice(0, 10);
+      try {
+        const r = await api.get(`/resource-leveling/dashboard`, {
+          params: { date_range_start: startIso, date_range_end: endIso,
+                     project_id: projectId },
+        });
+        if (cancelled) return;
+        const out = {};
+        const severityRank = { major: 3, moderate: 2, minor: 1 };
+        const cells = r.data?.cells || {};
+        Object.entries(cells).forEach(([trade, byDate]) => {
+          Object.entries(byDate).forEach(([dateIso, cell]) => {
+            if (!["minor", "moderate", "major"].includes(cell.severity)) return;
+            for (const tid of (cell.contributing_task_ids || [])) {
+              const existing = out[tid];
+              const cur = severityRank[cell.severity] || 0;
+              const prev = existing ? (severityRank[existing.severity] || 0) : 0;
+              if (cur > prev) {
+                out[tid] = {
+                  severity: cell.severity,
+                  trade, date: dateIso,
+                  is_critical_path: !!cell.is_critical_path,
+                  gap: cell.gap, gap_id: cell.id,
+                };
+              }
+            }
+          });
+        });
+        setByTaskId(out);
+      } catch {
+        if (!cancelled) setByTaskId({});
+      }
+    };
+    // Initial fetch.
+    fetchOnce();
+    // Polling: recurring setTimeout (re-armed after each fetch) so we
+    // don't stack pending requests on a slow network. Skipped when
+    // document.hidden -- visibilitychange handler resumes on focus.
+    let timerId = null;
+    const scheduleNext = () => {
+      if (cancelled) return;
+      timerId = setTimeout(async () => {
+        if (cancelled || document.hidden) return;
+        await fetchOnce();
+        scheduleNext();
+      }, GAP_POLL_INTERVAL_MS);
+    };
+    scheduleNext();
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      if (timerId) clearTimeout(timerId);
+      fetchOnce().then(scheduleNext);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      if (timerId) clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [projectId]);
+  return byTaskId;
+}
+
+function TaskGapIcon({ gap }) {
+  if (!gap) return null;
+  const tone = gap.is_critical_path
+    ? "text-rose-700 bg-rose-100 border-rose-300"
+    : gap.severity === "major"
+      ? "text-rose-700 bg-rose-50 border-rose-200"
+      : gap.severity === "moderate"
+        ? "text-orange-800 bg-orange-50 border-orange-200"
+        : "text-amber-800 bg-amber-50 border-amber-200";
+  return (
+    <Link to={`/resource-leveling?tab=gaps&trade=${encodeURIComponent(gap.trade)}`}
+      title={`${gap.trade} shortage on ${gap.date} (gap ${gap.gap}${gap.is_critical_path ? ", on CP" : ""}). Click to open Resource Leveling.`}
+      data-testid={`task-gap-icon-${gap.gap_id}`}
+      className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded border text-[10px] font-mono ${tone}`}>
+      <Users className="h-3 w-3" />
+      <span className="hidden md:inline">{gap.severity[0].toUpperCase()}</span>
+    </Link>
+  );
+}
 
 export default function Tasks() {
   const { activeId, projects } = useProjects();
@@ -23,6 +127,8 @@ export default function Tasks() {
   const [form, setForm] = useState(EMPTY);
   // Bucket C1 Phase 3 — only one blocker popover open at a time.
   const [openBlockerId, setOpenBlockerId] = useState(null);
+  // Bucket H Phase 4 -- per-task resource-leveling gap indicator.
+  const gapByTaskId = useTaskGapIndicator(activeId);
   const project = projects.find((p) => p.id === activeId);
 
   const load = () => activeId && api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data));
@@ -100,6 +206,15 @@ export default function Tasks() {
 
   return (
     <div data-testid="tasks-page" className="space-y-4">
+      {/* Bucket G Phase 4 (2026-05-11) -- schedule-import suggestions
+          banner. Renders when this project has pending AI-trade-
+          inference suggestions on schedule_activity rows (the BG task
+          on /schedule-proposals/{id}/approve drops these in bulk).
+          PM can route to the Review Queue or bulk-accept all in one
+          click; saves ~30 min on a 50-task import. */}
+      {activeId && (
+        <ScheduleAiSuggestionsBanner projectId={activeId} />
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Schedule activities</h1>
@@ -195,6 +310,7 @@ export default function Tasks() {
               <th title="Open blockers (delays / RFIs / field-issues linked to this task). Click to see them.">Blockers</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
               <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
+              <th title="Resource gap. Surfaces when the master schedule's trade demand exceeds crew supply on at least one day in this task's date range.">Gap</th>
               <th></th>
             </tr>
           </thead>
@@ -233,6 +349,7 @@ export default function Tasks() {
                 <td className="tabular-nums text-xs" title="Days of slack before this task delays the project finish">
                   {t.total_float_days ?? "—"}
                 </td>
+                <td><TaskGapIcon gap={gapByTaskId[t.id]} /></td>
                 <td className="text-right">
                   <button data-testid={`edit-task-${t.activity_code}`} onClick={() => openEdit(t)} title="Edit" className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100">
                     <Pencil className="h-3.5 w-3.5" />
@@ -357,6 +474,181 @@ function BlockerCell({ task, open, onToggle }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// =====================================================================
+// Bucket G Phase 4 -- schedule-import AI suggestions banner.
+//
+// Surfaces a sticky toast-style banner when the project has pending
+// AI trade-inference suggestions (entity_type=schedule_activity,
+// source=ai_schedule_analyzer). Two affordances:
+//   - "Review all" routes to the Review Queue inside the Approvals
+//     page with the filters pre-applied.
+//   - "Bulk accept defaults" hits the bulk-confirm endpoint with
+//     up to 50 ids at a time, chunking until the queue is empty.
+//
+// Dismissable per-session (sessionStorage). Re-polls on tab focus.
+// =====================================================================
+const TASKS_SUGGESTIONS_DISMISS_KEY = "ice.tasks.ai_suggestions.dismissed";
+
+function ScheduleAiSuggestionsBanner({ projectId }) {
+  const navigate = useNavigate();
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [dismissed, setDismissed] = useState(() => {
+    try { return sessionStorage.getItem(TASKS_SUGGESTIONS_DISMISS_KEY) === "1"; }
+    catch { return false; }
+  });
+
+  const load = useCallback(async () => {
+    if (!projectId) return;
+    setLoading(true);
+    try {
+      // Hit the per-user pending feed with explicit filters so we
+      // only see the schedule-activity rows that ai_schedule_analyzer
+      // produced. The endpoint server-side filters by role+status;
+      // we then client-filter by source since the server endpoint
+      // doesn't expose a source-filter param.
+      const { data } = await api.get("/users/current/pending-suggestions", {
+        params: {
+          project_id: projectId,
+          entity_type: "schedule_activity",
+          limit: 200,
+        },
+      });
+      const list = (data?.rows || [])
+        .filter((r) => r.suggested_by === "ai_schedule_analyzer");
+      setRows(list);
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    load();
+    const onVis = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [load]);
+
+  const reviewAll = () => {
+    // The Approvals page reads the active tab from local state; we
+    // deep-link via a query param so it lands on the Pending
+    // suggestions tab with the entity_type filter pre-applied. The
+    // Phase 5 polish could wire URL state directly into Approvals.
+    navigate(
+      "/approvals?tab=suggestions&entity_type=schedule_activity"
+      + `&source=ai_schedule_analyzer&project=${projectId}`,
+    );
+  };
+
+  const bulkAcceptDefaults = async () => {
+    if (busy || rows.length === 0) return;
+    setBusy(true);
+    let chunk = 0;
+    let confirmed = 0;
+    let failed = 0;
+    try {
+      // Chunked at 50 per call (matches backend BULK_CAP). Stop on
+      // first hard error so the user can investigate.
+      const remaining = [...rows];
+      while (remaining.length) {
+        const ids = remaining.splice(0, 50).map((r) => r.id);
+        chunk += 1;
+        const { data } = await api.post("/field-suggestions/bulk-confirm", {
+          suggestion_ids: ids,
+        });
+        confirmed += (data?.success_count || 0);
+        failed += (data?.failure_count || 0);
+      }
+      if (confirmed > 0) {
+        toast.success(
+          `Confirmed ${confirmed} AI suggestion(s) across ${chunk} chunk(s).`
+          + (failed > 0 ? ` ${failed} skipped (role / race).` : ""),
+        );
+      } else if (failed > 0) {
+        toast.info(`${failed} suggestion(s) skipped (role / race / not-found).`);
+      }
+      await load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Bulk accept failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = () => {
+    try { sessionStorage.setItem(TASKS_SUGGESTIONS_DISMISS_KEY, "1"); }
+    catch { /* sessionStorage unavailable -- no-op */ }
+    setDismissed(true);
+  };
+
+  if (loading && rows.length === 0) return null;
+  if (dismissed) return null;
+  if (rows.length === 0) return null;
+
+  return (
+    <div
+      data-testid="tasks-ai-suggestions-banner"
+      className="bg-blue-50 border border-blue-300 rounded p-3 text-sm text-blue-900 flex items-start gap-2"
+    >
+      <Sparkles className="h-4 w-4 mt-0.5 shrink-0 text-blue-700" />
+      <div className="flex-1">
+        <div className="font-medium">
+          {rows.length} schedule activit{rows.length === 1 ? "y has" : "ies have"} AI
+          trade/headcount suggestions.
+        </div>
+        <div className="text-xs mt-0.5">
+          Confidence 70% across the rule-based analyzer. Review each one or
+          accept the defaults in one click -- you save roughly{" "}
+          {Math.ceil(rows.length * 0.6)} minute(s) vs. per-row review.
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          <button
+            data-testid="tasks-ai-banner-review"
+            onClick={reviewAll}
+            className="h-8 px-3 rounded bg-white border border-blue-300 text-blue-900 text-xs hover:bg-blue-100"
+          >
+            Review all
+          </button>
+          <button
+            data-testid="tasks-ai-banner-bulk-accept"
+            onClick={bulkAcceptDefaults}
+            disabled={busy}
+            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {busy
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <Check className="h-3 w-3" />}
+            Bulk accept defaults
+          </button>
+          <button
+            data-testid="tasks-ai-banner-refresh"
+            onClick={load}
+            disabled={busy || loading}
+            className="h-8 px-2 rounded border border-blue-300 bg-white text-blue-700 text-xs"
+            title="Re-check"
+          >
+            <Loader2 className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+      <button
+        data-testid="tasks-ai-banner-dismiss"
+        onClick={dismiss}
+        title="Hide until next session"
+        className="text-blue-700 hover:text-blue-900 p-1"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
