@@ -566,6 +566,19 @@ async def _tool_create_safety_event(ctx: dict, args: dict) -> dict:
         "created_at": utc_now().isoformat(),
     }
     await db.safety_events.insert_one(doc.copy())
+    # Bucket G Phase 2 -- AI safety-analyzer producer. The description
+    # (+ severity / event_type if AI-derived) lands as pending Jigsaw
+    # suggestions on the freshly-created safety event so a human
+    # confirms what the copilot wrote. Audit trail preserves AI
+    # authorship + the confirmation decision.
+    await _emit_copilot_suggestions(
+        ctx=ctx, entity_type="safety_event", entity_id=doc["id"],
+        project_id=doc.get("project_id"),
+        fields={"description": doc["description"],
+                 "severity": doc.get("severity"),
+                 "event_type": doc.get("event_type")},
+        source="ai_safety_analyzer",
+    )
     return {"created": {"resource": "safety_event", "id": doc["id"], "description": doc["description"]}}
 
 
@@ -589,7 +602,60 @@ async def _tool_create_qc_issue(ctx: dict, args: dict) -> dict:
         "created_at": utc_now().isoformat(),
     }
     await db.qc_issues.insert_one(doc.copy())
+    # Bucket G Phase 2 -- AI qc-analyzer producer. Same pattern as
+    # safety: emit pending suggestions on the description + severity
+    # so a human confirms what the copilot wrote.
+    await _emit_copilot_suggestions(
+        ctx=ctx, entity_type="qc_issue", entity_id=doc["id"],
+        project_id=doc.get("project_id"),
+        fields={"description": doc["description"],
+                 "severity": doc.get("severity")},
+        source="ai_qc_analyzer",
+    )
     return {"created": {"resource": "qc_issue", "id": doc["id"], "description": doc["description"]}}
+
+
+# =====================================================================
+# Bucket G Phase 2 -- shared helper for copilot tool producers.
+# Suggested defaults (severity="minor", event_type="near_miss") are
+# excluded; the suggestion framework should only flag fields that
+# the AI provided substantively, otherwise users get a sea of
+# "AI suggested 'minor'" badges that are just defaults.
+# =====================================================================
+_COPILOT_DEFAULT_VALUES = {"minor", "near_miss"}
+
+
+async def _emit_copilot_suggestions(
+    *, ctx: dict, entity_type: str, entity_id: str,
+    project_id: Optional[str], fields: dict, source: str,
+) -> None:
+    if not project_id:
+        return
+    try:
+        from services import field_suggestions as fs
+        for fpath, val in (fields or {}).items():
+            if val is None:
+                continue
+            # Skip stamp-only defaults.
+            if isinstance(val, str) and val in _COPILOT_DEFAULT_VALUES:
+                continue
+            await fs.create_suggestion(
+                tenant_id=ctx["tenant_id"], project_id=project_id,
+                entity_type=entity_type, entity_id=entity_id,
+                field_path=fpath, suggested_value=val,
+                suggested_by=source,
+                source_context=(
+                    f"copilot_tool=create_{entity_type}; "
+                    f"actor={ctx['user']['id']}"
+                ),
+                actor_id=ctx["user"]["id"],
+                request_id=ctx.get("request_id"),
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger("copilot_tools").warning(
+            "field_suggestion producer (%s) failed: %s", source, exc,
+        )
 
 
 async def _tool_create_delivery(ctx: dict, args: dict) -> dict:

@@ -593,6 +593,36 @@ async def generate_mitigation_scenarios(
         }}
     await db.delays.update_one({"tenant_id": tenant_id, "id": delay_id}, update)
 
+    # Bucket G Phase 2 -- calibration_rag producer hook. When the
+    # calibration block was non-empty (we had prior outcomes to
+    # calibrate against) AND there's no chosen mitigation yet, drop
+    # a Jigsaw suggestion pointing at the top-confidence scenario.
+    # PM confirms in the Jigsaw widget. Best-effort.
+    try:
+        if calibration_block and not delay.get("chosen_mitigation_id") and persisted:
+            top = max(
+                persisted, key=lambda m: float(m.get("estimated_confidence") or 0),
+            )
+            from services import field_suggestions as fs
+            await fs.create_suggestion(
+                tenant_id=tenant_id, project_id=project_id or "",
+                entity_type="delay", entity_id=delay_id,
+                field_path="chosen_mitigation_id",
+                suggested_value=top["id"],
+                suggested_by="calibration_rag",
+                confidence_score=float(top.get("estimated_confidence") or 0),
+                source_context=(
+                    f"top_of_3_scenarios; calibrated against prior outcomes; "
+                    f"strategy={top.get('strategy_name', '')[:80]}"
+                ),
+                actor_id=proposed_by_user_id,
+                request_id=f"mitigation_calibration_{delay_id}",
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger("ai_agents").warning(
+            "calibration_rag field_suggestion producer failed: %s", exc,
+        )
     return persisted
 
 
@@ -731,4 +761,27 @@ async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
         ok = False
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     await _track_usage(tenant_id, request_id, latency_ms, ok)
+    # Bucket G Phase 2 -- calibration_rag producer hook. On a
+    # successful narrative generation, drop a Jigsaw suggestion on
+    # delay.ai_report so PMs see the AI-authored narrative awaiting
+    # explicit confirmation instead of having it land as authoritative
+    # data without review. Best-effort.
+    if ok and resp and delay.get("id"):
+        try:
+            from services import field_suggestions as fs
+            await fs.create_suggestion(
+                tenant_id=tenant_id,
+                project_id=delay.get("project_id") or "",
+                entity_type="delay", entity_id=delay["id"],
+                field_path="ai_report",
+                suggested_value=str(resp),
+                suggested_by="calibration_rag",
+                source_context=f"delay_report_session={request_id}",
+                actor_id=None, request_id=request_id,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger("ai_agents").warning(
+                "calibration_rag delay-report field_suggestion failed: %s", exc,
+            )
     return resp

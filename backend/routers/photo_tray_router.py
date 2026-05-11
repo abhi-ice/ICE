@@ -611,7 +611,151 @@ async def create_photo_tag(
         },
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+
+    # Bucket G Phase 2 (2026-05-11) -- Photo AI producer hook.
+    # When a tray with a high-confidence AI analysis gets tagged to
+    # an event, drop field suggestions on the linked event so the
+    # event's form lights up with the Jigsaw light-green pre-fill.
+    # Best-effort; failures here never block the tag-create.
+    try:
+        await _create_photo_ai_field_suggestions(
+            tenant_id=ctx["tenant_id"],
+            project_id=tray["project_id"],
+            tray=tray, ref_field=ref_field, ref_id=ref_id,
+            event_doc=ev, actor_id=ctx["user"]["id"],
+            request_id=ctx["request_id"],
+        )
+    except Exception as exc:
+        # Never fail the tag insert just because the suggestion
+        # producer choked. Log + carry on.
+        import logging
+        logging.getLogger("photo_tray_router").warning(
+            "photo_ai field_suggestion producer failed: %s", exc,
+        )
     return photo_doc
+
+
+# =====================================================================
+# Bucket G Phase 2 -- Photo AI producer hook helper. Lives here
+# (instead of services/field_suggestions.py) because it needs the
+# photo_tray_router's per-event-type knowledge of which field on
+# which collection to suggest into. The service module stays generic.
+# =====================================================================
+
+# Per-ref_field, which destination collection + field path takes the
+# AI caption. RFIs use "body", coordination events use "summary",
+# delays/qc/safety/delivery use "description". daily_report_activity
+# and drawing_pin tags don't get a caption suggestion (the field is
+# narrative + free-form, and drawing_pin photos are pure evidence).
+_REF_TO_CAPTION_TARGET: dict[str, tuple[str, str]] = {
+    "delay_id":              ("delay",              "description"),
+    "rfi_id":                ("rfi",                "body"),
+    "qc_issue_id":           ("qc_issue",           "description"),
+    "safety_event_id":       ("safety_event",       "description"),
+    "coordination_event_id": ("coordination_event", "summary"),
+    "delivery_id":           ("delivery",           "description"),
+}
+
+# Safety-concern keyword -> osha_classification mapping. Loose
+# substring match against any concern in the tray's
+# ai_safety_concerns_detected list. Defaults to "general" when
+# nothing matches but at least one concern was flagged.
+_OSHA_CLASS_BY_CONCERN = [
+    (("fall", "height", "no harness"),               "fall"),
+    (("ppe", "hard hat", "safety glasses",
+       "high-vis", "hi-vis"),                         "ppe_violation"),
+    (("electrical", "exposed wire", "live circuit"), "electrical"),
+    (("fire", "ignition", "flammable",
+       "extinguisher"),                              "fire"),
+    (("trench", "excavation", "shoring"),            "excavation"),
+    (("scaffold", "platform"),                       "scaffold"),
+    (("rebar", "exposed steel"),                     "struck_by"),
+]
+
+
+def _infer_osha_classification(concerns: list[str]) -> str:
+    for c in concerns or []:
+        lc = (c or "").lower()
+        for keywords, klass in _OSHA_CLASS_BY_CONCERN:
+            if any(k in lc for k in keywords):
+                return klass
+    return "general"
+
+
+async def _create_photo_ai_field_suggestions(
+    *, tenant_id: str, project_id: str, tray: dict,
+    ref_field: str, ref_id: str, event_doc: dict,
+    actor_id: str, request_id: str,
+) -> None:
+    """The producer body. Emits one or more FIELD_SUGGESTION_CREATED
+    audit rows when conditions are met. No-op if tray has no AI
+    complete analysis OR confidence too low OR event already has a
+    non-empty value for the target field (don't overwrite human work
+    with AI guesses)."""
+    if tray.get("ai_analysis_status") != "complete":
+        return
+    confidence = tray.get("ai_confidence_score")
+    if confidence is None or float(confidence) <= 0.3:
+        return
+
+    from services import field_suggestions as fs
+
+    # ---- Caption -> event.description / body / summary ----
+    caption = (tray.get("ai_suggested_caption") or "").strip()
+    target = _REF_TO_CAPTION_TARGET.get(ref_field)
+    if caption and target:
+        entity_type, field_path = target
+        # Only suggest if the field is currently empty -- a human-
+        # written description always wins.
+        existing_val = (event_doc.get(field_path) or "").strip() \
+            if isinstance(event_doc.get(field_path), str) else event_doc.get(field_path)
+        if not existing_val:
+            await fs.create_suggestion(
+                tenant_id=tenant_id, project_id=project_id,
+                entity_type=entity_type, entity_id=ref_id,
+                field_path=field_path,
+                suggested_value=caption,
+                suggested_by="ai_photo_vision",
+                confidence_score=float(confidence),
+                source_context=f"photo_tray_id={tray.get('id')}",
+                actor_id=actor_id, request_id=request_id,
+            )
+
+    # ---- Safety concerns -> safety_event.osha_classification ----
+    if ref_field == "safety_event_id":
+        concerns = list(tray.get("ai_safety_concerns_detected") or [])
+        if concerns and not event_doc.get("osha_classification"):
+            klass = _infer_osha_classification(concerns)
+            await fs.create_suggestion(
+                tenant_id=tenant_id, project_id=project_id,
+                entity_type="safety_event", entity_id=ref_id,
+                field_path="osha_classification",
+                suggested_value=klass,
+                suggested_by="ai_photo_vision",
+                confidence_score=float(confidence),
+                source_context=(
+                    f"photo_tray_id={tray.get('id')}; "
+                    f"concerns={','.join(concerns[:5])}"
+                ),
+                actor_id=actor_id, request_id=request_id,
+            )
+
+    # ---- Trade -> entity.trade where the entity has a trade field.
+    # delays, rfis, qc_issues don't carry trade directly; only
+    # coordination_events do (via trade_code). Skip for now.
+    trade = (tray.get("ai_suggested_trade") or "").strip()
+    if trade and ref_field == "coordination_event_id":
+        if not event_doc.get("trade_code"):
+            await fs.create_suggestion(
+                tenant_id=tenant_id, project_id=project_id,
+                entity_type="coordination_event", entity_id=ref_id,
+                field_path="trade_code",
+                suggested_value=trade,
+                suggested_by="ai_photo_vision",
+                confidence_score=float(confidence),
+                source_context=f"photo_tray_id={tray.get('id')}",
+                actor_id=actor_id, request_id=request_id,
+            )
 
 
 @router.get("/photo-tray/{tray_id}/tags")

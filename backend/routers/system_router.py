@@ -220,13 +220,78 @@ async def list_recovery(project_id: str, ctx: dict = Depends(require_tenant)):
 
 @router.post("/ai/rfi-draft")
 async def ai_rfi_draft(payload: RfiDraftRequest, ctx: dict = Depends(require_tenant)):
-    return await rfi_draft(
+    out = await rfi_draft(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
         subject=payload.subject,
         context=payload.context,
         schedule_activity_id=payload.schedule_activity_id,
     )
+    # Bucket G Phase 2 -- when an existing RFI shell id is supplied,
+    # create field suggestions on that RFI so the form lights up
+    # with the Jigsaw pre-fill pattern. Best-effort; failures here
+    # never break the draft response.
+    if payload.rfi_id and out.get("draft"):
+        try:
+            from services import field_suggestions as fs
+            db = get_db()
+            rfi = await db.rfis.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": payload.rfi_id}),
+                {"_id": 0, "id": 1, "project_id": 1, "body": 1,
+                 "subject": 1, "linked_task_ids": 1},
+            )
+            if rfi and rfi.get("project_id") == payload.project_id:
+                # Suggest the generated body if the RFI body is empty.
+                if not (rfi.get("body") or "").strip():
+                    await fs.create_suggestion(
+                        tenant_id=ctx["tenant_id"],
+                        project_id=payload.project_id,
+                        entity_type="rfi", entity_id=payload.rfi_id,
+                        field_path="body",
+                        suggested_value=out["draft"],
+                        suggested_by="ai_rfi_drafter",
+                        source_context=f"rfi_draft_session={ctx['request_id']}",
+                        actor_id=ctx["user"]["id"],
+                        request_id=ctx["request_id"],
+                    )
+                # If the caller provided a subject AND the RFI has no
+                # subject yet, surface the caller-typed subject as a
+                # suggestion (allows the form to still light-green
+                # confirm the subject the user typed in the drafter
+                # dialog before saving).
+                if payload.subject and not (rfi.get("subject") or "").strip():
+                    await fs.create_suggestion(
+                        tenant_id=ctx["tenant_id"],
+                        project_id=payload.project_id,
+                        entity_type="rfi", entity_id=payload.rfi_id,
+                        field_path="subject",
+                        suggested_value=payload.subject,
+                        suggested_by="ai_rfi_drafter",
+                        source_context=f"rfi_draft_session={ctx['request_id']}",
+                        actor_id=ctx["user"]["id"],
+                        request_id=ctx["request_id"],
+                    )
+                # Schedule activity -> linked_task_ids suggestion when
+                # the RFI has none.
+                if (payload.schedule_activity_id
+                        and not (rfi.get("linked_task_ids") or [])):
+                    await fs.create_suggestion(
+                        tenant_id=ctx["tenant_id"],
+                        project_id=payload.project_id,
+                        entity_type="rfi", entity_id=payload.rfi_id,
+                        field_path="linked_task_ids",
+                        suggested_value=[payload.schedule_activity_id],
+                        suggested_by="ai_rfi_drafter",
+                        source_context=f"rfi_draft_session={ctx['request_id']}",
+                        actor_id=ctx["user"]["id"],
+                        request_id=ctx["request_id"],
+                    )
+        except Exception as exc:
+            import logging
+            logging.getLogger("system_router").warning(
+                "ai_rfi_drafter field_suggestion producer failed: %s", exc,
+            )
+    return out
 
 
 # --- Dashboard summary ---

@@ -360,6 +360,40 @@ async def approve_proposal(
             pass
     bg.add_task(_bg_recompute_demand, ctx["tenant_id"], project_id)
 
+    # Bucket G Phase 2 hook -- rule-based trade inference. Scan the
+    # newly-imported tasks for trade-keyword matches and drop Jigsaw
+    # FieldSuggestion rows for required_trade + required_headcount on
+    # every match. PM bulk-confirms in the Review Queue UI (Phase 3).
+    # BackgroundTask so the approval response stays fast on large
+    # schedules; the suggestions are best-effort (failures don't roll
+    # back the approval).
+    async def _bg_infer_trades(tenant_id: str, pid: str, request_id: str,
+                                  actor_id: str):
+        try:
+            from services.schedule_trade_inference import infer_trades_for_project
+            out = await infer_trades_for_project(
+                tenant_id=tenant_id, project_id=pid,
+                actor_id=actor_id, request_id=request_id,
+            )
+            await write_audit(
+                tenant_id=tenant_id, table_name="field_suggestions",
+                op="FIELD_SUGGESTIONS_SCHEDULE_TRADE_INFERENCE",
+                record_id=pid, before=None,
+                after={"trigger": "schedule_import",
+                        "project_id": pid, "result": out},
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger("schedule_proposals_router").warning(
+                "schedule_trade_inference background task failed",
+                exc_info=True,
+            )
+    bg.add_task(
+        _bg_infer_trades, ctx["tenant_id"], project_id,
+        ctx["request_id"], ctx["user"]["id"],
+    )
+
     # Bucket C3c Phase 1 — schedule version diff against prior approved
     # proposal. Runs as BackgroundTask so the approval response stays fast
     # (diff walks both schedules and writes audit; can take seconds on

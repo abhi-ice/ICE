@@ -2005,6 +2005,13 @@ class RfiDraftRequest(StrictModel):
     subject: str
     context: str
     schedule_activity_id: Optional[str] = None
+    # Bucket G Phase 2 -- when an existing RFI shell is being drafted
+    # into (frontend has already inserted a placeholder RFI), passing
+    # its id wires the AI output through the field_suggestions
+    # framework as light-green pre-fills for body + linked_task_ids.
+    # Optional: legacy callers that just want the draft text don't
+    # need to change.
+    rfi_id: Optional[str] = None
 
 
 # ============================================================
