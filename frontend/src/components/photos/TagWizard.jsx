@@ -1,11 +1,34 @@
 // Bucket D Phase 2 -- 3-step tag wizard. Pick DR -> Pick event type ->
 // Pick the specific event row on that DR. Creates a Photo (tagging
 // junction) row via POST /photo-tags. XOR enforced server-side.
+//
+// Bucket F Phase 3 (2026-05-08) -- AI pre-fill. When the tray row
+// carries an AI suggestion (status=complete with non-empty fields),
+// the wizard pre-selects suggested event type on step 2 + filters
+// the step-3 list by suggested trade (with a "Show all trades"
+// toggle so the user can override -- some QC issues span multiple
+// trades and we don't hide options). On submit, the Photo row gets
+// created_via_ai_suggestion + ai_suggestion_id + ai_confidence_at_
+// tag_time stamped on it.
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, ChevronLeft, Check, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronLeft, Check, Loader2, Sparkles, Filter } from "lucide-react";
 import api from "../../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { toast } from "../ui/sonner";
+
+// Map AI-suggested event type values to the wizard's EVENT_TYPES.value.
+// AI returns "qc_issue" / "safety_event" / etc.; wizard fields are
+// "qc_issue_id" / "safety_event_id" / etc. "none" / "delay" / others
+// fall through to the default activity tagging.
+const AI_TO_WIZARD_EVENT_TYPE = {
+  delay: "delay_id",
+  rfi: "rfi_id",
+  qc_issue: "qc_issue_id",
+  safety_event: "safety_event_id",
+  coordination_event: "coordination_event_id",
+  delivery: "delivery_id",
+  none: "daily_report_activity_id",
+};
 
 const EVENT_TYPES = [
   { value: "daily_report_activity_id", label: "Activity (WBS row)", coll: "activities" },
@@ -36,16 +59,53 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
   const [photoClass, setPhotoClass] = useState("progress");
   const [caption, setCaption] = useState("");
   const [busy, setBusy] = useState(false);
+  // Bucket F Phase 3 -- AI pre-fill state. aiSuggestion is the most
+  // recent AI suggestion blob for this tray (loaded via the same
+  // /ai-analysis endpoint AiAnalysisCard polls). showAllTrades=false
+  // filters step-3 options by the suggested trade; true expands.
+  const [aiSuggestion, setAiSuggestion] = useState(null);
+  const [showAllTrades, setShowAllTrades] = useState(false);
 
   // Reset when the dialog opens for a new tray entry.
   useEffect(() => {
     if (!open) return;
     setStep(1);
-    setEventType("daily_report_activity_id");
     setEventOptions([]);
     setEventId("");
-    setPhotoClass("progress");
-    setCaption("");
+    setShowAllTrades(false);
+    // Pull the AI suggestion + use it for the initial selections.
+    // The tray row carries the AI fields directly from the upload
+    // response, but we re-fetch to make sure we have the freshest
+    // values (the analysis may have completed after the modal opened).
+    let trayAi = null;
+    if (tray?.ai_analysis_status === "complete") {
+      trayAi = {
+        ai_analysis_status: tray.ai_analysis_status,
+        ai_suggested_class: tray.ai_suggested_class,
+        ai_suggested_caption: tray.ai_suggested_caption,
+        ai_suggested_event_type: tray.ai_suggested_event_type,
+        ai_suggested_trade: tray.ai_suggested_trade,
+        ai_confidence_score: tray.ai_confidence_score,
+      };
+    }
+    setAiSuggestion(trayAi);
+    if (tray?.id) {
+      api.get(`/photo-tray/${tray.id}/ai-analysis`)
+        .then((r) => {
+          if (r.data?.ai_analysis_status === "complete") {
+            setAiSuggestion(r.data);
+          }
+        })
+        .catch(() => { /* keep tray-row values; non-fatal */ });
+    }
+    // Default initial event type + class + caption from AI suggestion
+    // when available. User can still change everything before save.
+    const aiEvent = trayAi?.ai_suggested_event_type;
+    const wizardEv = AI_TO_WIZARD_EVENT_TYPE[aiEvent] || "daily_report_activity_id";
+    setEventType(wizardEv);
+    const aiClass = trayAi?.ai_suggested_class;
+    setPhotoClass(aiClass && aiClass !== "other" ? aiClass : "progress");
+    setCaption(trayAi?.ai_suggested_caption || "");
     // Pre-pick DR from tray's exif_taken_at date if available, else today.
     const exifDate = tray?.exif_taken_at ? String(tray.exif_taken_at).slice(0, 10) : null;
     setDrId("");
@@ -64,7 +124,27 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
         .catch(() => setDrs([]))
         .finally(() => setDrsLoading(false));
     }
-  }, [open, projectId, tray?.id]);
+  }, [open, projectId, tray?.id, tray?.ai_analysis_status,
+       tray?.ai_suggested_event_type, tray?.ai_suggested_class,
+       tray?.ai_suggested_caption, tray?.ai_suggested_trade,
+       tray?.ai_confidence_score]);
+
+  // Bucket F Phase 3 -- step-3 trade filter. When AI suggested a
+  // trade AND the user hasn't toggled showAllTrades, filter options
+  // by trade_code (events carry trade_code on most collections;
+  // daily_report_activities have it via the linked task).
+  const filteredEventOptions = useMemo(() => {
+    const suggestedTrade = aiSuggestion?.ai_suggested_trade;
+    if (!suggestedTrade || showAllTrades) return eventOptions;
+    const wanted = suggestedTrade.toLowerCase().trim();
+    const matched = eventOptions.filter((o) => {
+      const t = (o.trade_code || o.trade || "").toLowerCase().trim();
+      return t && (t === wanted || t.includes(wanted) || wanted.includes(t));
+    });
+    // If filter removes everything, fall back to all options so the
+    // user isn't stranded with an empty picker.
+    return matched.length ? matched : eventOptions;
+  }, [eventOptions, aiSuggestion, showAllTrades]);
 
   // Load event options for step 3 whenever drId / eventType change.
   useEffect(() => {
@@ -131,6 +211,15 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
         daily_report_activity_id: null, delay_id: null, rfi_id: null,
         qc_issue_id: null, safety_event_id: null,
         coordination_event_id: null, delivery_id: null, drawing_pin_id: null,
+        // Bucket F Phase 3 -- AI lineage. True when an AI suggestion
+        // was loaded for this tray AND the user didn't override the
+        // suggested class/event/caption. The override path keeps the
+        // flag true; the lineage IS that this tag started from AI.
+        // Use ai_suggestion_id = the tray id (each tray has one
+        // analysis cycle; tray.id is the durable handle).
+        created_via_ai_suggestion: !!aiSuggestion,
+        ai_suggestion_id: aiSuggestion ? tray.id : null,
+        ai_confidence_at_tag_time: aiSuggestion?.ai_confidence_score ?? null,
       };
       payload[eventType] = eventId;
       const res = await api.post("/photo-tags", payload);
@@ -173,17 +262,34 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
 
           {step === 2 && (
             <>
-              <div className="text-xs text-slate-500">Pick the event type.</div>
+              <div className="text-xs text-slate-500 flex items-center gap-2">
+                <span>Pick the event type.</span>
+                {aiSuggestion?.ai_suggested_event_type && (
+                  <span data-testid="tag-wizard-ai-event-badge"
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200 text-[10px]">
+                    <Sparkles className="h-3 w-3" />
+                    AI suggested: {(aiSuggestion.ai_suggested_event_type || "").replace(/_/g, " ")}
+                  </span>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-2">
-                {EVENT_TYPES.map((t) => (
-                  <button key={t.value} data-testid={`tag-wizard-type-${t.value}`}
-                    onClick={() => setEventType(t.value)}
-                    className={`h-10 rounded border text-sm text-left px-3 ${
-                      eventType === t.value ? "border-blue-500 bg-blue-50 text-blue-800" : "border-slate-200 hover:border-slate-300"
-                    }`}>
-                    {t.label}
-                  </button>
-                ))}
+                {EVENT_TYPES.map((t) => {
+                  const isAiPick = AI_TO_WIZARD_EVENT_TYPE[
+                    aiSuggestion?.ai_suggested_event_type
+                  ] === t.value;
+                  return (
+                    <button key={t.value} data-testid={`tag-wizard-type-${t.value}`}
+                      onClick={() => setEventType(t.value)}
+                      className={`h-10 rounded border text-sm text-left px-3 flex items-center justify-between ${
+                        eventType === t.value ? "border-blue-500 bg-blue-50 text-blue-800" : "border-slate-200 hover:border-slate-300"
+                      }`}>
+                      <span>{t.label}</span>
+                      {isAiPick && (
+                        <Sparkles className="h-3 w-3 text-blue-600" title="AI suggested this" />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
               <div className="flex justify-between">
                 <button onClick={() => setStep(1)} className="h-9 px-3 rounded bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 inline-flex items-center gap-1">
@@ -202,6 +308,31 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
               <div className="text-xs text-slate-500">
                 Pick the specific {EVENT_TYPES.find((t) => t.value === eventType)?.label || "event"} on this DR.
               </div>
+              {/* Bucket F Phase 3 -- trade filter toggle. Visible only
+                  when AI suggested a trade. Default ON = filter; OFF
+                  = show all. We never hide options entirely (some QC
+                  issues span trades); the toggle is the escape hatch. */}
+              {aiSuggestion?.ai_suggested_trade && eventOptions.length > 0 && (
+                <div data-testid="tag-wizard-trade-filter"
+                  className="flex items-center justify-between px-2 py-1 rounded bg-blue-50 border border-blue-200 text-xs">
+                  <span className="inline-flex items-center gap-1 text-blue-900">
+                    <Filter className="h-3 w-3" />
+                    {showAllTrades
+                      ? `Showing all trades`
+                      : `Filtered by AI-suggested trade: ${aiSuggestion.ai_suggested_trade}`}
+                    {!showAllTrades && (
+                      <span className="text-blue-700">
+                        ({filteredEventOptions.length} of {eventOptions.length})
+                      </span>
+                    )}
+                  </span>
+                  <button data-testid="tag-wizard-show-all-trades"
+                    onClick={() => setShowAllTrades((v) => !v)}
+                    className="text-[10px] text-blue-700 hover:underline">
+                    {showAllTrades ? "Re-apply trade filter" : "Show all trades"}
+                  </button>
+                </div>
+              )}
               {eventOptionsLoading ? (
                 <div className="text-slate-400 inline-flex items-center gap-1"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…</div>
               ) : !eventOptions.length ? (
@@ -212,18 +343,32 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                 <select data-testid="tag-wizard-event" value={eventId} onChange={(e) => setEventId(e.target.value)}
                   className="w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
                   <option value="">— pick —</option>
-                  {eventOptions.map((o) => <option key={o.id} value={o.id}>{optionLabel(o)}</option>)}
+                  {filteredEventOptions.map((o) => <option key={o.id} value={o.id}>{optionLabel(o)}</option>)}
                 </select>
               )}
               <div>
-                <label className="text-[11px] text-slate-500 uppercase">Photo class</label>
+                <label className="text-[11px] text-slate-500 uppercase inline-flex items-center gap-1">
+                  Photo class
+                  {aiSuggestion?.ai_suggested_class && photoClass === aiSuggestion.ai_suggested_class && (
+                    <span className="text-[9px] text-blue-700 inline-flex items-center gap-0.5">
+                      <Sparkles className="h-2.5 w-2.5" /> AI
+                    </span>
+                  )}
+                </label>
                 <select data-testid="tag-wizard-class" value={photoClass} onChange={(e) => setPhotoClass(e.target.value)}
                   className="w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
                   {PHOTO_CLASSES.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
               <div>
-                <label className="text-[11px] text-slate-500 uppercase">Caption (optional)</label>
+                <label className="text-[11px] text-slate-500 uppercase inline-flex items-center gap-1">
+                  Caption (optional)
+                  {aiSuggestion?.ai_suggested_caption && caption === aiSuggestion.ai_suggested_caption && (
+                    <span className="text-[9px] text-blue-700 inline-flex items-center gap-0.5">
+                      <Sparkles className="h-2.5 w-2.5" /> AI
+                    </span>
+                  )}
+                </label>
                 <input data-testid="tag-wizard-caption" value={caption} onChange={(e) => setCaption(e.target.value)}
                   className="w-full h-9 px-2 rounded border border-slate-300 text-sm" />
               </div>

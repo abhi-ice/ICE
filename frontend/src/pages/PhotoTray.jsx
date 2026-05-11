@@ -2,13 +2,19 @@
 // they're tagged to specific DR events. Grid of tray photos with
 // status filter; click a photo to open the tagging wizard.
 import { useEffect, useState, useCallback } from "react";
-import { Camera, Upload, Filter, Archive, Check, MapPin, Clock, FileImage } from "lucide-react";
+import { Camera, Upload, Filter, Archive, Check, MapPin, Clock, FileImage, Sparkles, X as XIcon } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import TagWizard from "../components/photos/TagWizard";
+import AiAnalysisCard from "../components/photos/AiAnalysisCard";
 import { useUrlState } from "../lib/useUrlState";
+
+// Bucket F Phase 3 -- first-run tooltip dismissable per user via
+// localStorage. Shown the first time a user opens the tray modal
+// after the AI feature ships.
+const AI_FIRSTRUN_KEY = "ice.photoai.firstrun.v1";
 
 const STATUS_LABELS = {
   untagged:           { label: "Untagged",           tone: "bg-slate-100 text-slate-700" },
@@ -210,6 +216,32 @@ function TrayCard({ row, onClick }) {
           <MapPin className="h-2.5 w-2.5 inline" />
         </span>
       )}
+      {/* Bucket F Phase 3 -- AI status badge in top-right of card. */}
+      {row.ai_analysis_status && row.ai_analysis_status !== "skipped" && (
+        <span data-testid={`tray-card-ai-${row.id}`}
+          title={`AI: ${row.ai_analysis_status}${
+            row.ai_confidence_score
+              ? ` (${Math.round(row.ai_confidence_score * 100)}%)` : ""
+          }`}
+          className={`absolute top-1 right-1 text-[9px] px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${
+            row.ai_analysis_status === "complete"
+              ? "bg-blue-600 text-white"
+              : row.ai_analysis_status === "failed"
+                ? "bg-rose-600 text-white"
+                : row.ai_analysis_status === "budget_paused"
+                  ? "bg-amber-500 text-white"
+                  : row.ai_analysis_status === "rejected_by_user"
+                    ? "bg-slate-400 text-white"
+                    : "bg-sky-500 text-white"
+          }`}>
+          <Sparkles className="h-2.5 w-2.5" />
+          {row.ai_analysis_status === "complete" && row.ai_confidence_score
+            ? `${Math.round(row.ai_confidence_score * 100)}%`
+            : row.ai_analysis_status === "complete"
+              ? "AI"
+              : row.ai_analysis_status.charAt(0).toUpperCase()}
+        </span>
+      )}
     </div>
   );
 }
@@ -217,6 +249,17 @@ function TrayCard({ row, onClick }) {
 function DetailContent({ row, onTagClick, onArchive }) {
   const [src, setSrc] = useState(null);
   const [tags, setTags] = useState([]);
+  // Bucket F Phase 3 -- first-run tooltip state. Read once on mount;
+  // dismiss writes to localStorage so the tooltip stays gone for this
+  // browser. Per-user (not per-tenant) since localStorage is browser-local.
+  const [showFirstRun, setShowFirstRun] = useState(() => {
+    try { return localStorage.getItem(AI_FIRSTRUN_KEY) !== "1"; }
+    catch { return false; }
+  });
+  const dismissFirstRun = () => {
+    try { localStorage.setItem(AI_FIRSTRUN_KEY, "1"); } catch { /* ignore */ }
+    setShowFirstRun(false);
+  };
   useEffect(() => {
     let cancelled = false; let blob = null;
     api.get(`/photo-tray/${row.id}/file`, { responseType: "blob" })
@@ -228,10 +271,31 @@ function DetailContent({ row, onTagClick, onArchive }) {
 
   return (
     <div className="space-y-3 text-sm">
+      {/* Bucket F Phase 3 -- first-run AI tooltip. Dismissable. */}
+      {showFirstRun && (
+        <div data-testid="ai-firstrun-tooltip"
+          className="p-2 rounded border border-sky-200 bg-sky-50 text-xs flex items-start gap-2">
+          <Sparkles className="h-3.5 w-3.5 text-sky-700 mt-0.5 shrink-0" />
+          <div className="flex-1 text-sky-900">
+            <strong>New: AI photo analysis.</strong> Every upload now runs through
+            Claude Vision to suggest a class, caption, and event type. You'll
+            see the suggestion below — accept, override, or reject as needed.
+            All overrides are audit-logged.
+          </div>
+          <button onClick={dismissFirstRun}
+            data-testid="ai-firstrun-dismiss"
+            className="text-sky-700 hover:text-sky-900 shrink-0"
+            title="Dismiss">
+            <XIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
       <div className="bg-slate-100 rounded overflow-hidden">
         {src ? <img src={src} alt="" className="w-full max-h-[400px] object-contain bg-black" />
           : <div className="h-64 grid place-items-center text-slate-400">Loading…</div>}
       </div>
+      {/* Bucket F Phase 3 -- AI analysis section. */}
+      <AiAnalysisCard trayId={row.id} />
       <div className="grid grid-cols-2 gap-3 text-xs">
         <div><span className="text-slate-500 uppercase text-[10px]">Source:</span> {SOURCE_LABELS[row.capture_source] || row.capture_source}</div>
         <div><span className="text-slate-500 uppercase text-[10px]">Status:</span> {STATUS_LABELS[row.status]?.label}</div>

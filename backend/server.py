@@ -303,6 +303,29 @@ async def lifespan(app: FastAPI):
         logger.info("Object storage initialized")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
+    # Bucket F Phase 3 -- pending-row sweeper on startup. Catches photos
+    # that were uploaded during a worker outage and stuck in `pending`
+    # because the in-process BackgroundTask never ran. Tenant-wide
+    # sweep (no tenant filter) so a multi-tenant deploy heals everyone
+    # on the same boot. Cap at 100 rows so startup isn't blocked by
+    # a big backlog; the admin-only /photo-tray/sweep-stuck-pending
+    # endpoint can drain the rest.
+    try:
+        from services.photo_ai import sweep_stuck_pending
+        sweep_result = await sweep_stuck_pending(
+            tenant_id=None, older_than_minutes=5, limit=100,
+        )
+        if sweep_result.get("swept"):
+            logger.info(
+                "Photo AI startup sweep: %s rows touched (complete=%s, "
+                "skipped=%s, failed=%s, budget_paused=%s, tenants=%s)",
+                sweep_result.get("swept"), sweep_result.get("complete"),
+                sweep_result.get("skipped"), sweep_result.get("failed"),
+                sweep_result.get("budget_paused"),
+                sweep_result.get("tenants_touched"),
+            )
+    except Exception as e:
+        logger.warning("Photo AI startup sweep failed (non-fatal): %s", e)
     yield
     await close_db()
 

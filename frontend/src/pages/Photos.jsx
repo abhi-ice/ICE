@@ -9,10 +9,10 @@ import api, { API } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
-import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload } from "lucide-react";
+import { Camera, Filter, Lock, AlertTriangle, FileImage, Plus, Upload, Sparkles, Edit3 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
-import { getToken } from "../lib/auth";
+import { getToken, getUser } from "../lib/auth";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { localTodayISO } from "../lib/dateUtil";
 
@@ -62,6 +62,20 @@ export default function Photos() {
     affected_activity_id: "",
   });
   const project = projects.find((p) => p.id === activeId);
+  // Bucket F Phase 3 -- AI stats card. Admin / PM only. Fetched from
+  // the per-project endpoint added in Phase 2.
+  const user = getUser();
+  const showAiStats = ["admin", "pm", "px"].includes((user?.role || "").toLowerCase());
+  const [aiStats, setAiStats] = useState(null);
+  const [aiStatsLoading, setAiStatsLoading] = useState(false);
+  useEffect(() => {
+    if (!showAiStats || !activeId) { setAiStats(null); return; }
+    setAiStatsLoading(true);
+    api.get(`/projects/${activeId}/photo-ai-stats`, { params: { days: 30 } })
+      .then((r) => setAiStats(r.data))
+      .catch(() => setAiStats(null))
+      .finally(() => setAiStatsLoading(false));
+  }, [showAiStats, activeId]);
 
   const load = async () => {
     if (!activeId) return;
@@ -112,6 +126,11 @@ export default function Photos() {
         a specific daily report. The same image may appear multiple times if tagged to
         multiple events. Upload + tag from the <Link to="/photo-tray" className="underline">Photo tray</Link>.
       </div>
+
+      {/* Bucket F Phase 3 -- AI stats card (admin / PM only). */}
+      {showAiStats && (
+        <AiStatsCard stats={aiStats} loading={aiStatsLoading} />
+      )}
 
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <Filter className="h-4 w-4 text-slate-500 mb-2" />
@@ -185,6 +204,24 @@ function PhotoCard({ photo, projectId }) {
             <AlertTriangle className="h-2.5 w-2.5" />
           </span>
         )}
+        {/* Bucket F Phase 3 -- AI lineage indicator. Sparkles icon
+            on photos created via an AI suggestion. Hover shows the
+            confidence captured at tag time. Override pencil shown
+            when the suggestion was modified at tag-time -- the
+            ai_user_overridden flag lives on the tray row, not the
+            tag row, so we approximate via confidence vs class diff. */}
+        {photo.created_via_ai_suggestion && (
+          <span data-testid={`photo-ai-${photo.id}`}
+            title={
+              `AI-suggested tag` +
+              (photo.ai_confidence_at_tag_time != null
+                ? ` (${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence)`
+                : "")
+            }
+            className="absolute top-1 right-6 bg-blue-600 text-white rounded px-1 py-0.5 text-[8px] inline-flex items-center gap-0.5">
+            <Sparkles className="h-2.5 w-2.5" /> AI
+          </span>
+        )}
       </div>
       <div className="p-2 space-y-1 text-xs">
         <div className="flex items-center justify-between">
@@ -233,6 +270,95 @@ function PhotoNewButton({ projectId }) {
     </button>
   );
 }
+
+// Bucket F Phase 3 -- AI usage stats card. Admin / PM only. 30-day
+// rollup from /api/projects/{id}/photo-ai-stats. Renders 6 metrics
+// + top safety concerns + estimated cost.
+function AiStatsCard({ stats, loading }) {
+  if (loading) {
+    return (
+      <div data-testid="ai-stats-loading"
+        className="bg-white border border-slate-200 rounded p-3 mb-4 text-xs text-slate-500">
+        Loading AI usage stats…
+      </div>
+    );
+  }
+  if (!stats || stats.uploaded_in_window === 0) {
+    return (
+      <div data-testid="ai-stats-empty"
+        className="bg-white border border-slate-200 rounded p-3 mb-4 text-xs text-slate-500 inline-flex items-center gap-2">
+        <Sparkles className="h-3 w-3" />
+        No AI activity in the last 30 days on this project.
+      </div>
+    );
+  }
+  return (
+    <div data-testid="ai-stats-card"
+      className="bg-white border border-slate-200 rounded p-3 mb-4">
+      <div className="flex items-center gap-2 mb-2">
+        <Sparkles className="h-4 w-4 text-blue-700" />
+        <div className="font-medium text-sm">AI usage · last 30 days</div>
+        <div className="ml-auto text-[10px] text-slate-500">
+          Window: {stats.window_days}d · {stats.uploaded_in_window} uploaded
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+        <StatTile label="Analyzed" value={stats.analyzed_in_window} />
+        <StatTile label="Avg confidence"
+          value={`${Math.round((stats.avg_confidence_score || 0) * 100)}%`} />
+        <StatTile label="Override rate"
+          value={`${Math.round((stats.override_rate || 0) * 100)}%`} />
+        <StatTile label="Rejection rate"
+          value={`${Math.round((stats.rejection_rate || 0) * 100)}%`} />
+        <StatTile label="Tokens (out/in)"
+          value={`${stats.output_tokens_total || 0}/${stats.input_tokens_total || 0}`} />
+        <StatTile label="Est cost"
+          value={`$${(stats.estimated_cost_usd || 0).toFixed(2)}`} />
+      </div>
+      {Array.isArray(stats.top_safety_concerns) && stats.top_safety_concerns.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase text-slate-500 mb-1">
+            Top safety concerns
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {stats.top_safety_concerns.map((c, i) => (
+              <span key={i} data-testid={`ai-stats-safety-${i}`}
+                className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-200">
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {c.concern} <span className="text-rose-700">({c.count})</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {Object.keys(stats.failure_reasons || {}).length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase text-slate-500 mb-1">
+            Failed analyses by reason
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {Object.entries(stats.failure_reasons).map(([reason, count]) => (
+              <span key={reason}
+                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                {reason} <span className="text-slate-500">({count})</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatTile({ label, value }) {
+  return (
+    <div className="p-2 rounded border border-slate-200 bg-slate-50">
+      <div className="text-[10px] uppercase text-slate-500">{label}</div>
+      <div className="text-sm font-semibold text-slate-900 tabular-nums">{value}</div>
+    </div>
+  );
+}
+
 
 function PhotoImage({ photoId }) {
   const [url, setUrl] = useState(null);

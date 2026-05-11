@@ -948,3 +948,22 @@ async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
         )
     from services.photo_ai import check_budget
     return await check_budget(tenant_id=ctx["tenant_id"])
+
+
+# Bucket F Phase 3 -- pending-row sweeper. Admin-only manual trigger.
+# A lifespan-startup task in server.py also runs this on boot.
+@router.post("/photo-tray/sweep-stuck-pending")
+async def sweep_stuck_pending_endpoint(
+    older_than_minutes: int = 5, limit: int = 100,
+    ctx: dict = Depends(require_tenant),
+):
+    if _user_role(ctx) not in _ROLE_BUDGET:
+        raise HTTPException(
+            403, "Admins only -- this resets stuck-pending rows tenant-wide",
+        )
+    from services.photo_ai import sweep_stuck_pending
+    result = await sweep_stuck_pending(
+        tenant_id=ctx["tenant_id"],
+        older_than_minutes=older_than_minutes, limit=limit,
+    )
+    return result

@@ -58,6 +58,21 @@ from database import get_db, tenant_filter
 
 log = logging.getLogger("photo_ai")
 
+# Bucket F Phase 3 (2026-05-08) -- HEIF/HEIC support for iPhone uploads.
+# pillow-heif registers itself as a Pillow plugin on import. ICE supers
+# use iPhones; without this, every iOS Photos upload fails with
+# NotAnImageError at preprocess time. Module-load registration so the
+# first image upload doesn't pay the cost.
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    log.info("pillow-heif registered: HEIC/HEIF uploads supported")
+except ImportError:
+    log.warning("pillow-heif not installed; HEIC uploads will fail "
+                "with NotAnImageError")
+except Exception as _heif_exc:
+    log.warning("pillow-heif registration failed: %s", _heif_exc)
+
 # Pricing per the Anthropic API (Claude Sonnet 4.5). Update when the
 # pricing card changes. Constants here so tests can verify cost math
 # without monkey-patching.
@@ -1120,6 +1135,61 @@ async def override_analysis(
                 "event_type": tray.get("ai_suggested_event_type"),
                 "trade": tray.get("ai_suggested_trade"),
             }}
+
+
+async def sweep_stuck_pending(
+    *, tenant_id: Optional[str] = None,
+    older_than_minutes: int = 5, limit: int = 100,
+) -> dict:
+    """Bucket F Phase 3 -- re-queue tray rows that have been stuck in
+    `pending` longer than `older_than_minutes` (default 5).
+
+    Without this, a worker hiccup or a BackgroundTask that exits
+    before the analysis lands leaves photos invisibly stuck. Run this
+    via the lifespan-task on startup + admin endpoint.
+
+    Strategy: walk pending rows with uploaded_at < cutoff, reset
+    ai_analysis_started_at to None + fire analyze_photo() for each.
+    Limit caps the sweep size per call so a 1000+ tray backlog
+    doesn't choke the worker. Returns counts per outcome.
+    """
+    db = get_db()
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(minutes=max(1, older_than_minutes))).isoformat()
+    q: dict = {"ai_analysis_status": "pending",
+                "uploaded_at": {"$lt": cutoff}}
+    if tenant_id:
+        q["tenant_id"] = tenant_id
+    rows = await db.photo_tray.find(
+        q, {"_id": 0, "id": 1, "tenant_id": 1},
+    ).limit(max(1, min(int(limit), 500))).to_list(length=None)
+    out = {"swept": len(rows), "complete": 0, "skipped": 0,
+            "failed": 0, "budget_paused": 0, "tenants_touched": 0}
+    seen_tenants: set = set()
+    for r in rows:
+        tid = r.get("tenant_id")
+        if not tid:
+            continue
+        seen_tenants.add(tid)
+        try:
+            res = await analyze_photo(
+                tenant_id=tid, tray_id=r["id"], actor_id=None,
+            )
+            s = res.get("status")
+            if s == "complete":
+                out["complete"] += 1
+            elif s == "skipped":
+                out["skipped"] += 1
+            elif s == "budget_paused":
+                out["budget_paused"] += 1
+            elif s == "failed":
+                out["failed"] += 1
+        except Exception as exc:
+            log.warning("sweeper failed on %s: %s", r.get("id"), exc)
+            out["failed"] += 1
+        await asyncio.sleep(BATCH_THROTTLE_MS / 1000.0)
+    out["tenants_touched"] = len(seen_tenants)
+    return out
 
 
 async def get_analysis_stats(
