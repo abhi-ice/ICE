@@ -106,6 +106,13 @@ MIGRATIONS = [
     # users (auth_provider, picture), writes GOOGLE_AUTH_REMOVED
     # audit op per tenant. Idempotent at every step.
     "migrations.016_google_auth_purge",
+    # Bucket D Addition 5 (2026-05-12) -- post-submit ADD flow.
+    # Backfills post_submit_added=False, add_reason=None,
+    # added_at_post_submit=None, added_by_post_submit=None on every
+    # event collection + activity grid. Single
+    # POST_SUBMIT_ADD_FIELDS_INITIALIZED audit per tenant. Idempotent
+    # via $exists field guards + per-tenant audit existence check.
+    "migrations.017_post_submit_add_flow",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

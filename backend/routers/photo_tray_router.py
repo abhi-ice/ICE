@@ -457,11 +457,16 @@ async def create_photo_tag(
             422,
             "Tray entry and daily report must belong to the same project",
         )
-    if dr.get("status") == "submitted":
-        raise HTTPException(
-            409,
-            "Daily report is locked. Use the supplement flow to tag photos against locked DRs.",
-        )
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow. The prior 409
+    # reject is replaced with the tiered add-permission check. Caller
+    # must supply add_reason (min EDIT_REASON_MIN_LEN chars) when DR
+    # is locked AND caller isn't admin/PM. Approved edit_requests open
+    # the same 1-hour window for adds as for edits.
+    from services.edit_permissions import enforce_locked_dr_add_policy
+    _dr_full, is_locked_add = await enforce_locked_dr_add_policy(
+        ctx=ctx, daily_report_id=payload.daily_report_id,
+        add_reason=payload.add_reason, event_type="photo",
+    )
 
     # Validate event ref exists in tenant + (where applicable) on the DR.
     ev = await _validate_event_ref(
@@ -611,6 +616,17 @@ async def create_photo_tag(
         },
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+
+    # Addition 5 -- post-submit add stamping (only when the parent DR
+    # was locked at tag time).
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="photos", record_id=photo_doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=payload.add_reason or "", after=photo_doc,
+            request_id=ctx["request_id"],
+        )
 
     # Bucket G Phase 2 (2026-05-11) -- Photo AI producer hook.
     # When a tray with a high-confidence AI analysis gets tagged to

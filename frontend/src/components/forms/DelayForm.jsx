@@ -51,7 +51,14 @@ const CAUSE_CLASS_OPTS = [
   "regulatory", "utility", "procurement", "other",
 ];
 
-export default function DelayForm({ projectId, reportDate, dailyReportId, initial, onSaved, onCancel }) {
+// Bucket D Addition 5 (2026-05-12) -- new `lockedAddReason` prop. When
+// the parent DR is locked AND this form is in create mode (no
+// `initial.id`), the panel passes the reason text through this prop;
+// we include it as `add_reason` on the POST so the backend stamps
+// post_submit_added=true + writes EVENT_ADDED_POST_SUBMIT audit. The
+// reason itself is rendered + validated in the parent panel; this
+// form is only responsible for piping it through.
+export default function DelayForm({ projectId, reportDate, dailyReportId, initial, onSaved, onCancel, lockedAddReason }) {
   const [tasks, setTasks] = useState([]);  // [{id, activity_code, description, total_float_days, is_critical_path}]
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [picker, setPicker] = useState("");
@@ -148,16 +155,37 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       if (initial?.id) {
         res = await api.patch(`/delays/${initial.id}`, payload);
       } else {
-        res = await api.post(`/delays`, {
+        const createBody = {
           ...payload,
           project_id: projectId,
           daily_report_id: dailyReportId || undefined,
           date: reportDate || localTodayISO(),
-        });
+        };
+        // Bucket D Addition 5 -- forward the add_reason text on create
+        // when the parent DR is locked. Backend ignores the field on
+        // unlocked DRs (it's Optional[str]).
+        if (lockedAddReason) {
+          createBody.add_reason = lockedAddReason;
+        }
+        res = await api.post(`/delays`, createBody);
       }
       onSaved?.(res.data);
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message || "Save failed");
+      // Bucket D Addition 5 -- 24h self-edit window closed handling.
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      if (
+        status === 403 && detail && typeof detail === "object"
+        && detail.error === "edit_request_required"
+      ) {
+        toast.error(
+          "Self-edit window (24h) has closed. File an edit request from "
+          + "the edit pencil on any existing row -- approval opens a "
+          + "1-hour window for adds too.",
+        );
+      } else {
+        toast.error(detail || e.message || "Save failed");
+      }
     } finally { setBusy(false); }
   };
 

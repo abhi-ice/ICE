@@ -28,6 +28,8 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason = doc.pop("add_reason", None)
     # Bucket D Corrective -- master-schedule task linkage required min-1.
     # Coexists with the C3a gating_entities back-pointer (still set
     # below by create_for_entity).
@@ -54,6 +56,14 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
         "created_by": ctx["user"]["id"],
         "created_at": utc_now().isoformat(),
     })
+    # Addition 5 -- locked-DR add policy (skipped on supplement path).
+    is_locked_add = False
+    if not doc.get("is_supplement") and doc.get("daily_report_id"):
+        from services.edit_permissions import enforce_locked_dr_add_policy
+        _dr, is_locked_add = await enforce_locked_dr_add_policy(
+            ctx=ctx, daily_report_id=doc["daily_report_id"],
+            add_reason=add_reason, event_type="rfi",
+        )
     # Bucket D Phase 4 -- supplement metadata + audit.
     from services.dr_activity_linkage import (
         stamp_supplement_metadata, validate_supplement_parent_locked,
@@ -73,6 +83,14 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
             tenant_id=ctx["tenant_id"], table_name="rfis", op="SUPPLEMENT_FILED",
             record_id=doc["id"], before=None, after=sup_audit,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="rfis", record_id=doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=add_reason or "", after=doc,
+            request_id=ctx["request_id"],
         )
     # Bucket C3a Phase 1 — auto-create the gating_entities CPM-node row
     # and write its id back onto the RFI. Schedule_activity_id (if set)

@@ -47,8 +47,14 @@ const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
 
 function isoToday() { return new Date().toISOString().slice(0, 10); }
 
+// Bucket D Addition 5 (2026-05-12) -- new `lockedAddReason` prop. When
+// the parent DR (initialDailyReportId) is locked, the PhotosPanel
+// captures the reason and passes it through; we include it on the
+// /photo-tags POST so the backend stamps post_submit_added=true +
+// writes EVENT_ADDED_POST_SUBMIT.
 export default function TagWizard({ open, onOpenChange, tray, projectId, onTagged,
-                                    initialDailyReportId = null }) {
+                                    initialDailyReportId = null,
+                                    lockedAddReason = null }) {
   // Bucket F Phase 4 -- when the wizard is opened from the DR PhotosPanel
   // upload flow, the DR is already known. Skip step 1 in that case
   // (pre-select the DR + start at step 2) so the user lands directly
@@ -236,12 +242,33 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
         ai_confidence_at_tag_time: aiSuggestion?.ai_confidence_score ?? null,
       };
       payload[eventType] = eventId;
+      // Bucket D Addition 5 -- forward add_reason when the parent DR
+      // is locked. Backend stamps post_submit_added=true + writes
+      // EVENT_ADDED_POST_SUBMIT audit. Ignored on unlocked DRs.
+      if (lockedAddReason) {
+        payload.add_reason = lockedAddReason;
+      }
       const res = await api.post("/photo-tags", payload);
-      toast.success("Photo tagged");
+      toast.success(lockedAddReason
+        ? "Photo tagged (post-submit). Audit chain captured."
+        : "Photo tagged");
       onTagged?.(res.data);
       onOpenChange(false);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Tagging failed");
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      if (
+        status === 403 && detail && typeof detail === "object"
+        && detail.error === "edit_request_required"
+      ) {
+        toast.error(
+          "Self-edit window (24h) has closed. File an edit request from "
+          + "any locked-DR edit pencil -- approval opens a 1-hour window "
+          + "for adds (including photo tags) too.",
+        );
+      } else {
+        toast.error(detail || "Tagging failed");
+      }
     } finally { setBusy(false); }
   };
 

@@ -1,9 +1,10 @@
-"""Addition 4 -- tiered permission check for editing events on a
-LOCKED daily report.
+"""Addition 4 (edit) + Addition 5 (add) -- tiered permission check for
+EDITING existing events on a LOCKED daily report AND for ADDING new
+events to a LOCKED daily report.
 
-Three outcomes:
+Three outcomes for both flows:
 
-  "allowed"        -- the user can patch the event right now. Caller
+  "allowed"        -- the user can patch/insert right now. Caller
                        proceeds with the write.
   "needs_request"  -- the user is the original submitter but the
                        24-hour self-edit window has closed and there's
@@ -12,14 +13,21 @@ Three outcomes:
   "forbidden"      -- the user is not privileged AND not the original
                        submitter. Caller returns 403.
 
-Spec rules (see CLAUDE.md / Addition 4.1):
+Spec rules (see CLAUDE.md / Addition 4.1 + Addition 5):
 
-- Admin / PM: always allowed (any DR, any event, no approval flow).
-- Within 24h of original DR submit, on YOUR OWN DR: allowed.
+- Admin / PM: always allowed (any DR, any event, no approval flow,
+  no reason required).
+- Within 24h of original DR submit, on YOUR OWN DR: allowed (reason
+  required, min EDIT_REASON_MIN_LEN chars).
 - After 24h, on YOUR OWN DR: needs an approved + non-expired
   edit_request for that user + DR (1-hour edit window from approve).
-- Editing ANYONE ELSE'S DR (not original submitter): forbidden unless
-  Admin/PM.
+- Editing/adding on ANYONE ELSE'S DR (not original submitter):
+  forbidden unless Admin/PM.
+
+The edit_request workflow approves BOTH editing existing events AND
+adding new events on the same DR -- the 1-hour window opens both
+paths uniformly so the super doesn't have to file two requests when
+they realize they need to both fix a row and add a missed delay.
 
 The check is async because it reads daily_reports.submitted_at +
 edit_requests for the approval-window check.
@@ -116,10 +124,16 @@ async def stamp_edit_metadata(
     *, db, collection: str, record_id: str, tenant_id: str,
     actor_id: str, edit_reason: str, before: dict, after: dict,
     request_id: Optional[str] = None,
+    audit_op: str = "EVENT_EDITED_POST_SUBMIT",
 ) -> None:
     """Update last_edited_*/edit_count/post_submit_edited on the record
-    AND write the EVENT_EDITED_POST_SUBMIT audit op with full before/after
-    snapshots so legal can render a per-edit diff in TIA Section 12.
+    AND write the {audit_op} audit op with full before/after snapshots
+    so legal can render a per-edit diff in TIA Section 12.
+
+    Default op is EVENT_EDITED_POST_SUBMIT. The activity-grid PATCH
+    endpoint passes audit_op="ACTIVITY_GRID_EDITED_POST_SUBMIT" so
+    counsel can filter grid edits separately from event edits when
+    reading the chain.
 
     Called from each event PATCH endpoint AFTER the underlying field
     write so 'after' reflects the post-merge state.
@@ -141,12 +155,53 @@ async def stamp_edit_metadata(
     )
     await write_audit(
         tenant_id=tenant_id, table_name=collection,
-        op="EVENT_EDITED_POST_SUBMIT",
+        op=audit_op,
         record_id=record_id, before=before, after=after,
         actor_id=actor_id, request_id=request_id,
         # The audit_log row also captures the reason in the after
         # payload's metadata block; the diff is reconstructable from
         # before/after but legal prefers the reason inline.
+    )
+
+
+async def stamp_add_metadata(
+    *, db, collection: str, record_id: str, tenant_id: str,
+    actor_id: str, add_reason: str, after: dict,
+    request_id: Optional[str] = None,
+) -> None:
+    """Addition 5 (2026-05-12) -- counterpart to stamp_edit_metadata
+    for the "add new event to a locked DR" flow. Sets post_submit_added=
+    true + add_reason + added_at_post_submit + added_by_post_submit on
+    the inserted record, then writes EVENT_ADDED_POST_SUBMIT audit op
+    with the full after snapshot (no before -- this is a new row).
+
+    Called from each event POST endpoint AFTER insert_one when the
+    permission check (enforce_locked_dr_add_policy) returned True.
+    """
+    from audit import write_audit
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db[collection].update_one(
+        tenant_filter(tenant_id, {"id": record_id}),
+        {"$set": {
+            "post_submit_added": True,
+            "add_reason": add_reason,
+            "added_at_post_submit": now,
+            "added_by_post_submit": actor_id,
+        }},
+    )
+    # Refresh after-snapshot so the audit captures the stamped flags.
+    enriched = {**after,
+                "post_submit_added": True,
+                "add_reason": add_reason,
+                "added_at_post_submit": now,
+                "added_by_post_submit": actor_id}
+    await write_audit(
+        tenant_id=tenant_id, table_name=collection,
+        op="EVENT_ADDED_POST_SUBMIT",
+        record_id=record_id, before=None, after=enriched,
+        actor_id=actor_id, request_id=request_id,
     )
 
 
@@ -225,6 +280,83 @@ async def enforce_locked_dr_edit_policy(
                 "daily_report_id": daily_report_id,
                 "event_type": event_type,
                 "event_id": event_id,
+            },
+        )
+    return dr, True
+
+
+async def enforce_locked_dr_add_policy(
+    *, ctx: dict, daily_report_id: Optional[str], add_reason: Optional[str],
+    event_type: str,
+) -> tuple[Optional[dict], bool]:
+    """Addition 5 (2026-05-12) -- counterpart to enforce_locked_dr_edit_policy
+    for the "add new event to a locked DR" flow.
+
+    Returns (parent_dr_doc, is_locked_add) where is_locked_add=True
+    means the caller should call stamp_add_metadata after insert.
+
+    Raises HTTPException(422) if the parent DR is locked AND the
+    payload didn't include an add_reason (or it's too short) AND the
+    caller isn't admin/PM.
+    Raises HTTPException(403) if the user lacks add permission
+    (forbidden) or needs to file an edit_request first.
+
+    The role + 24h + edit_request rules are identical to the edit
+    flow -- an approved edit_request for the DR opens BOTH paths
+    (edits AND adds) for the same 1-hour window.
+    """
+    from fastapi import HTTPException
+    from models import EDIT_REASON_MIN_LEN
+
+    dr = await get_locked_dr_for_event(
+        tenant_id=ctx["tenant_id"], daily_report_id=daily_report_id,
+    )
+    if not dr or dr.get("status") not in ("submitted", "approved"):
+        # Draft DR (or orphan event) -- regular create path, no
+        # locked-add ceremony.
+        return dr, False
+
+    role = (ctx["user"].get("role") or "").lower()
+    # Admin / PM bypass the reason requirement (already privileged at
+    # tenant level + the role is captured in the audit actor_id, so
+    # legal can still trace).
+    if role in PRIVILEGED_ROLES:
+        return dr, True
+
+    # Non-privileged: require reason + permission tier.
+    cleaned_reason = (add_reason or "").strip()
+    if len(cleaned_reason) < EDIT_REASON_MIN_LEN:
+        raise HTTPException(
+            422,
+            f"add_reason required (min {EDIT_REASON_MIN_LEN} chars) "
+            f"when adding events to a locked daily report.",
+        )
+
+    # event_id="<new>" -- the row doesn't exist yet; check_edit_permission
+    # only looks at it for the audit metadata, not the lookup.
+    decision = await check_edit_permission(
+        tenant_id=ctx["tenant_id"], user=ctx["user"],
+        daily_report=dr, event_type=event_type, event_id="<new>",
+    )
+    if decision == "forbidden":
+        raise HTTPException(
+            403,
+            "Adding events to another user's locked daily report "
+            "requires Admin or PM role.",
+        )
+    if decision == "needs_request":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "edit_request_required",
+                "message": (
+                    "Self-edit window (24h after submit) has closed. "
+                    "File an edit request via POST /edit-requests so an "
+                    "Admin or PM can approve a new 1-hour edit/add window."
+                ),
+                "daily_report_id": daily_report_id,
+                "event_type": event_type,
+                "operation": "add",
             },
         )
     return dr, True

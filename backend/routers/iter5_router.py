@@ -843,6 +843,8 @@ class DeliveryCreate(StrictModel):
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class DeliveryUpdate(StrictModel):
@@ -864,6 +866,8 @@ class DeliveryUpdate(StrictModel):
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason = doc.pop("add_reason", None)
     # Bucket D Corrective -- master-schedule task linkage required min-1.
     from services.dr_activity_linkage import validate_linked_task_ids
     doc["linked_task_ids"] = await validate_linked_task_ids(
@@ -877,6 +881,14 @@ async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_t
         "received_by": None, "photos": [],
         "created_at": utc_now().isoformat(),
     })
+    # Addition 5 -- locked-DR add policy (skipped on supplement path).
+    is_locked_add = False
+    if not doc.get("is_supplement") and doc.get("daily_report_id"):
+        from services.edit_permissions import enforce_locked_dr_add_policy
+        _dr, is_locked_add = await enforce_locked_dr_add_policy(
+            ctx=ctx, daily_report_id=doc["daily_report_id"],
+            add_reason=add_reason, event_type="delivery",
+        )
     # Bucket D Phase 4 + Task 3 fix C -- supplement metadata + lock check + audit.
     from services.dr_activity_linkage import (
         stamp_supplement_metadata, validate_supplement_parent_locked,
@@ -904,6 +916,14 @@ async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_t
             tenant_id=ctx["tenant_id"], table_name="deliveries", op="SUPPLEMENT_FILED",
             record_id=doc["id"], before=None, after=sup_audit,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="deliveries", record_id=doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=add_reason or "", after=doc,
+            request_id=ctx["request_id"],
         )
     return doc
 

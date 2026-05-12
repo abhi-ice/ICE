@@ -52,9 +52,14 @@ function defaultsFromInitial(initial, linkedDailyReportId) {
   };
 }
 
+// Bucket D Addition 5 (2026-05-12) -- new `lockedAddReason` prop. When
+// the parent DR is locked AND this form is in create mode, the panel
+// passes the reason text through this prop; we include it as
+// `add_reason` on the POST so the backend stamps post_submit_added=true
+// + writes EVENT_ADDED_POST_SUBMIT audit.
 export default function CoordinationEventForm({ projectId, initial, linkedDailyReportId,
                                                  abbreviated = false,
-                                                 onSaved, onCancel }) {
+                                                 onSaved, onCancel, lockedAddReason }) {
   const [form, setForm] = useState(() => defaultsFromInitial(initial, linkedDailyReportId));
   const [busy, setBusy] = useState(false);
 
@@ -99,11 +104,29 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       if (initial?.id) {
         res = await api.patch(`/coordination-events/${initial.id}`, payload);
       } else {
+        // Bucket D Addition 5 -- forward add_reason on create when the
+        // parent DR is locked. Backend ignores on unlocked DRs.
+        if (lockedAddReason) {
+          payload.add_reason = lockedAddReason;
+        }
         res = await api.post(`/coordination-events`, payload);
       }
       onSaved?.(res.data);
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message || "Save failed");
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      if (
+        status === 403 && detail && typeof detail === "object"
+        && detail.error === "edit_request_required"
+      ) {
+        toast.error(
+          "Self-edit window (24h) has closed. File an edit request from "
+          + "the edit pencil on any existing row -- approval opens a "
+          + "1-hour window for adds too.",
+        );
+      } else {
+        toast.error(detail || e.message || "Save failed");
+      }
     } finally { setBusy(false); }
   };
 

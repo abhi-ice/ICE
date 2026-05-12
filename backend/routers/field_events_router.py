@@ -96,6 +96,10 @@ def _enrich_delay_for_read(d: dict) -> dict:
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow. Strip the
+    # add_reason out of the record (it's metadata, stamped by
+    # stamp_add_metadata) and pass it to enforce_locked_dr_add_policy.
+    add_reason = doc.pop("add_reason", None)
     # Bucket D Corrective (2026-05-08) -- the dr-activity linkage that
     # used to be validated here was a wrong-scope build. Canonical
     # linkage is linked_task_ids (master schedule). _resolve_task_impacts
@@ -124,6 +128,16 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
+    # Addition 5 -- on direct-to-locked-DR add (NOT supplement path),
+    # check the tiered add policy. Supplements still go through the
+    # supplement_parent path below.
+    is_locked_add = False
+    if not doc.get("is_supplement") and doc.get("daily_report_id"):
+        from services.edit_permissions import enforce_locked_dr_add_policy
+        _dr, is_locked_add = await enforce_locked_dr_add_policy(
+            ctx=ctx, daily_report_id=doc["daily_report_id"],
+            add_reason=add_reason, event_type="delay",
+        )
     # Bucket D Phase 4 -- supplement metadata + audit (no-op for normal
     # creates; raises 422 + writes SUPPLEMENT_FILED for supplements).
     from services.dr_activity_linkage import (
@@ -144,6 +158,16 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
             tenant_id=ctx["tenant_id"], table_name="delays", op="SUPPLEMENT_FILED",
             record_id=doc["id"], before=None, after=sup_audit,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    # Addition 5 -- stamp post_submit_added + write EVENT_ADDED_POST_SUBMIT
+    # audit. Runs after INSERT so the audit captures the persisted row.
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="delays", record_id=doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=add_reason or "", after=doc,
+            request_id=ctx["request_id"],
         )
     # Bucket C1 Phase 2 — opening a delay flips has_open_blocker on every
     # linked task and may shift its computed_status to 'blocked'.
@@ -524,6 +548,8 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason = doc.pop("add_reason", None)
     # Bucket D Corrective -- master-schedule task linkage OPTIONAL for
     # safety (some events are area-wide and don't tie to a specific
     # task). Validation just confirms ids resolve to project tasks if
@@ -540,6 +566,14 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
         "reported_by": ctx["user"]["id"], "reported_at": utc_now().isoformat(),
         "created_at": utc_now().isoformat(),
     })
+    # Addition 5 -- locked-DR add policy (skipped on supplement path).
+    is_locked_add = False
+    if not doc.get("is_supplement") and doc.get("daily_report_id"):
+        from services.edit_permissions import enforce_locked_dr_add_policy
+        _dr, is_locked_add = await enforce_locked_dr_add_policy(
+            ctx=ctx, daily_report_id=doc["daily_report_id"],
+            add_reason=add_reason, event_type="safety",
+        )
     # Bucket D Phase 4 -- supplement metadata + audit.
     from services.dr_activity_linkage import (
         stamp_supplement_metadata, validate_supplement_parent_locked,
@@ -559,6 +593,14 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
             tenant_id=ctx["tenant_id"], table_name="safety_events", op="SUPPLEMENT_FILED",
             record_id=doc["id"], before=None, after=sup_audit,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="safety_events", record_id=doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=add_reason or "", after=doc,
+            request_id=ctx["request_id"],
         )
     return SafetyEvent(**doc)
 
@@ -642,6 +684,8 @@ async def update_safety_event(
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason = doc.pop("add_reason", None)
     # Bucket D Corrective -- master-schedule task linkage required (QC
     # drives the rework cascade in Phase 5; the linkage is the cascade's
     # seed). Cascade reads doc["linked_task_ids"] downstream.
@@ -658,6 +702,14 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
         "resolved_at": None, "resolution_notes": None,
         "created_at": utc_now().isoformat(),
     })
+    # Addition 5 -- locked-DR add policy (skipped on supplement path).
+    is_locked_add = False
+    if not doc.get("is_supplement") and doc.get("daily_report_id"):
+        from services.edit_permissions import enforce_locked_dr_add_policy
+        _dr, is_locked_add = await enforce_locked_dr_add_policy(
+            ctx=ctx, daily_report_id=doc["daily_report_id"],
+            add_reason=add_reason, event_type="qc",
+        )
     # Bucket D Phase 5 -- if severity=rework_required, super-entered
     # rework_duration_hours is required. Stamp the estimate metadata.
     if doc.get("severity") == "rework_required":
@@ -690,6 +742,14 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
             tenant_id=ctx["tenant_id"], table_name="qc_issues", op="SUPPLEMENT_FILED",
             record_id=doc["id"], before=None, after=sup_audit,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="qc_issues", record_id=doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=add_reason or "", after=doc,
+            request_id=ctx["request_id"],
         )
     # Bucket D Phase 5 -- trigger the rework cascade if severity asks
     # for it. The synthetic delay write + CPM cascade run inside the
