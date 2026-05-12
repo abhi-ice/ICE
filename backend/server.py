@@ -657,29 +657,31 @@ async def lifespan(app: FastAPI):
         _periodic_friday_recovery(),
     )
     yield
-    # Cancel the recurring task before closing the DB so the next
+    # Cancel the recurring tasks before closing the DB so the next
     # tick doesn't hit a closed connection.
-    task = getattr(app.state, "field_suggestions_expire_task", None)
-    if task and not task.done():
-        task.cancel()
-        try:
-            await task
-        except Exception:
-            pass
-    sla_task = getattr(app.state, "submittal_sla_breach_task", None)
-    if sla_task and not sla_task.done():
-        sla_task.cancel()
-        try:
-            await sla_task
-        except Exception:
-            pass
-    friday_task = getattr(app.state, "friday_recovery_task", None)
-    if friday_task and not friday_task.done():
-        friday_task.cancel()
-        try:
-            await friday_task
-        except Exception:
-            pass
+    #
+    # CancelledError is a BaseException (not Exception) in Py3.8+, so
+    # `except Exception: pass` does NOT swallow it -- the prior code
+    # leaked it out of the lifespan and triggered "Application
+    # shutdown failed" log noise on every SIGTERM. The explicit
+    # CancelledError branch absorbs the expected re-raise from the
+    # task's own `except CancelledError: raise` cleanup hook.
+    for attr in (
+        "field_suggestions_expire_task",
+        "submittal_sla_breach_task",
+        "friday_recovery_task",
+    ):
+        task = getattr(app.state, attr, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except _asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning(
+                    "BG task %s shutdown raised (non-fatal): %s", attr, exc,
+                )
     await close_db()
 
 

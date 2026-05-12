@@ -1,8 +1,12 @@
 """Backend tests for ICE Schedule Ops iteration 2 features.
-Covers: Google OAuth (cookie auth + invalid session 401), Activity CRUD,
-Daily-report available-tasks/grid add/remove, Voice annotation pipeline,
-Spec PDF ingestion, Drawing PDF upload + streaming, tenant isolation
-on new endpoints.
+Covers: Activity CRUD, Daily-report available-tasks/grid add/remove,
+Voice annotation pipeline, Spec PDF ingestion, Drawing PDF upload +
+streaming, tenant isolation on new endpoints.
+
+Note (2026-05-11): Google OAuth + cookie-auth tests removed alongside
+the broader Google-Auth purge. The /api/auth/google/session route no
+longer exists and the user_sessions collection has been dropped by
+migration 016.
 """
 import io
 import os
@@ -12,7 +16,6 @@ import uuid
 import wave
 import pytest
 import requests
-from datetime import datetime, timedelta, timezone
 
 # allow importing backend modules
 import pathlib
@@ -46,46 +49,6 @@ def project_id(admin_headers):
         if "GSA" in (p.get("name") or "") or "Federal" in (p.get("name") or ""):
             return p["id"]
     return r.json()[0]["id"]
-
-
-@pytest.fixture(scope="module")
-def cookie_session():
-    """Pre-create a user_sessions row so we can test cookie-based auth."""
-    try:
-        from pymongo import MongoClient
-    except Exception:
-        pytest.skip("pymongo unavailable")
-    mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-    db_name = os.environ.get("DB_NAME", "ice_schedule_ops")
-    db = MongoClient(mongo_url)[db_name]
-    tenant = db.tenants.find_one({"slug": "ice"})
-    if not tenant:
-        pytest.skip("ice tenant not seeded")
-    uid = "test-user-" + uuid.uuid4().hex[:8]
-    sess = "TEST_session_" + uuid.uuid4().hex[:12]
-    db.users.insert_one({
-        "id": uid, "email": f"test.{uid}@example.com",
-        "full_name": "Test Cookie User", "picture": None,
-        "tenant_id": tenant["id"], "role": "pm",
-        "auth_provider": "google",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    db.tenant_users.insert_one({
-        "id": str(uuid.uuid4()), "user_id": uid,
-        "tenant_id": tenant["id"], "role": "pm",
-        "status": "active",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    db.user_sessions.insert_one({
-        "user_id": uid, "session_token": sess,
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    yield {"uid": uid, "session_token": sess}
-    # cleanup
-    db.users.delete_many({"id": uid})
-    db.tenant_users.delete_many({"user_id": uid})
-    db.user_sessions.delete_many({"session_token": sess})
 
 
 @pytest.fixture(scope="module")
@@ -161,57 +124,15 @@ def test_health():
     assert r.status_code == 200
 
 
-# ---------- Google OAuth / cookie auth ----------
-class TestGoogleAuth:
-    def test_invalid_session_id_returns_401_not_500(self):
+# ---------- Google OAuth removal verification ----------
+# Confirms the 2026-05-11 purge: /auth/google/session must 404 and
+# the user_sessions collection must be absent (dropped by migration 016).
+class TestGoogleAuthRemoved:
+    def test_google_session_route_gone(self):
         r = requests.post(f"{API}/auth/google/session",
-                          json={"session_id": "not_a_real_session"},
+                          json={"session_id": "anything"},
                           timeout=20)
-        assert r.status_code != 500, f"got 500: {r.text[:200]}"
-        assert r.status_code in (400, 401, 403), f"unexpected: {r.status_code} {r.text[:200]}"
-
-    def test_cookie_auth_me(self, cookie_session):
-        cookies = {"session_token": cookie_session["session_token"]}
-        r = requests.get(f"{API}/auth/me", cookies=cookies, timeout=15)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        # email should match the test user we inserted
-        assert "test." in body.get("email", ""), body
-
-    def test_logout_clears_cookie(self, cookie_session):
-        # use a fresh session for logout to avoid interfering with other tests
-        from pymongo import MongoClient
-        db = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))[
-            os.environ.get("DB_NAME", "ice_schedule_ops")]
-        tenant = db.tenants.find_one({"slug": "ice"})
-        uid = "test-user-" + uuid.uuid4().hex[:8]
-        sess = "TEST_session_" + uuid.uuid4().hex[:12]
-        db.users.insert_one({
-            "id": uid, "email": f"test.lo.{uid}@example.com",
-            "full_name": "T", "tenant_id": tenant["id"], "role": "pm",
-            "auth_provider": "google",
-            "created_at": datetime.now(timezone.utc).isoformat()})
-        db.tenant_users.insert_one({
-            "id": str(uuid.uuid4()), "user_id": uid, "tenant_id": tenant["id"],
-            "role": "pm", "status": "active",
-            "created_at": datetime.now(timezone.utc).isoformat()})
-        db.user_sessions.insert_one({
-            "user_id": uid, "session_token": sess,
-            "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat()})
-
-        cookies = {"session_token": sess}
-        r = requests.post(f"{API}/auth/logout", cookies=cookies, timeout=15)
-        assert r.status_code in (200, 204), r.text
-        # session should be deleted from DB
-        assert db.user_sessions.find_one({"session_token": sess}) is None
-
-        # subsequent /auth/me with same cookie should fail
-        r2 = requests.get(f"{API}/auth/me", cookies=cookies, timeout=15)
-        assert r2.status_code in (401, 403)
-        # cleanup
-        db.users.delete_many({"id": uid})
-        db.tenant_users.delete_many({"user_id": uid})
+        assert r.status_code in (404, 405), f"unexpected: {r.status_code} {r.text[:200]}"
 
 
 # ---------- Activity (Task) CRUD ----------

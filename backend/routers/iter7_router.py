@@ -494,7 +494,7 @@ NIST_800_171 = [
      "implementation": "Schema-on-read MongoDB with Pydantic strict models; deploy via supervisor.",
      "evidence_endpoint": "models.py"},
     {"id": "3.5.1", "family": "IA", "name": "Identify users",
-     "implementation": "Email-based identity + Emergent Google Auth optional.",
+     "implementation": "Email-based identity (Bearer-JWT). Third-party OAuth disabled per federal-contractor policy.",
      "evidence_endpoint": "/api/auth/login"},
     {"id": "3.5.10", "family": "IA", "name": "Store passwords cryptographically",
      "implementation": "bcrypt hashing in auth.py (passlib).",

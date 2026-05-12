@@ -142,6 +142,18 @@ export default function Tasks() {
 
   const recompute = async () => {
     const { data } = await api.post(`/projects/${activeId}/critical-path/recompute`);
+    // services/cpm.py:56 returns {error: "cycle_detected"} on cycle without
+    // a project_finish; guard so the toast doesn't render "Finish: undefined".
+    if (data?.error === "cycle_detected") {
+      toast.error("Schedule has a cycle in predecessor topology — cannot compute CPM. Fix the cycle and retry.");
+      load();
+      return;
+    }
+    if (data?.error) {
+      toast.error(`CPM recompute failed: ${data.error}`);
+      load();
+      return;
+    }
     toast.success(`CPM updated. ${data.critical_count} on critical path. Finish: ${data.project_finish}`);
     load();
   };

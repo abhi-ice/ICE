@@ -100,6 +100,12 @@ MIGRATIONS = [
     # assignment; existing users keep current role. ROLE_ENUM_EXTENDED
     # audit op per tenant; idempotent.
     "migrations.015_role_enum_extended",
+    # Google-Auth purge (2026-05-11) -- federal-contractor data-
+    # confidentiality policy. Drops the user_sessions collection
+    # (cookie-auth path removed), $unsets google-sourced fields on
+    # users (auth_provider, picture), writes GOOGLE_AUTH_REMOVED
+    # audit op per tenant. Idempotent at every step.
+    "migrations.016_google_auth_purge",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

@@ -12,9 +12,8 @@ root.render(
 
 // PWA service worker — DISABLED.
 // We previously shipped a cache-first SW which kept serving stale bundles
-// after auth + UI changes (users still saw the old Google button after
-// upgrade). Now we forcibly unregister any existing SW and purge its
-// caches on every page load. App is online-only.
+// after auth + UI changes. Now we forcibly unregister any existing SW
+// and purge its caches on every page load. App is online-only.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.getRegistrations()

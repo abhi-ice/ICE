@@ -72,7 +72,7 @@ export default function ResourceLeveling() {
   const [recomputing, setRecomputing] = useState(false);
 
   // First-run flow state: derived from presence of crews + tasks data
-  // on the tenant. We probe via /resources/crews + /projects.
+  // on the tenant. We probe via /crews + /projects.
   const [firstRun, setFirstRun] = useState({
     checked: false, hasCrews: false, hasProjects: false, hasComputed: false,
   });
@@ -116,7 +116,7 @@ export default function ResourceLeveling() {
   const probeFirstRun = async () => {
     try {
       const [crewsRes, projectsRes] = await Promise.all([
-        api.get(`/resources/crews`),
+        api.get(`/crews`),
         api.get(`/projects`),
       ]);
       const crewCount = Array.isArray(crewsRes.data) ? crewsRes.data.length : 0;
@@ -804,7 +804,7 @@ function ReallocationForm({ onClose, onCommitted }) {
   const [projects, setProjects] = useState([]);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    api.get(`/resources/crews`).then((r) => setCrews(Array.isArray(r.data) ? r.data : []));
+    api.get(`/crews`).then((r) => setCrews(Array.isArray(r.data) ? r.data : []));
     api.get(`/projects`).then((r) => setProjects(Array.isArray(r.data) ? r.data : []));
   }, []);
   const submit = async () => {
