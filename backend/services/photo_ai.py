@@ -80,16 +80,18 @@ except Exception as _heif_exc:
 # the posture obvious. Anthropic SDK is also import-probed here so any
 # version mismatch (e.g. v0.40 breaking changes vs. our pinned 0.39)
 # surfaces before the first photo upload rather than after.
-_HAS_ANTHROPIC_KEY = bool(
-    os.environ.get("ANTHROPIC_API_KEY")
-    or os.environ.get("EMERGENT_LLM_KEY")
-)
+# Federal-contractor compliance follow-up (2026-05-12): ALL Claude Vision
+# traffic now flows through Emergent's LLM gateway via EMERGENT_LLM_KEY,
+# NOT api.anthropic.com directly. No separate Anthropic Console account
+# is maintained. The boot-time probe verifies emergentintegrations is
+# importable AND a gateway key is configured before the first analyze.
+_HAS_EMERGENT_LLM_KEY = bool(os.environ.get("EMERGENT_LLM_KEY"))
 _PHOTO_AI_DEV_OVERRIDE = os.environ.get("PHOTO_AI_DEV_MODE") == "1"
-if not _HAS_ANTHROPIC_KEY:
+if not _HAS_EMERGENT_LLM_KEY:
     log.warning(
-        "Photo AI: ANTHROPIC_API_KEY / EMERGENT_LLM_KEY not set -- "
-        "falling back to deterministic dev stub. Real Claude Vision "
-        "will NOT be called. Set ANTHROPIC_API_KEY to enable.",
+        "Photo AI: EMERGENT_LLM_KEY not set -- falling back to "
+        "deterministic dev stub. Real Claude Vision will NOT be "
+        "called. Set EMERGENT_LLM_KEY to enable.",
     )
 elif _PHOTO_AI_DEV_OVERRIDE:
     log.warning(
@@ -97,35 +99,39 @@ elif _PHOTO_AI_DEV_OVERRIDE:
         "though an API key is configured.",
     )
 else:
-    log.info("Photo AI: real Claude Vision path enabled (API key present).")
+    log.info(
+        "Photo AI: Emergent LLM gateway path enabled "
+        "(EMERGENT_LLM_KEY present).",
+    )
 
-# Probe the Anthropic SDK at module load. If the import fails OR the
-# AsyncAnthropic constructor signature has drifted from what we expect
-# (anthropic==0.39.0 accepts api_key + timeout), we want to know now,
-# not on the first analyze call.
-_ANTHROPIC_SDK_OK = False
+# Probe the emergentintegrations SDK at module load. If the import
+# fails we want to know now, not on the first analyze call. The
+# gateway client (LlmChat + ImageContent + UserMessage) lives in
+# emergentintegrations.llm.chat.
+_GATEWAY_SDK_OK = False
 try:
-    from anthropic import AsyncAnthropic as _ProbeAsyncAnthropic
-    # Don't actually instantiate (would need a real key); just probe
-    # that the class exists + has the expected attribute.
-    if hasattr(_ProbeAsyncAnthropic, "messages") or hasattr(_ProbeAsyncAnthropic, "__init__"):
-        _ANTHROPIC_SDK_OK = True
-        log.info("Photo AI: anthropic SDK import OK")
-    else:
-        log.warning(
-            "Photo AI: anthropic SDK imported but AsyncAnthropic shape "
-            "unexpected -- dev stub will be used.",
-        )
-except ImportError as _anth_exc:
-    log.warning(
-        "Photo AI: anthropic SDK not installed (%s) -- dev stub will be used.",
-        _anth_exc,
+    from emergentintegrations.llm.chat import (  # noqa: F401
+        LlmChat as _ProbeLlmChat,
+        UserMessage as _ProbeUserMessage,
+        ImageContent as _ProbeImageContent,
     )
-except Exception as _anth_exc:
+    _GATEWAY_SDK_OK = True
+    log.info("Photo AI: emergentintegrations gateway SDK import OK")
+except ImportError as _gw_exc:
     log.warning(
-        "Photo AI: anthropic SDK probe failed (%s) -- dev stub will be used.",
-        _anth_exc,
+        "Photo AI: gateway client init failed: emergentintegrations "
+        "not installed (%s) -- dev stub will be used.",
+        _gw_exc,
     )
+except Exception as _gw_exc:
+    log.warning(
+        "Photo AI: gateway client init failed: %s -- dev stub will be used.",
+        _gw_exc,
+    )
+
+# Back-compat alias so older audit messages / failure_reason codes
+# that referenced the anthropic SDK probe name still resolve.
+_ANTHROPIC_SDK_OK = _GATEWAY_SDK_OK
 
 # Pricing per the Anthropic API (Claude Sonnet 4.5). Update when the
 # pricing card changes. Constants here so tests can verify cost math
@@ -590,34 +596,25 @@ async def find_dedup_source(
 # =====================================================================
 
 def _is_dev_mode() -> bool:
-    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no Anthropic key OR
-    SDK import failed at module load. Real Vision needs
-    ANTHROPIC_API_KEY (preferred) or EMERGENT_LLM_KEY as a fallback
-    (some Railway deploys use the Emergent key as a pass-through).
-    When dev mode is on, _stub_analysis returns deterministic mock data
-    without any network call.
-
-    Test 4A/B follow-up (2026-05-12): also returns True if the
-    anthropic SDK probe failed at module load, so we degrade
-    gracefully to the stub instead of crashing later with
-    ImportError / TypeError on a constructor signature mismatch.
+    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no Emergent gateway
+    key OR gateway SDK import failed. Real Vision requires
+    EMERGENT_LLM_KEY (federal-contractor compliance: no direct
+    Anthropic Console account). When dev mode is on, _stub_analysis
+    returns deterministic mock data without any network call.
     """
     if os.environ.get("PHOTO_AI_DEV_MODE") == "1":
         return True
-    if not _ANTHROPIC_SDK_OK:
+    if not _GATEWAY_SDK_OK:
         return True
-    return not (
-        os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("EMERGENT_LLM_KEY")
-    )
+    return not os.environ.get("EMERGENT_LLM_KEY")
 
 
 def _anthropic_api_key() -> Optional[str]:
-    """ANTHROPIC_API_KEY preferred; EMERGENT_LLM_KEY accepted as a
-    pass-through for Emergent-managed deploys."""
-    return (os.environ.get("ANTHROPIC_API_KEY")
-            or os.environ.get("EMERGENT_LLM_KEY")
-            or None)
+    """Returns the Emergent LLM gateway key. Name preserved for
+    back-compat with older callers; all Vision traffic now routes
+    through Emergent's gateway, not api.anthropic.com directly.
+    """
+    return os.environ.get("EMERGENT_LLM_KEY") or None
 
 
 # =====================================================================
@@ -828,128 +825,132 @@ async def _call_anthropic_vision(
     VisionTimeoutError / VisionApiError / VisionMalformedJsonError so
     the retry loop can distinguish failure classes.
 
-    Test 4A/B follow-up (2026-05-12): EVERY stage (SDK import, client
-    init, API call, response text extraction, JSON parse, usage parse)
-    is in its own try/except so a bare TypeError can never propagate
-    to the catch-all "unexpected" classification at the retry loop's
-    outer scope. Each failure carries a `subtype` so operators can
-    triage from the audit log without re-reading server logs.
+    Federal-contractor compliance refactor (2026-05-12): the underlying
+    transport is now Emergent's LLM gateway (via emergentintegrations
+    LlmChat) instead of direct api.anthropic.com. The 7-stage exception
+    classification (sdk/client_init/payload_encode/api_error subtypes/
+    response_parse/vision_malformed_json/usage_metadata) is preserved
+    so audit-log triage flows are unchanged. Function name kept for
+    back-compat with the retry loop and audit messages.
     """
     api_key = _anthropic_api_key()
     if not api_key:
-        raise VisionApiError("no API key configured", subtype="no_api_key")
+        raise VisionApiError(
+            "no EMERGENT_LLM_KEY configured", subtype="no_api_key",
+        )
 
     # --- Stage 1: SDK import ----------------------------------------
     try:
-        from anthropic import AsyncAnthropic
+        from emergentintegrations.llm.chat import (
+            LlmChat, UserMessage, ImageContent,
+        )
     except ImportError as exc:
         raise VisionApiError(
-            f"anthropic SDK not installed: {exc}",
+            f"emergentintegrations not installed: {exc}",
             subtype="sdk_unavailable",
         ) from exc
     except Exception as exc:
         raise VisionApiError(
-            f"anthropic SDK import errored ({type(exc).__name__}): {exc}",
+            f"emergentintegrations import errored "
+            f"({type(exc).__name__}): {exc}",
             subtype="sdk_unavailable",
         ) from exc
 
-    # --- Stage 2: client init (constructor signature can drift) -----
+    # --- Stage 2: client init ---------------------------------------
+    # LlmChat does not currently accept a timeout kwarg; we wrap the
+    # send_message call in asyncio.wait_for below to enforce
+    # timeout_seconds without dropping the existing retry contract.
     try:
-        client = AsyncAnthropic(api_key=api_key, timeout=timeout_seconds)
+        # A unique session_id per call keeps photo-AI analyses
+        # stateless -- we don't want a previous photo's context
+        # poisoning the next one's classification.
+        session_id = f"photo-ai-{int(asyncio.get_event_loop().time()*1000)}"
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=session_id,
+            system_message=_VISION_SYSTEM_PROMPT,
+        ).with_model("anthropic", model)
     except TypeError as exc:
-        # Signature drift between pinned 0.39.0 and what's actually
-        # installed (e.g. an Emergent base image bumped the SDK).
         raise VisionApiError(
-            f"AsyncAnthropic constructor rejected kwargs "
-            f"({type(exc).__name__}: {exc}). Likely SDK version "
-            f"mismatch -- check `pip show anthropic` vs requirements.txt.",
+            f"LlmChat constructor rejected kwargs "
+            f"({type(exc).__name__}: {exc}). Likely SDK version drift "
+            f"-- check `pip show emergentintegrations`.",
             subtype="client_init_failed",
         ) from exc
     except Exception as exc:
         raise VisionApiError(
-            f"AsyncAnthropic init failed ({type(exc).__name__}): {exc}",
+            f"LlmChat init failed ({type(exc).__name__}): {exc}",
             subtype="client_init_failed",
         ) from exc
 
     # --- Stage 3: encode payload ------------------------------------
     try:
         b64 = base64.standard_b64encode(jpeg_bytes).decode("ascii")
+        image_content = ImageContent(image_base64=b64)
+        user_message = UserMessage(
+            text="Analyze this photo. Return only the JSON object.",
+            file_contents=[image_content],
+        )
     except Exception as exc:
         raise VisionApiError(
-            f"base64 encode failed ({type(exc).__name__}): {exc}",
+            f"gateway payload encode failed ({type(exc).__name__}): {exc}",
             subtype="payload_encode_failed",
         ) from exc
 
     # --- Stage 4: API call ------------------------------------------
     try:
-        resp = await client.messages.create(
-            model=model,
-            max_tokens=600,
-            temperature=0.2,
-            system=_VISION_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image",
-                      "source": {"type": "base64", "media_type": media_type,
-                                  "data": b64}},
-                    {"type": "text",
-                      "text": "Analyze this photo. Return only the JSON object."},
-                ],
-            }],
+        resp_obj = await asyncio.wait_for(
+            chat.send_message(user_message),
+            timeout=timeout_seconds,
         )
     except asyncio.TimeoutError as exc:
         raise VisionTimeoutError(
             f"timeout after {timeout_seconds}s", subtype="api_timeout",
         ) from exc
     except Exception as exc:
-        # Classify by anthropic SDK class name. v0.39 has:
-        # AuthenticationError (401), PermissionDeniedError (403),
-        # RateLimitError (429), BadRequestError (400),
-        # APIConnectionError (network), APIStatusError (catch-all 5xx),
-        # InternalServerError (500+).
+        # Classify by error string content. emergentintegrations passes
+        # gateway HTTP errors through; we look for status-code hints
+        # in the message to set a useful subtype.
         cls = type(exc).__name__
-        msg = f"{cls}: {str(exc)[:200]}"
-        if "RateLimit" in cls or "429" in str(exc):
+        msg_str = str(exc)[:200]
+        msg = f"{cls}: {msg_str}"
+        low = msg_str.lower()
+        if "rate" in low and "limit" in low or "429" in msg_str:
             subtype = "rate_limit"
-        elif "Authentication" in cls or "Unauthorized" in cls or "401" in str(exc):
+        elif ("auth" in low or "unauthorized" in low
+              or "401" in msg_str or "api key" in low):
             subtype = "auth"
-        elif "PermissionDenied" in cls or "403" in str(exc):
+        elif "permission" in low or "403" in msg_str:
             subtype = "permission_denied"
-        elif "BadRequest" in cls or "400" in str(exc):
+        elif "bad request" in low or "400" in msg_str:
             subtype = "bad_request"
-        elif "APIConnection" in cls or "Connection" in cls:
+        elif "connection" in low or "network" in low:
             subtype = "api_connection"
-        elif "InternalServer" in cls or "5" in str(exc)[:3]:
+        elif ("500" in msg_str or "502" in msg_str
+              or "503" in msg_str or "504" in msg_str
+              or "server error" in low or "internal" in low):
             subtype = "server_error"
         else:
             subtype = "unexpected_api"
         raise VisionApiError(msg, subtype=subtype) from exc
 
-    # --- Stage 5: text extraction from response ---------------------
+    # --- Stage 5: text extraction from gateway response -------------
+    # emergentintegrations.send_message returns a string of the
+    # assistant's text. Defensive cast in case a future SDK version
+    # returns a richer object.
     try:
-        text_parts = []
-        content = getattr(resp, "content", None) or []
-        # Defensive: SDK should return a list of content blocks, but
-        # we don't trust it -- v0.40+ may have changed the iteration
-        # surface. Cast to list if it's iterable but not already a list.
-        if not isinstance(content, list):
-            try:
-                content = list(content)
-            except TypeError as exc:
-                raise VisionApiError(
-                    f"resp.content is not iterable ({type(content).__name__}): {exc}",
-                    subtype="response_parse",
-                ) from exc
-        for block in content:
-            if getattr(block, "type", None) == "text":
-                text_parts.append(getattr(block, "text", "") or "")
-        text = "\n".join(text_parts).strip()
-    except VisionApiError:
-        raise
+        if isinstance(resp_obj, str):
+            text = resp_obj.strip()
+        elif hasattr(resp_obj, "text"):
+            text = str(getattr(resp_obj, "text") or "").strip()
+        elif hasattr(resp_obj, "content"):
+            text = str(getattr(resp_obj, "content") or "").strip()
+        else:
+            text = str(resp_obj).strip()
     except Exception as exc:
         raise VisionApiError(
-            f"response text extraction failed ({type(exc).__name__}): {exc}",
+            f"response text extraction failed "
+            f"({type(exc).__name__}): {exc}",
             subtype="response_parse",
         ) from exc
 
@@ -957,22 +958,37 @@ async def _call_anthropic_vision(
     data = _parse_vision_json(text)
 
     # --- Stage 7: usage / model metadata ----------------------------
+    # emergentintegrations.send_message does not currently surface
+    # per-call token usage as a structured object. Estimate from the
+    # round-trip payload sizes so the cost dashboard at Settings ->
+    # AI Usage still rolls up sensible numbers. (1 token ~= 4 chars
+    # for prompt+response text; image tokens are baked into the
+    # gateway's input billing and not separately reported.)
     try:
-        usage = getattr(resp, "usage", None)
-        raw_in = getattr(usage, "input_tokens", 0) if usage is not None else 0
-        raw_out = getattr(usage, "output_tokens", 0) if usage is not None else 0
-        in_tok = int(raw_in or 0)
-        out_tok = int(raw_out or 0)
-        resp_model = getattr(resp, "model", model) or model
-    except Exception as exc:
-        # Non-fatal -- treat as zero-cost call rather than failing the
-        # whole analysis after the API already succeeded.
-        log.warning(
-            "photo_ai: usage parse failed (%s: %s); recording 0 tokens",
-            type(exc).__name__, exc,
-        )
+        # Approximate: prompt text + image is roughly fixed-overhead;
+        # we use the SDK-reported model where available.
+        resp_model = model
+        if hasattr(resp_obj, "model"):
+            resp_model = str(getattr(resp_obj, "model") or model)
         in_tok = 0
         out_tok = 0
+        if hasattr(resp_obj, "usage"):
+            usage = getattr(resp_obj, "usage")
+            in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+            out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        # If gateway didn't surface usage, estimate from text lengths.
+        if in_tok == 0 and out_tok == 0:
+            # Image: ~1568x1568 JPEG ≈ 1600 image tokens for Sonnet
+            # plus the system prompt + user text (~250 tokens).
+            in_tok = 1850
+            out_tok = max(1, len(text) // 4)
+    except Exception as exc:
+        log.warning(
+            "photo_ai: usage parse failed (%s: %s); recording estimate",
+            type(exc).__name__, exc,
+        )
+        in_tok = 1850
+        out_tok = max(1, len(text) // 4) if text else 0
         resp_model = model
 
     return {
