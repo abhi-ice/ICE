@@ -110,7 +110,7 @@ async def list_project_members(
     user_ids = [m["user_id"] for m in members]
     user_docs = await db.users.find(
         {"id": {"$in": user_ids}},
-        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "picture": 1},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1},
     ).to_list(length=len(user_ids) or 1)
     by_uid = {u["id"]: u for u in user_docs}
     enriched = []
@@ -120,7 +120,6 @@ async def list_project_members(
             **m,
             "user_email": u.get("email"),
             "user_full_name": u.get("full_name"),
-            "user_picture": u.get("picture"),
         })
     return {"project_id": project_id, "project_name": proj.get("name"),
             "members": enriched}
@@ -331,6 +330,6 @@ async def list_eligible_members(
         return []
     users = await db.users.find(
         {"id": {"$in": eligible_ids}},
-        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "picture": 1, "role": 1},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1},
     ).to_list(length=len(eligible_ids))
     return users

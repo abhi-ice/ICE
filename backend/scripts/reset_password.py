@@ -6,11 +6,12 @@ This is the bottom-of-the-escalation-ladder recovery path:
   2. User locked out, admin available   -> POST /api/team/members/{id}/reset-password
   3. Every admin locked out             -> THIS SCRIPT (requires shell + MONGO_URL)
 
-Writes a freshly bcrypt'd password_hash, invalidates all session
-tokens for the user, and appends an OPERATOR_PASSWORD_RESET audit
-entry. Use with care -- direct DB write bypasses the tenant-admin
-permission check that the HTTP endpoint enforces. The audit entry
-captures who ran the script (--executed-by required).
+Writes a freshly bcrypt'd password_hash and appends an
+OPERATOR_PASSWORD_RESET audit entry. Use with care -- direct DB
+write bypasses the tenant-admin permission check that the HTTP
+endpoint enforces. The audit entry captures who ran the script
+(--executed-by required). Active Bearer JWTs remain valid until
+they expire naturally (~7 days).
 
 Usage:
 
@@ -136,7 +137,10 @@ async def main(argv: Optional[list[str]] = None) -> int:
             "password_reset_by": args.executed_by,
         }},
     )
-    sessions_deleted = await db.user_sessions.delete_many({"user_id": user["id"]})
+    # Note: the Google-OAuth cookie session path was removed in the
+    # 2026-05-11 purge, so there's no longer a user_sessions collection
+    # to invalidate. Active Bearer JWTs are stateless and expire on
+    # their own.
 
     # Audit (uses write_audit so the SHA-256 chain stays intact).
     await write_audit(
@@ -149,7 +153,6 @@ async def main(argv: Optional[list[str]] = None) -> int:
             "reset_user_email": user.get("email"),
             "executed_by": args.executed_by,
             "note": args.note,
-            "sessions_invalidated": int(sessions_deleted.deleted_count or 0),
         },
         actor_id=args.executed_by,
         request_id=f"scripts.reset_password.{int(datetime.now(timezone.utc).timestamp())}",
@@ -161,15 +164,13 @@ async def main(argv: Optional[list[str]] = None) -> int:
     print(f"Tenant:      {user['tenant_id']}")
     print(f"Old hash prefix: {before_prefix!r}")
     print(f"New hash prefix: {new_hash[:7]!r}")
-    print(f"Sessions invalidated: {int(sessions_deleted.deleted_count or 0)}")
     print(f"Audit op: OPERATOR_PASSWORD_RESET written")
     print(f"Executed by: {args.executed_by}")
     if args.note:
         print(f"Note: {args.note}")
     print()
     print("User must log in with the new password. Active Bearer JWTs "
-          "remain valid until they expire (~7 days); cookie-based "
-          "sessions were cleared.")
+          "remain valid until they expire (~7 days).")
     return 0
 
 

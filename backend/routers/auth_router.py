@@ -308,10 +308,11 @@ async def admin_reset_password(
                    "password_reset_at": utc_now().isoformat(),
                    "password_reset_by": ctx["user"]["id"]}},
     )
-    # Invalidate any active session_tokens so the reset takes effect
-    # immediately on cookie-auth paths (Bearer JWTs are stateless and
-    # will expire naturally; document that in the response).
-    await db.user_sessions.delete_many({"user_id": user_id})
+    # Bearer JWTs are stateless and will expire naturally; document that
+    # in the response so the operator knows tokens issued before the
+    # reset remain valid until expiry. (The Google-OAuth cookie session
+    # path was removed in the 2026-05-11 purge, so there's no longer
+    # anything else to invalidate here.)
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="users",
         op="ADMIN_PASSWORD_RESET",
@@ -326,7 +327,6 @@ async def admin_reset_password(
         "ok": True,
         "user_id": user_id,
         "email": user.get("email"),
-        "sessions_invalidated": True,
         "note": "User must re-login with the new password. Active JWTs "
-                "remain valid until expiry; cookie sessions were cleared.",
+                "remain valid until expiry.",
     }

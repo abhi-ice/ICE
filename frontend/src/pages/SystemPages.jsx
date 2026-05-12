@@ -51,8 +51,9 @@ const AUDIT_OP_GROUPS = [
   },
   {
     label: "Auth + admin",
-    ops: ["ADMIN_PASSWORD_RESET", "OPERATOR_PASSWORD_RESET",
-           "LINKAGE_FIELD_MIGRATED", "RESET_BOUNDARY"],
+    ops: ["ADMIN_PASSWORD_RESET", "GOOGLE_AUTH_REMOVED",
+           "LINKAGE_FIELD_MIGRATED", "OPERATOR_PASSWORD_RESET",
+           "RESET_BOUNDARY"],
   },
   // Bucket F Phase 5 (2026-05-11) -- Photo AI op family. Surfacing
   // these in the filter dropdown lets compliance + admins audit AI
@@ -128,6 +129,69 @@ const AUDIT_OP_GROUPS = [
   {
     label: "Exhibit exports",
     ops: ["AUDIT_EXTRACT_EXPORTED", "PHOTO_EVIDENCE_PACK_EXPORTED"],
+  },
+  // Pre-test sweep (2026-05-11) -- 30 backend audit ops that fire but
+  // weren't in the dropdown. Grouped by bucket origin. Sorted
+  // alphabetically within each group.
+  {
+    label: "Coordination",
+    ops: [
+      "COORDINATION_EVENT_CREATE",
+      "COORDINATION_EVENT_DELETE",
+      "COORDINATION_EVENT_UPDATE",
+    ],
+  },
+  {
+    label: "Mitigations",
+    ops: [
+      "MITIGATION_CHOOSE",
+      "MITIGATION_PROPOSE",
+      "MITIGATION_UNCHOOSE",
+      "OUTCOME_RECORD",
+    ],
+  },
+  {
+    label: "TIA",
+    ops: [
+      "TIA_DOWNLOAD",
+      "TIA_GENERATED",
+      "TIA_GENERATION_FAILED",
+      "TIA_PRIVILEGE_FLAGGED",
+      "TIA_PRIVILEGE_UNFLAGGED",
+    ],
+  },
+  {
+    label: "Schedule",
+    ops: [
+      "AI_NARRATIVE_GENERATED",
+      "CPM_RECOMPUTE",
+      "SCHEDULE_DIFF_FAILED",
+      "SCHEDULE_DIFF_GENERATED",
+      "STATUS_COMPUTE",
+    ],
+  },
+  {
+    label: "Photos (lifecycle)",
+    ops: [
+      "PHOTO_CREATE",
+      "PHOTO_PIN_SET",
+      "PHOTO_TAG_REMOVED",
+      "PHOTO_TRAY_UPLOAD",
+      "PHOTO_UPDATE",
+    ],
+  },
+  {
+    label: "Cross-bucket infra",
+    ops: [
+      "AUTO_INSERT_FROM_GRID",
+      "CASCADE_DELETE_FROM_DR",
+      "CASCADE_NOTIFICATION",
+      "DR_ORPHAN_CLEANUP",
+      "GATING_ENTITY_CREATE",
+      "GATING_ENTITY_ORPHAN_CLEANUP",
+      "GATING_ENTITY_STATUS_CHANGE",
+      "SYNC",
+    ],
   },
 ];
 

@@ -243,7 +243,12 @@ export default function DelayDetail() {
           try {
             // Mirrors the existing /choose endpoint on the mitigations
             // router. The chosen scenario id IS the suggested value.
-            await api.post(`/mitigations/${v}/choose`);
+            // Body is required by MitigationChooseRequest; rationale
+            // is optional (null = "accepted AI suggestion without
+            // explicit rationale").
+            await api.post(`/mitigations/${v}/choose`, {
+              decision_rationale: null,
+            });
             refresh();
             toast.success("AI-suggested mitigation chosen");
           } catch (e) {

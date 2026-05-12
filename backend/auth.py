@@ -1,8 +1,12 @@
-"""JWT auth + Google session_token (cookie) — dual auth.
+"""JWT auth — Bearer-only.
 
 Order of resolution per request:
-  1. session_token cookie  → look up in `user_sessions`
-  2. Authorization: Bearer <JWT> → decode HS256
+  1. Authorization: Bearer <JWT> → decode HS256
+
+Google OAuth + cookie session_token purge (2026-05-11): the prior dual-auth
+path (cookie OR JWT) was removed per federal-contractor data-confidentiality
+policy. No third-party auth providers. The `user_sessions` collection is
+dropped by migration 016. Only the Bearer-JWT path remains.
 
 Followup-fix (2026-05-08): verify_password used to swallow every
 exception as `return False`, so a malformed hash, encoding bug, or
@@ -20,7 +24,7 @@ import os
 import bcrypt
 import jwt as pyjwt
 from datetime import datetime, timedelta, timezone
-from fastapi import Depends, HTTPException, Header, status, Request
+from fastapi import Depends, HTTPException, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 from database import get_db
@@ -280,27 +284,6 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid token: {e}")
 
 
-async def _resolve_via_cookie(token: str) -> dict | None:
-    db = get_db()
-    sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if not sess:
-        return None
-    expires_at = sess.get("expires_at")
-    if isinstance(expires_at, str):
-        try:
-            expires_at = datetime.fromisoformat(expires_at)
-        except ValueError:
-            expires_at = None
-    if expires_at is None:
-        return None
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        return None
-    user = await db.users.find_one({"id": sess["user_id"]}, {"_id": 0, "password_hash": 0})
-    return user
-
-
 async def _resolve_via_jwt(token: str) -> dict | None:
     db = get_db()
     claims = decode_token(token)
@@ -309,16 +292,14 @@ async def _resolve_via_jwt(token: str) -> dict | None:
 
 
 async def get_current_user(
-    request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
     x_tenant_id: Optional[str] = Header(default=None, alias="X-Tenant-ID"),
 ) -> dict:
-    """Dual-auth: cookie OR Bearer JWT."""
+    """Bearer-JWT auth. The Google-OAuth cookie path was removed in the
+    2026-05-11 Google-Auth purge (federal-contractor data-confidentiality
+    policy)."""
     user = None
-    cookie_token = request.cookies.get("session_token")
-    if cookie_token:
-        user = await _resolve_via_cookie(cookie_token)
-    if not user and creds:
+    if creds:
         user = await _resolve_via_jwt(creds.credentials)
     if not user:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
