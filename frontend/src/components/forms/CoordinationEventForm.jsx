@@ -52,14 +52,17 @@ function defaultsFromInitial(initial, linkedDailyReportId) {
   };
 }
 
-// Bucket D Addition 5 (2026-05-12) -- new `lockedAddReason` prop. When
-// the parent DR is locked AND this form is in create mode, the panel
-// passes the reason text through this prop; we include it as
-// `add_reason` on the POST so the backend stamps post_submit_added=true
-// + writes EVENT_ADDED_POST_SUBMIT audit.
+// Bucket D Addition 5 (2026-05-12) -- new `isLocked` + `lockedAddReason`
+// props. Mirrors DelayForm's enforcement: client-side gate rejects
+// submit if isLocked + create mode + reason too short, regardless of
+// caller role. Submit button disabled when invalid. Backend bypass for
+// admin/PM remains intact as the safety net.
+const COORD_REASON_MIN = 10;
+const coordIsReasonValid = (v) => (v || "").trim().length >= COORD_REASON_MIN;
 export default function CoordinationEventForm({ projectId, initial, linkedDailyReportId,
                                                  abbreviated = false,
-                                                 onSaved, onCancel, lockedAddReason }) {
+                                                 onSaved, onCancel,
+                                                 isLocked = false, lockedAddReason = null }) {
   const [form, setForm] = useState(() => defaultsFromInitial(initial, linkedDailyReportId));
   const [busy, setBusy] = useState(false);
 
@@ -70,6 +73,15 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
     if (!form.other_party_name.trim()) { toast.error("Other party name is required"); return; }
     if (form.topic === "other" && !form.topic_other_description.trim()) {
       toast.error("Describe the topic when 'other'");
+      return;
+    }
+    // Bucket D Addition 5 -- client-side add-reason gate on locked-DR
+    // creates. Uniform across roles for UX consistency; backend bypass
+    // for admin/PM is the safety net.
+    if (isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason)) {
+      toast.error(
+        `Add reason required (min ${COORD_REASON_MIN} chars) when logging a coordination event on a locked daily report.`,
+      );
       return;
     }
     setBusy(true);
@@ -104,10 +116,10 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       if (initial?.id) {
         res = await api.patch(`/coordination-events/${initial.id}`, payload);
       } else {
-        // Bucket D Addition 5 -- forward add_reason on create when the
-        // parent DR is locked. Backend ignores on unlocked DRs.
-        if (lockedAddReason) {
-          payload.add_reason = lockedAddReason;
+        // Bucket D Addition 5 -- ALWAYS include add_reason on locked-DR
+        // creates (client-side gate above guarantees it's valid).
+        if (isLocked) {
+          payload.add_reason = (lockedAddReason || "").trim();
         }
         res = await api.post(`/coordination-events`, payload);
       }
@@ -290,9 +302,19 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             Cancel
           </button>
         )}
-        <button data-testid="coord-save" onClick={submit} disabled={busy}
-          className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
-          {busy ? "Saving…" : (initial?.id ? "Save changes" : "Log event")}
+        {/* Bucket D Addition 5 -- submit disabled until add-reason gate
+            passes on locked-DR creates. */}
+        <button data-testid="coord-save" onClick={submit}
+          disabled={busy || (isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason))}
+          title={isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason)
+            ? `Add reason required (min ${COORD_REASON_MIN} chars) on a locked DR.`
+            : undefined}
+          className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          {busy
+            ? "Saving…"
+            : (initial?.id
+                ? "Save changes"
+                : (isLocked ? "Log event (post-submit)" : "Log event"))}
         </button>
       </div>
     </div>

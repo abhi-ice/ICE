@@ -51,14 +51,29 @@ const CAUSE_CLASS_OPTS = [
   "regulatory", "utility", "procurement", "other",
 ];
 
-// Bucket D Addition 5 (2026-05-12) -- new `lockedAddReason` prop. When
-// the parent DR is locked AND this form is in create mode (no
-// `initial.id`), the panel passes the reason text through this prop;
-// we include it as `add_reason` on the POST so the backend stamps
-// post_submit_added=true + writes EVENT_ADDED_POST_SUBMIT audit. The
-// reason itself is rendered + validated in the parent panel; this
-// form is only responsible for piping it through.
-export default function DelayForm({ projectId, reportDate, dailyReportId, initial, onSaved, onCancel, lockedAddReason }) {
+// Bucket D Addition 5 (2026-05-12) -- new `isLocked` + `lockedAddReason`
+// props. When the parent DR is locked AND this form is in create mode
+// (no `initial.id`), the panel passes:
+//   - isLocked: true so the form knows to apply the add-reason gate
+//   - lockedAddReason: the reason text from the panel's reason block
+//
+// On submit, the form validates client-side that the reason meets the
+// min-char threshold (10) BEFORE hitting the backend. Submit button is
+// also disabled when isLocked && reason invalid, so the user gets
+// immediate UX feedback that the field is required. Backend bypass for
+// admin/PM remains intact -- the client-side gate is intentionally
+// uniform across roles so audit captures intent for everyone.
+//
+// Test 2D follow-up (2026-05-12): prior version checked
+// `if (lockedAddReason)` truthy which omitted the field when empty --
+// admin/PM bypass then let the create through with no audit reason.
+// Now we always include the field when isLocked + abort client-side
+// when invalid, regardless of role.
+const REASON_MIN = 10;
+const isReasonValid = (v) => (v || "").trim().length >= REASON_MIN;
+export default function DelayForm({ projectId, reportDate, dailyReportId, initial,
+                                     onSaved, onCancel,
+                                     isLocked = false, lockedAddReason = null }) {
   const [tasks, setTasks] = useState([]);  // [{id, activity_code, description, total_float_days, is_critical_path}]
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [picker, setPicker] = useState("");
@@ -129,6 +144,15 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   const submit = async () => {
     if (!form.description.trim()) { toast.error("What happened? is required"); return; }
     if (!form.impacts.length) { toast.error("Link at least one task"); return; }
+    // Bucket D Addition 5 -- client-side add-reason gate. Uniform
+    // across roles; backend bypass for admin/PM still operates as the
+    // safety net but the UI insists every add captures intent.
+    if (isLocked && !initial?.id && !isReasonValid(lockedAddReason)) {
+      toast.error(
+        `Add reason required (min ${REASON_MIN} chars) when logging a delay on a locked daily report.`,
+      );
+      return;
+    }
     setBusy(true);
     try {
       const payload = {
@@ -161,11 +185,13 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           daily_report_id: dailyReportId || undefined,
           date: reportDate || localTodayISO(),
         };
-        // Bucket D Addition 5 -- forward the add_reason text on create
-        // when the parent DR is locked. Backend ignores the field on
-        // unlocked DRs (it's Optional[str]).
-        if (lockedAddReason) {
-          createBody.add_reason = lockedAddReason;
+        // Bucket D Addition 5 -- ALWAYS include add_reason on locked-DR
+        // creates (not just when truthy). Empty string would still
+        // trigger backend 422 for non-admin/PM; client-side gate above
+        // already rejected empty, so this branch always carries the
+        // valid reason text.
+        if (isLocked) {
+          createBody.add_reason = (lockedAddReason || "").trim();
         }
         res = await api.post(`/delays`, createBody);
       }
@@ -383,9 +409,18 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       )}
 
       <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-        <button data-testid="delay-form-save" onClick={submit} disabled={busy}
-          className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
-          {initial?.id ? "Save changes" : "Add delay"}
+        {/* Bucket D Addition 5 -- submit disabled until add-reason gate
+            passes on locked DRs (create mode only). Edit mode + draft
+            DRs follow the original disabled-when-busy rule. */}
+        <button data-testid="delay-form-save" onClick={submit}
+          disabled={busy || (isLocked && !initial?.id && !isReasonValid(lockedAddReason))}
+          title={isLocked && !initial?.id && !isReasonValid(lockedAddReason)
+            ? `Add reason required (min ${REASON_MIN} chars) on a locked DR.`
+            : undefined}
+          className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          {initial?.id
+            ? "Save changes"
+            : (isLocked ? "Add delay (post-submit)" : "Add delay")}
         </button>
         {onCancel && (
           <button data-testid="delay-form-cancel" type="button" onClick={onCancel} className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">

@@ -51,28 +51,50 @@ const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 // passed inline to the create() API call as `add_reason`; backend
 // stamps post_submit_added=true + writes EVENT_ADDED_POST_SUBMIT audit
 // when min-10-char threshold is met. Admin/PM bypass the reason check
-// server-side but the field still renders for them so their audit
-// captures intent uniformly.
+// server-side but the FIELD STILL RENDERS AS REQUIRED CLIENT-SIDE for
+// them so audit captures intent uniformly across roles (consistent UX,
+// no role-conditional UI behavior). Submission is blocked client-side
+// until the field meets the min-char threshold.
+//
+// Test 2D follow-up (2026-05-12): the prior implementation didn't have
+// client-side enforcement -- empty submit succeeded for admin (correct
+// per policy spec but inconsistent UX) and for non-admin if the form
+// somehow reached the backend. The visual red-border + disabled-submit
+// combo now makes the field unambiguously required at the UI layer.
 const ADD_REASON_MIN = 10;
+function isAddReasonValid(value) {
+  return (value || "").trim().length >= ADD_REASON_MIN;
+}
 function LockedAddReasonBlock({ value, onChange, eventLabel = "this event", testid = "locked-add-reason" }) {
   const length = (value || "").trim().length;
   const ok = length >= ADD_REASON_MIN;
   return (
-    <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900 space-y-1.5"
-         data-testid={`${testid}-block`}>
+    <div className={`rounded p-2 text-xs space-y-1.5 ${
+      ok
+        ? "bg-amber-50 border border-amber-200 text-amber-900"
+        : "bg-rose-50 border-2 border-rose-300 text-rose-900"
+    }`} data-testid={`${testid}-block`}>
       <div className="flex items-start gap-1.5">
         <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
         <div>
-          <strong>Adding {eventLabel} to a locked daily report.</strong> Reason
-          will be captured in the audit chain (min {ADD_REASON_MIN} chars).
+          <strong>Adding {eventLabel} to a locked daily report.</strong>{" "}
+          <span className="font-semibold">Reason required (min {ADD_REASON_MIN} chars).</span>{" "}
+          Captured in the audit chain.
         </div>
       </div>
       <textarea data-testid={testid} value={value || ""}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Why is this being added after the DR was submitted? (e.g. 'forgot to log discovery during demo')"
-        className="w-full p-2 rounded border border-amber-300 text-sm bg-white h-16" />
-      <div className={`text-right text-[10px] ${ok ? "text-emerald-700" : "text-amber-800"}`}>
-        {length} / {ADD_REASON_MIN} min
+        aria-required="true"
+        aria-invalid={!ok}
+        className={`w-full p-2 rounded text-sm bg-white h-16 ${
+          ok ? "border border-amber-300" : "border-2 border-rose-400 ring-1 ring-rose-200"
+        }`} />
+      <div className={`flex items-center justify-between text-[10px] ${
+        ok ? "text-emerald-700" : "text-rose-700 font-semibold"
+      }`}>
+        <span>{ok ? "✓ ready" : "⚠ required field"}</span>
+        <span>{length} / {ADD_REASON_MIN} min</span>
       </div>
     </div>
   );
@@ -366,14 +388,57 @@ function DailyReportDetail({ id, onBack }) {
   const completed = grid.filter((r) => (r.pct_complete_end_of_day || 0) >= 100).length;
   const ppc = grid.length ? Math.round((completed / grid.length) * 100) : 0;
 
-  // Validation rules to run before submit (returns {ok, errors})
+  // Bucket D Addition 5 / Test 2G follow-up (2026-05-12) -- validate()
+  // relaxed. Previously this function HARD-BLOCKED submit on three
+  // conditions: empty weather, empty crew presence, empty grid. That
+  // prevented legitimate no-work days from reaching the backend's
+  // no-work-day modal flow (which is the spec'd UX for empty DRs).
+  //
+  // New rule: only block on LOGICAL CONTRADICTIONS that can't be a
+  // no-work day. Empty DRs flow through to the server, which returns
+  // 422 with error="empty_dr_requires_no_work_day" so the client
+  // opens the no-work-day modal (see _submitWith's 422 handler).
+  //
+  // Hard-block cases:
+  //   - Crew presence empty BUT grid has recorded progress
+  //     (someone progressed activities with nobody present -- has to
+  //      be one or the other)
+  //   - Grid rows exist AND every row is untouched (zero progress,
+  //     zero hours, zero status change) -- that's a "wasted submit"
+  //     not a no-work day; user should mark the rows or remove them
+  //
+  // Soft (non-blocking) hints would go in a future "submit checklist"
+  // sidebar -- for now we trust the no-work-day modal flow to handle
+  // the empty cases.
   const validate = () => {
     const errors = [];
-    if (!report.weather_conditions) errors.push("Weather not recorded — click Auto-fill on the Weather panel.");
-    if (presence.length === 0) errors.push("Crew presence is empty — add at least one trade row.");
-    if (grid.length === 0) errors.push("Activity grid is empty — add at least one activity.");
-    const untouched = grid.filter((r) => (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day && (r.hours_worked || 0) === 0);
-    if (untouched.length === grid.length && grid.length > 0) errors.push("No activity progress recorded for the day.");
+    const hasProgress = grid.some((r) =>
+      (r.pct_complete_end_of_day ?? 0) > (r.pct_complete_start_of_day ?? 0)
+      || (r.hours_worked || 0) > 0
+      || (r.status_at_end_of_day && r.status_at_end_of_day !== "not_started")
+    );
+    if (presence.length === 0 && hasProgress) {
+      errors.push(
+        "Crew presence is empty but activities show recorded progress. "
+        + "Either add a trade row to the presence panel, or unmark the activity "
+        + "progress (zero progress + no crew = no-work day, which you can submit "
+        + "via the no-work-day modal).",
+      );
+    }
+    // The "every row untouched" case: only a hard-block when grid IS
+    // non-empty. Empty grid is a valid no-work day candidate.
+    const untouched = grid.filter((r) =>
+      (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
+      && (r.hours_worked || 0) === 0
+      && (!r.status_at_end_of_day || r.status_at_end_of_day === "not_started")
+    );
+    if (grid.length > 0 && untouched.length === grid.length) {
+      errors.push(
+        "Activity grid has rows but none show progress. Either record EOD%, "
+        + "hours, or status on at least one row, or remove the rows and submit "
+        + "as a no-work day.",
+      );
+    }
     return { ok: errors.length === 0, errors };
   };
 
@@ -393,12 +458,15 @@ function DailyReportDetail({ id, onBack }) {
       return true;
     } catch (e) {
       const detail = e.response?.data?.detail;
-      // Addition 3 -- empty DR -> open the no-work-day modal so the user
-      // can acknowledge the blank day with an explicit reason.
+      // Addition 3 + Test 2G follow-up -- empty DR opens the no-work-
+      // day modal. We accept both the legacy `error` key and the new
+      // `error_code` key (Test 2G renamed it for clarity); either
+      // triggers the modal.
       if (
         e.response?.status === 422
         && detail && typeof detail === "object"
-        && detail.error === "empty_dr_requires_no_work_day"
+        && (detail.error === "empty_dr_requires_no_work_day"
+            || detail.error_code === "empty_dr_requires_no_work_day_confirmation")
       ) {
         setNoWorkModal({ reason: "", note: "" });
         toast.info(
@@ -427,16 +495,14 @@ function DailyReportDetail({ id, onBack }) {
   };
 
   const submit = async () => {
-    // Addition 3 -- the legacy validator hard-blocked empty grids. We
-    // now defer to the server, which lets the user submit blank days
-    // explicitly via the no-work-day modal. Only block on errors that
-    // can't be a no-work day (e.g. partially-filled grids with row
-    // errors).
+    // Test 2G follow-up (2026-05-12) -- validate() now only flags
+    // logical contradictions (crew-empty-with-progress, all-rows-
+    // untouched). Empty DRs intentionally pass client validation and
+    // get routed to the no-work-day modal via the server's 422
+    // response handler in _submitWith (see "empty_dr_requires_no_
+    // work_day" / "empty_dr_requires_no_work_day_confirmation").
     const { ok, errors } = validate();
-    const onlyEmptyGridError = (
-      !ok && errors.length === 1 && errors[0].includes("Activity grid is empty")
-    );
-    if (!ok && !onlyEmptyGridError) {
+    if (!ok) {
       toast.error("Cannot submit: " + errors[0]);
       return;
     }
@@ -518,6 +584,7 @@ function DailyReportDetail({ id, onBack }) {
             projectId={project.id}
             linkedDailyReportId={id}
             abbreviated={true}
+            isLocked={locked}
             lockedAddReason={locked ? coordAddReason : null}
             onSaved={() => {
               setCoordOpen(false);
@@ -1615,7 +1682,12 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                 <option value="">— Pick —</option>
                 {available.map((a) => <option key={a.id} value={a.id}>[{a.activity_code}] {a.description}{a.trade_code ? ` · ${a.trade_code}` : ""}</option>)}
               </select>
-              <button data-testid="dr-add-activity-button" onClick={addActivity} disabled={!picking} className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700">
+              <button data-testid="dr-add-activity-button" onClick={addActivity}
+                disabled={!picking || (locked && !isAddReasonValid(addReason))}
+                title={locked && !isAddReasonValid(addReason)
+                  ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+                  : undefined}
+                className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-700">
                 {locked ? "Add (post-submit)" : "Add"}
               </button>
             </div>
@@ -1627,8 +1699,12 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
               <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             </div>
-            <button data-testid="unplanned-add" onClick={createUnplanned} disabled={creatingUnplanned}
-              className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 flex items-center gap-1">
+            <button data-testid="unplanned-add" onClick={createUnplanned}
+              disabled={creatingUnplanned || (locked && !isAddReasonValid(addReason))}
+              title={locked && !isAddReasonValid(addReason)
+                ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+                : undefined}
+              className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
               <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
             </button>
           </div>
@@ -1731,6 +1807,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
               projectId={projectId}
               reportDate={reportDate}
               dailyReportId={dailyReportId}
+              isLocked={locked}
               lockedAddReason={locked ? addReason : null}
               onSaved={() => {
                 setShowForm(false);
@@ -1985,8 +2062,12 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
             {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
-        <button data-testid="safety-add" onClick={create} disabled={busy}
-          className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+        <button data-testid="safety-add" onClick={create}
+          disabled={busy || (locked && !isAddReasonValid(addReason))}
+          title={locked && !isAddReasonValid(addReason)
+            ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+            : undefined}
+          className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1">
           <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Add (post-submit)" : "Add"}
         </button>
       </div>
@@ -2179,8 +2260,12 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
           )}
 
           <div className="flex justify-end">
-            <button data-testid="qc-add" onClick={create} disabled={busy}
-              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+            <button data-testid="qc-add" onClick={create}
+              disabled={busy || (locked && !isAddReasonValid(addReason))}
+              title={locked && !isAddReasonValid(addReason)
+                ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+                : undefined}
+              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1">
               <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Add QC (post-submit)" : "Add QC issue"}
             </button>
           </div>
@@ -2309,8 +2394,12 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
           <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
             {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <button data-testid="rfi-add" onClick={create} disabled={busy}
-            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Open RFI (post-submit)" : "Open RFI"}</button>
+          <button data-testid="rfi-add" onClick={create}
+            disabled={busy || (locked && !isAddReasonValid(addReason))}
+            title={locked && !isAddReasonValid(addReason)
+              ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+              : undefined}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Open RFI (post-submit)" : "Open RFI"}</button>
         </div>
       </div>
     </PanelShell>
@@ -2414,8 +2503,12 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
           <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
           <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
           <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-          <button data-testid="delivery-add" onClick={create} disabled={busy}
-            className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Log delivery (post-submit)" : "Log delivery"}</button>
+          <button data-testid="delivery-add" onClick={create}
+            disabled={busy || (locked && !isAddReasonValid(addReason))}
+            title={locked && !isAddReasonValid(addReason)
+              ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+              : undefined}
+            className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Log delivery (post-submit)" : "Log delivery"}</button>
         </div>
         <TaskPicker projectId={projectId}
           value={draft.linked_task_ids}
@@ -2624,6 +2717,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           tray={pendingTray}
           projectId={projectId}
           initialDailyReportId={dailyReportId}
+          isLocked={locked}
           lockedAddReason={locked ? addReason : null}
           onTagged={() => {
             reload();

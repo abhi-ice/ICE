@@ -2,6 +2,11 @@
 EDITING existing events on a LOCKED daily report AND for ADDING new
 events to a LOCKED daily report.
 
+Test 2D follow-up (2026-05-12): added observability log lines so the
+operator can trace what role / DR-status / decision the policy made
+on every locked-DR add. Grep server logs for "locked_dr_add_policy"
+to see every decision in real time.
+
 Three outcomes for both flows:
 
   "allowed"        -- the user can patch/insert right now. Caller
@@ -32,10 +37,13 @@ they realize they need to both fix a row and add a missed delay.
 The check is async because it reads daily_reports.submitted_at +
 edit_requests for the approval-window check.
 """
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from database import get_db, tenant_filter
+
+log = logging.getLogger("edit_permissions")
 
 EditDecision = Literal["allowed", "needs_request", "forbidden"]
 
@@ -304,9 +312,17 @@ async def enforce_locked_dr_add_policy(
     The role + 24h + edit_request rules are identical to the edit
     flow -- an approved edit_request for the DR opens BOTH paths
     (edits AND adds) for the same 1-hour window.
+
+    Test 2D follow-up (2026-05-12): emits structured log lines for
+    every decision branch so the operator can trace bypass / 422 /
+    403 outcomes without instrumenting the call sites.
     """
     from fastapi import HTTPException
     from models import EDIT_REASON_MIN_LEN
+
+    role = (ctx["user"].get("role") or "").lower()
+    actor_id = (ctx.get("user") or {}).get("id")
+    reason_len = len((add_reason or "").strip())
 
     dr = await get_locked_dr_for_event(
         tenant_id=ctx["tenant_id"], daily_report_id=daily_report_id,
@@ -314,22 +330,39 @@ async def enforce_locked_dr_add_policy(
     if not dr or dr.get("status") not in ("submitted", "approved"):
         # Draft DR (or orphan event) -- regular create path, no
         # locked-add ceremony.
+        log.debug(
+            "locked_dr_add_policy: draft_or_missing dr_id=%s event_type=%s "
+            "actor=%s role=%s -> NOT_LOCKED (regular create)",
+            daily_report_id, event_type, actor_id, role,
+        )
         return dr, False
 
-    role = (ctx["user"].get("role") or "").lower()
     # Admin / PM bypass the reason requirement (already privileged at
     # tenant level + the role is captured in the audit actor_id, so
     # legal can still trace).
     if role in PRIVILEGED_ROLES:
+        log.info(
+            "locked_dr_add_policy: privileged_bypass dr_id=%s event_type=%s "
+            "actor=%s role=%s reason_len=%d -> ALLOWED (admin/PM bypass; "
+            "reason captured if frontend supplied it)",
+            daily_report_id, event_type, actor_id, role, reason_len,
+        )
         return dr, True
 
     # Non-privileged: require reason + permission tier.
     cleaned_reason = (add_reason or "").strip()
     if len(cleaned_reason) < EDIT_REASON_MIN_LEN:
+        log.warning(
+            "locked_dr_add_policy: reason_too_short dr_id=%s event_type=%s "
+            "actor=%s role=%s reason_len=%d min=%d -> 422",
+            daily_report_id, event_type, actor_id, role,
+            reason_len, EDIT_REASON_MIN_LEN,
+        )
         raise HTTPException(
             422,
             f"add_reason required (min {EDIT_REASON_MIN_LEN} chars) "
-            f"when adding events to a locked daily report.",
+            f"when adding events to a locked daily report. "
+            f"Got {reason_len} chars.",
         )
 
     # event_id="<new>" -- the row doesn't exist yet; check_edit_permission
@@ -339,12 +372,22 @@ async def enforce_locked_dr_add_policy(
         daily_report=dr, event_type=event_type, event_id="<new>",
     )
     if decision == "forbidden":
+        log.warning(
+            "locked_dr_add_policy: forbidden dr_id=%s event_type=%s "
+            "actor=%s role=%s -> 403 (not submitter, not admin/PM)",
+            daily_report_id, event_type, actor_id, role,
+        )
         raise HTTPException(
             403,
             "Adding events to another user's locked daily report "
             "requires Admin or PM role.",
         )
     if decision == "needs_request":
+        log.warning(
+            "locked_dr_add_policy: needs_request dr_id=%s event_type=%s "
+            "actor=%s role=%s -> 403 (24h self-edit window closed)",
+            daily_report_id, event_type, actor_id, role,
+        )
         raise HTTPException(
             status_code=403,
             detail={
@@ -359,4 +402,9 @@ async def enforce_locked_dr_add_policy(
                 "operation": "add",
             },
         )
+    log.info(
+        "locked_dr_add_policy: allowed dr_id=%s event_type=%s actor=%s "
+        "role=%s reason_len=%d -> POST-SUBMIT-ADD",
+        daily_report_id, event_type, actor_id, role, reason_len,
+    )
     return dr, True
