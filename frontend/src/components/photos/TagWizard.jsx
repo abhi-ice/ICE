@@ -47,13 +47,16 @@ const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
 
 function isoToday() { return new Date().toISOString().slice(0, 10); }
 
-// Bucket D Addition 5 (2026-05-12) -- new `lockedAddReason` prop. When
-// the parent DR (initialDailyReportId) is locked, the PhotosPanel
-// captures the reason and passes it through; we include it on the
-// /photo-tags POST so the backend stamps post_submit_added=true +
-// writes EVENT_ADDED_POST_SUBMIT.
+// Bucket D Addition 5 (2026-05-12) -- new `isLocked` + `lockedAddReason`
+// props. Mirrors DelayForm gate: client-side validation rejects submit
+// if isLocked + reason too short. The PhotosPanel ALSO pre-validates
+// before kicking off the upload, but this is the defense-in-depth
+// at the tag-create step.
+const TAG_REASON_MIN = 10;
+const tagIsReasonValid = (v) => (v || "").trim().length >= TAG_REASON_MIN;
 export default function TagWizard({ open, onOpenChange, tray, projectId, onTagged,
                                     initialDailyReportId = null,
+                                    isLocked = false,
                                     lockedAddReason = null }) {
   // Bucket F Phase 4 -- when the wizard is opened from the DR PhotosPanel
   // upload flow, the DR is already known. Skip step 1 in that case
@@ -242,11 +245,18 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
         ai_confidence_at_tag_time: aiSuggestion?.ai_confidence_score ?? null,
       };
       payload[eventType] = eventId;
-      // Bucket D Addition 5 -- forward add_reason when the parent DR
-      // is locked. Backend stamps post_submit_added=true + writes
-      // EVENT_ADDED_POST_SUBMIT audit. Ignored on unlocked DRs.
-      if (lockedAddReason) {
-        payload.add_reason = lockedAddReason;
+      // Bucket D Addition 5 -- client-side gate + always-include on
+      // locked-DR creates. Uniform across roles; backend bypass for
+      // admin/PM still operates as the safety net.
+      if (isLocked) {
+        if (!tagIsReasonValid(lockedAddReason)) {
+          toast.error(
+            `Add reason required (min ${TAG_REASON_MIN} chars) when tagging a photo on a locked daily report.`,
+          );
+          setBusy(false);
+          return;
+        }
+        payload.add_reason = (lockedAddReason || "").trim();
       }
       const res = await api.post("/photo-tags", payload);
       toast.success(lockedAddReason

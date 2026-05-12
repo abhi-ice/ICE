@@ -885,13 +885,19 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     if not before:
         raise HTTPException(404, "Daily report not found")
 
-    # Addition 3 -- empty DR requires explicit no-work-day ack.
+    # Addition 3 + Test 2G follow-up (2026-05-12) -- empty DR requires
+    # explicit no-work-day ack. Returns BOTH the legacy `error` key
+    # (preserved for existing clients) AND the new `error_code` key
+    # (matches the Test 2G spec naming "_confirmation" suffix). The
+    # frontend already accepts either; new clients should use the
+    # `error_code` key for new branches.
     if await _dr_is_empty(db, daily_report_id, ctx["tenant_id"]):
         if not payload.is_no_work_day:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "error": "empty_dr_requires_no_work_day",
+                    "error_code": "empty_dr_requires_no_work_day_confirmation",
                     "message": (
                         "This daily report has no activities or events. "
                         "Submit it explicitly as a no-work day with a "
@@ -899,6 +905,12 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
                         "first."
                     ),
                     "valid_no_work_reasons": sorted(_NO_WORK_REASON_VALUES),
+                    "suggested_action": (
+                        "Open the no-work-day modal and pick a reason "
+                        "(weather / holiday / scheduled_non_work / "
+                        "crew_unavailable / tenant_restriction / other), "
+                        "then re-submit with is_no_work_day=true."
+                    ),
                 },
             )
         if payload.no_work_reason not in _NO_WORK_REASON_VALUES:
