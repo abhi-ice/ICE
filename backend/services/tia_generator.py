@@ -366,6 +366,12 @@ async def _gather_data(
     # with an `edits_summary` cell that the renderers print as
     # "edited N times, last YYYY-MM-DD". Counsel sees the original
     # contemporaneous record + a clear flag that it was edited later.
+    #
+    # Addition 5 (2026-05-12) -- analogous `added_post_submit_note`
+    # for rows that were ADDED to a locked DR (post_submit_added=True).
+    # Renders as "(added post-submit, YYYY-MM-DD)" in the supplement
+    # column; lets counsel distinguish "contemporaneous record" from
+    # "back-filled record" without inspecting the audit chain.
     def _annotate_edits(rows: list[dict]) -> None:
         for r in rows:
             if r.get("post_submit_edited"):
@@ -377,6 +383,18 @@ async def _gather_data(
                 )
             else:
                 r["edits_summary"] = ""
+            # Addition 5 -- post-submit ADD annotation. Distinct from
+            # supplement (different DR semantics): post_submit_added rows
+            # live ON the locked DR itself, supplements live on a
+            # container DR pointing back to the locked one.
+            if r.get("post_submit_added"):
+                added_when = (r.get("added_at_post_submit") or "")[:10]
+                r["added_post_submit_note"] = (
+                    f"added post-submit on {added_when}"
+                    if added_when else "added post-submit"
+                )
+            else:
+                r["added_post_submit_note"] = ""
     _annotate_edits(delays)
     _annotate_edits(photos)
     _annotate_edits(coord)
@@ -632,6 +650,14 @@ def _render_docx(data: dict) -> bytes:
             empty(); return
         # Bucket D Phase 4 -- supplements show first column annotated
         # with [SUPP] so the chronological ledger stays honest.
+        # Bucket D Addition 5 (2026-05-12) -- post-submit ADDS show
+        # first column annotated with [POST-SUBMIT-ADD]. Same
+        # principle: counsel sees at-a-glance which rows weren't
+        # contemporaneous. Stackable: a row that was added post-submit
+        # AND later filed against a parent DR via the legacy supplement
+        # path would carry both prefixes -- but in practice Addition 5
+        # supersedes the supplement flow, so collisions are vanishingly
+        # rare.
         # Sort: parent date if supplement, else native date field.
         def _sort_key(r):
             return (r.get("_supp_parent_date") or r.get("logged_date")
@@ -651,8 +677,13 @@ def _render_docx(data: dict) -> bytes:
                 elif isinstance(v, dict):
                     v = json.dumps(v, default=str)[:200]
                 cell_text = str(v) if v is not None else ""
-                if cidx == 0 and row.get("_supp"):
-                    cell_text = "[SUPP] " + cell_text
+                if cidx == 0:
+                    prefix = ""
+                    if row.get("_supp"):
+                        prefix += "[SUPP] "
+                    if row.get("post_submit_added"):
+                        prefix += "[POST-SUBMIT-ADD] "
+                    cell_text = prefix + cell_text
                 cells[cidx].text = cell_text
         if len(rows) > 200:
             P(f"... and {len(rows) - 200} more (full set in JSON artifact).")

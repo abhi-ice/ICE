@@ -130,6 +130,22 @@ const AUDIT_OP_GROUPS = [
     label: "Exhibit exports",
     ops: ["AUDIT_EXTRACT_EXPORTED", "PHOTO_EVIDENCE_PACK_EXPORTED"],
   },
+  // Bucket D Addition 5 (2026-05-12) -- post-submit ADD flow audit ops.
+  // ACTIVITY_GRID_EDITED_POST_SUBMIT fires when an activity grid row
+  // is edited on a locked DR (distinct from EVENT_EDITED_POST_SUBMIT
+  // which covers delays/rfis/qc/safety/coord/delivery/photos).
+  // EVENT_ADDED_POST_SUBMIT fires when any event/row is INSERTED on a
+  // locked DR via the add_reason flow. POST_SUBMIT_ADD_FIELDS_
+  // INITIALIZED is the one-shot migration 017 audit op.
+  {
+    label: "Post-submit add/edit",
+    ops: [
+      "ACTIVITY_GRID_EDITED_POST_SUBMIT",
+      "EVENT_ADDED_POST_SUBMIT",
+      "EVENT_EDITED_POST_SUBMIT",
+      "POST_SUBMIT_ADD_FIELDS_INITIALIZED",
+    ],
+  },
   // Pre-test sweep (2026-05-11) -- 30 backend audit ops that fire but
   // weren't in the dropdown. Grouped by bucket origin. Sorted
   // alphabetically within each group.

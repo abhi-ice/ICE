@@ -619,6 +619,10 @@ class DailyReportActivityUpdate(StrictModel):
     production_impact_hours: Optional[float] = Field(default=None, ge=0)
     # Addition 4 -- required when the parent DR is locked.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
+    # Bucket D Addition 5 (2026-05-12) -- "add row to locked DR" flow on
+    # the activity grid. Captured at create time on AddActivityRow /
+    # UnplannedActivityCreate; not used by this Update model. Kept here
+    # only for shape symmetry across event Updates.
 
 
 class DailyReportActivity(ReadModel):
@@ -759,6 +763,8 @@ class UnplannedActivityCreate(StrictModel):
     crew_id: Optional[str] = None
     duration_days: Optional[float] = 1
     notes: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 # ---------- Resources ----------
@@ -1109,6 +1115,12 @@ class RfiCreate(StrictModel):
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow. When
+    # the parent DR is locked AND the caller isn't admin/PM, this field
+    # is required (min EDIT_REASON_MIN_LEN chars) and the server stamps
+    # post_submit_added=true on the inserted row + writes an
+    # EVENT_ADDED_POST_SUBMIT audit op.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class RfiUpdate(StrictModel):
@@ -1265,6 +1277,9 @@ class DelayCreate(StrictModel):
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow. See
+    # the RfiCreate counterpart for semantics.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class DelayUpdate(StrictModel):
@@ -1379,6 +1394,8 @@ class SafetyEventCreate(StrictModel):
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class SafetyEventUpdate(StrictModel):
@@ -1434,6 +1451,8 @@ class QcIssueCreate(StrictModel):
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
     # Bucket D Phase 5 -- super-entered rework duration estimate when
     # severity=rework_required. Required by router-side validation in
     # that case. Basis is free text explaining the estimate; persisted
@@ -1751,6 +1770,11 @@ class PhotoTagCreate(StrictModel):
     # Bucket F Phase 5 -- snapshot of tray.ai_user_overridden at tag
     # time. Sets the user_overridden_at_tag_time field on Photo (above).
     user_overridden_at_tag_time: bool = False
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    # Previously tagging photos against a locked DR returned 409; now
+    # it's allowed with an add_reason captured here. Server stamps
+    # post_submit_added=true + writes EVENT_ADDED_POST_SUBMIT audit.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 # ---------- Work items / field issues ----------
@@ -2197,6 +2221,8 @@ class CoordinationEventCreate(StrictModel):
     is_supplement: bool = False
     parent_daily_report_id: Optional[str] = None
     supplement_reason: Optional[str] = None
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class CoordinationEventUpdate(StrictModel):
@@ -2470,22 +2496,34 @@ class EditRequest(ReadModel):
     edit_window_expires_at: Optional[datetime] = None
 
 
-# ---------- Edit metadata mixin (additive defaults on every event row) ----------
+# ---------- Edit + Add metadata mixin (additive defaults on every event row) ----------
 # Schema additions on delays / rfis / qc_issues / safety_events / photos /
 # coordination_events / deliveries / daily_report_activities. Defaults
-# preserve legacy behavior (edit_count=0, post_submit_edited=false) so no
-# migration is required -- only newly-edited rows ever set these fields.
+# preserve legacy behavior so no migration is strictly required -- only
+# newly-touched rows ever set these fields. Migration 017 backfills the
+# add-flow defaults on existing rows for grep-cleanliness.
 #
 # We don't bake these into every model class to avoid a 100-line diff;
 # the read endpoints surface them via the underlying mongo doc and the
-# ReadModel base ignores extras. The PATCH endpoints stamp them on
-# write. For documentation, the shape is:
+# ReadModel base ignores extras. The PATCH endpoints stamp the edit
+# block on write; the POST endpoints stamp the add block when the
+# parent DR is locked. For documentation, the shape is:
 #
+#   # --- edit-flow (Addition 4, 2026-05-08) ---
 #   last_edited_at: datetime | null
 #   last_edited_by: user_id | null
 #   last_edit_reason: str | null
 #   edit_count: int (default 0)
 #   post_submit_edited: bool (default false)
+#
+#   # --- add-flow (Addition 5, 2026-05-12) ---
+#   # Stamped when a row is INSERTED while the parent DR is locked.
+#   # Cleanly distinguishes "was on the DR at submit time" from "added
+#   # after the fact" so TIA / counsel / audit can read posture.
+#   post_submit_added: bool (default false)
+#   add_reason: str | null              # required if post_submit_added
+#   added_at_post_submit: datetime | null
+#   added_by_post_submit: user_id | null
 
 
 class PostSubmitEditPayload(StrictModel):
@@ -2496,6 +2534,19 @@ class PostSubmitEditPayload(StrictModel):
     the underlying record after permission/reason checks."""
     edit_reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
     updates: dict = Field(..., description="Field name -> new value")
+
+
+class PostSubmitAddPayload(StrictModel):
+    """Addition 5 (2026-05-12) -- counterpart to PostSubmitEditPayload
+    for the "add new event to a locked DR" flow. Captured as part of
+    the regular POST body on each event-create endpoint when the parent
+    DR is locked. Non-locked DRs ignore this field (add_reason stays
+    None, post_submit_added stays false).
+
+    Use direct: each event Create model carries an inline `add_reason`
+    field; this standalone class is for documentation + the activity
+    grid path which doesn't have its own Create model layer."""
+    add_reason: str = Field(..., min_length=EDIT_REASON_MIN_LEN, max_length=500)
 
 
 # ============================================================

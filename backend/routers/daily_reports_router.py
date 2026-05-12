@@ -4,12 +4,14 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from datetime import date, datetime, timedelta
 from typing import Optional
+from pydantic import Field
 from database import get_db, tenant_filter
 from models import (
     DailyReport, DailyReportCreate, DailyReportUpdate,
     DailyReportActivity, DailyReportActivityUpdate,
     DailyPresence, DailyPresenceCreate, DailyPresenceUpdate,
     UnplannedActivityCreate,
+    EDIT_REASON_MIN_LEN,
     gen_id, utc_now, StrictModel,
 )
 from auth import require_tenant
@@ -416,6 +418,10 @@ async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require
 
 class AddActivityRow(StrictModel):
     schedule_activity_id: str
+    # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    # Required (min EDIT_REASON_MIN_LEN chars) if the parent DR is
+    # locked AND the caller isn't admin/PM.
+    add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 @router.post("/daily-reports/{daily_report_id}/grid", response_model=DailyReportActivity)
@@ -424,6 +430,13 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow. Tiered
+    # permission + add_reason if the DR is submitted/approved.
+    from services.edit_permissions import enforce_locked_dr_add_policy
+    _dr, is_locked_add = await enforce_locked_dr_add_policy(
+        ctx=ctx, daily_report_id=daily_report_id,
+        add_reason=payload.add_reason, event_type="activity",
+    )
     if await db.daily_report_activities.find_one({"daily_report_id": daily_report_id, "schedule_activity_id": payload.schedule_activity_id}, {"_id": 0}):
         raise HTTPException(409, "Activity already in grid")
     t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.schedule_activity_id}), {"_id": 0})
@@ -462,6 +475,14 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
         "trade_code": t.get("trade_code"),
     }
     await db.daily_report_activities.insert_one(row.copy())
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="daily_report_activities", record_id=row["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=payload.add_reason or "", after=row,
+            request_id=ctx["request_id"],
+        )
     return DailyReportActivity(**row)
 
 
@@ -497,6 +518,8 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     raw = payload.model_dump(mode="json")
     # Optimistic-lock token is a control field — pop before writing the row.
     client_task_lmt = raw.pop("task_last_modified_at", None)
+    # Addition 5 (2026-05-12) -- edit_reason is metadata, not a row field.
+    edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
 
     before = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
@@ -505,18 +528,24 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     # tenant guard via parent daily report
     dr = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}),
-        {"_id": 0, "id": 1, "status": 1, "report_date": 1, "project_id": 1},
+        {"_id": 0, "id": 1, "status": 1, "report_date": 1, "project_id": 1,
+         "submitted_by": 1, "submitted_at": 1},
     )
     if not dr:
         raise HTTPException(404, "Row not found")
-    # Bucket C1 Phase 6 — submitted/approved daily reports are part of
-    # the field-attested record and cannot be edited. Frontend already
-    # disables the inputs but the backend is the source of truth.
-    if dr.get("status") not in ("draft", None):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Cannot edit a {dr.get('status')} daily report; create an amendment instead.",
-        )
+    # Bucket D Addition 5 (2026-05-12) -- locked-DR edit policy. The
+    # prior hard 403 on submitted/approved is replaced with the same
+    # tiered permission flow used for event edits: 24h self-edit on
+    # own DR, then edit_request workflow. Activity-grid edits fire
+    # ACTIVITY_GRID_EDITED_POST_SUBMIT (distinct from EVENT_EDITED_
+    # POST_SUBMIT) so counsel can filter grid edits separately.
+    from services.edit_permissions import (
+        enforce_locked_dr_edit_policy, stamp_edit_metadata,
+    )
+    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=before["daily_report_id"],
+        edit_reason=edit_reason, event_type="activity", event_id=row_id,
+    )
 
     # Bucket C3a Phase 2 — constraint validation. Cross-field rules
     # StrictModel can't express alone. We let the user effectively
@@ -769,6 +798,20 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                 "pct_delta": float(updates["pct_complete_end_of_day"]) - float(before.get("pct_complete_end_of_day", 0)),
                 "created_at": now_iso,
             })
+
+    # Bucket D Addition 5 (2026-05-12) -- post-submit grid edit audit.
+    # Fires ACTIVITY_GRID_EDITED_POST_SUBMIT (NOT EVENT_EDITED_POST_SUBMIT)
+    # so counsel can separately filter activity grid edits from event edits
+    # in the audit log dropdown. Only fires when the parent DR was locked.
+    if is_locked_edit:
+        await stamp_edit_metadata(
+            db=db, collection="daily_report_activities",
+            record_id=row_id, tenant_id=ctx["tenant_id"],
+            actor_id=ctx["user"]["id"], edit_reason=edit_reason,
+            before=before, after=after,
+            request_id=ctx["request_id"],
+            audit_op="ACTIVITY_GRID_EDITED_POST_SUBMIT",
+        )
 
     return DailyReportActivity(**after)
 
@@ -1474,8 +1517,15 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
-    if dr.get("status") == "submitted":
-        raise HTTPException(409, "Daily report locked")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow. The prior
+    # 409 reject on submitted DRs is replaced with the tiered add
+    # policy. Unplanned activities can now be added to locked DRs
+    # with an add_reason (or admin/PM directly).
+    from services.edit_permissions import enforce_locked_dr_add_policy
+    _dr, is_locked_add = await enforce_locked_dr_add_policy(
+        ctx=ctx, daily_report_id=daily_report_id,
+        add_reason=payload.add_reason, event_type="activity",
+    )
 
     # Auto-assign next activity_code (same convention as copilot/_tool_create_task)
     last = await db.tasks.find(
@@ -1564,6 +1614,22 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
         record_id=task_doc["id"], before=None, after=task_doc,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        # Stamp BOTH the task row (so PM review surfaces "added post-
+        # submit") AND the grid row (so the DR's audit chain mirrors it).
+        await stamp_add_metadata(
+            db=db, collection="tasks", record_id=task_doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=payload.add_reason or "", after=task_doc,
+            request_id=ctx["request_id"],
+        )
+        await stamp_add_metadata(
+            db=db, collection="daily_report_activities", record_id=row["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=payload.add_reason or "", after=row,
+            request_id=ctx["request_id"],
+        )
     return {"task": {k: v for k, v in task_doc.items() if k != "_id"},
             "grid_row": row}
 

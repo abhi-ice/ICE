@@ -19,7 +19,11 @@ import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
 // Addition 4 -- locked-DR edit modal (reusable across event types).
 import LockedEventEditModal from "../components/forms/LockedEventEditModal";
-import SupplementWizard from "../components/forms/SupplementWizard";
+// Bucket D Addition 5 (2026-05-12) -- SupplementWizard import removed.
+// The component file (frontend/src/components/forms/SupplementWizard.jsx)
+// is preserved for legacy reference but no longer imported anywhere on
+// this page. New events on locked DRs use the post_submit_added flow
+// via LockedAddReasonBlock + the standard create endpoints.
 import DrActivityPicker from "../components/forms/DrActivityPicker";
 // Bucket D Corrective (2026-05-08) -- master-schedule task picker.
 // Used by RFI / QC / Safety / Delivery / Coord forms below in place of
@@ -40,6 +44,60 @@ import TagWizard from "../components/photos/TagWizard";
 import JigsawField from "../components/forms/JigsawField";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
+
+// Bucket D Addition 5 (2026-05-12) -- "add to locked DR" reason capture.
+// Reused by every event panel + the activity grid when the user adds a
+// new event/row AFTER the parent DR was submitted. The reason text is
+// passed inline to the create() API call as `add_reason`; backend
+// stamps post_submit_added=true + writes EVENT_ADDED_POST_SUBMIT audit
+// when min-10-char threshold is met. Admin/PM bypass the reason check
+// server-side but the field still renders for them so their audit
+// captures intent uniformly.
+const ADD_REASON_MIN = 10;
+function LockedAddReasonBlock({ value, onChange, eventLabel = "this event", testid = "locked-add-reason" }) {
+  const length = (value || "").trim().length;
+  const ok = length >= ADD_REASON_MIN;
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900 space-y-1.5"
+         data-testid={`${testid}-block`}>
+      <div className="flex items-start gap-1.5">
+        <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+        <div>
+          <strong>Adding {eventLabel} to a locked daily report.</strong> Reason
+          will be captured in the audit chain (min {ADD_REASON_MIN} chars).
+        </div>
+      </div>
+      <textarea data-testid={testid} value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Why is this being added after the DR was submitted? (e.g. 'forgot to log discovery during demo')"
+        className="w-full p-2 rounded border border-amber-300 text-sm bg-white h-16" />
+      <div className={`text-right text-[10px] ${ok ? "text-emerald-700" : "text-amber-800"}`}>
+        {length} / {ADD_REASON_MIN} min
+      </div>
+    </div>
+  );
+}
+
+// Helper for create() handlers: inspects an API error response and, if
+// the backend returned 403 with edit_request_required, points the user
+// at the edit-request flow. Returns true when handled (caller skips
+// generic toast); false otherwise.
+function handleLockedAddError(e, _eventType) {
+  const status = e.response?.status;
+  const detail = e.response?.data?.detail;
+  if (
+    status === 403 && detail && typeof detail === "object"
+    && detail.error === "edit_request_required"
+  ) {
+    toast.error(
+      "Self-edit window (24h) has closed. File an edit request from the "
+      + "edit pencil on any existing row -- approval opens a 1-hour window "
+      + "for both edits AND adds.",
+    );
+    return true;
+  }
+  return false;
+}
 
 const PHOTO_CLASSES = [
   { value: "progress", label: "Progress", color: "bg-slate-100 text-slate-700 border-slate-300" },
@@ -212,6 +270,10 @@ function DailyReportDetail({ id, onBack }) {
   const [submitRowErrors, setSubmitRowErrors] = useState({});
   // Bucket C3b Phase 1 — quick-log coordination event dialog.
   const [coordOpen, setCoordOpen] = useState(false);
+  // Bucket D Addition 5 (2026-05-12) -- locked-DR add reason for the
+  // quick-log coordination dialog (lives at DR-detail scope so the
+  // header button can open it on locked DRs too).
+  const [coordAddReason, setCoordAddReason] = useState("");
   // Addition 3 -- no-work-day modal state. Opened when the server rejects
   // a submit with error="empty_dr_requires_no_work_day". On confirm we
   // resubmit with is_no_work_day=true + the reason/note.
@@ -439,15 +501,32 @@ function DailyReportDetail({ id, onBack }) {
       {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.
           Pre-links the event to this daily report on save so it shows up
           on the Coordination page filtered by linked_daily_report_id. */}
-      <Dialog open={coordOpen} onOpenChange={setCoordOpen}>
+      <Dialog open={coordOpen} onOpenChange={(o) => { setCoordOpen(o); if (!o) setCoordAddReason(""); }}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>Quick-log coordination event</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>
+              {locked ? "Quick-log coordination event (post-submit)" : "Quick-log coordination event"}
+            </DialogTitle>
+          </DialogHeader>
+          {locked && (
+            <div className="mb-2">
+              <LockedAddReasonBlock value={coordAddReason} onChange={setCoordAddReason}
+                eventLabel="a coordination event" testid="coord-add-reason" />
+            </div>
+          )}
           <CoordinationEventForm
             projectId={project.id}
             linkedDailyReportId={id}
             abbreviated={true}
-            onSaved={() => { setCoordOpen(false); toast.success("Coordination event logged"); }}
-            onCancel={() => setCoordOpen(false)}
+            lockedAddReason={locked ? coordAddReason : null}
+            onSaved={() => {
+              setCoordOpen(false);
+              setCoordAddReason("");
+              toast.success(locked
+                ? "Coordination event logged (post-submit). Audit chain captured."
+                : "Coordination event logged");
+            }}
+            onCancel={() => { setCoordOpen(false); setCoordAddReason(""); }}
           />
         </DialogContent>
       </Dialog>
@@ -642,10 +721,11 @@ function Header({ report, project, userLabels, ppc, totalHours,
           {/* Bucket C3b Phase 1 — quick-log a coordination event from
               the daily report. Pre-links to this DR; user can expand
               to full form on the Coordination page later. */}
-          {onQuickLogCoordination && !locked && (
+          {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
               className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
-              <MessageSquare className="h-4 w-4" /> + Coordination
+              <MessageSquare className="h-4 w-4" />
+              {locked ? "+ Coordination (post-submit)" : "+ Coordination"}
             </button>
           )}
           <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
@@ -1312,6 +1392,10 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture
+  // for activity grid rows (both planned + unplanned). Reused across the
+  // two add forms below so a single reason captures both kinds.
+  const [addReason, setAddReason] = useState("");
   // Bucket C1 Phase 1 — rows that the backend rejected with 409 because
   // the linked task was modified externally between grid load and PATCH.
   // Cleared by reload() (which pulls a fresh task_updated_at via /context).
@@ -1333,6 +1417,14 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
     // from /context. If the linked task has moved underneath us, the
     // backend rejects with 409 and we mark the row stale so the user
     // sees a "Schedule updated — refresh row" hint.
+    //
+    // Bucket D Addition 5 (2026-05-12) -- on a LOCKED DR, the inline
+    // grid inputs route through this updater. The PATCH endpoint now
+    // requires an edit_reason on locked DRs; quick inline edits won't
+    // carry one, so this code path is intended for DRAFT DRs only.
+    // Locked-DR edits go through the row's "edit" button which opens
+    // LockedEventEditModal with the edit_reason capture (see the
+    // table-row `locked && <button>edit</button>` chunk further down).
     const row = grid.find((r) => r.id === rowId) || {};
     const payload = { ...fields };
     if (row.task_updated_at) payload.task_last_modified_at = row.task_updated_at;
@@ -1365,23 +1457,46 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
   };
   const addActivity = async () => {
     if (!picking) return;
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
     try {
-      await api.post(`/daily-reports/${dailyReportId}/grid`, { schedule_activity_id: picking });
-      setPicking(""); reload();
-    } catch (e) { toast.error(formatErr(e, "Add planned activity")); }
+      await api.post(`/daily-reports/${dailyReportId}/grid`, {
+        schedule_activity_id: picking,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
+      });
+      setPicking("");
+      if (locked) { setAddReason(""); toast.success("Activity row added (post-submit). Audit chain captured."); }
+      reload();
+    } catch (e) {
+      if (!handleLockedAddError(e, "activity")) {
+        toast.error(formatErr(e, "Add planned activity"));
+      }
+    }
   };
   // Bucket D Fix E -- double-click guard for unplanned-activity create.
   const [creatingUnplanned, setCreatingUnplanned] = useState(false);
   const createUnplanned = async () => {
     if (creatingUnplanned) return;
     if (!unplanned.description) return toast.error("Describe the unplanned activity first");
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
     setCreatingUnplanned(true);
     try {
-      await api.post(`/daily-reports/${dailyReportId}/unplanned-activity`, unplanned);
+      await api.post(`/daily-reports/${dailyReportId}/unplanned-activity`, {
+        ...unplanned,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
+      });
       setUnplanned({ description: "", trade_code: "", duration_days: 1 });
-      toast.success("Unplanned activity created — flagged for PM review.");
+      if (locked) { setAddReason(""); toast.success("Unplanned activity created (post-submit). Audit chain captured."); }
+      else toast.success("Unplanned activity created — flagged for PM review.");
       reload();
-    } catch (e) { toast.error(formatErr(e, "Create unplanned")); }
+    } catch (e) {
+      if (!handleLockedAddError(e, "activity")) {
+        toast.error(formatErr(e, "Create unplanned"));
+      }
+    }
     finally { setCreatingUnplanned(false); }
   };
 
@@ -1466,7 +1581,18 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                     <ConstraintCell row={r} projectId={dailyReportProjectId} locked={locked} updateRow={updateRow} />
                   </td>
                   <td><input type="text" defaultValue={r.notes || ""} onBlur={(e) => updateRow(r.id, { notes: e.target.value })} disabled={locked} placeholder="Notes…" className="w-44" /></td>
-                  <td>{!locked && <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded text-xs">remove</button>}</td>
+                  <td>
+                    {!locked && <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded text-xs">remove</button>}
+                    {/* Bucket D Addition 5 (2026-05-12) -- per-row Edit
+                        button on locked DRs. Opens LockedEventEditModal
+                        targeting the row's PATCH endpoint with the
+                        editable activity-grid fields. The PATCH path
+                        on the backend fires
+                        ACTIVITY_GRID_EDITED_POST_SUBMIT (distinct from
+                        EVENT_EDITED_POST_SUBMIT) when the parent DR
+                        is locked. */}
+                    {locked && <ActivityRowLockedEditButton row={r} dailyReportId={dailyReportId} reload={reload} />}
+                  </td>
                 </tr>
               );
             })}
@@ -1475,8 +1601,12 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
         </table>
       </div>
 
-      {!locked && (
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-slate-100">
+      <div className="mt-4 pt-3 border-t border-slate-100 space-y-3">
+        {locked && (
+          <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+            eventLabel="an activity row" testid="activity-add-reason" />
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* PLANNED ADD */}
           <div className="space-y-2">
             <div className="text-xs font-medium text-slate-600">Add planned activity ({available.length} available for {reportDate})</div>
@@ -1485,7 +1615,9 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
                 <option value="">— Pick —</option>
                 {available.map((a) => <option key={a.id} value={a.id}>[{a.activity_code}] {a.description}{a.trade_code ? ` · ${a.trade_code}` : ""}</option>)}
               </select>
-              <button data-testid="dr-add-activity-button" onClick={addActivity} disabled={!picking} className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700">Add</button>
+              <button data-testid="dr-add-activity-button" onClick={addActivity} disabled={!picking} className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700">
+                {locked ? "Add (post-submit)" : "Add"}
+              </button>
             </div>
           </div>
           {/* UNPLANNED ADD */}
@@ -1497,11 +1629,11 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
             </div>
             <button data-testid="unplanned-add" onClick={createUnplanned} disabled={creatingUnplanned}
               className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 flex items-center gap-1">
-              <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : "Create unplanned activity"}
+              <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
             </button>
           </div>
         </div>
-      )}
+      </div>
     </PanelShell>
   );
 }
@@ -1525,9 +1657,58 @@ function RenovationPanel({ report, dailyReportId, locked, reload }) {
   );
 }
 
+// Bucket D Addition 5 (2026-05-12) -- per-row Edit button on the
+// activity grid when the parent DR is locked. Renders an amber
+// "edit" link that opens LockedEventEditModal targeting
+// /daily-report-activities/{rowId} with the SOD%/EOD%/hours/status/
+// notes/constraint fields. The modal already handles the edit_reason
+// prompt + 403 needs_request flip into edit-request mode. Backend
+// PATCH fires ACTIVITY_GRID_EDITED_POST_SUBMIT (instead of
+// EVENT_EDITED_POST_SUBMIT) so counsel can filter grid edits
+// separately in the Audit Log dropdown.
+function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button data-testid={`dr-row-edit-locked-${row.activity_code}`}
+        onClick={() => setOpen(true)}
+        className="text-amber-700 hover:bg-amber-50 p-1 rounded text-xs">
+        edit
+      </button>
+      <LockedEventEditModal
+        open={open} onOpenChange={setOpen}
+        eventType="activity" eventId={row.id} dailyReportId={dailyReportId}
+        patchUrl={`/daily-report-activities/${row.id}`}
+        title={`Edit grid row [${row.activity_code}] (post-submit)`}
+        fields={[
+          { key: "pct_complete_end_of_day", label: "EOD %", type: "number" },
+          { key: "hours_worked", label: "Hours worked", type: "number" },
+          { key: "status_at_end_of_day", label: "Status", type: "select",
+            options: [
+              { value: "not_started", label: "not started" },
+              { value: "in_progress", label: "in progress" },
+              { value: "blocked", label: "blocked" },
+              { value: "complete", label: "complete" },
+            ] },
+          { key: "notes", label: "Notes", type: "textarea" },
+        ]}
+        currentValues={{
+          pct_complete_end_of_day: row.pct_complete_end_of_day,
+          hours_worked: row.hours_worked,
+          status_at_end_of_day: row.status_at_end_of_day,
+          notes: row.notes,
+        }}
+        onSaved={reload}
+      />
+    </>
+  );
+}
+
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
   const [showForm, setShowForm] = useState(false);
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
+  const [addReason, setAddReason] = useState("");
 
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
@@ -1536,24 +1717,32 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           locked={locked} dailyReportId={dailyReportId} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No delays today.</div>}
-      {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100">
-          {!showForm ? (
-            <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
-              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
-              <Plus className="h-3.5 w-3.5" /> Log a delay
-            </button>
-          ) : (
+      <div className="mt-3 pt-3 border-t border-slate-100">
+        {!showForm ? (
+          <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
+            <Plus className="h-3.5 w-3.5" /> {locked ? "Log a delay (post-submit)" : "Log a delay"}
+          </button>
+        ) : (
+          <div className="space-y-2">
+            {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+              eventLabel="a delay" testid="delay-add-reason" />}
             <DelayForm
               projectId={projectId}
               reportDate={reportDate}
               dailyReportId={dailyReportId}
-              onSaved={() => { setShowForm(false); reload(); toast.success("Delay logged"); }}
-              onCancel={() => setShowForm(false)}
+              lockedAddReason={locked ? addReason : null}
+              onSaved={() => {
+                setShowForm(false);
+                setAddReason("");
+                reload();
+                toast.success(locked ? "Delay logged (post-submit). Audit chain captured." : "Delay logged");
+              }}
+              onCancel={() => { setShowForm(false); setAddReason(""); }}
             />
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </PanelShell>
   );
 }
@@ -1735,6 +1924,8 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
     description: "", severity: "minor", event_type: "near_miss",
     linked_task_ids: [],
   });
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
+  const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
   // Phase D — copilot can push a drafted description into this form.
@@ -1745,17 +1936,27 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const create = async () => {
     if (busy) return;
     if (!draft.description) return toast.error("Description required");
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
     setBusy(true);
     try {
       await api.post(`/safety-events`, {
         project_id: projectId, daily_report_id: dailyReportId, date: reportDate,
         description: draft.description, severity: draft.severity, event_type: draft.event_type,
         linked_task_ids: draft.linked_task_ids,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
       });
       setDraft({ description: "", severity: "minor", event_type: "near_miss",
                   linked_task_ids: [] });
+      setAddReason("");
       reload();
-    } catch (e) { toast.error(formatErr(e, "Create safety event")); }
+      if (locked) toast.success("Safety event added (post-submit). Audit chain captured.");
+    } catch (e) {
+      if (!handleLockedAddError(e, "safety")) {
+        toast.error(formatErr(e, "Create safety event"));
+      }
+    }
     finally { setBusy(false); }
   };
   return (
@@ -1765,30 +1966,30 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
-      {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
-          <textarea data-testid="safety-new-desc" rows={4} placeholder="Describe the event"
-            value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-            className="w-full p-2 rounded border border-slate-200 text-sm" />
-          <TaskPicker projectId={projectId}
-            value={draft.linked_task_ids}
-            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
-            required={false} label="Linked tasks (optional)"
-            testidPrefix="safety-activity" />
-          <div className="grid grid-cols-2 gap-2">
-            <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-              {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
-            </select>
-            <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-              {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <button data-testid="safety-add" onClick={create} disabled={busy}
-            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
-            <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Add"}
-          </button>
+      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
+        {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+          eventLabel="a safety event" testid="safety-add-reason" />}
+        <textarea data-testid="safety-new-desc" rows={4} placeholder="Describe the event"
+          value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+          className="w-full p-2 rounded border border-slate-200 text-sm" />
+        <TaskPicker projectId={projectId}
+          value={draft.linked_task_ids}
+          onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+          required={false} label="Linked tasks (optional)"
+          testidPrefix="safety-activity" />
+        <div className="grid grid-cols-2 gap-2">
+          <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+          </select>
+          <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </div>
-      )}
+        <button data-testid="safety-add" onClick={create} disabled={busy}
+          className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
+          <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Add (post-submit)" : "Add"}
+        </button>
+      </div>
     </PanelShell>
   );
 }
@@ -1864,6 +2065,8 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
 
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
+  const [addReason, setAddReason] = useState("");
   const create = async () => {
     if (busy) return;
     if (!draft.description) return toast.error("Description required");
@@ -1876,6 +2079,9 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         return toast.error("Rework basis (short note) required");
       }
     }
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
     setBusy(true);
     try {
       const payload = {
@@ -1885,6 +2091,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         description: draft.description,
         severity: draft.severity,
         linked_task_ids: draft.linked_task_ids,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
       };
       if (isRework) {
         payload.rework_duration_hours = Number(draft.rework_duration_hours);
@@ -1894,11 +2101,16 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
       setDraft({ description: "", severity: "minor",
                   rework_duration_hours: "", rework_duration_basis: "",
                   linked_task_ids: [] });
+      setAddReason("");
       reload();
       toast.success(isRework
         ? "QC rework filed -- synthetic delay created and CPM cascade running."
-        : "QC issue logged.");
-    } catch (e) { toast.error(formatErr(e, "Create QC issue")); }
+        : (locked ? "QC issue added (post-submit). Audit chain captured." : "QC issue logged."));
+    } catch (e) {
+      if (!handleLockedAddError(e, "qc")) {
+        toast.error(formatErr(e, "Create QC issue"));
+      }
+    }
     finally { setBusy(false); }
   };
 
@@ -1909,8 +2121,10 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
           dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
-      {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
+      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
+        {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+          eventLabel="a QC issue" testid="qc-add-reason" />}
+        <div className="space-y-2">
           <textarea data-testid="qc-new-desc" rows={4} placeholder="Describe the issue"
             value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             className="w-full p-2 rounded border border-slate-200 text-sm" />
@@ -1967,11 +2181,11 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
           <div className="flex justify-end">
             <button data-testid="qc-add" onClick={create} disabled={busy}
               className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
-              <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Add QC issue"}
+              <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Add QC (post-submit)" : "Add QC issue"}
             </button>
           </div>
         </div>
-      )}
+      </div>
     </PanelShell>
   );
 }
@@ -2042,12 +2256,17 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
     subject: "", description: "", priority: "normal",
     linked_task_ids: [],
   });
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
+  const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
   const create = async () => {
     if (busy) return;
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
     if (!draft.linked_task_ids.length) return toast.error("Pick at least one linked task");
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
     setBusy(true);
     try {
       await api.post(`/rfis`, {
@@ -2056,10 +2275,17 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         question: draft.description,  // backend alias -> description
         priority: draft.priority,
         linked_task_ids: draft.linked_task_ids,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
       });
       setDraft({ subject: "", description: "", priority: "normal", linked_task_ids: [] });
+      setAddReason("");
       reload();
-    } catch (e) { toast.error(formatErr(e, "Open RFI")); }
+      if (locked) toast.success("RFI added (post-submit). Audit chain captured.");
+    } catch (e) {
+      if (!handleLockedAddError(e, "rfi")) {
+        toast.error(formatErr(e, "Open RFI"));
+      }
+    }
     finally { setBusy(false); }
   };
   return (
@@ -2069,24 +2295,24 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
           dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No RFIs raised today.</div>}
-      {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-          <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
-          <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="w-full px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
-          <TaskPicker projectId={projectId}
-            value={draft.linked_task_ids}
-            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
-            required={true} label="Linked tasks"
-            testidPrefix="rfi-activity" />
-          <div className="flex items-center gap-2">
-            <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-              {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <button data-testid="rfi-add" onClick={create} disabled={busy}
-              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Open RFI"}</button>
-          </div>
+      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+        {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+          eventLabel="an RFI" testid="rfi-add-reason" />}
+        <input data-testid="rfi-new-subject" placeholder="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} className="w-full h-8 px-2 rounded border border-slate-200 text-sm" />
+        <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="w-full px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
+        <TaskPicker projectId={projectId}
+          value={draft.linked_task_ids}
+          onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+          required={true} label="Linked tasks"
+          testidPrefix="rfi-activity" />
+        <div className="flex items-center gap-2">
+          <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <button data-testid="rfi-add" onClick={create} disabled={busy}
+            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Open RFI (post-submit)" : "Open RFI"}</button>
         </div>
-      )}
+      </div>
     </PanelShell>
   );
 }
@@ -2142,12 +2368,17 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
     vendor: "", description: "", po_number: "",
     linked_task_ids: [],
   });
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
+  const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
   const create = async () => {
     if (busy) return;
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
     if (!draft.linked_task_ids.length) return toast.error("Pick at least one task consuming this delivery");
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
     setBusy(true);
     try {
       await api.post(`/deliveries`, {
@@ -2156,10 +2387,17 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
         vendor: draft.vendor, description: draft.description,
         po_number: draft.po_number || null,
         linked_task_ids: draft.linked_task_ids,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
       });
       setDraft({ vendor: "", description: "", po_number: "", linked_task_ids: [] });
+      setAddReason("");
       reload();
-    } catch (e) { toast.error(formatErr(e, "Log delivery")); }
+      if (locked) toast.success("Delivery added (post-submit). Audit chain captured.");
+    } catch (e) {
+      if (!handleLockedAddError(e, "delivery")) {
+        toast.error(formatErr(e, "Log delivery"));
+      }
+    }
     finally { setBusy(false); }
   };
   return (
@@ -2169,22 +2407,22 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
           dailyReportId={dailyReportId} reload={reload} />
       ))}
       {!rows.length && <div className="text-xs text-slate-400 py-2">No deliveries scheduled for {reportDate}.</div>}
-      {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-          <div className="grid grid-cols-3 gap-2">
-            <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-            <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
-            <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
-            <button data-testid="delivery-add" onClick={create} disabled={busy}
-              className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Log delivery"}</button>
-          </div>
-          <TaskPicker projectId={projectId}
-            value={draft.linked_task_ids}
-            onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
-            required={true} label="Tasks consuming this delivery"
-            testidPrefix="delivery-activity" />
+      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+        {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+          eventLabel="a delivery" testid="delivery-add-reason" />}
+        <div className="grid grid-cols-3 gap-2">
+          <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+          <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
+          <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
+          <button data-testid="delivery-add" onClick={create} disabled={busy}
+            className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Log delivery (post-submit)" : "Log delivery"}</button>
         </div>
-      )}
+        <TaskPicker projectId={projectId}
+          value={draft.linked_task_ids}
+          onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+          required={true} label="Tasks consuming this delivery"
+          testidPrefix="delivery-activity" />
+      </div>
     </PanelShell>
   );
 }
@@ -2234,6 +2472,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [aiPrepStatus, setAiPrepStatus] = useState(null); // null | 'preparing' | 'ready' | 'skipped'
   const [pendingTray, setPendingTray] = useState(null);
   const [openWizard, setOpenWizard] = useState(false);
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason
+  // capture for photo uploads. Forwarded through to TagWizard which
+  // includes it on the /photo-tags POST.
+  const [addReason, setAddReason] = useState("");
 
   // Poll the tray's /ai-analysis until status leaves "pending"/"analyzing"
   // or we hit the time cap. We never fail the upload on AI errors;
@@ -2272,6 +2514,14 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Bucket D Addition 5 -- locked-DR uploads require add_reason BEFORE
+    // we even hit the upload endpoint, so the user knows the gate up
+    // front. The reason itself is enforced on the tag-create call.
+    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
+      toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) before uploading to a locked DR.`);
+      e.target.value = "";
+      return;
+    }
     setBusy(true);
     setAiPrepStatus(null);
     try {
@@ -2341,20 +2591,21 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           Preparing tag suggestions…
         </div>
       )}
-      {!locked && (
-        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-          <div className="text-[11px] text-slate-500">
-            Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
-            After upload, we'll open the tag wizard with AI suggestions ready.
-          </div>
-          <label data-testid="photo-upload-label" className="block">
-            <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
-              <ImageIcon className="h-3.5 w-3.5" /> {busy ? "Uploading…" : "Upload + tag"}
-            </span>
-            <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
-          </label>
+      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+        {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+          eventLabel="a photo" testid="photo-add-reason" />}
+        <div className="text-[11px] text-slate-500">
+          Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
+          After upload, we'll open the tag wizard with AI suggestions ready.
         </div>
-      )}
+        <label data-testid="photo-upload-label" className="block">
+          <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
+            <ImageIcon className="h-3.5 w-3.5" />
+            {busy ? "Uploading…" : (locked ? "Upload + tag (post-submit)" : "Upload + tag")}
+          </span>
+          <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
+        </label>
+      </div>
       {/* Auto-opened tag wizard. DR is pre-locked so the wizard starts
           at step 2 (event-type picker) and inherits AI suggestions. */}
       {pendingTray && (
@@ -2365,11 +2616,15 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             if (!v) {
               setPendingTray(null);
               setAiPrepStatus(null);
+              // Reset reason after the wizard closes so the next
+              // locked-DR upload requires a fresh reason capture.
+              if (locked) setAddReason("");
             }
           }}
           tray={pendingTray}
           projectId={projectId}
           initialDailyReportId={dailyReportId}
+          lockedAddReason={locked ? addReason : null}
           onTagged={() => {
             reload();
             setOpenWizard(false);
@@ -2657,125 +2912,30 @@ function SupplementBadge({ row }) {
 }
 
 // ------------------------------------------------------------
-// Bucket D Phase 4 -- supplements appendix on the parent DR.
-// Lists every event with parent_daily_report_id == this DR.
-// ------------------------------------------------------------
-function SupplementsAppendix({ dailyReportId, projectId }) {
-  const [data, setData] = useState(null);
-  const [wizardOpen, setWizardOpen] = useState(false);
-  const [parentDr, setParentDr] = useState(null);
-  const reload = useCallback(() => {
-    if (!dailyReportId) return;
-    api.get(`/daily-reports/${dailyReportId}/supplements`)
-      .then(({ data }) => {
-        setData(data);
-        setParentDr({ id: data.daily_report_id, report_date: data.report_date });
-      })
-      .catch(() => setData(null));
-  }, [dailyReportId]);
-  useEffect(() => { reload(); }, [reload]);
-
-  // Bucket D Phase 4 -- only render the appendix if there are
-  // supplements OR the user is viewing a locked DR (so they can
-  // file one). For draft DRs we hide the appendix entirely.
-  const [parentLocked, setParentLocked] = useState(false);
-  useEffect(() => {
-    if (!dailyReportId) return;
-    api.get(`/daily-reports/${dailyReportId}`)
-      .then(({ data }) => setParentLocked(data?.status === "submitted" || data?.status === "approved"))
-      .catch(() => setParentLocked(false));
-  }, [dailyReportId]);
-
-  const fileSupplement = async () => {
-    if (!projectId) return;
-    try {
-      // Idempotent on (project, date) -- returns existing today's DR or creates one.
-      const today = localTodayISO();
-      const { data: container } = await api.post("/daily-reports", {
-        project_id: projectId, report_date: today,
-      });
-      // Container must NOT be the same as parent (filing supplement to today's DR is nonsense).
-      if (container.id === dailyReportId) {
-        toast.error("Cannot file a supplement to today's DR -- edit it directly.");
-        return;
-      }
-      // Set window state so the wizard knows the container DR id.
-      window.__supplementContainerId = container.id;
-      setWizardOpen(true);
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Couldn't open today's DR");
-    }
-  };
-
-  if (!data) return null;
-  const buckets = [
-    ["delays", "Delays", AlertTriangle],
-    ["rfis", "RFIs", MessageSquare],
-    ["qc_issues", "QC issues", ClipboardCheck],
-    ["safety_events", "Safety events", ShieldAlert],
-    ["coordination_events", "Coordination", MessageSquare],
-    ["deliveries", "Deliveries", Truck],
-    ["photos", "Photos", ImageIcon],
-    ["daily_report_activities", "Activity rows", ClipboardList],
-  ];
-  const total = buckets.reduce((s, [k]) => s + (data[k]?.length || 0), 0);
-  // If no supplements AND parent is unlocked, hide entirely.
-  if (!total && !parentLocked) return null;
-  return (
-    <PanelShell icon={ClipboardList} title={`Supplements (${total})`} testid="dr-supplements-panel" count={total}>
-      <div className="text-xs text-slate-500 mb-2 flex items-center justify-between gap-2">
-        <span>
-          Facts filed AFTER this report was submitted. Each supplement is linked to its container
-          DR (today's, where it was filed) and renders here to keep the parent DR's record honest.
-        </span>
-        {parentLocked && (
-          <button data-testid="file-supplement-button" onClick={fileSupplement}
-            className="h-7 px-2 rounded bg-amber-600 text-white text-xs hover:bg-amber-700 inline-flex items-center gap-1 flex-shrink-0">
-            <Plus className="h-3 w-3" /> File supplement
-          </button>
-        )}
-      </div>
-      <SupplementWizard open={wizardOpen} onOpenChange={setWizardOpen}
-        parentDailyReport={parentDr} projectId={projectId}
-        containerDailyReportId={typeof window !== "undefined" ? window.__supplementContainerId : null}
-        onSaved={reload} />
-      {buckets.map(([key, label, Icon]) => {
-        const rows = data[key] || [];
-        if (!rows.length) return null;
-        return (
-          <div key={key} className="mb-3">
-            <div className="text-[11px] uppercase font-semibold text-slate-700 flex items-center gap-1 mb-1">
-              <Icon className="h-3.5 w-3.5" /> {label} ({rows.length})
-            </div>
-            <ul className="space-y-1 text-xs">
-              {rows.map((r) => (
-                <li key={r.id} data-testid={`supplement-${key}-${r.id}`}
-                  className="bg-amber-50 border-l-2 border-amber-400 px-2 py-1 rounded-r">
-                  <span className="text-amber-800 font-mono text-[10px] mr-1">[SUPP]</span>
-                  <span className="text-slate-700">{r.description || r.subject || r.summary || r.vendor || (r.tag_caption || r.id.slice(0, 8))}</span>
-                  {r.supplement_filed_at && (
-                    <span className="text-slate-400 ml-2">
-                      filed {new Date(r.supplement_filed_at).toLocaleDateString()}
-                    </span>
-                  )}
-                  {r.supplement_reason && (
-                    <span className="text-slate-500 italic ml-2">— "{r.supplement_reason}"</span>
-                  )}
-                  {r.daily_report_id && r.daily_report_id !== dailyReportId && (
-                    <a href={`/daily-reports?openId=${r.daily_report_id}`}
-                      className="text-blue-600 underline ml-2 text-[10px]">
-                      [container DR]
-                    </a>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        );
-      })}
-    </PanelShell>
-  );
+// Bucket D Addition 5 (2026-05-12) -- Supplements section HIDDEN.
+//
+// The supplement flow (file new events against a "container DR"
+// pointing back to the locked parent) was replaced by the
+// post_submit_added flag (file events directly on the locked DR
+// with an add_reason). Existing supplement records stay in the DB
+// for audit + TIA preservation, but the UI no longer renders them
+// here -- they appear inline on each event panel like any other
+// row, with their SUPP→<date> badge per SupplementBadge above.
+//
+// The function below is preserved (commented-out call site in the
+// DR detail render) for forensic recovery if we ever need to expose
+// the legacy supplement list as a debug surface. The early return
+// keeps it from rendering anything in the meantime.
+function SupplementsAppendix(_props) {
+  return null;
 }
+// Legacy SupplementsAppendix implementation removed (2026-05-12). The
+// supplement flow is replaced by post_submit_added on each event
+// collection. Pre-existing supplement records still surface inline on
+// their event panels with the SUPP→<date> badge (see SupplementBadge
+// above) and are preserved in the DB / audit chain. Git history holds
+// the legacy implementation if it ever needs to be revived as a debug
+// surface.
 
 // ------------------------------------------------------------
 //  Tiny field helpers

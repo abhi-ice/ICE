@@ -156,9 +156,22 @@ export default function LockedEventEditModal({
         {mode === "edit" ? (
           <div className="space-y-3 text-sm">
             <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900">
-              The parent daily report is locked. Your edit will be captured
-              in the audit log with before/after snapshots and surfaced in
-              the TIA. Reason is required (min {REASON_MIN} characters).
+              <div className="font-semibold mb-1">Edit posture — post-submit window</div>
+              <p>
+                The parent daily report is locked. Your edit will be
+                captured in the audit log with before/after snapshots and
+                surfaced in the TIA. Reason is required (min {REASON_MIN} characters).
+              </p>
+              <p className="mt-1">
+                The same 24-hour self-edit window also governs <em>adding new
+                events</em> to this locked DR (Bucket D Addition 5,
+                2026-05-12). If you need to add a forgotten delay / RFI /
+                QC / safety event / delivery / coordination event / photo /
+                activity row, use the "+ event" button on the relevant
+                panel rather than editing an existing row. After the 24-
+                hour window closes, an approved edit_request opens BOTH
+                edit AND add for the same 1-hour window.
+              </p>
             </div>
             {fields.map((f) => (
               <FieldEditor key={f.key} f={f} value={values[f.key]}

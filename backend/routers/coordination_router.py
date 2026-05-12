@@ -37,6 +37,8 @@ async def create_coordination_event(
         raise HTTPException(404, "Project not found")
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
+    # Addition 5 (2026-05-12) -- "add to locked DR" flow.
+    add_reason = doc.pop("add_reason", None)
     # Bucket D Corrective -- master-schedule task linkage OPTIONAL for
     # coordination (some events are project-wide). Validation confirms
     # ids resolve to project tasks if provided.
@@ -56,6 +58,15 @@ async def create_coordination_event(
         "deleted_at": None,
         "deleted_by_user_id": None,
     })
+    # Addition 5 -- locked-DR add policy (skipped on supplement path).
+    # Coordination uses linked_daily_report_id (different field name).
+    is_locked_add = False
+    if not doc.get("is_supplement") and doc.get("linked_daily_report_id"):
+        from services.edit_permissions import enforce_locked_dr_add_policy
+        _dr, is_locked_add = await enforce_locked_dr_add_policy(
+            ctx=ctx, daily_report_id=doc["linked_daily_report_id"],
+            add_reason=add_reason, event_type="coordination",
+        )
     # Bucket D Phase 4 -- supplement metadata + audit.
     from services.dr_activity_linkage import (
         stamp_supplement_metadata, validate_supplement_parent_locked,
@@ -80,6 +91,14 @@ async def create_coordination_event(
         before=None, after=doc,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    if is_locked_add:
+        from services.edit_permissions import stamp_add_metadata
+        await stamp_add_metadata(
+            db=db, collection="coordination_events", record_id=doc["id"],
+            tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
+            add_reason=add_reason or "", after=doc,
+            request_id=ctx["request_id"],
+        )
     return CoordinationEvent(**doc)
 
 
