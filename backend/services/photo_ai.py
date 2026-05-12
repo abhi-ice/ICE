@@ -73,6 +73,60 @@ except ImportError:
 except Exception as _heif_exc:
     log.warning("pillow-heif registration failed: %s", _heif_exc)
 
+# Test 4A/B follow-up (2026-05-12) -- explicit dev-stub fallback signal.
+# Operators sometimes don't realize the Emergent env never received the
+# ANTHROPIC_API_KEY (vs. having it set to a stale value) and assume the
+# stub path is broken. Loud WARN at module load so the boot log makes
+# the posture obvious. Anthropic SDK is also import-probed here so any
+# version mismatch (e.g. v0.40 breaking changes vs. our pinned 0.39)
+# surfaces before the first photo upload rather than after.
+_HAS_ANTHROPIC_KEY = bool(
+    os.environ.get("ANTHROPIC_API_KEY")
+    or os.environ.get("EMERGENT_LLM_KEY")
+)
+_PHOTO_AI_DEV_OVERRIDE = os.environ.get("PHOTO_AI_DEV_MODE") == "1"
+if not _HAS_ANTHROPIC_KEY:
+    log.warning(
+        "Photo AI: ANTHROPIC_API_KEY / EMERGENT_LLM_KEY not set -- "
+        "falling back to deterministic dev stub. Real Claude Vision "
+        "will NOT be called. Set ANTHROPIC_API_KEY to enable.",
+    )
+elif _PHOTO_AI_DEV_OVERRIDE:
+    log.warning(
+        "Photo AI: PHOTO_AI_DEV_MODE=1 set; using dev stub even "
+        "though an API key is configured.",
+    )
+else:
+    log.info("Photo AI: real Claude Vision path enabled (API key present).")
+
+# Probe the Anthropic SDK at module load. If the import fails OR the
+# AsyncAnthropic constructor signature has drifted from what we expect
+# (anthropic==0.39.0 accepts api_key + timeout), we want to know now,
+# not on the first analyze call.
+_ANTHROPIC_SDK_OK = False
+try:
+    from anthropic import AsyncAnthropic as _ProbeAsyncAnthropic
+    # Don't actually instantiate (would need a real key); just probe
+    # that the class exists + has the expected attribute.
+    if hasattr(_ProbeAsyncAnthropic, "messages") or hasattr(_ProbeAsyncAnthropic, "__init__"):
+        _ANTHROPIC_SDK_OK = True
+        log.info("Photo AI: anthropic SDK import OK")
+    else:
+        log.warning(
+            "Photo AI: anthropic SDK imported but AsyncAnthropic shape "
+            "unexpected -- dev stub will be used.",
+        )
+except ImportError as _anth_exc:
+    log.warning(
+        "Photo AI: anthropic SDK not installed (%s) -- dev stub will be used.",
+        _anth_exc,
+    )
+except Exception as _anth_exc:
+    log.warning(
+        "Photo AI: anthropic SDK probe failed (%s) -- dev stub will be used.",
+        _anth_exc,
+    )
+
 # Pricing per the Anthropic API (Claude Sonnet 4.5). Update when the
 # pricing card changes. Constants here so tests can verify cost math
 # without monkey-patching.
@@ -127,6 +181,8 @@ FAILURE_REASON_VERBOSE = {
         "The Vision API call exceeded the 30-second timeout. Site network may be unstable.",
     "vision_malformed_json":
         "The AI response wasn't valid JSON. Likely a prompt regression -- file a bug.",
+    "persist_failed":
+        "Vision call succeeded but the database write failed. Retry will re-persist without re-billing the API.",
     "tray_deleted_mid_flight":
         "Photo was deleted from the tray during analysis. Nothing to retry.",
     "tray_not_found":
@@ -147,14 +203,85 @@ FAILURE_REASON_VERBOSE = {
         "Another worker is analyzing this photo right now.",
 }
 
+# Test 4A/B follow-up (2026-05-12) -- subtype-specific copy for the
+# vision_api_error family. Keyed as "vision_api_error:<subtype>" so
+# verbose_failure_reason can look up the more specific text first
+# before falling back to the generic vision_api_error copy.
+FAILURE_REASON_VERBOSE.update({
+    "vision_api_error:no_api_key":
+        "Photo AI is configured but the ANTHROPIC_API_KEY environment "
+        "variable wasn't set on the server. Ask an admin to set it.",
+    "vision_api_error:sdk_unavailable":
+        "The anthropic Python SDK isn't installed on the server. "
+        "Re-deploy with `pip install anthropic==0.39.0`.",
+    "vision_api_error:client_init_failed":
+        "The Anthropic client couldn't be constructed -- usually an "
+        "SDK version mismatch with the pinned anthropic==0.39.0. "
+        "Run `pip show anthropic` on the server to verify.",
+    "vision_api_error:payload_encode_failed":
+        "Couldn't base64-encode the JPEG for the Vision call (memory "
+        "or encoding issue).",
+    "vision_api_error:auth":
+        "Anthropic rejected the API key (401). The key is missing, "
+        "expired, or revoked -- ask an admin to rotate it.",
+    "vision_api_error:permission_denied":
+        "Anthropic denied access (403). The key may not have Vision "
+        "scope or the org is blocked.",
+    "vision_api_error:rate_limit":
+        "Hit the Anthropic rate limit (429). The retry queue will "
+        "pick this up shortly; consider lowering BATCH_THROTTLE_MS "
+        "if it persists.",
+    "vision_api_error:bad_request":
+        "Anthropic returned 400 -- payload shape issue (oversized blob, "
+        "unsupported media type, etc.). File a bug.",
+    "vision_api_error:api_connection":
+        "Couldn't reach the Anthropic API (network / DNS / TLS).",
+    "vision_api_error:server_error":
+        "Anthropic returned a 5xx -- their service is unhealthy. "
+        "Retry will pick this up; if it persists check the Anthropic "
+        "status page.",
+    "vision_api_error:response_parse":
+        "Couldn't extract text from the Anthropic response object. "
+        "Likely a v0.40+ SDK shape drift; check the pinned version.",
+    "vision_api_error:usage_parse":
+        "Couldn't read the token-usage block from the response (cost "
+        "tracking degraded). Non-fatal; analysis still completed.",
+    "vision_api_error:unexpected_api":
+        "Unhandled error from the anthropic SDK. Check server logs "
+        "for the full traceback.",
+    "vision_timeout:api_timeout":
+        "The Vision API call exceeded the 30-second timeout (site "
+        "network or Anthropic latency).",
+})
+
 
 def verbose_failure_reason(code: Optional[str]) -> str:
     """Returns the verbose label for a tray.ai_failure_reason code.
-    Falls back to the code itself if unknown so the UI always has
-    something to render."""
+    Falls back to the base code if subtype-specific copy isn't
+    defined, then to the code itself so the UI always has something
+    to render.
+
+    Test 4A/B follow-up: handles "code:subtype" lookups by stripping
+    the subtype on miss and re-trying with the base code.
+    """
     if not code:
         return "No reason recorded."
-    return FAILURE_REASON_VERBOSE.get(code, f"Unknown failure code: {code}")
+    if code in FAILURE_REASON_VERBOSE:
+        return FAILURE_REASON_VERBOSE[code]
+    # Strip ":subtype" and retry with base code.
+    if ":" in code:
+        base = code.split(":", 1)[0]
+        if base in FAILURE_REASON_VERBOSE:
+            return FAILURE_REASON_VERBOSE[base]
+    # "unclassified:TypeError" etc. -- pass through with a helpful hint.
+    if code.startswith("unclassified:"):
+        return (
+            f"Unclassified failure ({code}). The Photo AI service hit an "
+            "exception type that isn't wrapped by a domain-specific class. "
+            "Check server logs for the traceback and file a bug -- this "
+            "should never reach the UI."
+        )
+    return f"Unknown failure code: {code}"
 
 
 async def _evict_image_cache_if_needed() -> None:
@@ -463,12 +590,21 @@ async def find_dedup_source(
 # =====================================================================
 
 def _is_dev_mode() -> bool:
-    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no Anthropic key.
-    Real Vision needs ANTHROPIC_API_KEY (preferred) or EMERGENT_LLM_KEY
-    as a fallback (some Railway deploys use the Emergent key as a
-    pass-through). When dev mode is on, _stub_analysis returns
-    deterministic mock data without any network call."""
+    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no Anthropic key OR
+    SDK import failed at module load. Real Vision needs
+    ANTHROPIC_API_KEY (preferred) or EMERGENT_LLM_KEY as a fallback
+    (some Railway deploys use the Emergent key as a pass-through).
+    When dev mode is on, _stub_analysis returns deterministic mock data
+    without any network call.
+
+    Test 4A/B follow-up (2026-05-12): also returns True if the
+    anthropic SDK probe failed at module load, so we degrade
+    gracefully to the stub instead of crashing later with
+    ImportError / TypeError on a constructor signature mismatch.
+    """
     if os.environ.get("PHOTO_AI_DEV_MODE") == "1":
+        return True
+    if not _ANTHROPIC_SDK_OK:
         return True
     return not (
         os.environ.get("ANTHROPIC_API_KEY")
@@ -542,8 +678,19 @@ def _preprocess_image_for_vision(blob: bytes) -> tuple[bytes, str, dict]:
 
 class _PhotoAIError(Exception):
     """Base class for photo-AI domain errors. Used as a tag class so
-    the analyze loop can distinguish from generic exceptions."""
+    the analyze loop can distinguish from generic exceptions.
+
+    Test 4A/B follow-up (2026-05-12): subclasses can carry a `subtype`
+    attribute that the retry loop joins into the persisted
+    ai_failure_reason as `code:subtype` (e.g. "vision_api_error:auth").
+    Subtypes are surfaced in audit + the Photo AI dashboard so the
+    operator can triage by failure class without re-reading logs.
+    """
     reason_code = "photo_ai_error"
+
+    def __init__(self, message: str = "", *, subtype: Optional[str] = None):
+        super().__init__(message)
+        self.subtype = subtype
 
 
 class ImageTooLargeError(_PhotoAIError):
@@ -559,6 +706,19 @@ class ImageConversionError(_PhotoAIError):
 
 
 class VisionApiError(_PhotoAIError):
+    """Test 4A/B follow-up -- accepts a `subtype` keyword to narrow the
+    failure class:
+      - client_init      AsyncAnthropic constructor raised (signature
+                          drift, missing dep, etc.)
+      - auth             401 / invalid API key
+      - rate_limit       429
+      - bad_request      400 (bad message shape, oversized blob, etc.)
+      - api_connection   network / DNS / TLS error
+      - response_parse   couldn't extract text from response object
+      - usage_parse      couldn't extract token counts
+      - unexpected_api   anything else from the SDK
+      - sdk_unavailable  anthropic package not importable
+    """
     reason_code = "vision_api_error"
 
 
@@ -572,6 +732,13 @@ class VisionMalformedJsonError(_PhotoAIError):
 
 class StorageUnavailableError(_PhotoAIError):
     reason_code = "storage_unavailable"
+
+
+class PersistFailedError(_PhotoAIError):
+    """Test 4A/B follow-up -- distinguishes "AI call succeeded but DB
+    write failed" from "API itself failed". Operators can re-run the
+    persist without re-billing the API call."""
+    reason_code = "persist_failed"
 
 
 # =====================================================================
@@ -659,16 +826,61 @@ async def _call_anthropic_vision(
 ) -> dict:
     """Single Vision call. Returns parsed dict + usage tokens. Raises
     VisionTimeoutError / VisionApiError / VisionMalformedJsonError so
-    the retry loop can distinguish failure classes."""
+    the retry loop can distinguish failure classes.
+
+    Test 4A/B follow-up (2026-05-12): EVERY stage (SDK import, client
+    init, API call, response text extraction, JSON parse, usage parse)
+    is in its own try/except so a bare TypeError can never propagate
+    to the catch-all "unexpected" classification at the retry loop's
+    outer scope. Each failure carries a `subtype` so operators can
+    triage from the audit log without re-reading server logs.
+    """
     api_key = _anthropic_api_key()
     if not api_key:
-        raise VisionApiError("no API key configured")
+        raise VisionApiError("no API key configured", subtype="no_api_key")
+
+    # --- Stage 1: SDK import ----------------------------------------
     try:
         from anthropic import AsyncAnthropic
     except ImportError as exc:
-        raise VisionApiError(f"anthropic SDK not installed: {exc}") from exc
-    client = AsyncAnthropic(api_key=api_key, timeout=timeout_seconds)
-    b64 = base64.standard_b64encode(jpeg_bytes).decode("ascii")
+        raise VisionApiError(
+            f"anthropic SDK not installed: {exc}",
+            subtype="sdk_unavailable",
+        ) from exc
+    except Exception as exc:
+        raise VisionApiError(
+            f"anthropic SDK import errored ({type(exc).__name__}): {exc}",
+            subtype="sdk_unavailable",
+        ) from exc
+
+    # --- Stage 2: client init (constructor signature can drift) -----
+    try:
+        client = AsyncAnthropic(api_key=api_key, timeout=timeout_seconds)
+    except TypeError as exc:
+        # Signature drift between pinned 0.39.0 and what's actually
+        # installed (e.g. an Emergent base image bumped the SDK).
+        raise VisionApiError(
+            f"AsyncAnthropic constructor rejected kwargs "
+            f"({type(exc).__name__}: {exc}). Likely SDK version "
+            f"mismatch -- check `pip show anthropic` vs requirements.txt.",
+            subtype="client_init_failed",
+        ) from exc
+    except Exception as exc:
+        raise VisionApiError(
+            f"AsyncAnthropic init failed ({type(exc).__name__}): {exc}",
+            subtype="client_init_failed",
+        ) from exc
+
+    # --- Stage 3: encode payload ------------------------------------
+    try:
+        b64 = base64.standard_b64encode(jpeg_bytes).decode("ascii")
+    except Exception as exc:
+        raise VisionApiError(
+            f"base64 encode failed ({type(exc).__name__}): {exc}",
+            subtype="payload_encode_failed",
+        ) from exc
+
+    # --- Stage 4: API call ------------------------------------------
     try:
         resp = await client.messages.create(
             model=model,
@@ -687,29 +899,86 @@ async def _call_anthropic_vision(
             }],
         )
     except asyncio.TimeoutError as exc:
-        raise VisionTimeoutError(f"timeout after {timeout_seconds}s") from exc
+        raise VisionTimeoutError(
+            f"timeout after {timeout_seconds}s", subtype="api_timeout",
+        ) from exc
     except Exception as exc:
-        # anthropic raises specific classes (RateLimitError, APIError,
-        # APIConnectionError, etc.). Surface the class name + a short
-        # message; the retry loop decides whether to retry.
-        msg = f"{type(exc).__name__}: {str(exc)[:200]}"
-        if "RateLimit" in type(exc).__name__ or "429" in str(exc):
-            raise VisionApiError(f"rate_limited: {msg}") from exc
-        raise VisionApiError(msg) from exc
-    # Extract text content from the response.
-    text_parts = []
-    for block in (resp.content or []):
-        if getattr(block, "type", None) == "text":
-            text_parts.append(getattr(block, "text", "") or "")
-    text = "\n".join(text_parts).strip()
+        # Classify by anthropic SDK class name. v0.39 has:
+        # AuthenticationError (401), PermissionDeniedError (403),
+        # RateLimitError (429), BadRequestError (400),
+        # APIConnectionError (network), APIStatusError (catch-all 5xx),
+        # InternalServerError (500+).
+        cls = type(exc).__name__
+        msg = f"{cls}: {str(exc)[:200]}"
+        if "RateLimit" in cls or "429" in str(exc):
+            subtype = "rate_limit"
+        elif "Authentication" in cls or "Unauthorized" in cls or "401" in str(exc):
+            subtype = "auth"
+        elif "PermissionDenied" in cls or "403" in str(exc):
+            subtype = "permission_denied"
+        elif "BadRequest" in cls or "400" in str(exc):
+            subtype = "bad_request"
+        elif "APIConnection" in cls or "Connection" in cls:
+            subtype = "api_connection"
+        elif "InternalServer" in cls or "5" in str(exc)[:3]:
+            subtype = "server_error"
+        else:
+            subtype = "unexpected_api"
+        raise VisionApiError(msg, subtype=subtype) from exc
+
+    # --- Stage 5: text extraction from response ---------------------
+    try:
+        text_parts = []
+        content = getattr(resp, "content", None) or []
+        # Defensive: SDK should return a list of content blocks, but
+        # we don't trust it -- v0.40+ may have changed the iteration
+        # surface. Cast to list if it's iterable but not already a list.
+        if not isinstance(content, list):
+            try:
+                content = list(content)
+            except TypeError as exc:
+                raise VisionApiError(
+                    f"resp.content is not iterable ({type(content).__name__}): {exc}",
+                    subtype="response_parse",
+                ) from exc
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                text_parts.append(getattr(block, "text", "") or "")
+        text = "\n".join(text_parts).strip()
+    except VisionApiError:
+        raise
+    except Exception as exc:
+        raise VisionApiError(
+            f"response text extraction failed ({type(exc).__name__}): {exc}",
+            subtype="response_parse",
+        ) from exc
+
+    # --- Stage 6: JSON parse (raises VisionMalformedJsonError) ------
     data = _parse_vision_json(text)
-    usage = getattr(resp, "usage", None)
-    in_tok = int(getattr(usage, "input_tokens", 0) or 0)
-    out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+
+    # --- Stage 7: usage / model metadata ----------------------------
+    try:
+        usage = getattr(resp, "usage", None)
+        raw_in = getattr(usage, "input_tokens", 0) if usage is not None else 0
+        raw_out = getattr(usage, "output_tokens", 0) if usage is not None else 0
+        in_tok = int(raw_in or 0)
+        out_tok = int(raw_out or 0)
+        resp_model = getattr(resp, "model", model) or model
+    except Exception as exc:
+        # Non-fatal -- treat as zero-cost call rather than failing the
+        # whole analysis after the API already succeeded.
+        log.warning(
+            "photo_ai: usage parse failed (%s: %s); recording 0 tokens",
+            type(exc).__name__, exc,
+        )
+        in_tok = 0
+        out_tok = 0
+        resp_model = model
+
     return {
         "parsed": data, "raw_text": text,
         "input_tokens": in_tok, "output_tokens": out_tok,
-        "model": str(getattr(resp, "model", model) or model),
+        "model": str(resp_model),
     }
 
 
@@ -1189,12 +1458,25 @@ async def _run_vision_with_retry(
 
         except _PhotoAIError as exc:
             last_error = exc
-            last_reason = exc.reason_code
-            log.warning("photo_ai attempt %d failed: %s: %s",
-                         attempt + 1, type(exc).__name__, exc)
+            # Test 4A/B follow-up -- join the reason code with the
+            # subtype (when present) so the persisted ai_failure_reason
+            # reads "vision_api_error:auth" rather than just
+            # "vision_api_error". Operators can triage from the audit
+            # log without rebuilding context from server logs.
+            sub = getattr(exc, "subtype", None)
+            last_reason = f"{exc.reason_code}:{sub}" if sub else exc.reason_code
+            log.warning("photo_ai attempt %d failed: %s reason=%s msg=%s",
+                         attempt + 1, type(exc).__name__, last_reason, exc)
             # Hard failures don't retry.
             if isinstance(exc, (NotAnImageError, ImageTooLargeError,
                                  ImageConversionError)):
+                break
+            # Auth + permission failures don't retry either -- the key
+            # isn't going to fix itself on the second attempt.
+            if isinstance(exc, VisionApiError) and sub in (
+                "auth", "permission_denied", "no_api_key",
+                "sdk_unavailable", "client_init_failed",
+            ):
                 break
             # Storage / Vision / JSON failures retry once.
             if attempt < MAX_RETRIES:
@@ -1202,8 +1484,17 @@ async def _run_vision_with_retry(
                 continue
             break
         except Exception as exc:
-            last_reason = f"unexpected:{type(exc).__name__}"
-            log.exception("photo_ai unexpected error: %s", exc)
+            # Test 4A/B follow-up -- this branch should now be
+            # functionally unreachable because every stage in the loop
+            # body raises a _PhotoAIError subclass. If we DO land here
+            # it means a new code path was added without classifying
+            # its failure -- the log.exception captures the full
+            # traceback so the operator can wrap that path next.
+            last_reason = f"unclassified:{type(exc).__name__}"
+            log.exception(
+                "photo_ai UNCLASSIFIED error (please wrap the responsible "
+                "stage with a _PhotoAIError subclass): %s", exc,
+            )
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
                 continue
