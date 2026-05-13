@@ -124,11 +124,18 @@ const AUDIT_OP_GROUPS = [
     label: "Roles",
     ops: ["ROLE_ENUM_EXTENDED"],
   },
-  // Bucket K (2026-05-11) -- standalone exhibit export ops. Counsel
-  // can trace who pulled which audit / photo pack with what filters.
+  // Bucket K (2026-05-11) -- exhibit-style + operational export ops.
+  // Counsel + admins can trace who pulled which export with what
+  // filters / formats. Bug #42 + #43 (2026-05-12) added the Tasks
+  // and Look Ahead operational exports.
   {
-    label: "Exhibit exports",
-    ops: ["AUDIT_EXTRACT_EXPORTED", "PHOTO_EVIDENCE_PACK_EXPORTED"],
+    label: "Exports",
+    ops: [
+      "AUDIT_EXTRACT_EXPORTED",
+      "LOOK_AHEAD_EXPORTED",
+      "PHOTO_EVIDENCE_PACK_EXPORTED",
+      "TASKS_EXPORTED",
+    ],
   },
   // Bucket D Addition 5 (2026-05-12) -- post-submit ADD flow audit ops.
   // ACTIVITY_GRID_EDITED_POST_SUBMIT fires when an activity grid row

@@ -3,7 +3,7 @@
 Master prompt §20.4: Activity-code is the primary ref. Predecessors reference
 activity_code, NOT hierarchical wbs.
 """
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Response
 from datetime import date, timedelta
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
@@ -351,3 +351,118 @@ async def lookahead(
             )
             d["lookahead_status"] = "in_window"
     return [Task(**d) for d in docs]
+
+
+# =====================================================================
+# Bug #42 + #43 (2026-05-12) -- Tasks + Look Ahead operational exports.
+# Same audit-honest pattern as Bucket K (services/exhibit_exports.py):
+# router writes the audit BEFORE returning the file bytes; service
+# module owns the gather + render.
+# =====================================================================
+
+_EXPORT_FMT_QUERY = Query(..., pattern="^(xlsx|pdf)$")
+
+
+async def _verify_project_access(ctx: dict, project_id: str) -> dict:
+    """Tenant + project guard. Returns the project doc on success;
+    raises 404 on cross-tenant or missing project. No project-RBAC
+    check beyond tenant -- exports are operational, every project
+    member can pull them. (Audit logs who pulled what.)"""
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "id": 1, "name": 1, "contract_number": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    return proj
+
+
+@router.get("/projects/{project_id}/tasks/export")
+async def export_tasks(
+    project_id: str,
+    format: str = _EXPORT_FMT_QUERY,
+    ctx: dict = Depends(require_tenant),
+):
+    """Stream the master-task table as XLSX or PDF. Fires
+    TASKS_EXPORTED audit on the project record with format +
+    task_count + actor_id in the payload."""
+    await _verify_project_access(ctx, project_id)
+    from services.tasks_exports import render_tasks_export
+    try:
+        blob, ct, fn, task_count = await render_tasks_export(
+            tenant_id=ctx["tenant_id"], project_id=project_id, fmt=format,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    if not blob:
+        # Cross-tenant or missing project (service returned empty).
+        raise HTTPException(404, "Project not found")
+    # Audit BEFORE returning -- chain must show the export attempt
+    # even on the rare case where Response delivery fails after this.
+    try:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="projects",
+            op="TASKS_EXPORTED",
+            record_id=project_id, before=None,
+            after={
+                "format": format,
+                "task_count": task_count,
+                "byte_count": len(blob),
+                "actor_id": ctx["user"]["id"],
+            },
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    except Exception:
+        # Audit failure must NOT block the export (matches Bucket K
+        # exhibit-exports_router pattern). The audit chain integrity
+        # check would surface the gap on the next verify-chain run.
+        pass
+    headers = {"Content-Disposition": f'attachment; filename="{fn}"'}
+    return Response(content=blob, media_type=ct, headers=headers)
+
+
+@router.get("/projects/{project_id}/lookahead/export")
+async def export_lookahead(
+    project_id: str,
+    format: str = _EXPORT_FMT_QUERY,
+    days: int = Query(default=14, ge=1, le=90),
+    ctx: dict = Depends(require_tenant),
+):
+    """Stream the look-ahead window as XLSX or PDF. Fires
+    LOOK_AHEAD_EXPORTED audit on the project record with format +
+    task_count + at_risk_count + window_start + window_end in the
+    payload. `days` query param controls the window length (default
+    14 -- matches the frontend Lookahead.jsx default)."""
+    await _verify_project_access(ctx, project_id)
+    from services.tasks_exports import render_lookahead_export
+    try:
+        blob, ct, fn, meta = await render_lookahead_export(
+            tenant_id=ctx["tenant_id"], project_id=project_id,
+            fmt=format, days=days,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    if not blob:
+        raise HTTPException(404, "Project not found")
+    try:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="projects",
+            op="LOOK_AHEAD_EXPORTED",
+            record_id=project_id, before=None,
+            after={
+                "format": format,
+                "task_count": meta.get("count", 0),
+                "at_risk_count": meta.get("at_risk_count", 0),
+                "window_start": meta.get("window_start"),
+                "window_end": meta.get("window_end"),
+                "days": meta.get("days", days),
+                "byte_count": len(blob),
+                "actor_id": ctx["user"]["id"],
+            },
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    except Exception:
+        pass
+    headers = {"Content-Disposition": f'attachment; filename="{fn}"'}
+    return Response(content=blob, media_type=ct, headers=headers)
