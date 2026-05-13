@@ -461,6 +461,30 @@ async def create_photo_tag(
             422,
             "Tray entry and daily report must belong to the same project",
         )
+
+    # Bug #30 fix (2026-05-13): idempotency gate on (tenant, tray,
+    # ref_field, ref_id). Same dedup pattern as field_suggestions
+    # create_suggestion at services/field_suggestions.py:216-226 --
+    # return the existing row, suppress the insert + audit + AI
+    # producer hook. Without this gate, the UI's "Tag again" gesture
+    # or a double-clicked submit creates duplicate photos rows that
+    # show as "Tagged to (2)" with identical content on the same DR.
+    #
+    # NOTE: gate runs BEFORE enforce_locked_dr_add_policy. A duplicate
+    # tag on a locked DR is a no-op (no new row, no new audit, no
+    # post_submit_added stamp); the original tag's permissions already
+    # captured the intent. Re-running the add-policy on dedup would
+    # spuriously demand a fresh add_reason for the same tag.
+    existing_tag = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {
+            "tray_photo_id": payload.tray_photo_id,
+            ref_field: ref_id,
+        }),
+        {"_id": 0},
+    )
+    if existing_tag:
+        return existing_tag
+
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. The prior 409
     # reject is replaced with the tiered add-permission check. Caller
     # must supply add_reason (min EDIT_REASON_MIN_LEN chars) when DR

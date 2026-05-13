@@ -28,6 +28,17 @@ const TOPICS = ["tenant_access", "building_coordination", "a_e_clarification",
                  "quality", "scope", "payment", "other"];
 const OUTCOMES = ["agreement", "disagreement", "pending", "informational",
                    "escalation_required"];
+// Bug #32 fix (2026-05-13) -- OPTIONAL trade tag on coordination events.
+// Matches the AI Vision Jigsaw producer that already suggests trade_code
+// on coordination events (see photo_tray_router.py ai_photo_vision path).
+// No shared frontend trades constant exists in this codebase -- other
+// surfaces (Tasks.jsx, Lookahead.jsx) treat trade_code as a free string,
+// but this form's local pattern is enum dropdowns, so we match that.
+// Empty value submits as null (matches other optional fields).
+const TRADES = ["general", "sitework", "demolition", "concrete", "masonry",
+                 "steel", "carpentry", "drywall", "finishes", "doors_windows",
+                 "roofing", "plumbing", "mechanical", "electrical",
+                 "fire_protection", "elevators", "abatement", "other"];
 
 function defaultsFromInitial(initial, linkedDailyReportId) {
   return {
@@ -49,6 +60,8 @@ function defaultsFromInitial(initial, linkedDailyReportId) {
     // Bucket D Corrective -- master-schedule task linkage. OPTIONAL
     // for coordination events (some are project-wide).
     linked_task_ids: initial?.linked_task_ids || [],
+    // Bug #32 fix -- OPTIONAL trade tag. Empty string == not set.
+    trade_code: initial?.trade_code || "",
   };
 }
 
@@ -111,6 +124,8 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         linked_daily_report_id: effectiveLinkedDr,
         // Bucket D Corrective -- master-schedule task linkage.
         linked_task_ids: form.linked_task_ids || [],
+        // Bug #32 fix -- OPTIONAL trade tag; empty string -> null.
+        trade_code: form.trade_code || null,
       };
       let res;
       if (initial?.id) {
@@ -217,7 +232,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <div>
           <label className="text-xs text-slate-500 uppercase tracking-wide">Topic</label>
           <JigsawField entityType="coordination_event" entityId={entityId}
@@ -237,6 +252,23 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
             {OUTCOMES.map((o) => <option key={o} value={o}>{o.replace(/_/g, " ")}</option>)}
           </select>
+        </div>
+        {/* Bug #32 fix (2026-05-13) -- OPTIONAL trade tag. Wrapped in
+            JigsawField so the AI Vision producer (which already emits
+            trade_code suggestions on coordination_event) can pre-fill
+            this from a photo. Empty string == not set. */}
+        <div>
+          <label className="text-xs text-slate-500 uppercase tracking-wide">Trade (optional)</label>
+          <JigsawField entityType="coordination_event" entityId={entityId}
+            fieldPath="trade_code" userRole={userRole} fieldLabel="trade"
+            onConfirm={(v) => set("trade_code", String(v ?? form.trade_code ?? ""))}>
+            <select data-testid="coord-trade" value={form.trade_code}
+              onChange={(e) => set("trade_code", e.target.value)}
+              className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
+              <option value="">—</option>
+              {TRADES.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
+            </select>
+          </JigsawField>
         </div>
       </div>
 
