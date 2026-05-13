@@ -23,8 +23,7 @@ POST /api/resource-leveling/capacity
 POST /api/resource-leveling/recompute
 POST /api/resource-leveling/commit-reallocation
 """
-from __future__ import annotations
-
+# Bug #44 fix (2026-05-13): see photo_tray_router.py for rationale.
 import logging
 import time
 from datetime import date, timedelta, datetime, timezone

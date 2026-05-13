@@ -22,7 +22,11 @@ qc_issue_id, safety_event_id, coordination_event_id, delivery_id,
 drawing_pin_id) must be non-null. Tagging recomputes evidentiary_flag
 per Bucket C3b Phase 4 OR semantics.
 """
-from __future__ import annotations
+# Bug #44 fix (2026-05-13): `from __future__ import annotations`
+# removed -- FastAPI 0.110.1 + Pydantic 2.13.3 lazy OpenAPI build
+# can't resolve `BackgroundTasks` when every annotation is a string
+# ForwardRef, and crashes /openapi.json with 500. Python 3.10+
+# supports PEP 604 unions natively so removal is safe runtime-wise.
 import hashlib
 import io
 from datetime import datetime, timedelta, timezone
@@ -457,6 +461,30 @@ async def create_photo_tag(
             422,
             "Tray entry and daily report must belong to the same project",
         )
+
+    # Bug #30 fix (2026-05-13): idempotency gate on (tenant, tray,
+    # ref_field, ref_id). Same dedup pattern as field_suggestions
+    # create_suggestion at services/field_suggestions.py:216-226 --
+    # return the existing row, suppress the insert + audit + AI
+    # producer hook. Without this gate, the UI's "Tag again" gesture
+    # or a double-clicked submit creates duplicate photos rows that
+    # show as "Tagged to (2)" with identical content on the same DR.
+    #
+    # NOTE: gate runs BEFORE enforce_locked_dr_add_policy. A duplicate
+    # tag on a locked DR is a no-op (no new row, no new audit, no
+    # post_submit_added stamp); the original tag's permissions already
+    # captured the intent. Re-running the add-policy on dedup would
+    # spuriously demand a fresh add_reason for the same tag.
+    existing_tag = await db.photos.find_one(
+        tenant_filter(ctx["tenant_id"], {
+            "tray_photo_id": payload.tray_photo_id,
+            ref_field: ref_id,
+        }),
+        {"_id": 0},
+    )
+    if existing_tag:
+        return existing_tag
+
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. The prior 409
     # reject is replaced with the tiered add-permission check. Caller
     # must supply add_reason (min EDIT_REASON_MIN_LEN chars) when DR
@@ -594,13 +622,21 @@ async def create_photo_tag(
     }
     await db.photos.insert_one(photo_doc.copy())
 
-    # Flip tray status untagged -> partially_tagged on first tag. We
-    # leave the user to mark fully_tagged explicitly via /tray/{id}/done
-    # (deferred -- Phase 3 may add it as part of the gallery rework).
-    if tray.get("status") == "untagged":
+    # Bug #28 fix (2026-05-13): flip tray status to fully_tagged on
+    # tag create. The original design wired untagged -> partially_
+    # tagged -> (user clicks "done" in Phase 3) -> fully_tagged, but
+    # the "done" button was never built and every tagged photo got
+    # stuck at "Partially tagged" forever.
+    #
+    # New rule: any tag creation flips the tray to fully_tagged. The
+    # gate accepts BOTH untagged + partially_tagged so legacy rows
+    # already at partially_tagged get upgraded the next time a tag
+    # lands on them. archived rows are NOT flipped (terminal state).
+    # fully_tagged stays fully_tagged (no-op, no spurious DB writes).
+    if tray.get("status") in ("untagged", "partially_tagged"):
         await db.photo_tray.update_one(
             tenant_filter(ctx["tenant_id"], {"id": tray["id"]}),
-            {"$set": {"status": "partially_tagged"}},
+            {"$set": {"status": "fully_tagged"}},
         )
 
     await write_audit(
@@ -1483,10 +1519,14 @@ async def create_safety_event_from_photo(
         },
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
-    # Flip tray status to partially_tagged.
+    # Bug #28 fix (2026-05-13): flip tray to fully_tagged (matches
+    # the canonical tag path at line ~600). Same defensive gate so
+    # we never undo archived. tray_id was just read above; status
+    # is guaranteed non-archived because the AI quick-action path
+    # only runs on pending/active analyses.
     await db.photo_tray.update_one(
-        {"id": tray_id},
-        {"$set": {"status": "partially_tagged"}},
+        {"id": tray_id, "status": {"$in": ["untagged", "partially_tagged"]}},
+        {"$set": {"status": "fully_tagged"}},
     )
 
     return {

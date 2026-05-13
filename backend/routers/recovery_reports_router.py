@@ -10,8 +10,7 @@
   GET    /recovery-reports/{id}/export           PDF / DOCX / JSON
   DELETE /recovery-reports/{id}                  admin soft-delete
 """
-from __future__ import annotations
-
+# Bug #44 fix (2026-05-13): see photo_tray_router.py for rationale.
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -168,7 +167,18 @@ async def generate_report(
         "audit_op_label": "Recovery Report (generating...)",
         "is_degraded": False, "degraded_reason": None,
         "ai_cost_estimate_usd": None,
-        "idempotency_key": idem,
+        # Bug #37 fix (2026-05-13): do NOT carry `idempotency_key` on the
+        # placeholder. Generator's _persist_report runs its own
+        # idempotency lookup keyed on (tenant, project, type, idem_key);
+        # if the placeholder shared the same key the generator would
+        # match the placeholder + short-circuit, and the BG task would
+        # then delete the only row that ever existed. Leaving idem off
+        # the placeholder lets the generator's check correctly find
+        # "no prior" on the FIRST generation attempt and insert the
+        # real row; on a legit re-generation the prior REAL row (which
+        # DOES carry idem) is found and returned. Placeholder still
+        # has _placeholder=True so the BG task can locate it for the
+        # success-path delete by placeholder_id.
         "_placeholder": True,
     }
     await db.recovery_reports.insert_one(placeholder.copy())

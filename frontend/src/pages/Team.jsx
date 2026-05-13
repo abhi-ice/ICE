@@ -4,7 +4,23 @@ import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { Users, Mail, Trash2, Copy, ShieldAlert } from "lucide-react";
 
-const ROLES = ["admin", "pm", "super", "foreman", "viewer"];
+// Bug #38 fix (2026-05-13): expanded to include the specialty roles
+// added by migration 015 (submittal_tech + scheduling_engineer) and
+// the older `pe` role (Professional Engineer). Each entry is
+// {value, label} so the dropdown can render human-readable text
+// while the form posts the canonical role value.
+//
+// Kept in sync with InviteCreate.role Literal in backend/models.py.
+const ROLES = [
+  { value: "admin",                label: "Admin" },
+  { value: "pm",                   label: "PM (Project Manager)" },
+  { value: "super",                label: "Super (Superintendent)" },
+  { value: "foreman",              label: "Foreman" },
+  { value: "viewer",               label: "Viewer (read-only)" },
+  { value: "pe",                   label: "PE (Professional Engineer)" },
+  { value: "submittal_tech",       label: "Submittal Tech" },
+  { value: "scheduling_engineer",  label: "Scheduling Engineer" },
+];
 
 export default function Team() {
   const [me, setMe] = useState(null);
@@ -79,7 +95,7 @@ export default function Team() {
             <div className="field-label">Role</div>
             <select data-testid="invite-role-select" value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })}
               className="h-9 px-2 rounded border border-slate-200 text-sm">
-              {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
           <button data-testid="send-invite-btn" type="submit" disabled={busy}

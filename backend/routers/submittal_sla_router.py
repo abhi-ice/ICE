@@ -17,8 +17,7 @@ GET    /api/submittals/{id}/review-events
 GET    /api/projects/{id}/submittals/aging-summary
 GET    /api/projects/{id}/submittals/overdue
 """
-from __future__ import annotations
-
+# Bug #44 fix (2026-05-13): see photo_tray_router.py for rationale.
 import logging
 from typing import Optional, List
 

@@ -191,6 +191,52 @@ async def compute_due_date(
     """Compute the A/E review due date from a submission timestamp.
     Returns a tz-aware UTC datetime at midnight on the due day -- the
     SLA "boundary" is end-of-day on the due date.
+
+    Bug #40 diagnostic note (2026-05-13):
+    -------------------------------------
+    If a submittal's `a_e_review_due_at` looks too short relative to
+    the project's `submittal_review_sla_days` setting (e.g. SLA = 14
+    working days but due is only ~4 working days from submission),
+    the math here is NOT the cause. Verified: this function walks
+    forward `sla_days` working days from `submitted_at.date()`,
+    skipping weekends + FEDERAL_HOLIDAYS_2026 + per-project
+    no_work_days. For a 2026-05-12 submission with 14 WD, due
+    should be ~2026-06-02 (Memorial Day 5/25 is in the holiday set).
+
+    Three likely data conditions for a too-short stored due date:
+
+      1. Per-submittal `sla_days_override` is set. Resolved at
+         line 376 above:
+           sla_days = (sub["sla_days_override"]
+                        or project["submittal_review_sla_days"]
+                        or SUBMITTAL_DEFAULT_SLA_DAYS)
+         If the override is non-None, the project's SLA is ignored.
+         Forensic check: db.submittals.findOne({submittal_number:
+         "SUB-0001"}, {sla_days_override: 1, sla_uses_calendar_days_
+         override: 1}).
+
+      2. The stored `a_e_review_due_at` was computed when the
+         project's SLA setting was different (e.g. 4 WD historically,
+         then changed to 14). The PATCH /projects/{id} handler does
+         NOT currently trigger a per-submittal recompute on SLA
+         setting changes. Existing submittals keep their stale
+         due dates until something else fires their recompute.
+         Forensic fix: call recompute_for_submittal(tenant_id, sub_
+         id) from a Python shell, OR record a review-event on the
+         submittal (which calls recompute internally).
+
+      3. `submitted_to_ae_at` itself is wrong. The clock anchors on
+         this field; if it's a different date than expected, the
+         due date will be too. Check db.audit_log for the
+         SUBMITTAL_SLA_REVIEW_EVENT_RECORDED op on this submittal
+         and verify the submitted_to_ae_at timestamp.
+
+    None of these are code defects in this function. If a
+    follow-up sprint wants to auto-recompute existing submittals
+    on project SLA changes, the right place to add that is the
+    PATCH /projects/{id} handler in projects_router.py:158 --
+    fire a BG task calling recompute_for_project. NOT changed here
+    to keep this fix scoped to documentation only.
     """
     if submitted_at.tzinfo is None:
         submitted_at = submitted_at.replace(tzinfo=timezone.utc)

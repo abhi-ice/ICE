@@ -135,6 +135,9 @@ export default function CoordinationEvents() {
               <th>Dir</th>
               <th>Other party</th>
               <th>Topic</th>
+              {/* Bug #32 fix (2026-05-13) -- optional trade tag column;
+                  renders "—" when unset. */}
+              <th>Trade</th>
               <th>Summary</th>
               <th>Outcome</th>
             </tr>
@@ -161,6 +164,8 @@ export default function CoordinationEvents() {
                     {r.other_party_org && <div className="text-[10px] text-slate-400">{r.other_party_org}</div>}
                   </td>
                   <td className="text-xs">{TOPIC_LABELS[r.topic] || r.topic}</td>
+                  {/* Bug #32 fix -- optional trade tag, "—" when unset. */}
+                  <td className="text-xs">{r.trade_code ? r.trade_code.replace(/_/g, " ") : "—"}</td>
                   <td className="text-sm max-w-[420px]">
                     <Link to={`/coordination/${r.id}`} className="text-blue-700 hover:underline">
                       {r.summary}
@@ -174,10 +179,10 @@ export default function CoordinationEvents() {
               );
             })}
             {!loading && !rows.length && (
-              <tr><td colSpan="7" className="text-center py-8 text-sm text-slate-500">No coordination events match the current filters.</td></tr>
+              <tr><td colSpan="8" className="text-center py-8 text-sm text-slate-500">No coordination events match the current filters.</td></tr>
             )}
             {loading && rows.length === 0 && (
-              <tr><td colSpan="7" className="text-center py-8 text-sm text-slate-400">Loading…</td></tr>
+              <tr><td colSpan="8" className="text-center py-8 text-sm text-slate-400">Loading…</td></tr>
             )}
           </tbody>
         </table>

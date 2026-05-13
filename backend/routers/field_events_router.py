@@ -894,7 +894,35 @@ def _compute_evidentiary(photo_class: str, pin_x, pin_y, drawing_id) -> bool:
     Followup-fix 8 (2026-05-07): originally written with AND semantics
     (required class AND pin together) which downgraded discovery/damage/
     quality photos to evidentiary=false until they were pinned, contra
-    the C3b spec. Switched to OR per the spec."""
+    the C3b spec. Switched to OR per the spec.
+
+    Bug #39 documentation (2026-05-13):
+    -----------------------------------
+    By design, `evidentiary_flag` is AUTO-ONLY -- there is no manual
+    admin override. The two affordances a user has to flip a photo
+    evidentiary are:
+      1. Change its `photo_class` to one of discovery / damage /
+         quality via PATCH /photos/{id}. The class change writes its
+         own audit (`PHOTO_CLASS_CHANGE`) so the chain shows when the
+         classification flipped.
+      2. Attach a drawing pin via PATCH /photos/{id}/pin (pin_x +
+         pin_y OR pin_drawing_id). The pin write also recomputes the
+         flag via this helper.
+
+    A "progress" photo with no drawing pin will correctly stay
+    evidentiary=false. The Photo Evidence Pack and TIA Section 8
+    filters both rely on this distinction -- adding a manual-override
+    checkbox would let an admin bypass the rule and quietly include
+    a progress photo in the evidentiary pack without leaving a
+    class-change audit trail, which counsel would have to defend.
+    If the project team needs a progress photo treated as evidence
+    retroactively, the correct workflow is to PATCH its photo_class
+    (which writes PHOTO_CLASS_CHANGE) or attach a drawing pin (which
+    writes PHOTO_PIN_SET). Both leave audit fingerprints.
+
+    Verified 2026-05-13: zero references to "manual override" /
+    "admin override" anywhere in code, comments, migration docs,
+    or the V1 product flow -- the auto-only design is intentional."""
     from models import EVIDENTIARY_CLASSES
     if photo_class in EVIDENTIARY_CLASSES:
         return True

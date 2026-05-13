@@ -27,6 +27,7 @@ import logging
 import re
 from typing import Optional
 
+from database import get_db, tenant_filter
 from services import field_suggestions as fs
 
 log = logging.getLogger("submittal_classifier")
@@ -174,10 +175,42 @@ async def classify_and_suggest(
         pdf_text = _extract_pdf_text(pdf_bytes)
     result = _classify(filename=filename or "", pdf_text=pdf_text)
 
+    # Bug #36 fix (2026-05-13): "don't overwrite human work" guard.
+    # Mirrors the photo_ai_producer pattern at photo_tray_router.py:
+    # 780-781 -- if the target field on the submittal is already
+    # populated, skip the suggestion silently. The PM either typed it
+    # manually or accepted a prior AI suggestion; either way the AI
+    # has no business shoving a fresh guess at them.
+    #
+    # Early exit if the classifier matched nothing -- avoids a DB
+    # roundtrip for the no-op case (which is the majority).
+    if not (result.get("discipline")
+            or result.get("submittal_type")
+            or result.get("spec_section_code")):
+        return result
+
+    db = get_db()
+    submittal = await db.submittals.find_one(
+        tenant_filter(tenant_id, {"id": submittal_id}),
+        {"_id": 0, "discipline": 1, "type": 1, "spec_section_code": 1},
+    ) or {}
+
+    def _empty(v):
+        """Same emptiness rule as photo_ai_producer: None / empty
+        string after strip both count as empty. Non-string truthy
+        values (e.g. an int 0 in a numeric field) would correctly
+        register as 'has a value' here -- we only suppress when the
+        user genuinely hasn't entered anything."""
+        if v is None:
+            return True
+        if isinstance(v, str) and not v.strip():
+            return True
+        return False
+
     # Emit suggestions. discipline + submittal_type + spec_section_
     # code each get their own row so the PM can confirm or reject
     # them independently in the JigsawField widget.
-    if result.get("discipline"):
+    if result.get("discipline") and _empty(submittal.get("discipline")):
         await fs.create_suggestion(
             tenant_id=tenant_id, project_id=project_id,
             entity_type="submittal", entity_id=submittal_id,
@@ -190,7 +223,7 @@ async def classify_and_suggest(
             ),
             actor_id=actor_id, request_id=request_id,
         )
-    if result.get("submittal_type"):
+    if result.get("submittal_type") and _empty(submittal.get("type")):
         await fs.create_suggestion(
             tenant_id=tenant_id, project_id=project_id,
             entity_type="submittal", entity_id=submittal_id,
@@ -203,7 +236,7 @@ async def classify_and_suggest(
             ),
             actor_id=actor_id, request_id=request_id,
         )
-    if result.get("spec_section_code"):
+    if result.get("spec_section_code") and _empty(submittal.get("spec_section_code")):
         await fs.create_suggestion(
             tenant_id=tenant_id, project_id=project_id,
             entity_type="submittal", entity_id=submittal_id,
