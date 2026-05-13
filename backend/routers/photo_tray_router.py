@@ -594,13 +594,21 @@ async def create_photo_tag(
     }
     await db.photos.insert_one(photo_doc.copy())
 
-    # Flip tray status untagged -> partially_tagged on first tag. We
-    # leave the user to mark fully_tagged explicitly via /tray/{id}/done
-    # (deferred -- Phase 3 may add it as part of the gallery rework).
-    if tray.get("status") == "untagged":
+    # Bug #28 fix (2026-05-13): flip tray status to fully_tagged on
+    # tag create. The original design wired untagged -> partially_
+    # tagged -> (user clicks "done" in Phase 3) -> fully_tagged, but
+    # the "done" button was never built and every tagged photo got
+    # stuck at "Partially tagged" forever.
+    #
+    # New rule: any tag creation flips the tray to fully_tagged. The
+    # gate accepts BOTH untagged + partially_tagged so legacy rows
+    # already at partially_tagged get upgraded the next time a tag
+    # lands on them. archived rows are NOT flipped (terminal state).
+    # fully_tagged stays fully_tagged (no-op, no spurious DB writes).
+    if tray.get("status") in ("untagged", "partially_tagged"):
         await db.photo_tray.update_one(
             tenant_filter(ctx["tenant_id"], {"id": tray["id"]}),
-            {"$set": {"status": "partially_tagged"}},
+            {"$set": {"status": "fully_tagged"}},
         )
 
     await write_audit(
@@ -1483,10 +1491,14 @@ async def create_safety_event_from_photo(
         },
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
-    # Flip tray status to partially_tagged.
+    # Bug #28 fix (2026-05-13): flip tray to fully_tagged (matches
+    # the canonical tag path at line ~600). Same defensive gate so
+    # we never undo archived. tray_id was just read above; status
+    # is guaranteed non-archived because the AI quick-action path
+    # only runs on pending/active analyses.
     await db.photo_tray.update_one(
-        {"id": tray_id},
-        {"$set": {"status": "partially_tagged"}},
+        {"id": tray_id, "status": {"$in": ["untagged", "partially_tagged"]}},
+        {"$set": {"status": "fully_tagged"}},
     )
 
     return {
