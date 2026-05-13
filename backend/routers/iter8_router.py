@@ -19,7 +19,7 @@ import os
 import base64
 from datetime import datetime, timezone, date, timedelta
 from typing import Optional, Any, Literal
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import Field
 
 from database import get_db, tenant_filter
