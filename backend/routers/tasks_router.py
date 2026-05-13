@@ -360,9 +360,6 @@ async def lookahead(
 # module owns the gather + render.
 # =====================================================================
 
-_EXPORT_FMT_QUERY = Query(..., pattern="^(xlsx|pdf)$")
-
-
 async def _verify_project_access(ctx: dict, project_id: str) -> dict:
     """Tenant + project guard. Returns the project doc on success;
     raises 404 on cross-tenant or missing project. No project-RBAC
@@ -381,7 +378,7 @@ async def _verify_project_access(ctx: dict, project_id: str) -> dict:
 @router.get("/projects/{project_id}/tasks/export")
 async def export_tasks(
     project_id: str,
-    format: str = _EXPORT_FMT_QUERY,
+    format: str = Query(..., pattern="^(xlsx|pdf)$"),
     ctx: dict = Depends(require_tenant),
 ):
     """Stream the master-task table as XLSX or PDF. Fires
@@ -425,7 +422,7 @@ async def export_tasks(
 @router.get("/projects/{project_id}/lookahead/export")
 async def export_lookahead(
     project_id: str,
-    format: str = _EXPORT_FMT_QUERY,
+    format: str = Query(..., pattern="^(xlsx|pdf)$"),
     days: int = Query(default=14, ge=1, le=90),
     ctx: dict = Depends(require_tenant),
 ):
