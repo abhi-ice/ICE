@@ -106,6 +106,19 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
         {"$set": {"gating_entity_id": ge["id"]}},
     )
     doc["gating_entity_id"] = ge["id"]
+    # Bug #50 (2026-05-13) -- recompute blocker count on each linked
+    # task so a freshly-created draft RFI immediately surfaces as a
+    # blocker on the task. Mirrors the delay create pattern.
+    affected_task_ids: set = set(doc.get("linked_task_ids") or [])
+    if doc.get("schedule_activity_id"):
+        affected_task_ids.add(doc["schedule_activity_id"])
+    if affected_task_ids:
+        from services.task_status import compute_and_persist_status
+        for tid in affected_task_ids:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return Rfi(**doc)
 
 
@@ -202,6 +215,40 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
             edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
+
+    # Bug #50 (2026-05-13) -- recompute blocker count on every linked
+    # task when the RFI's blocking-status changes. Mirrors the delay
+    # PATCH pattern: status transitions in [draft/sent/in_review] <->
+    # [answered/closed/voided] flip whether this RFI counts as a
+    # blocker (count_open_blockers in services/task_status.py). If
+    # linkage changed we refresh OLD linked tasks too so they
+    # un-blocker. Idempotent: compute_and_persist_status only writes
+    # when fields actually change.
+    BLOCKING_RFI_STATUSES = {"draft", "sent", "in_review"}
+    status_blocking_changed = (
+        (before.get("status") in BLOCKING_RFI_STATUSES)
+        != (after.get("status") in BLOCKING_RFI_STATUSES)
+    )
+    linkage_changed = (
+        set(before.get("linked_task_ids") or []) != set(after.get("linked_task_ids") or [])
+        or before.get("schedule_activity_id") != after.get("schedule_activity_id")
+    )
+    if status_blocking_changed or linkage_changed:
+        from services.task_status import compute_and_persist_status
+        affected: set = set()
+        for t in (before.get("linked_task_ids") or []):
+            affected.add(t)
+        for t in (after.get("linked_task_ids") or []):
+            affected.add(t)
+        if before.get("schedule_activity_id"):
+            affected.add(before["schedule_activity_id"])
+        if after.get("schedule_activity_id"):
+            affected.add(after["schedule_activity_id"])
+        for tid in affected:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return Rfi(**after)
 
 
