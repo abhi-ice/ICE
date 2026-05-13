@@ -22,7 +22,11 @@ qc_issue_id, safety_event_id, coordination_event_id, delivery_id,
 drawing_pin_id) must be non-null. Tagging recomputes evidentiary_flag
 per Bucket C3b Phase 4 OR semantics.
 """
-from __future__ import annotations
+# Bug #44 fix (2026-05-13): `from __future__ import annotations`
+# removed -- FastAPI 0.110.1 + Pydantic 2.13.3 lazy OpenAPI build
+# can't resolve `BackgroundTasks` when every annotation is a string
+# ForwardRef, and crashes /openapi.json with 500. Python 3.10+
+# supports PEP 604 unions natively so removal is safe runtime-wise.
 import hashlib
 import io
 from datetime import datetime, timedelta, timezone

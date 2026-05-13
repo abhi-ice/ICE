@@ -11,7 +11,7 @@ Also exposes:
     plan PDF page and creates Location records. Master prompt §22.
   - GET /onboarding/getting-started — markdown-free walkthrough text.
 """
-from __future__ import annotations
+# Bug #44 fix (2026-05-13): see photo_tray_router.py for rationale.
 import io
 import re
 import json

@@ -10,8 +10,7 @@
   GET    /recovery-reports/{id}/export           PDF / DOCX / JSON
   DELETE /recovery-reports/{id}                  admin soft-delete
 """
-from __future__ import annotations
-
+# Bug #44 fix (2026-05-13): see photo_tray_router.py for rationale.
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
