@@ -123,7 +123,17 @@ class UserRegister(StrictModel):
 
 class InviteCreate(StrictModel):
     email: EmailStr
-    role: Literal["admin", "pm", "super", "foreman", "viewer"] = "pm"
+    # Bug #38 fix (2026-05-13): expanded to match migration 015's
+    # role enum extension. The narrow 5-role list pre-dated the
+    # Bucket J specialty roles (submittal_tech + scheduling_engineer)
+    # and the older `pe` role. Existing callers passing any of the
+    # original 5 continue to work -- this is a backward-compatible
+    # widening. UserRole's `px` role is intentionally NOT exposed
+    # via invites; if needed, add separately.
+    role: Literal[
+        "admin", "pm", "super", "foreman", "viewer",
+        "pe", "submittal_tech", "scheduling_engineer",
+    ] = "pm"
 
 
 class InviteAccept(StrictModel):
