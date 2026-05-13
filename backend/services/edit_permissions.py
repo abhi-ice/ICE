@@ -118,6 +118,69 @@ STATUS_TRANSITION_CONFIGS: dict[str, dict] = {
 }
 
 
+def _diff_fields_meaningful(
+    event_type: str, updates: dict, before: dict,
+) -> set:
+    """Bug #49 hotfix (2026-05-13). Compute the set of fields a PATCH
+    meaningfully changes from the pre-image, tolerant of the
+    "frontend-default-vs-DB-None" phantom-change pattern.
+
+    The original Bug #49 diff was a straight value-equality check
+    (`before.get(k) != v`). That works for clean rows but breaks on
+    legacy data:
+
+        DelayForm.jsx:88
+          owner_attribution: initial?.owner_attribution || "none",
+          cause_class:       initial?.cause_class       || "other",
+
+    The form applies a JS-side default ("none" / "other") when the
+    loaded record's field is null. Legacy delays created before those
+    fields existed (or never set) come back from Mongo as null. The
+    user opens the form, sees the JS default, doesn't touch the field,
+    and saves -- payload echoes back "none"/"other". Backend `before`
+    has null, `updates` has "none"; equality fails, the field lands in
+    changed_fields, and because owner_attribution / cause_class aren't
+    in the delay's allowed status-only set, the exemption never fires.
+    Result: every legacy-delay resolve from /delays returns 422.
+
+    Rule applied here:
+      - before.get(k) == v  -> not changed (regardless of value).
+      - before.get(k) is None AND k NOT in the event type's allowed
+        status-only set AND updates[k] is a non-None value
+        -> TREAT AS NOT CHANGED. This tolerates the JS-default echo.
+      - otherwise -> counted as changed.
+
+    Why this is safe:
+      - Trigger + note fields (status, resolved_note, etc.) are IN the
+        allowed set, so the None -> meaningful-value transition is
+        still detected (status changing from None to "resolved",
+        resolved_note from None to "fixed at 0700").
+      - Real mixed edits where a non-allowed field changes from a real
+        value (not None) to another real value -- e.g. severity major
+        -> critical -- still count (before is not None).
+      - The only behavior lost is: "user genuinely sets a non-allowed
+        field for the first time (from None to a real value) as part
+        of a patch that is otherwise status-only." In that case we now
+        treat the patch as status-only and let it through without
+        edit_reason. Trade-off accepted: in practice the user supplies
+        edit_reason for such intentional patches via the standalone
+        form's edit-reason input (when present), and the cost of the
+        false-422 was blocking every legacy-delay close.
+    """
+    cfg = STATUS_TRANSITION_CONFIGS.get(event_type) or {}
+    allowed = cfg.get("allowed") or set()
+    changed: set = set()
+    for k, v in updates.items():
+        before_v = before.get(k)
+        if before_v == v:
+            continue
+        if before_v is None and k not in allowed and v is not None:
+            # JS-default-vs-DB-None phantom change. Skip.
+            continue
+        changed.add(k)
+    return changed
+
+
 def is_status_only_transition(
     event_type: str, changed_fields: set,
 ) -> bool:
@@ -395,12 +458,24 @@ async def enforce_locked_dr_edit_policy(
 
     # Bug #49 -- status-only transition exemption. Detect first; then
     # decide whether to require / accept / synthesize the reason.
+    #
+    # Bug #49 hotfix (2026-05-13): use _diff_fields_meaningful instead
+    # of inline value-equality so JS-default-vs-DB-None phantom changes
+    # on non-allowed fields don't falsely disqualify the patch.
+    # Log at INFO so operators can grep "bug49_diff" to debug future
+    # regressions (per Sid's diagnostic request).
     status_only = False
     if updates is not None and before is not None:
-        changed_fields = {
-            k for k, v in updates.items() if before.get(k) != v
-        }
+        changed_fields = _diff_fields_meaningful(event_type, updates, before)
         status_only = is_status_only_transition(event_type, changed_fields)
+        log.info(
+            "bug49_diff: dr_id=%s event_type=%s event_id=%s "
+            "changed=%s allowed=%s status_only=%s",
+            daily_report_id, event_type, event_id,
+            sorted(changed_fields),
+            sorted((STATUS_TRANSITION_CONFIGS.get(event_type) or {}).get("allowed") or []),
+            status_only,
+        )
 
     # Reason resolution:
     #   - If the user supplied a sufficient edit_reason, always use it
