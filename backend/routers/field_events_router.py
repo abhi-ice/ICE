@@ -602,6 +602,16 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
             add_reason=add_reason or "", after=doc,
             request_id=ctx["request_id"],
         )
+    # Bug #50 (2026-05-13) -- recompute blocker count on each linked
+    # task so a freshly-created open safety event immediately surfaces
+    # as a blocker. Mirrors the delay create pattern.
+    if doc.get("linked_task_ids"):
+        from services.task_status import compute_and_persist_status
+        for tid in doc["linked_task_ids"]:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return SafetyEvent(**doc)
 
 
@@ -676,6 +686,31 @@ async def update_safety_event(
             edit_reason=edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
+
+    # Bug #50 (2026-05-13) -- recompute blocker count on linked tasks
+    # when the safety event's blocking state changes. count_open_blockers
+    # treats safety_events with status=='open' as blockers. Status
+    # transitions today happen via PATCH from the standalone page or
+    # the close flow (when one exists). Linkage edits also re-target
+    # the blocker. Idempotent.
+    safety_status_blocking_changed = (
+        (before.get("status") == "open") != (after.get("status") == "open")
+    )
+    safety_linkage_changed = (
+        set(before.get("linked_task_ids") or []) != set(after.get("linked_task_ids") or [])
+    )
+    if safety_status_blocking_changed or safety_linkage_changed:
+        from services.task_status import compute_and_persist_status
+        affected: set = set()
+        for t in (before.get("linked_task_ids") or []):
+            affected.add(t)
+        for t in (after.get("linked_task_ids") or []):
+            affected.add(t)
+        for tid in affected:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return SafetyEvent(**after)
 
 
@@ -771,6 +806,19 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
                 op="QC_REWORK_CASCADE_FAILED",
                 record_id=doc["id"], before=None,
                 after={"error": str(e)[:500]},
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+    # Bug #50 (2026-05-13) -- recompute blocker count on each linked
+    # task so a freshly-created open QC issue immediately surfaces as
+    # a blocker. The rework cascade above may already flip status for
+    # severity=rework_required (synthetic delay path), but the generic
+    # QC->task blocker linkage exists independent of that cascade and
+    # must be reflected too.
+    if doc.get("linked_task_ids"):
+        from services.task_status import compute_and_persist_status
+        for tid in doc["linked_task_ids"]:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
             )
     return QcIssue(**doc)
@@ -882,6 +930,30 @@ async def update_qc_issue(
             edit_reason=edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
+
+    # Bug #50 (2026-05-13) -- recompute blocker count on linked tasks
+    # when the QC issue's blocking state changes. count_open_blockers
+    # treats QC issues with status in [open, needs_rework] as blockers.
+    BLOCKING_QC_STATUSES = {"open", "needs_rework"}
+    qc_status_blocking_changed = (
+        (before.get("status") in BLOCKING_QC_STATUSES)
+        != (after.get("status") in BLOCKING_QC_STATUSES)
+    )
+    qc_linkage_changed = (
+        set(before.get("linked_task_ids") or []) != set(after.get("linked_task_ids") or [])
+    )
+    if qc_status_blocking_changed or qc_linkage_changed:
+        from services.task_status import compute_and_persist_status
+        affected: set = set()
+        for t in (before.get("linked_task_ids") or []):
+            affected.add(t)
+        for t in (after.get("linked_task_ids") or []):
+            affected.add(t)
+        for tid in affected:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return QcIssue(**after)
 
 
