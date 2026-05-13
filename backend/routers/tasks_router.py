@@ -68,7 +68,7 @@ async def _bg_recompute_demand_dates(tenant_id: str, project_id: str, dates: lis
 
 
 @router.post("/tasks", response_model=Task)
-async def create_task(payload: TaskCreate, bg: BackgroundTasks,
+async def create_task(payload: TaskCreate, bg: BackgroundTasks = None,
                        ctx: dict = Depends(require_tenant)):
     # Bucket J Phase 2 (2026-05-11) -- scheduling_engineer + pm + pe
     # + admin are the write tier for schedule activities. super +
@@ -168,7 +168,7 @@ async def get_task(task_id: str, ctx: dict = Depends(require_tenant)):
 
 
 @router.patch("/tasks/{task_id}", response_model=Task)
-async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks, ctx: dict = Depends(require_tenant)):
+async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks = None, ctx: dict = Depends(require_tenant)):
     # Bucket J Phase 2 -- schedule write gate.
     from auth import role_can_write_schedule
     if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
@@ -257,7 +257,7 @@ async def _auto_release_for_task(tenant_id: str, task_id: str, actor_id: str):
 
 
 @router.post("/projects/{project_id}/tasks/bulk-delete")
-async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: BackgroundTasks,
+async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: BackgroundTasks = None,
                        ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Bucket H Phase 4 -- collect affected dates before the soft-delete
@@ -283,7 +283,7 @@ async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: Backgroun
 
 
 @router.delete("/tasks/{task_id}")
-async def delete_task(task_id: str, bg: BackgroundTasks, ctx: dict = Depends(require_tenant)):
+async def delete_task(task_id: str, bg: BackgroundTasks = None, ctx: dict = Depends(require_tenant)):
     # Bucket J Phase 2 -- schedule write gate.
     from auth import role_can_write_schedule
     if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
