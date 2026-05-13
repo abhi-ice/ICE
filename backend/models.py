@@ -2233,6 +2233,12 @@ class CoordinationEventCreate(StrictModel):
     supplement_reason: Optional[str] = None
     # Bucket D Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason: Optional[str] = Field(default=None, max_length=500)
+    # Bug #32 fix (2026-05-13) -- OPTIONAL trade tag, matching the
+    # AI Vision Jigsaw producer that already suggests trade_code on
+    # coordination events. Free-form string consistent with other
+    # collections (rfis, deliveries, daily_report_activities). Empty
+    # value persists as None.
+    trade_code: Optional[str] = None
 
 
 class CoordinationEventUpdate(StrictModel):
@@ -2266,6 +2272,8 @@ class CoordinationEventUpdate(StrictModel):
     linked_task_ids: Optional[List[str]] = None
     # Addition 4 -- required when the parent DR is locked.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
+    # Bug #32 fix (2026-05-13) -- OPTIONAL trade tag, patchable.
+    trade_code: Optional[str] = None
 
 
 class CoordinationEvent(ReadModel):
@@ -2313,6 +2321,8 @@ class CoordinationEvent(ReadModel):
     # supplement badge renders without a per-row fetch. Server-enriched
     # in /context bundle and /photos list (extend other lists if needed).
     parent_daily_report_date: Optional[str] = None
+    # Bug #32 fix (2026-05-13) -- OPTIONAL trade tag, surfaces in lists.
+    trade_code: Optional[str] = None
 
 
 # ============================================================
