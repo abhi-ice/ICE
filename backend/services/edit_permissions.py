@@ -2,6 +2,17 @@
 EDITING existing events on a LOCKED daily report AND for ADDING new
 events to a LOCKED daily report.
 
+Bug #49 (2026-05-13): status-only transitions (open -> resolved,
+draft -> answered -> closed, etc.) are exempted from the
+edit_reason requirement when invoked from a standalone event page.
+The status-specific note field (resolved_note / resolution_notes /
+response_text / outcome_notes / received_by) replaces the generic
+edit_reason for audit purposes. See STATUS_TRANSITION_CONFIGS +
+is_status_only_transition() below; the exemption fires only when
+the fields that actually CHANGED (vs the pre-image) are a subset of
+the type's allowed status-only set AND include the trigger field.
+Field edits to other attributes still gate on edit_reason.
+
 Test 2D follow-up (2026-05-12): added observability log lines so the
 operator can trace what role / DR-status / decision the policy made
 on every locked-DR add. Grep server logs for "locked_dr_add_policy"
@@ -54,6 +65,111 @@ PRIVILEGED_ROLES = {"admin", "pm"}
 SELF_EDIT_WINDOW_HOURS = 24
 # Edit-window granted by an approved request.
 APPROVED_EDIT_WINDOW_HOURS = 1
+
+
+# Bug #49 (2026-05-13) -- status-only transition configuration. Per
+# event_type:
+#   trigger:    the status-like field whose change defines a "transition"
+#   allowed:    superset of fields a status-only PATCH may touch. Patches
+#               whose set of CHANGED fields (post-diff against the
+#               pre-image) is a subset of `allowed` AND includes
+#               `trigger` are exempted from the edit_reason gate.
+#   note_field: the field whose value supplies the audit-trail reason
+#               when the exemption fires. May be None for delivery
+#               (no narrative note; received_by carries the actor).
+#
+# Intentionally NOT included:
+#   - "safety": SafetyEventUpdate has no status field, so the PATCH
+#     path can't transition status; the locked-DR resolve flow for
+#     safety doesn't exist today (would need a separate close endpoint).
+#   - "photo" / "activity": photos and DR activity-grid rows have no
+#     resolve/close semantics; their PATCH endpoints also call this
+#     policy, but the exemption never fires for them.
+#   - "submittal": submittals follow a separate SLA + status-machine
+#     pipeline (services/submittal_sla.py) and don't enforce the
+#     locked-DR edit_reason gate at all.
+STATUS_TRANSITION_CONFIGS: dict[str, dict] = {
+    "delay": {
+        "trigger": "status",
+        "allowed": {"status", "resolved_note", "resolved_date",
+                    "resolved_by_user_id"},
+        "note_field": "resolved_note",
+    },
+    "qc": {
+        "trigger": "status",
+        "allowed": {"status", "resolution_notes", "resolved_at"},
+        "note_field": "resolution_notes",
+    },
+    "rfi": {
+        "trigger": "status",
+        "allowed": {"status", "response_text", "date_responded"},
+        "note_field": "response_text",
+    },
+    "coordination": {
+        "trigger": "outcome",
+        "allowed": {"outcome", "outcome_notes"},
+        "note_field": "outcome_notes",
+    },
+    "delivery": {
+        "trigger": "status",
+        "allowed": {"status", "received_by"},
+        "note_field": "received_by",
+    },
+}
+
+
+def is_status_only_transition(
+    event_type: str, changed_fields: set,
+) -> bool:
+    """Bug #49 (2026-05-13). True iff every field that actually CHANGED
+    in this PATCH is in the event-type's allowed status-transition set
+    AND the trigger field (status/outcome) is among those changed.
+
+    Used by enforce_locked_dr_edit_policy to skip the edit_reason gate
+    on resolve/close flows initiated from standalone event pages, which
+    today have no edit_reason capture (Bug #49 repro). Adding/changing
+    a non-status field alongside the transition (e.g. severity, vendor)
+    falls through to the existing gate — those still require edit_reason.
+
+    `changed_fields` must be precomputed by the caller as
+    `{k for k, v in updates.items() if before.get(k) != v}` so that
+    forms which echo back unchanged fields (DelayForm sends the entire
+    record on each save) don't accidentally fail the subset check.
+    """
+    cfg = STATUS_TRANSITION_CONFIGS.get(event_type)
+    if not cfg or not changed_fields:
+        return False
+    if cfg["trigger"] not in changed_fields:
+        return False
+    return changed_fields.issubset(cfg["allowed"])
+
+
+def derive_status_transition_reason(
+    event_type: str, updates: dict, before: dict,
+) -> str:
+    """Bug #49 (2026-05-13). Synthesize an effective_edit_reason for
+    stamp_edit_metadata when the status-only-transition exemption fires.
+
+    Format: "status-only transition <before>-><after>; <note_field>: <note>".
+    Falls back to "<no note supplied>" when the note field is empty;
+    legal can still reconstruct intent from the before/after snapshot
+    on the UPDATE audit row.
+    """
+    cfg = STATUS_TRANSITION_CONFIGS.get(event_type) or {}
+    trigger = cfg.get("trigger", "status")
+    note_field = cfg.get("note_field")
+    before_val = before.get(trigger)
+    after_val = updates.get(trigger, before_val)
+    if note_field:
+        note_val = (updates.get(note_field) or before.get(note_field) or "")
+        note_text = note_val.strip() if isinstance(note_val, str) else str(note_val)
+        if not note_text:
+            note_text = "<no note supplied>"
+        return (
+            f"status-only transition {before_val} -> {after_val}; "
+            f"{note_field}: {note_text}"
+        )
+    return f"status-only transition {before_val} -> {after_val}"
 
 
 def _parse_iso(s: Optional[str]) -> Optional[datetime]:
@@ -234,14 +350,35 @@ async def get_locked_dr_for_event(
 async def enforce_locked_dr_edit_policy(
     *, ctx: dict, daily_report_id: Optional[str], edit_reason: Optional[str],
     event_type: str, event_id: str,
-) -> tuple[Optional[dict], bool]:
+    updates: Optional[dict] = None,
+    before: Optional[dict] = None,
+) -> tuple[Optional[dict], bool, Optional[str]]:
     """Combined helper used by every event PATCH endpoint.
 
-    Returns (parent_dr_doc, is_locked_edit) where is_locked_edit=True
-    means the caller should call stamp_edit_metadata after writing.
+    Returns (parent_dr_doc, is_locked_edit, effective_edit_reason).
+    is_locked_edit=True means the caller should call stamp_edit_metadata
+    after writing; effective_edit_reason is the value the caller should
+    pass for `edit_reason=` on that call (equals the input edit_reason
+    in the normal case, or a synthesized note-derived reason on the
+    Bug #49 status-only-transition exemption path).
+
+    Bug #49 (2026-05-13): when `updates` and `before` are supplied AND
+    the PATCH matches the event_type's status-only-transition pattern
+    AND edit_reason is missing/too-short, skip the 422 and synthesize
+    a reason from the note field. The UPDATE audit op caller already
+    writes a full before/after snapshot so the chain captures the
+    status change either way; on locked DRs the
+    EVENT_EDITED_POST_SUBMIT op also fires, now carrying the synthetic
+    note-derived reason so legal can see the intent inline. Hash chain
+    unbroken — we add no audit writes and skip none.
+
+    Legacy callers that don't pass `updates`/`before` fall through to
+    the original behavior; the third tuple element equals the input
+    edit_reason (which may be None on draft DRs, where it's unused).
 
     Raises HTTPException(422) if the parent DR is locked AND the
-    payload didn't include an edit_reason (or it's too short).
+    payload didn't include an edit_reason (or it's too short) AND the
+    PATCH is not exempt as a status-only transition.
     Raises HTTPException(403) if the user lacks edit permission
     (forbidden) or needs to file an edit_request first.
     """
@@ -254,11 +391,36 @@ async def enforce_locked_dr_edit_policy(
     if not dr or dr.get("status") not in ("submitted", "approved"):
         # Draft DR (or orphan event) -- regular patch path, no
         # locked-edit ceremony.
-        return dr, False
+        return dr, False, edit_reason
 
-    # Locked path: require reason + permission.
+    # Bug #49 -- status-only transition exemption. Detect first; then
+    # decide whether to require / accept / synthesize the reason.
+    status_only = False
+    if updates is not None and before is not None:
+        changed_fields = {
+            k for k, v in updates.items() if before.get(k) != v
+        }
+        status_only = is_status_only_transition(event_type, changed_fields)
+
+    # Reason resolution:
+    #   - If the user supplied a sufficient edit_reason, always use it
+    #     (more specific than any synthesis).
+    #   - Else if the patch is status-only (Bug #49), skip the 422 and
+    #     synthesize the reason from the note field.
+    #   - Else 422.
     cleaned_reason = (edit_reason or "").strip()
-    if len(cleaned_reason) < EDIT_REASON_MIN_LEN:
+    if len(cleaned_reason) >= EDIT_REASON_MIN_LEN:
+        effective_reason: Optional[str] = edit_reason
+    elif status_only:
+        effective_reason = derive_status_transition_reason(
+            event_type, updates or {}, before or {},
+        )
+        log.info(
+            "bug49_status_only_exemption: dr_id=%s event_type=%s "
+            "event_id=%s -> reason synthesized from note",
+            daily_report_id, event_type, event_id,
+        )
+    else:
         raise HTTPException(
             422,
             f"edit_reason required (min {EDIT_REASON_MIN_LEN} chars) "
@@ -290,7 +452,7 @@ async def enforce_locked_dr_edit_policy(
                 "event_id": event_id,
             },
         )
-    return dr, True
+    return dr, True, effective_reason
 
 
 async def enforce_locked_dr_add_policy(

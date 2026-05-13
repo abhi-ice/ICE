@@ -12,9 +12,22 @@ Status rule (Phase 2):
 
 Blocker sources counted in has_open_blocker:
   - delays.linked_task_ids contains task_id, delays.status in [open, in_progress]
-  - rfis.schedule_activity_id == task_id, rfis.status in [draft, sent, in_review]
+  - rfis.linked_task_ids contains task_id OR rfis.schedule_activity_id == task_id,
+    rfis.status in [draft, sent, in_review]
+  - qc_issues.linked_task_ids contains task_id, qc_issues.status in [open, needs_rework]
+  - safety_events.linked_task_ids contains task_id, safety_events.status == 'open'
+  - submittals.schedule_activity_id == task_id, submittals.status in [submitted, in_review],
+    submittals.sla_status == 'breached' (over-SLA submittals only)
   - work_item_links where (entity_type='task', entity_id=task_id),
     work_items.status NOT IN [closed, resolved]
+
+Bug #50 (2026-05-13): RFIs / QC / safety / submittals added to the
+aggregation so the Tasks page surfaces them as blockers, matching the
+"all open gating entities should aggregate" rule. RFIs now match on
+EITHER linked_task_ids (canonical Bucket D Corrective linkage) OR
+schedule_activity_id (legacy single-link) so we don't drop legacy data.
+Submittals are blockers ONLY when SLA-breached -- in-flight submittals
+within SLA are normal procurement, not blockers.
 
 CPM walk-forward (Phase 4) — see compute_projected_finish_dates.
 """
@@ -90,19 +103,98 @@ async def count_open_blockers(db, tenant_id: str, task_id: str) -> tuple[int, li
             "label": (d.get("description") or "")[:80],
         })
 
+    # Bug #50 (2026-05-13): match RFIs on EITHER linked_task_ids
+    # (canonical Bucket D Corrective linkage) OR schedule_activity_id
+    # (legacy single-link). Without the OR, RFIs migrated to multi-task
+    # linkage wouldn't surface as blockers.
     rfis = await db.rfis.find(
         tenant_filter(tenant_id, {
-            "schedule_activity_id": task_id,
+            "$or": [
+                {"linked_task_ids": task_id},
+                {"schedule_activity_id": task_id},
+            ],
             "status": {"$in": ["draft", "sent", "in_review"]},
         }),
         {"_id": 0, "id": 1, "rfi_number": 1, "subject": 1, "priority": 1, "status": 1},
     ).limit(20).to_list(20)
+    seen_rfi_ids: set = set()
     for r in rfis:
+        if r["id"] in seen_rfi_ids:
+            continue
+        seen_rfi_ids.add(r["id"])
         summary.append({
             "entity_type": "rfi",
             "entity_id": r["id"],
             "severity": r.get("priority") or "normal",
             "label": f"RFI {r.get('rfi_number')}: {(r.get('subject') or '')[:60]}",
+        })
+
+    # Bug #50 (2026-05-13): QC issues that are still open block the
+    # task. Status set follows Sid's spec: open + needs_rework. If the
+    # QC status vocabulary grows (e.g. in_remediation), add it here.
+    qcs = await db.qc_issues.find(
+        tenant_filter(tenant_id, {
+            "linked_task_ids": task_id,
+            "status": {"$in": ["open", "needs_rework"]},
+        }),
+        {"_id": 0, "id": 1, "severity": 1, "description": 1},
+    ).limit(20).to_list(20)
+    for q in qcs:
+        summary.append({
+            "entity_type": "qc_issue",
+            "entity_id": q["id"],
+            "severity": q.get("severity"),
+            "label": (q.get("description") or "")[:80],
+        })
+
+    # Bug #50 (2026-05-13): open safety events block linked tasks.
+    # The model has no requires_work_stoppage field today, so per
+    # Sid's spec fallback ("otherwise all open") we treat every open
+    # safety event as a blocker.
+    safeties = await db.safety_events.find(
+        tenant_filter(tenant_id, {
+            "linked_task_ids": task_id,
+            "status": "open",
+        }),
+        {"_id": 0, "id": 1, "severity": 1, "event_type": 1, "description": 1},
+    ).limit(20).to_list(20)
+    for s in safeties:
+        et = (s.get("event_type") or "").replace("_", " ")
+        descr = (s.get("description") or "")[:60]
+        summary.append({
+            "entity_type": "safety_event",
+            "entity_id": s["id"],
+            "severity": s.get("severity"),
+            "label": f"{et}: {descr}" if et else descr,
+        })
+
+    # Bug #50 (2026-05-13): submittals that are still in flight AND
+    # over their A/E review SLA block the task. In-flight-but-on-track
+    # submittals are normal procurement; only the SLA-breached ones
+    # are surfaced as blockers (Sid's spec).
+    subs = await db.submittals.find(
+        tenant_filter(tenant_id, {
+            "schedule_activity_id": task_id,
+            "status": {"$in": ["submitted", "in_review"]},
+            "sla_status": "breached",
+        }),
+        {"_id": 0, "id": 1, "submittal_number": 1, "title": 1,
+         "urgency_flag": 1, "overdue_days": 1, "status": 1},
+    ).limit(20).to_list(20)
+    for sub in subs:
+        od = sub.get("overdue_days")
+        title_part = (sub.get("title") or "")[:50]
+        label = f"{sub.get('submittal_number') or 'SUB'}: {title_part}"
+        if od:
+            label = f"{label} (+{od}d over SLA)"
+        summary.append({
+            "entity_type": "submittal",
+            "entity_id": sub["id"],
+            # Severity is implicit: any breached-SLA submittal is
+            # critical to surface. The Tasks-page color logic uses
+            # this string; "critical" puts the row at the worst tier.
+            "severity": "critical" if sub.get("urgency_flag") else "high",
+            "label": label,
         })
 
     wi_links = await db.work_item_links.find(

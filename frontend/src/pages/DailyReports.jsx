@@ -1751,12 +1751,37 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
         className="text-amber-700 hover:bg-amber-50 p-1 rounded text-xs">
         edit
       </button>
+      {/* Bug #51 (2026-05-13) -- post-submit modal field set was
+          previously {EOD%, hours, status, notes}, missing SOD% and
+          Constraint that are editable pre-submit. Adding both so the
+          post-submit edit path is field-symmetric with pre-submit.
+          Δ is intentionally NOT added: it's derived (EOD% - SOD%),
+          not stored or patchable, and the LockedEventEditModal's
+          FieldEditor has no display-only field type.
+
+          Bug #52 (2026-05-13) -- Constraint editing post-submit is
+          covered by the constraint_type dropdown below. The pre-submit
+          ConstraintCell's reference / description dependents are NOT
+          replicated here (the modal's flat field renderer can't host
+          the conditional follow-on inputs). Behavior:
+            - Switching to 'not_constrained' works: backend auto-clears
+              constraint_reference_entity_id + _other_description.
+            - Switching to 'other' works IFF the row already has a
+              non-empty constraint_other_description (set pre-submit
+              or via a prior edit). Otherwise backend 422s with a clear
+              message; user must first set a description via the
+              pre-submit grid or via direct API.
+            - Switching to a needs-ref type (awaiting_*, weather_impact,
+              etc.) works IFF the row already has a ref. Same fallback.
+          Constraint changes route through the same backend handler as
+          pre-submit edits, so the cascade hooks fire identically. */}
       <LockedEventEditModal
         open={open} onOpenChange={setOpen}
         eventType="activity" eventId={row.id} dailyReportId={dailyReportId}
         patchUrl={`/daily-report-activities/${row.id}`}
         title={`Edit grid row [${row.activity_code}] (post-submit)`}
         fields={[
+          { key: "pct_complete_start_of_day", label: "SOD %", type: "number" },
           { key: "pct_complete_end_of_day", label: "EOD %", type: "number" },
           { key: "hours_worked", label: "Hours worked", type: "number" },
           { key: "status_at_end_of_day", label: "Status", type: "select",
@@ -1766,12 +1791,16 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
               { value: "blocked", label: "blocked" },
               { value: "complete", label: "complete" },
             ] },
+          { key: "constraint_type", label: "Constraint", type: "select",
+            options: CONSTRAINT_TYPES },
           { key: "notes", label: "Notes", type: "textarea" },
         ]}
         currentValues={{
+          pct_complete_start_of_day: row.pct_complete_start_of_day,
           pct_complete_end_of_day: row.pct_complete_end_of_day,
           hours_worked: row.hours_worked,
           status_at_end_of_day: row.status_at_end_of_day,
+          constraint_type: row.constraint_type || "not_constrained",
           notes: row.notes,
         }}
         onSaved={reload}

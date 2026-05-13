@@ -203,9 +203,15 @@ async def update_coordination_event(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): pass updates + before so the policy can
+    # detect coordination outcome-only transitions (pending ->
+    # agreement with outcome_notes) initiated from /coordination and
+    # skip the edit_reason 422. updated_at is stamped after this call
+    # so it isn't in the policy's view of changed_fields.
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("linked_daily_report_id"),
         edit_reason=edit_reason, event_type="coordination", event_id=event_id,
+        updates=updates, before=before,
     )
     # Bucket D Corrective -- re-validate linked_task_ids on PATCH
     # against master schedule. Linkage is OPTIONAL for coordination per
@@ -240,7 +246,10 @@ async def update_coordination_event(
         await stamp_edit_metadata(
             db=db, collection="coordination_events", record_id=event_id,
             tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
-            edit_reason=edit_reason, before=before, after=after,
+            # Bug #49: on outcome-only transitions this carries
+            # "status-only transition pending -> agreement;
+            # outcome_notes: ...".
+            edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
     return CoordinationEvent(**after)

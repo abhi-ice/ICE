@@ -2,7 +2,10 @@ import { useEffect, useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X } from "lucide-react";
+// Bug #50 (2026-05-13): added ClipboardCheck (qc_issue), ShieldAlert
+// (safety_event), FileText (submittal) icons for the extended blocker
+// tooltip — each source type now gets a distinguishing glyph.
+import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X, ClipboardCheck, ShieldAlert, FileText } from "lucide-react";
 import ExportDropdown from "../components/ExportDropdown";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -331,7 +334,7 @@ export default function Tasks() {
               <th>Dur (d)</th>
               <th>%</th>
               <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
-              <th title="Open blockers (delays / RFIs / field-issues linked to this task). Click to see them.">Blockers</th>
+              <th title="Open blockers (delays / RFIs / QC issues / safety events / SLA-breached submittals / field-issues linked to this task). Click to see them.">Blockers</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
               <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
               <th title="Resource gap. Surfaces when the master schedule's trade demand exceeds crew supply on at least one day in this task's date range.">Gap</th>
@@ -438,6 +441,14 @@ function ComputedStatusPill({ task }) {
 // Bucket C1 Phase 3 — Blocker count with click popover listing the open
 // delays / RFIs / field-issues linked to this task. open_blocker_summary
 // is denormalized server-side (services/task_status.count_open_blockers).
+//
+// Bug #50 (2026-05-13): aggregation extended to 6 source types. Tooltip
+// rows now distinguish each: delay / rfi / qc_issue / safety_event /
+// submittal / work_item. Count-badge mini-letters use the type's first
+// initial pair so the badge "(5) d2 r1 q1 s1 w1" reads at a glance.
+//
+// Severity-to-color reuses the existing red/slate scheme; submittal
+// rows (always 'critical' or 'high' per the server) render red.
 function BlockerCell({ task, open, onToggle }) {
   const summary = task.open_blocker_summary || [];
   const count = task.open_blocker_count || 0;
@@ -458,6 +469,9 @@ function BlockerCell({ task, open, onToggle }) {
           {[
             counts.delay && `${counts.delay}d`,
             counts.rfi && `${counts.rfi}r`,
+            counts.qc_issue && `${counts.qc_issue}q`,
+            counts.safety_event && `${counts.safety_event}s`,
+            counts.submittal && `${counts.submittal}sb`,
             counts.work_item && `${counts.work_item}w`,
           ].filter(Boolean).join(" ")}
         </span>
@@ -472,12 +486,18 @@ function BlockerCell({ task, open, onToggle }) {
             {summary.map((s, i) => {
               const Icon = s.entity_type === "delay" ? AlertTriangle
                 : s.entity_type === "rfi" ? MessageSquare
+                : s.entity_type === "qc_issue" ? ClipboardCheck
+                : s.entity_type === "safety_event" ? ShieldAlert
+                : s.entity_type === "submittal" ? FileText
                 : s.entity_type === "work_item" ? AlertCircle
                 : AlertCircle;
               const sevColor = s.severity === "critical" || s.severity === "major" || s.severity === "high"
                 ? "text-red-600" : "text-slate-500";
               const link = s.entity_type === "delay" ? `/delays/${s.entity_id}`
                 : s.entity_type === "rfi" ? `/rfis`
+                : s.entity_type === "qc_issue" ? `/qc-issues`
+                : s.entity_type === "safety_event" ? `/safety-events`
+                : s.entity_type === "submittal" ? `/submittals`
                 : s.entity_type === "work_item" ? `/work-items`
                 : null;
               const inner = (

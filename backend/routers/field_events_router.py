@@ -226,9 +226,14 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): pass updates + before so the policy can detect
+    # the status-only-transition exemption and synthesize the effective
+    # edit_reason from resolved_note when the user resolves a linked delay
+    # from the standalone /delays page (no edit_reason capture there).
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="delay", event_id=delay_id,
+        updates=updates, before=before,
     )
 
     # Bucket D Corrective -- the dr-activity re-validation that used to
@@ -310,7 +315,11 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         await stamp_edit_metadata(
             db=db, collection="delays", record_id=delay_id,
             tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
-            edit_reason=edit_reason, before=before, after=after,
+            # Bug #49 (2026-05-13): use effective_edit_reason -- on the
+            # status-only-transition exemption path this carries the
+            # synthesized note-derived reason; on all other paths it
+            # equals the user-supplied edit_reason.
+            edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
 
@@ -602,6 +611,16 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
             add_reason=add_reason or "", after=doc,
             request_id=ctx["request_id"],
         )
+    # Bug #50 (2026-05-13) -- recompute blocker count on each linked
+    # task so a freshly-created open safety event immediately surfaces
+    # as a blocker. Mirrors the delay create pattern.
+    if doc.get("linked_task_ids"):
+        from services.task_status import compute_and_persist_status
+        for tid in doc["linked_task_ids"]:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return SafetyEvent(**doc)
 
 
@@ -642,7 +661,13 @@ async def update_safety_event(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): safety_events is intentionally NOT in
+    # STATUS_TRANSITION_CONFIGS -- SafetyEventUpdate has no status
+    # field today, so the close-from-standalone-page flow doesn't
+    # exist for safety. effective_edit_reason therefore equals the
+    # input edit_reason on every call. Left wired for the 3-tuple
+    # so the policy signature is uniform across event types.
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="safety", event_id=event_id,
     )
@@ -673,9 +698,36 @@ async def update_safety_event(
         await stamp_edit_metadata(
             db=db, collection="safety_events", record_id=event_id,
             tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
-            edit_reason=edit_reason, before=before, after=after,
+            # Bug #49: effective_edit_reason == edit_reason here
+            # (safety not in STATUS_TRANSITION_CONFIGS).
+            edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
+
+    # Bug #50 (2026-05-13) -- recompute blocker count on linked tasks
+    # when the safety event's blocking state changes. count_open_blockers
+    # treats safety_events with status=='open' as blockers. Status
+    # transitions today happen via PATCH from the standalone page or
+    # the close flow (when one exists). Linkage edits also re-target
+    # the blocker. Idempotent.
+    safety_status_blocking_changed = (
+        (before.get("status") == "open") != (after.get("status") == "open")
+    )
+    safety_linkage_changed = (
+        set(before.get("linked_task_ids") or []) != set(after.get("linked_task_ids") or [])
+    )
+    if safety_status_blocking_changed or safety_linkage_changed:
+        from services.task_status import compute_and_persist_status
+        affected: set = set()
+        for t in (before.get("linked_task_ids") or []):
+            affected.add(t)
+        for t in (after.get("linked_task_ids") or []):
+            affected.add(t)
+        for tid in affected:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return SafetyEvent(**after)
 
 
@@ -773,6 +825,19 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
                 after={"error": str(e)[:500]},
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
             )
+    # Bug #50 (2026-05-13) -- recompute blocker count on each linked
+    # task so a freshly-created open QC issue immediately surfaces as
+    # a blocker. The rework cascade above may already flip status for
+    # severity=rework_required (synthetic delay path), but the generic
+    # QC->task blocker linkage exists independent of that cascade and
+    # must be reflected too.
+    if doc.get("linked_task_ids"):
+        from services.task_status import compute_and_persist_status
+        for tid in doc["linked_task_ids"]:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return QcIssue(**doc)
 
 
@@ -848,9 +913,14 @@ async def update_qc_issue(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): pass updates + before so the policy can
+    # detect status-only transitions (open -> resolved with
+    # resolution_notes) initiated from /qc-issues and skip the
+    # edit_reason 422 in that case.
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="qc", event_id=qc_id,
+        updates=updates, before=before,
     )
     if "linked_task_ids" in updates:
         # Bucket D Corrective -- master-schedule re-validation on PATCH.
@@ -879,9 +949,37 @@ async def update_qc_issue(
         await stamp_edit_metadata(
             db=db, collection="qc_issues", record_id=qc_id,
             tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
-            edit_reason=edit_reason, before=before, after=after,
+            # Bug #49: on status-only-transition exemption this carries
+            # the synthesized "status-only transition open -> resolved;
+            # resolution_notes: ..." string; otherwise the user's
+            # edit_reason as before.
+            edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
+
+    # Bug #50 (2026-05-13) -- recompute blocker count on linked tasks
+    # when the QC issue's blocking state changes. count_open_blockers
+    # treats QC issues with status in [open, needs_rework] as blockers.
+    BLOCKING_QC_STATUSES = {"open", "needs_rework"}
+    qc_status_blocking_changed = (
+        (before.get("status") in BLOCKING_QC_STATUSES)
+        != (after.get("status") in BLOCKING_QC_STATUSES)
+    )
+    qc_linkage_changed = (
+        set(before.get("linked_task_ids") or []) != set(after.get("linked_task_ids") or [])
+    )
+    if qc_status_blocking_changed or qc_linkage_changed:
+        from services.task_status import compute_and_persist_status
+        affected: set = set()
+        for t in (before.get("linked_task_ids") or []):
+            affected.add(t)
+        for t in (after.get("linked_task_ids") or []):
+            affected.add(t)
+        for tid in affected:
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], tid,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return QcIssue(**after)
 
 
@@ -1024,7 +1122,10 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): photos are intentionally NOT in
+    # STATUS_TRANSITION_CONFIGS -- caption/class/pin edits aren't
+    # status closures. effective_edit_reason == edit_reason always.
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="photo", event_id=photo_id,
     )
@@ -1054,7 +1155,8 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
         await stamp_edit_metadata(
             db=db, collection="photos", record_id=photo_id,
             tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
-            edit_reason=edit_reason, before=before, after=after,
+            # Bug #49: effective_edit_reason == edit_reason here.
+            edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
     return Photo(**after)
