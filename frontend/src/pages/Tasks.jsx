@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X } from "lucide-react";
+import ExportDropdown from "../components/ExportDropdown";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -233,6 +234,17 @@ export default function Tasks() {
           <p className="text-sm text-slate-500">{project?.name}</p>
         </div>
         <div className="flex gap-2">
+          {/* Bug #42 (2026-05-12) -- Tasks export dropdown. Same audit-
+              honest pattern as the Audit Log CSV / Photo Evidence Pack
+              from Bucket K -- single-click download, server writes
+              TASKS_EXPORTED audit before returning the file. */}
+          <ExportDropdown
+            label="Export"
+            testidPrefix="tasks-export"
+            buildUrl={(fmt) => `/projects/${activeId}/tasks/export?format=${fmt}`}
+            filenameHint={(fmt) => `tasks_${(activeId || "").slice(0, 8)}.${fmt}`}
+            disabled={!activeId}
+          />
           <button data-testid="cpm-recompute" onClick={recompute} className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
             Recompute CPM
           </button>

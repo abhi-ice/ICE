@@ -6,6 +6,7 @@ import { CalendarRange, List, BarChart3 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
+import ExportDropdown from "../components/ExportDropdown";
 
 const DAY_PX = 32; // pixels per day in Gantt
 const ROW_H = 32;
@@ -47,6 +48,15 @@ export default function Lookahead() {
               <BarChart3 className="h-3 w-3" /> Gantt
             </button>
           </div>
+          {/* Bug #43 (2026-05-12) -- Look-ahead export. Honors the
+              currently-selected `days` window. */}
+          <ExportDropdown
+            label="Export"
+            testidPrefix="lookahead-export"
+            buildUrl={(fmt) => `/projects/${activeId}/lookahead/export?format=${fmt}&days=${days}`}
+            filenameHint={(fmt) => `lookahead_${(activeId || "").slice(0, 8)}.${fmt}`}
+            disabled={!activeId}
+          />
         </div>
       </div>
 
