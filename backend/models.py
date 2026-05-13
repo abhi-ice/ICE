@@ -597,6 +597,13 @@ ConstraintType = Literal[
 
 
 class DailyReportActivityUpdate(StrictModel):
+    # Bug #51 (2026-05-13) -- SOD % editable post-submit. Previously
+    # this Update model accepted EOD % only; the post-submit edit modal
+    # could not correct a wrong SOD value (carried forward from yesterday's
+    # EOD), forcing a schedule-update workaround. Pre-submit grid still
+    # renders SOD as display-only since it's derived; this Update path
+    # is the override surface for both pre-submit and post-submit edits.
+    pct_complete_start_of_day: Optional[float] = Field(default=None, ge=0, le=100)
     pct_complete_end_of_day: Optional[float] = Field(default=None, ge=0, le=100)
     crew_count: Optional[int] = None
     crew_id: Optional[str] = None
