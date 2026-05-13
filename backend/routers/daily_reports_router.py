@@ -542,7 +542,10 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): activity grid is intentionally NOT in
+    # STATUS_TRANSITION_CONFIGS -- per-DR activity rows don't have
+    # a resolve/close flow. effective_edit_reason == edit_reason here.
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before["daily_report_id"],
         edit_reason=edit_reason, event_type="activity", event_id=row_id,
     )
@@ -807,7 +810,9 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         await stamp_edit_metadata(
             db=db, collection="daily_report_activities",
             record_id=row_id, tenant_id=ctx["tenant_id"],
-            actor_id=ctx["user"]["id"], edit_reason=edit_reason,
+            # Bug #49: effective_edit_reason == edit_reason here
+            # (activity grid not in STATUS_TRANSITION_CONFIGS).
+            actor_id=ctx["user"]["id"], edit_reason=effective_edit_reason,
             before=before, after=after,
             request_id=ctx["request_id"],
             audit_op="ACTIVITY_GRID_EDITED_POST_SUBMIT",

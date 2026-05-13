@@ -963,9 +963,14 @@ async def update_delivery(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    _parent_dr, is_locked_edit = await enforce_locked_dr_edit_policy(
+    # Bug #49 (2026-05-13): pass updates + before so the policy can
+    # detect delivery status-only transitions (scheduled -> received
+    # with received_by) initiated from /deliveries and skip the
+    # edit_reason 422.
+    _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="delivery", event_id=delivery_id,
+        updates=updates, before=before,
     )
     if "linked_task_ids" in updates:
         # Bucket D Corrective -- master-schedule re-validation on PATCH.
@@ -994,7 +999,10 @@ async def update_delivery(
         await stamp_edit_metadata(
             db=db, collection="deliveries", record_id=delivery_id,
             tenant_id=ctx["tenant_id"], actor_id=ctx["user"]["id"],
-            edit_reason=edit_reason, before=before, after=after,
+            # Bug #49: on status-only transitions this carries
+            # "status-only transition scheduled -> received;
+            # received_by: <name>".
+            edit_reason=effective_edit_reason, before=before, after=after,
             request_id=ctx["request_id"],
         )
     return after
