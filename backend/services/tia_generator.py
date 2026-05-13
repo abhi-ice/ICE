@@ -524,7 +524,12 @@ async def _gather_data(
                 {"_id": 0, "id": 1, "suggested_value": 1,
                  "confidence_score": 1, "suggested_by": 1,
                  "entity_type": 1, "entity_id": 1,
-                 "field_path": 1},
+                 "field_path": 1,
+                 # Bug #41-revised (2026-05-13): include
+                 # superseded_by_suggestion_id so the §12a renderer can
+                 # show the newer suggestion that replaced an expired
+                 # or superseded entry.
+                 "superseded_by_suggestion_id": 1},
             ).to_list(length=None)
             by_id = {r["id"]: r for r in sugg_rows}
             for b in lifecycle_list:
@@ -543,6 +548,14 @@ async def _gather_data(
                     b["entity_id"] = src.get("entity_id")
                 if not b.get("field_path"):
                     b["field_path"] = src.get("field_path")
+                # Bug #41-revised (2026-05-13): the audit op for
+                # FIELD_SUGGESTION_SUPERSEDED doesn't carry the new
+                # suggestion id in its after blob, so we pull it from
+                # the DB row here. Absent on never-superseded rows.
+                if not b.get("superseded_by_suggestion_id"):
+                    b["superseded_by_suggestion_id"] = src.get(
+                        "superseded_by_suggestion_id",
+                    )
 
     return {
         "_meta": {
@@ -984,11 +997,30 @@ def _render_docx(data: dict) -> bytes:
                     f" at {terminal_at}. Reason: {reason[:240]}"
                 )
             elif terminal_op == "superseded":
-                r1 = decision.add_run("Superseded by newer AI suggestion")
+                # Bug #41-revised (2026-05-13): include the newer
+                # suggestion id when available so counsel can trace the
+                # full re-suggestion chain.
+                new_sid = b.get("superseded_by_suggestion_id")
+                if new_sid:
+                    label = (
+                        f"AI suggestion superseded by newer suggestion "
+                        f"{str(new_sid)[:8]}"
+                    )
+                else:
+                    label = "AI suggestion superseded by newer suggestion"
+                r1 = decision.add_run(label)
                 r1.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
                 decision.add_run(f" at {terminal_at}.")
             elif terminal_op == "expired":
-                r1 = decision.add_run("Auto-expired (30+ days pending)")
+                # Bug #41-revised (2026-05-13): explicit "expired"
+                # framing so reviewers don't confuse this with a
+                # rejection-with-missing-reason. Expired means the
+                # user didn't act on the suggestion within the 30-day
+                # window; the system auto-removed it from the review
+                # queue. NOT the same as a deliberate rejection.
+                r1 = decision.add_run(
+                    "AI suggestion expired (auto-rejected after 30 days)",
+                )
                 r1.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
                 decision.add_run(f" at {terminal_at}.")
             else:
@@ -1151,13 +1183,23 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
                 f" at {terminal_at}. Reason: {reason}"
             )
         elif terminal_op == "superseded":
+            # Bug #41-revised (2026-05-13): include the newer
+            # suggestion id when available.
+            new_sid = b.get("superseded_by_suggestion_id")
+            sid_suffix = (
+                f" {html.escape(str(new_sid)[:8])}"
+                if new_sid else ""
+            )
             decision_html = (
-                f"<span class='sugg-superseded'>Superseded by newer "
-                f"AI suggestion</span> at {terminal_at}."
+                f"<span class='sugg-superseded'>AI suggestion "
+                f"superseded by newer suggestion{sid_suffix}</span>"
+                f" at {terminal_at}."
             )
         elif terminal_op == "expired":
+            # Bug #41-revised (2026-05-13): explicit "expired" framing.
             decision_html = (
-                f"<span class='sugg-superseded'>Auto-expired</span> at {terminal_at}."
+                f"<span class='sugg-superseded'>AI suggestion expired "
+                f"(auto-rejected after 30 days)</span> at {terminal_at}."
             )
         else:
             decision_html = (
