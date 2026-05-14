@@ -38,6 +38,7 @@ from database import get_db, tenant_filter
 from auth import require_tenant
 from audit import write_audit
 from models import (PhotoTray, PhotoTagCreate, EVIDENTIARY_CLASSES,
+                     TenantAiBudgetUpdate,
                      gen_id, utc_now)
 from services.storage import put_object, get_object, make_path, record_file
 
@@ -1235,12 +1236,19 @@ async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
 # so compliance can trace who changed the cap.
 @router.patch("/tenants/current/ai-budget")
 async def update_tenant_ai_budget(
-    payload: "TenantAiBudgetUpdate",  # forward ref, imported below
+    # Bug #44-final (2026-05-14) -- unquote the payload annotation and
+    # remove the local-import + isinstance defensive shim. The "to
+    # avoid circular" comment was wrong: models.py does NOT import
+    # from any routers module, so `TenantAiBudgetUpdate` can be
+    # imported at the top of this file like every other Pydantic
+    # model. The quoted ForwardRef was confusing FastAPI 0.110.1's
+    # OpenAPI introspector + Pydantic 2.13.3 TypeAdapter, causing
+    # GET /api/openapi.json to return 500 (the only endpoint that
+    # actually walked the ForwardRef). Backend traffic itself was
+    # always fine.
+    payload: TenantAiBudgetUpdate,
     ctx: dict = Depends(require_tenant),
 ):
-    from models import TenantAiBudgetUpdate  # local to avoid circular
-    if not isinstance(payload, TenantAiBudgetUpdate):
-        payload = TenantAiBudgetUpdate(**(payload or {}))
     if _user_role(ctx) not in _ROLE_BUDGET:
         raise HTTPException(
             403, "Admins only -- only admins can modify AI budget",
