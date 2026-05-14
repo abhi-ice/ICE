@@ -54,6 +54,41 @@ const EVENT_TYPE_TO_ENTITY = {
 
 const REASON_MIN = 10;
 
+// Bug #57 (2026-05-14) -- mirrors backend STATUS_TRANSITION_CONFIGS
+// (services/edit_permissions.py). Key: eventType prop passed by the
+// caller (DailyReports.jsx renders 1 modal per event-row). Value:
+// Set of field names that count as "status-only" for that event type.
+//
+// A patch whose CHANGED fields fall entirely within this set is a
+// status-only transition; the backend Bug #49 exemption skips the
+// edit_reason requirement and synthesizes a reason from the note
+// field (resolved_note / closed_note / response_text / outcome_notes
+// / etc.). The modal mirrors this set so the client-side gate matches:
+// the user resolves an RFI from inside the DR view with just a status
+// change + answer, no reason required.
+//
+// MUST stay in sync with backend. If an event type's status-only set
+// changes server-side, update this map too. Both spellings (e.g.
+// "qc" + "qc_issue") are listed because callers pass slightly
+// different keys -- DailyReports.jsx passes "qc" while standalone
+// flows sometimes use "qc_issue". Easier to handle both than force
+// callers to normalize.
+//
+// photo + activity are intentionally NOT in the map -- they have no
+// status-only path, so every edit on those event types requires
+// edit_reason (matching the pre-Bug-#57 universal behavior).
+const STATUS_ONLY_FIELDS_BY_EVENT_TYPE = {
+  delay:               new Set(["status", "resolved_note", "resolved_date", "resolved_by_user_id"]),
+  qc:                  new Set(["status", "resolution_notes", "resolved_at"]),
+  qc_issue:            new Set(["status", "resolution_notes", "resolved_at"]),
+  rfi:                 new Set(["status", "response_text", "date_responded"]),
+  coordination:        new Set(["outcome", "outcome_notes"]),
+  coordination_event:  new Set(["outcome", "outcome_notes"]),
+  delivery:            new Set(["status", "received_by"]),
+  safety:              new Set(["status", "closed_note", "closed_date"]),
+  safety_event:        new Set(["status", "closed_note", "closed_date"]),
+};
+
 export default function LockedEventEditModal({
   open, onOpenChange,
   eventType, eventId, dailyReportId, patchUrl,
@@ -76,25 +111,80 @@ export default function LockedEventEditModal({
 
   const close = () => { reset(); onOpenChange?.(false); };
 
+  // Bug #57 (2026-05-14) -- compute the diff once. Powers BOTH:
+  //   (a) the gate below (reason required iff any changed key is
+  //       outside the event-type's status-only allowed set)
+  //   (b) the PATCH body in submitEdit (send only what changed --
+  //       matches the modal's existing "Diff: only send fields that
+  //       changed" intent, now exposed as a shared computation so
+  //       the gate can read the same source of truth)
+  const allowedStatusOnly = STATUS_ONLY_FIELDS_BY_EVENT_TYPE[eventType] || new Set();
+  const changedKeys = (() => {
+    const out = [];
+    for (const f of fields) {
+      const prev = currentValues[f.key];
+      const next = values[f.key];
+      if (next !== undefined && next !== prev) out.push(f.key);
+    }
+    return out;
+  })();
+  // isFieldEdit: true iff ANY changed key is outside the allowed set.
+  // Empty changedKeys -> not a field edit (nothing changed at all).
+  // No allowed set (event type without a status-only path) -> every
+  // change is a field edit and requires reason.
+  const isFieldEdit = (() => {
+    if (changedKeys.length === 0) return false;
+    if (allowedStatusOnly.size === 0) return true;
+    for (const k of changedKeys) {
+      if (!allowedStatusOnly.has(k)) return true;
+    }
+    return false;
+  })();
+  // Bug #57 -- reason is REQUIRED only when at least one changed
+  // field is outside the status-only allowed set. Status-only
+  // transitions (e.g. RFI close from inside the DR view: status +
+  // response_text + date_responded) flow through Bug #49's backend
+  // exemption with no client-side gate.
+  const reasonRequired = isFieldEdit;
+  const reasonValid = (reason || "").trim().length >= REASON_MIN;
+  const reasonOk = !reasonRequired || reasonValid;
+  const hasAnyChange = changedKeys.length > 0;
+
   // ---- Edit mode submit ----
   const submitEdit = async () => {
     if (busy) return;
-    if ((reason || "").trim().length < REASON_MIN) {
-      toast.error(`Edit reason must be at least ${REASON_MIN} characters.`);
+    if (!hasAnyChange) {
+      toast.error("No changes to save.");
+      return;
+    }
+    if (reasonRequired && !reasonValid) {
+      toast.error(
+        `Edit reason must be at least ${REASON_MIN} characters for field changes. ` +
+        `Status-only changes (close / resolve) are exempt.`,
+      );
       return;
     }
     // Diff: only send fields that changed (avoid blasting unset values
     // back at the server, especially for fields that weren't shown).
     const updates = {};
-    for (const f of fields) {
-      const prev = currentValues[f.key];
-      const next = values[f.key];
-      if (next !== undefined && next !== prev) updates[f.key] = next;
+    for (const k of changedKeys) {
+      updates[k] = values[k];
     }
     setBusy(true);
     try {
-      await api.patch(patchUrl, { ...updates, edit_reason: reason.trim() });
-      toast.success("Edit saved. Audit log captured before/after.");
+      // Bug #57: attach edit_reason ONLY if user supplied one. Empty
+      // is omitted so status-only patches route through the Bug #49
+      // exemption cleanly (the backend synthesizes a reason from the
+      // note field instead of getting an empty-string user reason).
+      const body = (reason && reason.trim())
+        ? { ...updates, edit_reason: reason.trim() }
+        : updates;
+      await api.patch(patchUrl, body);
+      toast.success(
+        isFieldEdit
+          ? "Edit saved. Audit log captured before/after."
+          : "Status updated. Audit log captured the transition.",
+      );
       onSaved?.();
       close();
     } catch (e) {
@@ -160,7 +250,10 @@ export default function LockedEventEditModal({
               <p>
                 The parent daily report is locked. Your edit will be
                 captured in the audit log with before/after snapshots and
-                surfaced in the TIA. Reason is required (min {REASON_MIN} characters).
+                surfaced in the TIA. {reasonRequired
+                  ? `Reason is required (min ${REASON_MIN} characters) for field changes.`
+                  : `Status-only changes (resolve / close / answer) are exempt from the reason requirement -- the status-specific note field replaces it for audit purposes.`
+                }
               </p>
               <p className="mt-1">
                 The same 24-hour self-edit window also governs <em>adding new
@@ -180,13 +273,24 @@ export default function LockedEventEditModal({
                 entityId={eventId} />
             ))}
             <div>
-              <label className="field-label">Edit reason *</label>
+              {/* Bug #57 (2026-05-14) -- conditional label / hint based
+                  on whether the current diff is a status-only transition
+                  (Bug #49 exemption) or a field edit (reason required). */}
+              <label className="field-label">
+                Edit reason{reasonRequired ? " *" : " (optional for status-only changes)"}
+              </label>
               <textarea data-testid="locked-edit-reason"
                 value={reason} onChange={(e) => setReason(e.target.value)}
-                placeholder={`Why this edit is needed (min ${REASON_MIN} characters).`}
+                placeholder={reasonRequired
+                  ? `Why this edit is needed (min ${REASON_MIN} characters).`
+                  : `Optional: explain the resolve/close. Will be appended to the audit row alongside the note field.`
+                }
                 className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
               <div className="text-[10px] text-slate-500 text-right">
                 {(reason || "").trim().length} / {REASON_MIN} min
+                {reasonRequired
+                  ? " — required for field changes"
+                  : " — optional for status-only"}
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-2">
@@ -194,8 +298,19 @@ export default function LockedEventEditModal({
                 className="h-9 px-3 rounded border border-slate-200 text-sm">
                 Cancel
               </button>
-              <Button data-testid="locked-edit-save" onClick={submitEdit} disabled={busy}
-                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50">
+              {/* Bug #57 -- Save disabled when either nothing has changed
+                  OR (reason is required AND the user hasn't supplied
+                  10+ chars). Title hint surfaces the exact gate. */}
+              <Button data-testid="locked-edit-save" onClick={submitEdit}
+                disabled={busy || !hasAnyChange || !reasonOk}
+                title={
+                  !hasAnyChange
+                    ? "No changes to save."
+                    : (!reasonOk
+                      ? `Edit reason must be at least ${REASON_MIN} characters for field changes.`
+                      : undefined)
+                }
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
                 {busy ? "Saving…" : "Save edit"}
               </Button>
             </div>

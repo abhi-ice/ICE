@@ -99,14 +99,25 @@ export default function CrudList({
       }
     }
   };
-  // Bug #54 -- compute "is this an edit beyond the status-only allowed
-  // set?" for the conditional Save gate. Compares each form field to
-  // the original row, normalizing null vs "" so a no-touch save isn't
-  // falsely flagged. If config.allowedFields is empty, every change
-  // counts as a field edit (safety_events case).
-  const isFieldEditCrud = (() => {
-    if (!editReasonConfig || !editing) return false;
-    const allowed = editReasonConfig.allowedFields || new Set();
+  // Bug #54 + Bug #56 (2026-05-14) -- compute the set of fields the
+  // user actually changed (form vs editing). Single source of truth
+  // for BOTH:
+  //   - the Bug #54 isFieldEditCrud gate (do any changed fields fall
+  //     outside the status-only allowed set?)
+  //   - the Bug #56 PATCH body builder (send ONLY changed fields,
+  //     not the full row; the legacy /crud endpoint accepted extras
+  //     but the Bug #55 dedicated routers have Pydantic extras=forbid
+  //     and 422 on project_id, tenant_id, created_at, etc. that the
+  //     buildPayload helper used to inject for CREATE)
+  //
+  // Normalization rules:
+  //   - null and "" are equal (Mongo-stored nulls vs form-state empty
+  //     strings shouldn't count as changes)
+  //   - numbers compared as Number(x) so "5" vs 5 vs 5.0 are equal
+  //   - everything else compared via String()
+  const changedFieldEntries = (() => {
+    if (!editing) return [];
+    const out = [];
     for (const f of formFields) {
       const fv = form[f.key];
       const ev = editing[f.key];
@@ -115,8 +126,19 @@ export default function CrudList({
         || (ev == null && (fv == null || fv === ""))
         || (f.type === "number" ? Number(fv ?? 0) === Number(ev ?? 0) : String(fv ?? "") === String(ev ?? ""))
       );
-      if (same) continue;
-      if (!allowed.has(f.key)) return true;
+      if (!same) out.push([f.key, fv]);
+    }
+    return out;
+  })();
+  // Bug #54 gate: a "field edit" means at least one changed field is
+  // OUTSIDE the status-only allowed set. Status-only patches (e.g.
+  // RFI close with status + answer + date_responded) skip the gate
+  // and ride Bug #49's backend exemption.
+  const isFieldEditCrud = (() => {
+    if (!editReasonConfig || !editing) return false;
+    const allowed = editReasonConfig.allowedFields || new Set();
+    for (const [k] of changedFieldEntries) {
+      if (!allowed.has(k)) return true;
     }
     return false;
   })();
@@ -136,26 +158,56 @@ export default function CrudList({
       );
       return;
     }
-    const payload = buildPayload ? buildPayload(form, editing) : { ...form };
-    // strip empty strings → null for non-required text
-    formFields.forEach((f) => {
-      if (!f.required && payload[f.key] === "") payload[f.key] = null;
-      if (f.type === "number" && payload[f.key] !== null && payload[f.key] !== undefined && payload[f.key] !== "") {
-        payload[f.key] = Number(payload[f.key]);
-      }
-    });
     setSaving(true);
     try {
       if (editing) {
+        // Bug #56 (2026-05-14) -- PATCH body is the field-level DIFF
+        // (form vs editing), NOT the full row spread through
+        // buildPayload. buildPayload was designed for CREATE where
+        // project_id is mandatory; on PATCH the dedicated Bug #55
+        // routers' Update models have Pydantic extras=forbid and
+        // reject project_id / tenant_id / created_at as "Extra inputs
+        // are not permitted". Sending only the diff:
+        //   - avoids the 422 on all entities routed through dedicated
+        //     routers (rfis, qc-issues, safety-events)
+        //   - keeps payloads minimal for legacy /crud entities too
+        //     (no behavior regression since /crud accepted extras)
+        //   - matches the backend's "patch what changed" semantics
+        const patchBody = {};
+        for (const [k, v] of changedFieldEntries) {
+          patchBody[k] = v;
+        }
+        // Same empty-string -> null + number coercion normalization
+        // as the pre-Bug #56 full-payload path, but applied ONLY to
+        // fields actually in the diff (don't reintroduce unchanged
+        // fields via the formFields.forEach loop).
+        formFields.forEach((f) => {
+          if (!(f.key in patchBody)) return;
+          if (!f.required && patchBody[f.key] === "") patchBody[f.key] = null;
+          if (f.type === "number" && patchBody[f.key] !== null
+              && patchBody[f.key] !== undefined && patchBody[f.key] !== "") {
+            patchBody[f.key] = Number(patchBody[f.key]);
+          }
+        });
         // Bug #54 -- attach edit_reason on PATCH when supplied. Empty
         // is omitted (backend doesn't need it on draft DRs or on
         // status-only patches via Bug #49 exemption).
-        const patchBody = (editReason && editReason.trim())
-          ? { ...payload, edit_reason: editReason.trim() }
-          : payload;
+        if (editReason && editReason.trim()) {
+          patchBody.edit_reason = editReason.trim();
+        }
         await api.patch(patchEndpoint(editing), patchBody);
         toast.success("Saved");
       } else {
+        // CREATE -- full payload via buildPayload (which injects
+        // project_id and any other create-time scaffolding).
+        const payload = buildPayload ? buildPayload(form, editing) : { ...form };
+        formFields.forEach((f) => {
+          if (!f.required && payload[f.key] === "") payload[f.key] = null;
+          if (f.type === "number" && payload[f.key] !== null
+              && payload[f.key] !== undefined && payload[f.key] !== "") {
+            payload[f.key] = Number(payload[f.key]);
+          }
+        });
         await api.post(createEndpoint, payload);
         toast.success("Created");
       }
