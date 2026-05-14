@@ -1177,7 +1177,12 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
                 f" by {actor}{role_str} at {terminal_at}."
             )
         elif terminal_op == "rejected":
-            reason = html.escape(str(b.get("rejection_reason") or "(no reason)")[:240])
+            # Bug #48 (2026-05-14): normalize the fallback text to match
+            # the docx renderer above ("(no reason recorded)"). Only fires
+            # on historical entries from before the reject gate was
+            # added; new rejections always carry >=10-char reason text
+            # (Pydantic + service-layer redundant check).
+            reason = html.escape(str(b.get("rejection_reason") or "(no reason recorded)")[:240])
             decision_html = (
                 f"<span class='sugg-rejected'>Rejected</span>"
                 f" at {terminal_at}. Reason: {reason}"
