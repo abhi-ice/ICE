@@ -115,6 +115,18 @@ STATUS_TRANSITION_CONFIGS: dict[str, dict] = {
         "allowed": {"status", "received_by"},
         "note_field": "received_by",
     },
+    # Bug #55 (2026-05-14) -- safety added after SafetyEventUpdate
+    # gained status / closed_note / closed_date fields. Close-only
+    # patches (status -> 'closed' with a closure narrative) skip the
+    # edit_reason 422 via the same exemption as the other event types.
+    # Field edits to severity / event_type / description still gate
+    # on edit_reason. Note field is closed_note for the synthesized
+    # audit-trail reason.
+    "safety": {
+        "trigger": "status",
+        "allowed": {"status", "closed_note", "closed_date"},
+        "note_field": "closed_note",
+    },
 }
 
 
