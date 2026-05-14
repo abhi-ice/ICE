@@ -2,10 +2,11 @@ import { useEffect, useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-// Bug #50 (2026-05-13): added ClipboardCheck (qc_issue), ShieldAlert
-// (safety_event), FileText (submittal) icons for the extended blocker
-// tooltip — each source type now gets a distinguishing glyph.
-import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X, ClipboardCheck, ShieldAlert, FileText } from "lucide-react";
+// Bug #50 (2026-05-13): added FileText (submittal) icon for the
+// extended blocker tooltip. Bug #53 (2026-05-13): dropped ClipboardCheck
+// (qc_issue) and ShieldAlert (safety_event) imports since those types
+// are no longer surfaced as blockers.
+import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X, FileText } from "lucide-react";
 import ExportDropdown from "../components/ExportDropdown";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -334,7 +335,7 @@ export default function Tasks() {
               <th>Dur (d)</th>
               <th>%</th>
               <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
-              <th title="Open blockers (delays / RFIs / QC issues / safety events / SLA-breached submittals / field-issues linked to this task). Click to see them.">Blockers</th>
+              <th title="Open blockers (delays / RFIs / SLA-breached submittals / field-issues linked to this task). Click to see them. QC issues + safety events stay linked for the gallery but don't surface here.">Blockers</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
               <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
               <th title="Resource gap. Surfaces when the master schedule's trade demand exceeds crew supply on at least one day in this task's date range.">Gap</th>
@@ -439,16 +440,22 @@ function ComputedStatusPill({ task }) {
 }
 
 // Bucket C1 Phase 3 — Blocker count with click popover listing the open
-// delays / RFIs / field-issues linked to this task. open_blocker_summary
-// is denormalized server-side (services/task_status.count_open_blockers).
+// delays / RFIs / submittals / field-issues linked to this task.
+// open_blocker_summary is denormalized server-side
+// (services/task_status.count_open_blockers).
 //
-// Bug #50 (2026-05-13): aggregation extended to 6 source types. Tooltip
-// rows now distinguish each: delay / rfi / qc_issue / safety_event /
-// submittal / work_item. Count-badge mini-letters use the type's first
-// initial pair so the badge "(5) d2 r1 q1 s1 w1" reads at a glance.
+// Bug #50 (2026-05-13): aggregation extended to RFIs via linked_task_ids
+// and SLA-breached submittals. Bug #53 (2026-05-13) narrowed Bug #50:
+// QC issues and safety events are NOT blockers (Sid's call) -- they're
+// internal quality / safety flags. The linkage stays, but they don't
+// appear in the count badge or tooltip. If a backend row still carries
+// a stale 'qc_issue' / 'safety_event' summary entry from before Bug #53
+// rolled out, the count-letter logic below silently ignores it; the
+// next compute_and_persist_status pass will rewrite the summary.
 //
-// Severity-to-color reuses the existing red/slate scheme; submittal
-// rows (always 'critical' or 'high' per the server) render red.
+// Mini-letters in the count badge: d (delay), r (rfi), s (submittal),
+// w (work_item). Severity-to-color reuses the red/slate scheme;
+// submittal rows (always 'critical' or 'high' per the server) render red.
 function BlockerCell({ task, open, onToggle }) {
   const summary = task.open_blocker_summary || [];
   const count = task.open_blocker_count || 0;
@@ -469,9 +476,9 @@ function BlockerCell({ task, open, onToggle }) {
           {[
             counts.delay && `${counts.delay}d`,
             counts.rfi && `${counts.rfi}r`,
-            counts.qc_issue && `${counts.qc_issue}q`,
-            counts.safety_event && `${counts.safety_event}s`,
-            counts.submittal && `${counts.submittal}sb`,
+            // Bug #53: qc_issue + safety_event removed from blocker
+            // aggregation. Letters dropped to match.
+            counts.submittal && `${counts.submittal}s`,
             counts.work_item && `${counts.work_item}w`,
           ].filter(Boolean).join(" ")}
         </span>
@@ -483,11 +490,17 @@ function BlockerCell({ task, open, onToggle }) {
         >
           <div className="font-medium mb-1 text-slate-700">Open blockers ({count})</div>
           <div className="space-y-1 max-h-56 overflow-y-auto">
-            {summary.map((s, i) => {
+            {summary
+              // Bug #53 (2026-05-13): filter out any qc_issue /
+              // safety_event entries that may still be cached on a
+              // task row from before Bug #53 rolled out. The next
+              // compute_and_persist_status pass will rewrite the
+              // summary without them; until then we hide them here
+              // so the UI matches the new policy immediately.
+              .filter((s) => s.entity_type !== "qc_issue" && s.entity_type !== "safety_event")
+              .map((s, i) => {
               const Icon = s.entity_type === "delay" ? AlertTriangle
                 : s.entity_type === "rfi" ? MessageSquare
-                : s.entity_type === "qc_issue" ? ClipboardCheck
-                : s.entity_type === "safety_event" ? ShieldAlert
                 : s.entity_type === "submittal" ? FileText
                 : s.entity_type === "work_item" ? AlertCircle
                 : AlertCircle;
@@ -495,8 +508,6 @@ function BlockerCell({ task, open, onToggle }) {
                 ? "text-red-600" : "text-slate-500";
               const link = s.entity_type === "delay" ? `/delays/${s.entity_id}`
                 : s.entity_type === "rfi" ? `/rfis`
-                : s.entity_type === "qc_issue" ? `/qc-issues`
-                : s.entity_type === "safety_event" ? `/safety-events`
                 : s.entity_type === "submittal" ? `/submittals`
                 : s.entity_type === "work_item" ? `/work-items`
                 : null;
