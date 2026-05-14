@@ -657,15 +657,16 @@ async def update_safety_event(
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
-    # Bug #49 (2026-05-13): safety_events is intentionally NOT in
-    # STATUS_TRANSITION_CONFIGS -- SafetyEventUpdate has no status
-    # field today, so the close-from-standalone-page flow doesn't
-    # exist for safety. effective_edit_reason therefore equals the
-    # input edit_reason on every call. Left wired for the 3-tuple
-    # so the policy signature is uniform across event types.
+    # Bug #55 (2026-05-14): safety NOW has status / closed_note /
+    # closed_date fields on SafetyEventUpdate, so the close flow can
+    # take the Bug #49 status-only exemption like delays/RFIs/QC.
+    # Passing updates + before so the policy can run the projection-
+    # equal diff. (Pre-Bug #55, safety was intentionally not in
+    # STATUS_TRANSITION_CONFIGS because the close flow didn't exist.)
     _parent_dr, is_locked_edit, effective_edit_reason = await enforce_locked_dr_edit_policy(
         ctx=ctx, daily_report_id=before.get("daily_report_id"),
         edit_reason=edit_reason, event_type="safety", event_id=event_id,
+        updates=updates, before=before,
     )
     if "linked_task_ids" in updates:
         # Bucket D Corrective -- master-schedule re-validation on PATCH.
