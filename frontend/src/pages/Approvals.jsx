@@ -431,7 +431,7 @@ function PendingSuggestionsQueue() {
           className="rounded p-2 text-xs border border-rose-300 bg-rose-50 space-y-1"
         >
           <label className="block text-[10px] uppercase text-rose-800">
-            Reason (10+ chars, applies to all {selected.size})
+            Rejection reason (required, min 10 chars; applies to all {selected.size})
           </label>
           <textarea
             data-testid="suggestions-bulk-reason"
@@ -441,12 +441,24 @@ function PendingSuggestionsQueue() {
             placeholder="Explain why all selected suggestions are wrong…"
             className="w-full p-1.5 text-xs rounded border border-rose-300 bg-white"
           />
+          {/* Bug #48 (2026-05-14) -- char counter + gated submit button.
+              Same UX as the per-row reject modal in JigsawField.jsx and
+              the locked-DR edit_reason from Bug #54's DelayForm. */}
+          <div className="text-[10px] text-rose-800/70 text-right">
+            {(bulkReason || "").trim().length} / 10 min
+            {(bulkReason || "").trim().length < 10
+              ? " — required for TIA defensibility"
+              : " — ready"}
+          </div>
           <div className="flex gap-1">
             <button
               data-testid="suggestions-bulk-reject-submit"
-              disabled={bulkBusy}
+              disabled={bulkBusy || (bulkReason || "").trim().length < 10}
               onClick={bulkReject}
-              className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 disabled:opacity-50"
+              title={(bulkReason || "").trim().length < 10
+                ? "Rejection reason must be at least 10 characters."
+                : undefined}
+              className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Submit reject
             </button>

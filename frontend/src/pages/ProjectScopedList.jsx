@@ -268,6 +268,61 @@ const KIND_TO_CREATE_EVENT = {
   deliveries: "delivery",
 };
 
+// Bug #55 (2026-05-14) -- federal-defensibility fix.
+//
+// The legacy /crud/{entity}/{id} endpoint is a raw $set update with NO
+// Pydantic validation and NO locked-DR policy enforcement. A PM could
+// edit a closed RFI's linked_task_ids six weeks after DR submit and
+// the audit chain would show nothing.
+//
+// For these 3 entity types, route the standalone-page PATCH through
+// the dedicated router that calls enforce_locked_dr_edit_policy (Bug
+// #49) so locked-DR field edits require edit_reason and status-only
+// transitions take the exemption automatically. Every OTHER entity in
+// entityName continues to use /crud (unchanged behavior).
+const BUG55_DEDICATED_ROUTERS = {
+  "rfis": "/rfis",
+  "qc-issues": "/qc-issues",
+  "safety-events": "/safety-events",
+};
+
+// Wire CrudList.editReasonConfig (added in Bug #54) for the 3 entity
+// types now flowing through the policy-enforcing routers. Allowed
+// field sets MUST stay in sync with backend STATUS_TRANSITION_CONFIGS
+// (services/edit_permissions.py). minChars not specified -> default 10
+// to match the backend's EDIT_REASON_MIN_LEN constant.
+//
+// safety-events: status / closed_note / closed_date were added to
+// SafetyEventUpdate as part of Bug #55. The form fields (form: [...]
+// above) don't yet expose them -- the close flow there is a follow-up
+// (status field will be added when the close UX is designed). Until
+// then, every standalone safety-event edit counts as a field edit and
+// will require edit_reason. That's the correct default; the editReason
+// gate is opt-in via this config + parent-DR-lock detection.
+//
+// rfis: status / answer / date_responded mirror RfiUpdate's status-
+// only fields. Note "answer" is the form-side field name (Pydantic
+// alias from Bug #55 step 1); the diff in CrudList compares form-state
+// keys vs the original row, so it must use the form-side name.
+//
+// qc-issues: form fields don't yet expose status / resolution_notes
+// for the close flow -- same deferred-UX situation as safety-events.
+// Config is in place so the wiring works once the form is extended.
+const BUG55_EDIT_REASON_CONFIG = {
+  "rfis": {
+    allowedFields: new Set(["status", "answer", "date_responded"]),
+    parentDrIdKey: "daily_report_id",
+  },
+  "qc-issues": {
+    allowedFields: new Set(["status", "resolution_notes", "resolved_at"]),
+    parentDrIdKey: "daily_report_id",
+  },
+  "safety-events": {
+    allowedFields: new Set(["status", "closed_note", "closed_date"]),
+    parentDrIdKey: "daily_report_id",
+  },
+};
+
 export default function ProjectScopedList({ kind }) {
   const { activeId } = useProjects();
   const navigate = useNavigate();
@@ -389,12 +444,21 @@ export default function ProjectScopedList({ kind }) {
         help={cfg.help}
         listEndpoint={listUrl}
         createEndpoint={cfg.create}
-        patchEndpoint={cfg.create && entityName ? (r) => `/crud/${entityName}/${r.id}` : null}
+        patchEndpoint={
+          cfg.create && entityName
+            ? (r) => (
+                BUG55_DEDICATED_ROUTERS[entityName]
+                  ? `${BUG55_DEDICATED_ROUTERS[entityName]}/${r.id}`
+                  : `/crud/${entityName}/${r.id}`
+              )
+            : null
+        }
         deleteEndpoint={cfg.create && entityName ? (r) => `/crud/${entityName}/${r.id}` : null}
         testidPrefix={kind}
         columns={decoratedColumns}
         formFields={cfg.form}
         buildPayload={cfg.buildPayload ? (form, ed) => cfg.buildPayload(form, activeId) : null}
+        editReasonConfig={BUG55_EDIT_REASON_CONFIG[entityName] || null}
         customAddButton={cfg.galleryEventKind && KIND_TO_CREATE_EVENT[kind] ? (
           <Button data-testid={`${kind}-add-via-dr`} onClick={routeToTodaysDr}
             disabled={routing} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">

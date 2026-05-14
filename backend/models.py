@@ -1141,9 +1141,21 @@ class RfiCreate(StrictModel):
 
 
 class RfiUpdate(StrictModel):
+    # Bug #55 (2026-05-14) -- alias parity with RfiCreate. The frontend
+    # CrudList sends `question` / `answer` form-field names; RfiCreate
+    # already accepts those via Field(alias=...). Without the same
+    # aliases on RfiUpdate, switching ProjectScopedList's PATCH routing
+    # from /crud/{entity}/{id} to the dedicated /rfis/{id} (Bug #55's
+    # Step 3) would 422 every patch on extra-fields-forbidden.
+    # populate_by_name=True lets either the field name or the alias
+    # work, so existing callers using description / response_text keep
+    # working alongside the new question / answer paths.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True,
+                                populate_by_name=True)
+
     subject: Optional[str] = None
-    description: Optional[str] = None
-    response_text: Optional[str] = None
+    description: Optional[str] = Field(default=None, alias="question")
+    response_text: Optional[str] = Field(default=None, alias="answer")
     status: Optional[RfiStatus] = None
     date_responded: Optional[date] = None
     cost_impact_estimated_usd: Optional[float] = None
@@ -1151,6 +1163,11 @@ class RfiUpdate(StrictModel):
     # Bucket D Corrective -- re-pickable post-create. Re-validated
     # against tasks (master schedule) when present in the patch.
     linked_task_ids: Optional[List[str]] = None
+    # Bug #32 fix (2026-05-13) -- accept trade_code on RFI updates too
+    # (RfiCreate has it; pre-#55 RfiUpdate didn't because /crud bypassed
+    # validation entirely). Now that the dedicated /rfis/{id} router is
+    # the path for standalone edits, this needs to flow through.
+    trade_code: Optional[str] = None
     # Addition 4 -- required when the parent DR is locked. Server
     # rejects locked-DR patches with a missing or short reason.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
@@ -1417,11 +1434,22 @@ class SafetyEventCreate(StrictModel):
 
 class SafetyEventUpdate(StrictModel):
     """Addition 4 -- supports edit-in-place on locked DRs (and
-    correction edits on draft DRs). Required-on-locked: edit_reason."""
+    correction edits on draft DRs). Required-on-locked: edit_reason.
+
+    Bug #55 (2026-05-14) -- status / closed_note / closed_date added
+    so safety events can be closed from the standalone /safety-events
+    page through the same policy-enforcing PATCH path as delays/RFIs/QC.
+    The matching STATUS_TRANSITION_CONFIGS["safety"] entry treats
+    status + closed_note + closed_date as the status-only allowed set,
+    so close-only patches skip the edit_reason 422 via Bug #49 exemption.
+    """
     description: Optional[str] = None
     severity: Optional[Severity] = None
     event_type: Optional[SafetyEventType] = None
     linked_task_ids: Optional[List[str]] = None
+    status: Optional[str] = None
+    closed_note: Optional[str] = None
+    closed_date: Optional[date] = None
     edit_reason: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -1483,11 +1511,18 @@ class QcIssueUpdate(StrictModel):
     instead of raw dict updates. All fields optional, including the
     new linkage list and resolution fields used by C2/C3 cascade flows.
     Phase 5 -- adds rework outcome fields used by /qc-issues/{id}/
-    record-rework-outcome to capture actuals."""
+    record-rework-outcome to capture actuals.
+
+    Bug #55 (2026-05-14) -- resolved_at added so the close flow from
+    the standalone /qc-issues page can stamp it. STATUS_TRANSITION_
+    CONFIGS["qc"]["allowed"] already includes resolved_at; this
+    completes the round-trip (frontend sets, model accepts, DB stores).
+    """
     description: Optional[str] = None
     severity: Optional[str] = None
     status: Optional[str] = None
     resolution_notes: Optional[str] = None
+    resolved_at: Optional[datetime] = None
     linked_task_ids: Optional[List[str]] = None
     # Phase 5 -- rework estimate fields (editable post-create until
     # outcome is recorded).

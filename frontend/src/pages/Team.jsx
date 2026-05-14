@@ -53,8 +53,24 @@ export default function Team() {
     try {
       const { data } = await api.post("/team/invites", draft);
       const code = data.invite?.code;
-      if (data.already_existed) toast.info(`Pending invite re-used (code ${code}).`);
-      else toast.success(`Invite created — share the code: ${code}`);
+      const invitee = data.invite?.email || draft.email;
+      if (data.already_existed) {
+        toast.info(`Pending invite re-used (code ${code}).`);
+      } else if (data.email_sent) {
+        // Bug #47 (2026-05-14): SendGrid delivery succeeded.
+        toast.success(`Invite emailed to ${invitee}.`);
+      } else {
+        // Bug #47 (2026-05-14): email delivery failed (provider error,
+        // disabled provider, or missing API key). The invite_code is
+        // still persisted -- admin can copy the link from the table
+        // below and share manually.
+        const reason = data.email_error
+          ? ` (${data.email_error})`
+          : "";
+        toast.error(
+          `Invite created but email failed${reason}. Copy the link from the table below to share manually.`,
+        );
+      }
       setDraft({ email: "", role: "pm" });
       reload();
     } catch (ex) {

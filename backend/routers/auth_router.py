@@ -215,7 +215,73 @@ async def create_invite(payload: InviteCreate, ctx: dict = Depends(require_tenan
         record_id=invite["id"], before=None, after=invite,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
-    return {"invite": invite, "already_existed": False}
+
+    # Bug #47 (2026-05-14) -- send the invite email via SendGrid (or
+    # whatever EMAIL_PROVIDER selects). Sequence: invite row -> audit
+    # op -> email send -> response. Email failure NEVER blocks the
+    # response -- the invite_code is already persisted and the admin
+    # can fall back to copy-paste the invite link from the UI.
+    from services.invite_email import send_invite_email
+    tenant_row = await db.tenants.find_one(
+        {"id": ctx["tenant_id"]}, {"_id": 0, "name": 1},
+    )
+    tenant_name = (tenant_row or {}).get("name") or "your team"
+    base_url = (
+        os.environ.get("INVITE_BASE_URL")
+        or os.environ.get("REACT_APP_BACKEND_URL")
+        or ""
+    ).rstrip("/")
+    # Strip a trailing /api so the base for the user-facing accept-
+    # invite page is the frontend origin. If INVITE_BASE_URL points at
+    # the frontend directly (no /api), this is a no-op.
+    if base_url.endswith("/api"):
+        base_url = base_url[:-4]
+    invite_link = f"{base_url}/accept-invite?code={code}" if base_url else f"/accept-invite?code={code}"
+
+    email_result = send_invite_email(
+        tenant_name=tenant_name,
+        invitee_email=payload.email,
+        role=payload.role,
+        invite_code=code,
+        invite_link=invite_link,
+    )
+
+    # Audit either INVITE_EMAIL_SENT or INVITE_EMAIL_FAILED so legal
+    # can trace delivery attempts alongside the invite INSERT op.
+    # Reasons for both ops to exist (vs one with a status field):
+    # the audit log dropdown filters by op string, so distinct ops
+    # let counsel grep "INVITE_EMAIL_FAILED" to find delivery issues
+    # without scanning all invite ops.
+    try:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="team_invites",
+            op=("INVITE_EMAIL_SENT" if email_result.get("sent")
+                else "INVITE_EMAIL_FAILED"),
+            record_id=invite["id"], before=None,
+            after={
+                "email": payload.email,
+                "role": payload.role,
+                "provider_message_id": email_result.get("provider_message_id"),
+                "error": email_result.get("error"),
+            },
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    except Exception:
+        # Audit failure is non-fatal here. The INSERT op already
+        # captured the invite creation; this second op is supplementary
+        # delivery-tracking metadata.
+        pass
+
+    return {
+        "invite": invite,
+        "already_existed": False,
+        # Bug #47: surface email-send status to the frontend so the
+        # Team page can toast "Invite sent" vs "Invite created -- copy
+        # the link manually". The invite link itself remains visible
+        # in the Invites list regardless.
+        "email_sent": bool(email_result.get("sent")),
+        "email_error": email_result.get("error"),
+    }
 
 
 @team_router.get("/invites")
