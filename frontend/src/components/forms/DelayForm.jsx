@@ -71,6 +71,17 @@ const CAUSE_CLASS_OPTS = [
 // when invalid, regardless of role.
 const REASON_MIN = 10;
 const isReasonValid = (v) => (v || "").trim().length >= REASON_MIN;
+
+// Bug #54 (2026-05-13) -- the backend's STATUS_TRANSITION_CONFIGS["delay"]
+// allowed set: a PATCH whose changed fields fall within this set is the
+// Bug #49 status-only-transition exemption path (no edit_reason needed).
+// Any other field changes require edit_reason on a locked DR. Mirrored
+// here so the frontend gates Save when reason is missing on field edits.
+// Must stay in sync with services/edit_permissions.py STATUS_TRANSITION_CONFIGS.
+const DELAY_STATUS_ONLY_FIELDS = new Set([
+  "status", "resolved_note", "resolved_date", "resolved_by_user_id",
+]);
+
 export default function DelayForm({ projectId, reportDate, dailyReportId, initial,
                                      onSaved, onCancel,
                                      isLocked = false, lockedAddReason = null }) {
@@ -96,6 +107,34 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   }));
   const [busy, setBusy] = useState(false);
 
+  // Bug #54 (2026-05-13) -- edit_reason capture for field edits on
+  // locked-DR delays. When the user opens this form from /delays or
+  // /delays/:id (standalone surfaces, not inside a DR panel), the
+  // caller doesn't know whether the parent DR is locked. We lazy-fetch
+  // the parent DR's status when entering edit mode so the textarea +
+  // gate can render conditionally. If the caller already passes
+  // isLocked=true (DR panel context), we skip the fetch.
+  const [editReason, setEditReason] = useState("");
+  const [editLockedDr, setEditLockedDr] = useState(false);
+  useEffect(() => {
+    if (!initial?.id) return;            // create mode: skip
+    if (isLocked) {                       // DR-panel caller already knows
+      setEditLockedDr(true);
+      return;
+    }
+    const drId = initial?.daily_report_id;
+    if (!drId) return;                    // orphan event: nothing to fetch
+    let cancelled = false;
+    api.get(`/daily-reports/${drId}`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const st = data?.status;
+        if (st === "submitted" || st === "approved") setEditLockedDr(true);
+      })
+      .catch(() => {});  // defensive: treat as unlocked on fetch failure
+    return () => { cancelled = true; };
+  }, [initial?.id, initial?.daily_report_id, isLocked]);
+
   useEffect(() => {
     if (!projectId) return;
     api.get(`/projects/${projectId}/tasks`)
@@ -103,6 +142,35 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       .catch(() => setTasks([]))
       .finally(() => setTasksLoaded(true));
   }, [projectId]);
+
+  // Bug #54 -- compute whether the user has touched any non-status-only
+  // field vs `initial`. Field defaults applied symmetrically on both
+  // sides (e.g. owner_attribution defaults to "none" on read; we match
+  // here so a no-touch save isn't falsely flagged as a field edit).
+  // Mirrors the backend Bug #49 hotfix 2 _projection_equal logic for
+  // per_task_impacts (the form's impacts state is a thin projection
+  // of the DB-stored 5-key items; compare by task_id + value only).
+  const isFieldEdit = (() => {
+    if (!initial?.id) return false;
+    if ((form.description || "") !== (initial.description || "")) return true;
+    if ((form.severity || "moderate") !== (initial.severity || "moderate")) return true;
+    if ((form.reason_category || "weather") !== (initial.reason_category || "weather")) return true;
+    if ((form.owner_attribution || "none") !== (initial.owner_attribution || "none")) return true;
+    if ((form.cause_class || "other") !== (initial.cause_class || "other")) return true;
+    const initImpacts = initial.per_task_impacts || [];
+    if (form.impacts.length !== initImpacts.length) return true;
+    const initBy = Object.fromEntries(
+      initImpacts.map((i) => [i.task_id, Number(i.projected_impact_days || 0)]),
+    );
+    for (const imp of form.impacts) {
+      const iv = initBy[imp.task_id];
+      if (iv === undefined) return true;
+      if (iv !== Number(imp.projected_impact_days || 0)) return true;
+    }
+    return false;
+  })();
+  const needsEditReason = !!initial?.id && editLockedDr && isFieldEdit;
+  const editReasonValid = isReasonValid(editReason);
 
   const taskById = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
   const linkedIds = form.impacts.map((i) => i.task_id);
@@ -153,6 +221,15 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       );
       return;
     }
+    // Bug #54 -- edit_reason gate on field edits to locked-DR delays.
+    // Status-only transitions (e.g. open -> resolved + note) flow
+    // through Bug #49's exemption and don't need a reason.
+    if (needsEditReason && !editReasonValid) {
+      toast.error(
+        `Edit reason required (min ${REASON_MIN} chars) for field changes on a locked daily report. Status-only changes (resolve/close) are exempt.`,
+      );
+      return;
+    }
     setBusy(true);
     try {
       const payload = {
@@ -177,7 +254,14 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       }
       let res;
       if (initial?.id) {
-        res = await api.patch(`/delays/${initial.id}`, payload);
+        // Bug #54 -- attach edit_reason when the user supplied one.
+        // The backend ignores it on draft DRs (no gate to satisfy);
+        // on locked DRs it satisfies the field-edit gate, or wins
+        // over the synthesized note-reason on a status-only patch.
+        const patchBody = (editReason && editReason.trim())
+          ? { ...payload, edit_reason: editReason.trim() }
+          : payload;
+        res = await api.patch(`/delays/${initial.id}`, patchBody);
       } else {
         const createBody = {
           ...payload,
@@ -408,15 +492,52 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
         </div>
       )}
 
+      {/* Bug #54 (2026-05-13) -- edit_reason textarea for field edits
+          on locked-DR delays. Renders ONLY when:
+            - we're editing an existing delay (not creating), AND
+            - the parent DR is locked (lazy-fetched on mount unless
+              the caller passed isLocked=true).
+          Status-only transitions (resolve/close + note) flow through
+          Bug #49's backend exemption and don't need a reason; for
+          those the textarea still renders but the user can leave it
+          empty. The Save gate below only insists on reason text when
+          isFieldEdit is true. */}
+      {initial?.id && editLockedDr && (
+        <div className="pt-2 border-t border-slate-100">
+          <label className="text-xs uppercase tracking-wide text-slate-500">
+            Edit reason{isFieldEdit ? " *" : " (optional for status-only)"}
+          </label>
+          <textarea
+            data-testid="delay-form-edit-reason"
+            rows={2}
+            value={editReason}
+            onChange={(e) => setEditReason(e.target.value)}
+            placeholder="Why this edit is needed (min 10 chars)"
+            className="mt-1 w-full p-2 rounded border border-slate-200 text-sm" />
+          <div className="text-[10px] text-slate-500 text-right">
+            {(editReason || "").trim().length} / {REASON_MIN} min
+            {isFieldEdit ? " — required for field changes" : " — optional for status-only"}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
         {/* Bucket D Addition 5 -- submit disabled until add-reason gate
-            passes on locked DRs (create mode only). Edit mode + draft
-            DRs follow the original disabled-when-busy rule. */}
+            passes on locked DRs (create mode only). Bug #54 (2026-05-13)
+            -- AND submit disabled when editing a field-edit on a locked
+            DR without an edit_reason >= 10 chars. Status-only patches
+            stay enabled (Bug #49 backend exemption handles them). */}
         <button data-testid="delay-form-save" onClick={submit}
-          disabled={busy || (isLocked && !initial?.id && !isReasonValid(lockedAddReason))}
-          title={isLocked && !initial?.id && !isReasonValid(lockedAddReason)
-            ? `Add reason required (min ${REASON_MIN} chars) on a locked DR.`
-            : undefined}
+          disabled={busy
+            || (isLocked && !initial?.id && !isReasonValid(lockedAddReason))
+            || (needsEditReason && !editReasonValid)}
+          title={
+            isLocked && !initial?.id && !isReasonValid(lockedAddReason)
+              ? `Add reason required (min ${REASON_MIN} chars) on a locked DR.`
+              : (needsEditReason && !editReasonValid
+                ? `Edit reason required (min ${REASON_MIN} chars) for field changes on a locked DR.`
+                : undefined)
+          }
           className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
           {initial?.id
             ? "Save changes"
