@@ -389,7 +389,7 @@ export default function JigsawField({
             data-testid={`jigsaw-reject-dialog-${fieldPath}`}
           >
             <label className="block text-[10px] uppercase text-rose-800">
-              Reason (10+ chars)
+              Rejection reason (required, min 10 chars)
             </label>
             <textarea
               data-testid={`jigsaw-reject-reason-${fieldPath}`}
@@ -399,12 +399,27 @@ export default function JigsawField({
               placeholder="Explain why this suggestion is wrong (calibration RAG learns from your reason)…"
               className="w-full p-1.5 text-xs rounded border border-rose-300 bg-white"
             />
+            {/* Bug #48 (2026-05-14) -- char counter + gated submit button.
+                Mirrors the Bug #54 DelayForm.jsx edit_reason UX so the
+                user sees the gate up-front instead of finding out via
+                toast error after click. Also defends against future
+                bypass attempts if the toast-error path is ever skipped. */}
+            <div className="text-[10px] text-rose-800/70 text-right">
+              {(rejectReason || "").trim().length} / 10 min
+              {(rejectReason || "").trim().length < 10
+                ? " — required for TIA defensibility"
+                : " — ready"}
+            </div>
             <div className="flex gap-1">
               <button
-                type="button" disabled={busy}
+                type="button"
+                disabled={busy || (rejectReason || "").trim().length < 10}
                 onClick={reject}
                 data-testid={`jigsaw-reject-submit-${fieldPath}`}
-                className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 disabled:opacity-50"
+                title={(rejectReason || "").trim().length < 10
+                  ? "Rejection reason must be at least 10 characters."
+                  : undefined}
+                className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Submit
               </button>
