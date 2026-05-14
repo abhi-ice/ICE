@@ -14,20 +14,18 @@ Blocker sources counted in has_open_blocker:
   - delays.linked_task_ids contains task_id, delays.status in [open, in_progress]
   - rfis.linked_task_ids contains task_id OR rfis.schedule_activity_id == task_id,
     rfis.status in [draft, sent, in_review]
-  - qc_issues.linked_task_ids contains task_id, qc_issues.status in [open, needs_rework]
-  - safety_events.linked_task_ids contains task_id, safety_events.status == 'open'
   - submittals.schedule_activity_id == task_id, submittals.status in [submitted, in_review],
     submittals.sla_status == 'breached' (over-SLA submittals only)
   - work_item_links where (entity_type='task', entity_id=task_id),
     work_items.status NOT IN [closed, resolved]
 
-Bug #50 (2026-05-13): RFIs / QC / safety / submittals added to the
-aggregation so the Tasks page surfaces them as blockers, matching the
-"all open gating entities should aggregate" rule. RFIs now match on
-EITHER linked_task_ids (canonical Bucket D Corrective linkage) OR
-schedule_activity_id (legacy single-link) so we don't drop legacy data.
-Submittals are blockers ONLY when SLA-breached -- in-flight submittals
-within SLA are normal procurement, not blockers.
+Bug #50 (2026-05-13): RFIs (via linked_task_ids) + submittals added to
+the aggregation. Bug #53 (2026-05-13): QC / safety briefly added by
+Bug #50 are REMOVED -- they're internal quality / safety flags, not
+schedule blockers (Sid's clarification after seeing them surface in
+production). The linkage stays on the entity models so the gallery
+filter and per-task lookups continue to work; only the blocker
+aggregation drops them.
 
 CPM walk-forward (Phase 4) — see compute_projected_finish_dates.
 """
@@ -129,44 +127,16 @@ async def count_open_blockers(db, tenant_id: str, task_id: str) -> tuple[int, li
             "label": f"RFI {r.get('rfi_number')}: {(r.get('subject') or '')[:60]}",
         })
 
-    # Bug #50 (2026-05-13): QC issues that are still open block the
-    # task. Status set follows Sid's spec: open + needs_rework. If the
-    # QC status vocabulary grows (e.g. in_remediation), add it here.
-    qcs = await db.qc_issues.find(
-        tenant_filter(tenant_id, {
-            "linked_task_ids": task_id,
-            "status": {"$in": ["open", "needs_rework"]},
-        }),
-        {"_id": 0, "id": 1, "severity": 1, "description": 1},
-    ).limit(20).to_list(20)
-    for q in qcs:
-        summary.append({
-            "entity_type": "qc_issue",
-            "entity_id": q["id"],
-            "severity": q.get("severity"),
-            "label": (q.get("description") or "")[:80],
-        })
-
-    # Bug #50 (2026-05-13): open safety events block linked tasks.
-    # The model has no requires_work_stoppage field today, so per
-    # Sid's spec fallback ("otherwise all open") we treat every open
-    # safety event as a blocker.
-    safeties = await db.safety_events.find(
-        tenant_filter(tenant_id, {
-            "linked_task_ids": task_id,
-            "status": "open",
-        }),
-        {"_id": 0, "id": 1, "severity": 1, "event_type": 1, "description": 1},
-    ).limit(20).to_list(20)
-    for s in safeties:
-        et = (s.get("event_type") or "").replace("_", " ")
-        descr = (s.get("description") or "")[:60]
-        summary.append({
-            "entity_type": "safety_event",
-            "entity_id": s["id"],
-            "severity": s.get("severity"),
-            "label": f"{et}: {descr}" if et else descr,
-        })
+    # Bug #53 (2026-05-13) -- QC issues and safety events were briefly
+    # added as blocker sources by Bug #50 (commit 9a0170d). Sid
+    # clarified after seeing it in production: those are internal
+    # quality / safety flags, not schedule blockers. The linkage stays
+    # (qc_issues.linked_task_ids and safety_events.linked_task_ids
+    # remain canonical for the gallery + per-task filtering), but
+    # neither surfaces in the Tasks page blocker count or tooltip.
+    # See routers/field_events_router.py for the matching removal of
+    # the compute_and_persist_status recompute hooks on QC/Safety
+    # create + PATCH paths (Bug #50 added them, Bug #53 removes them).
 
     # Bug #50 (2026-05-13): submittals that are still in flight AND
     # over their A/E review SLA block the task. In-flight-but-on-track
