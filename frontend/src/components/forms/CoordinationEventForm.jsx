@@ -180,9 +180,16 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       const effectiveLinkedDr = (!initial?.id && linkedDailyReportId)
         ? linkedDailyReportId
         : (form.linked_daily_report_id || null);
+      // Bug #56 (2026-05-14) -- project_id is CREATE-only. The
+      // CoordinationEventUpdate Pydantic model intentionally omits
+      // project_id ("intentionally not patchable -- would orphan the
+      // row across tenants/projects" per the model docstring) and
+      // inherits extras=forbid from StrictModel. Sending project_id
+      // on PATCH gets a 422 "Extra inputs are not permitted" toast.
+      // Build a base payload WITHOUT project_id; the CREATE branch
+      // below adds it explicitly.
       const payload = {
         ...form,
-        project_id: projectId,
         // Datetime-local widget gives "YYYY-MM-DDTHH:MM" — Pydantic accepts.
         occurred_at: form.occurred_at,
         // Strip empties so they read null on the server.
@@ -207,6 +214,9 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
           : payload;
         res = await api.patch(`/coordination-events/${initial.id}`, patchBody);
       } else {
+        // Bug #56 -- inject project_id only on CREATE (the Create
+        // model requires it).
+        payload.project_id = projectId;
         // Bucket D Addition 5 -- ALWAYS include add_reason on locked-DR
         // creates (client-side gate above guarantees it's valid).
         if (isLocked) {
