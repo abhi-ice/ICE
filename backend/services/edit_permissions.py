@@ -118,6 +118,64 @@ STATUS_TRANSITION_CONFIGS: dict[str, dict] = {
 }
 
 
+def _projection_equal(before_v, updates_v) -> bool:
+    """Bug #49 hotfix 2 (2026-05-13). True iff updates_v is consistent
+    with before_v under "frontend echoes a thin projection of stored
+    data" semantics.
+
+    Root cause this addresses:
+    backend/routers/field_events_router.py:_resolve_task_impacts stamps
+    each per_task_impacts item with 5 keys on storage:
+        task_id, projected_impact_days,
+        float_at_logging_days, consumes_float_only, pushes_critical_path
+
+    DelayForm.jsx echoes back only 2 keys:
+        task_id, projected_impact_days
+
+    Python dict equality requires identical key sets:
+        {a:1, b:2, c:3, d:4, e:5}  !=  {a:1, b:2}
+    so list element-wise == falsely flags per_task_impacts as changed on
+    every patch, even when the user touched nothing on the impacts grid.
+    That pulled per_task_impacts into changed_fields, which is NOT in
+    delay's status-only allowed set, disqualifying the exemption and
+    causing the 422 reported in preview.
+
+    Rule:
+      - Scalar / dict identity:  use Python ==.
+      - List-of-dict, same length: each updates item must be a
+        key-subset of the corresponding before item with matching
+        values for the shared keys. Backend-only keys not echoed by
+        the frontend are tolerated.
+      - Anything else: fall back to ==.
+
+    Asymmetry note: we project BEFORE -> UPDATES keys, never the other
+    way. If the frontend sent extra keys not in before, Pydantic
+    StrictModel (extra='forbid') would 422 before reaching the policy
+    -- so the reverse case is unreachable.
+
+    Detected as a real change (returns False), preserving the gate:
+      - User changes projected_impact_days from 5 to 10:
+          b_item.get('projected_impact_days') == 5.0 != u_item[..] == 10
+      - User adds or removes a task: len(before) != len(updates).
+      - User mutates a non-list-of-dict field (severity, etc.):
+        falls through to ==, which catches real value changes.
+    """
+    if before_v == updates_v:
+        return True
+    if (isinstance(before_v, list) and isinstance(updates_v, list)
+            and len(before_v) == len(updates_v)):
+        for b_item, u_item in zip(before_v, updates_v):
+            if isinstance(b_item, dict) and isinstance(u_item, dict):
+                # u keys must be a subset of b keys-and-values.
+                for k, v in u_item.items():
+                    if b_item.get(k) != v:
+                        return False
+            elif b_item != u_item:
+                return False
+        return True
+    return False
+
+
 def _diff_fields_meaningful(
     event_type: str, updates: dict, before: dict,
 ) -> set:
@@ -172,7 +230,11 @@ def _diff_fields_meaningful(
     changed: set = set()
     for k, v in updates.items():
         before_v = before.get(k)
-        if before_v == v:
+        # Bug #49 hotfix 2 (2026-05-13): swapped raw `==` for
+        # _projection_equal so list-of-dict fields where the frontend
+        # echoes a thin projection of DB-enriched data (per_task_impacts
+        # is the canonical case) compare correctly.
+        if _projection_equal(before_v, v):
             continue
         if before_v is None and k not in allowed and v is not None:
             # JS-default-vs-DB-None phantom change. Skip.
@@ -476,6 +538,33 @@ async def enforce_locked_dr_edit_policy(
             sorted((STATUS_TRANSITION_CONFIGS.get(event_type) or {}).get("allowed") or []),
             status_only,
         )
+        # Bug #49 hotfix 2 (2026-05-13): when status_only is False AND
+        # there are changed_fields, emit a structural diagnostic for
+        # each "offending" field so the next class-of regression is
+        # one-glance debuggable. Captures types + (for list-of-dict)
+        # the key sets on each side -- which is exactly the signal
+        # that revealed the per_task_impacts mismatch.
+        if not status_only and changed_fields:
+            diag = {}
+            for k in changed_fields:
+                bv = before.get(k)
+                uv = updates.get(k)
+                entry: dict = {
+                    "before_type": type(bv).__name__,
+                    "updates_type": type(uv).__name__,
+                }
+                if isinstance(bv, list) and bv and isinstance(bv[0], dict):
+                    entry["before_item_keys"] = sorted(bv[0].keys())
+                if isinstance(uv, list) and uv and isinstance(uv[0], dict):
+                    entry["updates_item_keys"] = sorted(uv[0].keys())
+                if isinstance(bv, list) and isinstance(uv, list):
+                    entry["before_len"] = len(bv)
+                    entry["updates_len"] = len(uv)
+                diag[k] = entry
+            log.info(
+                "bug49_diff_detail: dr_id=%s event_type=%s event_id=%s offenders=%s",
+                daily_report_id, event_type, event_id, diag,
+            )
 
     # Reason resolution:
     #   - If the user supplied a sufficient edit_reason, always use it
