@@ -10,7 +10,7 @@
 //   abbreviated     bool — Quick-log mode skips the "linkages" expander
 //   onSaved         function(event) — called on success
 //   onCancel        function — close handler
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 // Bucket D Corrective (2026-05-08) -- master-schedule task picker
@@ -72,6 +72,13 @@ function defaultsFromInitial(initial, linkedDailyReportId) {
 // admin/PM remains intact as the safety net.
 const COORD_REASON_MIN = 10;
 const coordIsReasonValid = (v) => (v || "").trim().length >= COORD_REASON_MIN;
+
+// Bug #54 (2026-05-13) -- mirrors backend STATUS_TRANSITION_CONFIGS
+// ["coordination"]. Trigger field is `outcome` (not `status`); only
+// outcome + outcome_notes count as status-only changes. Any other
+// field edit on a locked-DR coordination event requires edit_reason.
+const COORD_STATUS_ONLY_FIELDS = new Set(["outcome", "outcome_notes"]);
+
 export default function CoordinationEventForm({ projectId, initial, linkedDailyReportId,
                                                  abbreviated = false,
                                                  onSaved, onCancel,
@@ -80,6 +87,64 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
   const [busy, setBusy] = useState(false);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  // Bug #54 (2026-05-13) -- edit_reason capture for field edits on
+  // locked-DR coordination events. Lazy-fetch parent DR status when
+  // entering edit mode. Coordination uses linked_daily_report_id
+  // (different field name from delays/QC/safety which use
+  // daily_report_id directly).
+  const [editReason, setEditReason] = useState("");
+  const [editLockedDr, setEditLockedDr] = useState(false);
+  useEffect(() => {
+    if (!initial?.id) return;
+    if (isLocked) { setEditLockedDr(true); return; }
+    const drId = initial?.linked_daily_report_id || linkedDailyReportId;
+    if (!drId) return;
+    let cancelled = false;
+    api.get(`/daily-reports/${drId}`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const st = data?.status;
+        if (st === "submitted" || st === "approved") setEditLockedDr(true);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [initial?.id, initial?.linked_daily_report_id, linkedDailyReportId, isLocked]);
+
+  // Diff form vs initial. Trigger = outcome; status-only allowed
+  // covers only outcome + outcome_notes. Everything else (channel,
+  // direction, topic, summary, parties, linked_task_ids, etc.) is a
+  // field edit requiring edit_reason.
+  const isFieldEdit = (() => {
+    if (!initial?.id) return false;
+    const NON_STATUS_KEYS = [
+      "occurred_at", "channel", "direction", "other_party_name",
+      "other_party_org", "other_party_role", "other_party_email",
+      "other_party_phone", "topic", "topic_other_description",
+      "summary", "detail_text", "trade_code",
+    ];
+    for (const k of NON_STATUS_KEYS) {
+      const f = (form[k] ?? "");
+      const i = (initial[k] ?? "");
+      // occurred_at slicing: form stores 16-char local datetime,
+      // initial may have a longer ISO string — compare prefixes.
+      if (k === "occurred_at") {
+        if (String(f).slice(0, 16) !== String(i).slice(0, 16)) return true;
+        continue;
+      }
+      if (String(f) !== String(i)) return true;
+    }
+    // linked_task_ids: list of strings, set-compare
+    const ftids = [...(form.linked_task_ids || [])].sort();
+    const itids = [...(initial.linked_task_ids || [])].sort();
+    if (ftids.length !== itids.length) return true;
+    for (let i = 0; i < ftids.length; i++) {
+      if (ftids[i] !== itids[i]) return true;
+    }
+    return false;
+  })();
+  const needsEditReason = !!initial?.id && editLockedDr && isFieldEdit;
+  const editReasonValid = coordIsReasonValid(editReason);
 
   const submit = async () => {
     if (!form.summary.trim()) { toast.error("Summary is required"); return; }
@@ -94,6 +159,13 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
     if (isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason)) {
       toast.error(
         `Add reason required (min ${COORD_REASON_MIN} chars) when logging a coordination event on a locked daily report.`,
+      );
+      return;
+    }
+    // Bug #54 -- field-edit gate for locked-DR coordination events.
+    if (needsEditReason && !editReasonValid) {
+      toast.error(
+        `Edit reason required (min ${COORD_REASON_MIN} chars) for field changes on a locked daily report. Outcome-only changes are exempt.`,
       );
       return;
     }
@@ -129,7 +201,11 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       };
       let res;
       if (initial?.id) {
-        res = await api.patch(`/coordination-events/${initial.id}`, payload);
+        // Bug #54 -- include user-supplied edit_reason when present.
+        const patchBody = (editReason && editReason.trim())
+          ? { ...payload, edit_reason: editReason.trim() }
+          : payload;
+        res = await api.patch(`/coordination-events/${initial.id}`, patchBody);
       } else {
         // Bucket D Addition 5 -- ALWAYS include add_reason on locked-DR
         // creates (client-side gate above guarantees it's valid).
@@ -327,6 +403,30 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         required={false} label="Linked tasks (optional)"
         testidPrefix="coord-activity" />
 
+      {/* Bug #54 (2026-05-13) -- edit_reason textarea for field edits
+          on locked-DR coordination events. Renders only in edit mode
+          + locked parent DR. Outcome-only changes (Bug #49 backend
+          exemption) don't strictly need a reason but the field is
+          still available for user-supplied intent. */}
+      {initial?.id && editLockedDr && (
+        <div className="pt-2 border-t border-slate-100">
+          <label className="text-xs uppercase tracking-wide text-slate-500">
+            Edit reason{isFieldEdit ? " *" : " (optional for outcome-only)"}
+          </label>
+          <textarea
+            data-testid="coord-edit-reason"
+            rows={2}
+            value={editReason}
+            onChange={(e) => setEditReason(e.target.value)}
+            placeholder="Why this edit is needed (min 10 chars)"
+            className="mt-1 w-full p-2 rounded border border-slate-200 text-sm" />
+          <div className="text-[10px] text-slate-500 text-right">
+            {(editReason || "").trim().length} / {COORD_REASON_MIN} min
+            {isFieldEdit ? " — required for field changes" : " — optional for outcome-only"}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
         {onCancel && (
           <button onClick={onCancel} disabled={busy}
@@ -335,12 +435,20 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
           </button>
         )}
         {/* Bucket D Addition 5 -- submit disabled until add-reason gate
-            passes on locked-DR creates. */}
+            passes on locked-DR creates. Bug #54 -- AND disabled when
+            editing a field-edit on a locked DR without an edit_reason
+            >= 10 chars. Outcome-only patches stay enabled. */}
         <button data-testid="coord-save" onClick={submit}
-          disabled={busy || (isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason))}
-          title={isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason)
-            ? `Add reason required (min ${COORD_REASON_MIN} chars) on a locked DR.`
-            : undefined}
+          disabled={busy
+            || (isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason))
+            || (needsEditReason && !editReasonValid)}
+          title={
+            isLocked && !initial?.id && !coordIsReasonValid(lockedAddReason)
+              ? `Add reason required (min ${COORD_REASON_MIN} chars) on a locked DR.`
+              : (needsEditReason && !editReasonValid
+                ? `Edit reason required (min ${COORD_REASON_MIN} chars) for field changes on a locked DR.`
+                : undefined)
+          }
           className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
           {busy
             ? "Saving…"

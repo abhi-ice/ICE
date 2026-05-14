@@ -22,7 +22,22 @@ import { toast } from "./ui/sonner";
  *   testidPrefix     for data-testid hooks
  *   refreshKey       changes → triggers reload
  *   help             short paragraph below the page header
+ *
+ *   editReasonConfig Bug #54 (2026-05-13) -- optional. When present AND
+ *                    in edit mode AND the row's parent DR is locked,
+ *                    render an edit_reason textarea + gate Save when
+ *                    the patch is a field edit. Shape:
+ *                      {
+ *                        allowedFields: Set<string>  // status-only allowed
+ *                        parentDrIdKey: string       // e.g. "daily_report_id"
+ *                        minChars?: number           // default 10
+ *                      }
+ *                    Allowed=empty-set means "no status-only path" --
+ *                    every edit requires a reason on a locked DR
+ *                    (used for safety_events, which has no status field).
  */
+const EDIT_REASON_MIN_DEFAULT = 10;
+
 export default function CrudList({
   title, subtitle, listEndpoint, createEndpoint, patchEndpoint, deleteEndpoint,
   columns, formFields, buildPayload, testidPrefix = "crud", help, extraActions,
@@ -31,6 +46,8 @@ export default function CrudList({
   // this custom node (gallery pages route to today's DR instead of
   // opening an inline modal).
   customAddButton,
+  // Bug #54 (2026-05-13) -- edit_reason capture for field edits.
+  editReasonConfig = null,
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -51,22 +68,74 @@ export default function CrudList({
 
   useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [listEndpoint]);
 
+  // Bug #54 (2026-05-13) -- per-row edit_reason capture state. Reset
+  // on every startCreate/startEdit; lazy-fetch the parent DR's status
+  // on startEdit so the textarea + gate render conditionally.
+  const [editReason, setEditReason] = useState("");
+  const [editLockedDr, setEditLockedDr] = useState(false);
+  const reasonMin = (editReasonConfig && editReasonConfig.minChars) || EDIT_REASON_MIN_DEFAULT;
+
   const startCreate = () => {
     const def = {};
     formFields.forEach((f) => { def[f.key] = f.default ?? (f.type === "checkbox" ? false : ""); });
     setForm(def); setEditing(null); setOpen(true);
+    setEditReason(""); setEditLockedDr(false);
   };
   const startEdit = (row) => {
     const def = {};
     formFields.forEach((f) => { def[f.key] = row[f.key] ?? (f.type === "checkbox" ? false : ""); });
     setForm(def); setEditing(row); setOpen(true);
+    setEditReason(""); setEditLockedDr(false);
+    // Lazy-fetch parent DR lock state if configured.
+    if (editReasonConfig && editReasonConfig.parentDrIdKey) {
+      const drId = row[editReasonConfig.parentDrIdKey];
+      if (drId) {
+        api.get(`/daily-reports/${drId}`)
+          .then(({ data }) => {
+            const st = data?.status;
+            if (st === "submitted" || st === "approved") setEditLockedDr(true);
+          })
+          .catch(() => {});  // defensive: treat as unlocked on fetch failure
+      }
+    }
   };
+  // Bug #54 -- compute "is this an edit beyond the status-only allowed
+  // set?" for the conditional Save gate. Compares each form field to
+  // the original row, normalizing null vs "" so a no-touch save isn't
+  // falsely flagged. If config.allowedFields is empty, every change
+  // counts as a field edit (safety_events case).
+  const isFieldEditCrud = (() => {
+    if (!editReasonConfig || !editing) return false;
+    const allowed = editReasonConfig.allowedFields || new Set();
+    for (const f of formFields) {
+      const fv = form[f.key];
+      const ev = editing[f.key];
+      const same = (
+        (fv == null && (ev == null || ev === ""))
+        || (ev == null && (fv == null || fv === ""))
+        || (f.type === "number" ? Number(fv ?? 0) === Number(ev ?? 0) : String(fv ?? "") === String(ev ?? ""))
+      );
+      if (same) continue;
+      if (!allowed.has(f.key)) return true;
+    }
+    return false;
+  })();
+  const needsEditReasonCrud = !!editing && editLockedDr && isFieldEditCrud;
+  const editReasonValidCrud = (editReason || "").trim().length >= reasonMin;
   // Bucket D Fix E -- double-click guards: one for save, one for
   // per-row delete (Set tracks in-flight delete row ids).
   const [saving, setSaving] = useState(false);
   const [deletingIds, setDeletingIds] = useState(new Set());
   const submit = async () => {
     if (saving) return;
+    // Bug #54 -- client-side gate before payload assembly. Backend
+    // would 422 anyway but the textarea + counter give clearer UX.
+    if (needsEditReasonCrud && !editReasonValidCrud) {
+      toast.error(
+        `Edit reason required (min ${reasonMin} chars) for field changes on a locked daily report.`,
+      );
+      return;
+    }
     const payload = buildPayload ? buildPayload(form, editing) : { ...form };
     // strip empty strings → null for non-required text
     formFields.forEach((f) => {
@@ -78,7 +147,13 @@ export default function CrudList({
     setSaving(true);
     try {
       if (editing) {
-        await api.patch(patchEndpoint(editing), payload);
+        // Bug #54 -- attach edit_reason on PATCH when supplied. Empty
+        // is omitted (backend doesn't need it on draft DRs or on
+        // status-only patches via Bug #49 exemption).
+        const patchBody = (editReason && editReason.trim())
+          ? { ...payload, edit_reason: editReason.trim() }
+          : payload;
+        await api.patch(patchEndpoint(editing), patchBody);
         toast.success("Saved");
       } else {
         await api.post(createEndpoint, payload);
@@ -169,7 +244,36 @@ export default function CrudList({
             {formFields.map((f) => (
               <FormField key={f.key} f={f} value={form[f.key]} onChange={(v) => setForm({ ...form, [f.key]: v })} testidPrefix={testidPrefix} />
             ))}
-            <Button data-testid={`${testidPrefix}-save`} onClick={submit} disabled={saving} className="bg-blue-600 hover:bg-blue-700 w-full disabled:opacity-50">{saving ? "Saving…" : (editing ? "Save changes" : "Create")}</Button>
+            {/* Bug #54 (2026-05-13) -- edit_reason textarea for field
+                edits on locked-DR rows. Renders only in edit mode +
+                locked parent DR. The empty-allowed-set case (safety
+                events have no status-only path) shows the textarea on
+                ANY edit; for others the label hints when it's optional
+                (status-only) vs required (field edit). */}
+            {editing && editLockedDr && editReasonConfig && (
+              <div className="pt-2 border-t border-slate-100">
+                <label className="field-label">
+                  Edit reason{isFieldEditCrud ? " *" : " (optional for status-only)"}
+                </label>
+                <textarea
+                  data-testid={`${testidPrefix}-edit-reason`}
+                  rows={2}
+                  value={editReason}
+                  onChange={(e) => setEditReason(e.target.value)}
+                  placeholder={`Why this edit is needed (min ${reasonMin} chars)`}
+                  className="mt-1 w-full p-2 rounded border border-slate-200 text-sm" />
+                <div className="text-[10px] text-slate-500 text-right">
+                  {(editReason || "").trim().length} / {reasonMin} min
+                  {isFieldEditCrud ? " — required for field changes" : " — optional for status-only"}
+                </div>
+              </div>
+            )}
+            <Button data-testid={`${testidPrefix}-save`} onClick={submit}
+              disabled={saving || (needsEditReasonCrud && !editReasonValidCrud)}
+              title={needsEditReasonCrud && !editReasonValidCrud
+                ? `Edit reason required (min ${reasonMin} chars) for field changes on a locked DR.`
+                : undefined}
+              className="bg-blue-600 hover:bg-blue-700 w-full disabled:opacity-50">{saving ? "Saving…" : (editing ? "Save changes" : "Create")}</Button>
           </div>
         </DialogContent>
       </Dialog>
