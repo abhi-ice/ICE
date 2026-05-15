@@ -20,6 +20,8 @@ import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate, resolveTodaysDr } from "../lib/todaysDr";
 import api from "../lib/api";
+// CPM Part G (2026-05-15) -- report_date rendered MM/DD/YYYY in toasts.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 const TRADE_OPTIONS = [
   "general", "concrete", "masonry", "steel", "framing", "drywall",
@@ -341,7 +343,7 @@ export default function ProjectScopedList({ kind }) {
     try {
       const { url, locked, dr } = await navigateToTodaysDrForCreate(activeId, createEvent);
       if (locked) {
-        toast.info(`Today's DR (${dr.report_date}) is locked. Use Supplements panel on the parent DR to add ${createEvent}.`);
+        toast.info(`Today's DR (${formatDateDisplay(dr.report_date)}) is locked. Use Supplements panel on the parent DR to add ${createEvent}.`);
         navigate(`/daily-reports?openId=${dr.id}`);
       } else {
         navigate(url);
@@ -510,7 +512,7 @@ function AiFlaggedSafetyPhotosBanner({ projectId }) {
       const dr = await resolveTodaysDr(projectId);
       if (dr.status === "submitted" || dr.status === "approved") {
         toast.info(
-          `Today's DR (${dr.report_date}) is locked. File the safety event via Supplements on the parent DR.`,
+          `Today's DR (${formatDateDisplay(dr.report_date)}) is locked. File the safety event via Supplements on the parent DR.`,
         );
         return;
       }

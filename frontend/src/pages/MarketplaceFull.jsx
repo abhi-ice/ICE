@@ -8,6 +8,9 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import { useNavigate, useSearchParams } from "react-router-dom";
+// CPM Part G (2026-05-15) -- created_at + deadline rendered MM/DD/YYYY
+// via the chokepoint helper.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 const TYPES = ["sub_invitation", "equipment_rental", "labor_request", "materials"];
 const VISIBILITY = ["network", "union_hall", "public", "private"];
@@ -198,13 +201,13 @@ export default function MarketplaceFull() {
             <div className="flex items-center gap-2 mb-2">
               <span className="pill pill-blue capitalize">{p.posting_type.replace(/_/g, " ")}</span>
               <span className="pill pill-slate text-[10px]">{p.visibility}</span>
-              <span className="ml-auto text-[10px] text-slate-400">{new Date(p.created_at).toLocaleDateString()}</span>
+              <span className="ml-auto text-[10px] text-slate-400">{formatDateDisplay(p.created_at)}</span>
             </div>
             <div className="font-medium">{p.title}</div>
             <div className="text-xs text-slate-600 mt-1 line-clamp-3">{p.description}</div>
             <div className="text-xs text-slate-500 mt-2 flex items-center gap-2">
               {p.location_city && <span>{p.location_city}, {p.location_state}</span>}
-              {p.deadline && <span>· deadline {p.deadline}</span>}
+              {p.deadline && <span>· deadline {formatDateDisplay(p.deadline)}</span>}
             </div>
             {(p.budget_low || p.budget_high) && (
               <div className="text-xs font-mono mt-1">${p.budget_low?.toLocaleString() || "—"} – ${p.budget_high?.toLocaleString() || "—"}</div>

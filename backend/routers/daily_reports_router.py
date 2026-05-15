@@ -1141,6 +1141,11 @@ async def export_daily_pdf(daily_report_id: str, ctx: dict = Depends(require_ten
     deployment uses ReportLab/WeasyPrint for true PDF.
     """
     from fastapi import Response
+    # CPM Part G (2026-05-15) -- "Date:" line in the export body
+    # renders MM/DD/YYYY via the shared backend chokepoint. The
+    # filename below stays ISO YYYY-MM-DD (no slashes in filenames;
+    # ISO sorts chronologically in file managers).
+    from services.date_format import format_date_mmddyyyy
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
@@ -1150,7 +1155,7 @@ async def export_daily_pdf(daily_report_id: str, ctx: dict = Depends(require_ten
 
     lines = [
         f"DAILY REPORT — {proj['name'] if proj else dr['project_id']}",
-        f"Date: {dr['report_date']}",
+        f"Date: {format_date_mmddyyyy(dr['report_date'])}",
         f"Status: {dr['status']}",
         f"Weather: {dr.get('weather_conditions') or 'n/a'}, "
         f"high {dr.get('weather_temp_high_f')}F low {dr.get('weather_temp_low_f')}F, "

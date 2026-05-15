@@ -9,6 +9,11 @@ import {
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
+// CPM Part G (2026-05-15) -- weekly report period_start/end and
+// recovery action due_date rendered MM/DD/YYYY via the lib/dateUtil
+// chokepoint. Budget reset_at (toLocaleDateString) is a datetime
+// + time-aware display and stays untouched.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 // Bucket H Phase 5 (2026-05-08) -- audit op filter dropdown options.
 // Grouped for legibility; "(all)" sentinel left as empty string so the
@@ -1899,8 +1904,8 @@ function ReportRow({ r, onOpen, onFinalize, onArchive, onExport, isAdminOrPm }) 
         <span className="font-medium">{r.audit_op_label || `Report ${r.id.slice(0, 8)}`}</span>
         {r.period_start && (
           <span className="text-slate-500 ml-2 font-mono">
-            {r.period_start}{r.period_end && r.period_end !== r.period_start
-              ? ` → ${r.period_end}` : ""}
+            {formatDateDisplay(r.period_start)}{r.period_end && r.period_end !== r.period_start
+              ? ` → ${formatDateDisplay(r.period_end)}` : ""}
           </span>
         )}
       </span>
@@ -2008,7 +2013,7 @@ function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
                     <div className="font-medium">{a.action}</div>
                     <div className="text-slate-500 text-[10px] mt-1">
                       Owner: {a.owner || "—"} ·
-                      Due: {a.due_date || "—"} ·
+                      Due: {formatDateDisplay(a.due_date)} ·
                       Confidence: {a.confidence != null
                         ? `${Math.round(a.confidence * 100)}%` : "—"}
                     </div>

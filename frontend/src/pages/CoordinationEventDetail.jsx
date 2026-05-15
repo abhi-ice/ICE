@@ -13,6 +13,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ChevronLeft, Pencil, Trash2, Lock } from "lucide-react";
 import api from "../lib/api";
 import { Button } from "../components/ui/button";
+// CPM Part G (2026-05-15) -- last_edited_at displayed MM/DD/YYYY.
+import { formatDateDisplay } from "../lib/dateUtil";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
@@ -141,7 +143,7 @@ export default function CoordinationEventDetail() {
             <span className="bg-amber-100 text-amber-900 border border-amber-300 rounded px-1.5 py-0.5"
               title={ev.last_edit_reason || ""}>
               Edited {ev.edit_count || 0}× post-submit
-              {ev.last_edited_at && `, last ${ev.last_edited_at.slice(0, 10)}`}
+              {ev.last_edited_at && `, last ${formatDateDisplay(ev.last_edited_at)}`}
             </span>
             {ev.last_edit_reason && (
               <span className="ml-2 text-slate-600 italic">"{ev.last_edit_reason}"</span>

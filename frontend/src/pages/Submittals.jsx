@@ -26,6 +26,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { toast } from "../components/ui/sonner";
 import { getUser } from "../lib/auth";
 import JigsawField from "../components/forms/JigsawField";
+// CPM Part G (2026-05-15) -- submittal SLA dates (submitted_to_ae_at,
+// a_e_review_due_at, must_approve_by) rendered MM/DD/YYYY via the
+// chokepoint helper. The fields are datetimes in storage but the
+// display cells already truncated to the date portion via
+// .toLocaleDateString(); formatDateDisplay does the same truncation
+// (slice(0,10)) plus the format conversion in one place.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 const STATUS_OPTIONS = [
   "not_yet_submitted", "submitted", "in_review", "approved",
@@ -448,10 +455,10 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
       <td className="text-xs">{(s.type || "").replace(/_/g, " ")}</td>
       <td className="text-xs tabular-nums">{s.review_cycle_count || 0}</td>
       <td className="text-xs font-mono">
-        {s.submitted_to_ae_at ? new Date(s.submitted_to_ae_at).toLocaleDateString() : "—"}
+        {formatDateDisplay(s.submitted_to_ae_at)}
       </td>
       <td className="text-xs font-mono">
-        {s.a_e_review_due_at ? new Date(s.a_e_review_due_at).toLocaleDateString() : "—"}
+        {formatDateDisplay(s.a_e_review_due_at)}
       </td>
       <td className="text-xs tabular-nums">
         {s.aging_days != null
@@ -462,7 +469,7 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
       <td className="text-xs font-mono">
         {s.must_approve_by
           ? <span className={s.urgency_flag ? "text-rose-700 font-medium" : ""}>
-              {new Date(s.must_approve_by).toLocaleDateString()}
+              {formatDateDisplay(s.must_approve_by)}
               {s.urgency_flag && (
                 <AlertTriangle className="inline h-3 w-3 ml-1 text-rose-600" />
               )}
@@ -519,11 +526,11 @@ function RegisterCard({ s, isAdminOrPm, onSubmitToAe, onPauseResume, onOpenEdit 
         {s.discipline || "—"} · {(s.type || "").replace(/_/g, " ")} · rev {s.review_cycle_count || 0}
       </div>
       <div className="grid grid-cols-2 gap-1 text-[10px] text-slate-600">
-        <div>Submitted: {s.submitted_to_ae_at ? new Date(s.submitted_to_ae_at).toLocaleDateString() : "—"}</div>
-        <div>Due: {s.a_e_review_due_at ? new Date(s.a_e_review_due_at).toLocaleDateString() : "—"}</div>
+        <div>Submitted: {formatDateDisplay(s.submitted_to_ae_at)}</div>
+        <div>Due: {formatDateDisplay(s.a_e_review_due_at)}</div>
         <div>Aging: {s.aging_days != null ? `${s.aging_days}d` : "—"}</div>
         <div className={s.urgency_flag ? "text-rose-700" : ""}>
-          Must approve: {s.must_approve_by || "—"}
+          Must approve: {formatDateDisplay(s.must_approve_by)}
         </div>
       </div>
       <div className="flex items-center gap-1 pt-1 border-t border-slate-100">

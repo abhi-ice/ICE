@@ -23,21 +23,45 @@ export function localISODate(d) {
 }
 
 // CPM Part F (2026-05-15) -- single display-format point for date
-// columns in Tasks + Lookahead. For Part F we pass through the ISO
-// YYYY-MM-DD form (matches the existing planned_start / planned_finish
-// rendering). CPM Part G (next ship) will swap this helper's body to
-// MM/DD/YY so the entire app changes format from one place -- every
-// caller already routes through formatDateDisplay().
+// columns app-wide. Every visible date string (Tasks, Lookahead,
+// Daily Reports, RFIs, Deliveries, Delays, QC, Safety, Photos,
+// Weekly Reports, Approvals, Drawings, Dashboard) routes through
+// this one helper so the format can be flipped in one place.
 //
-// Returns "—" (em-dash) on null/empty/undefined input so the Impacted
-// Start + Impacted Finish columns don't render literal "null" or
-// blank on tasks with no projected dates yet (fresh schedule import,
-// no events logged).
+// CPM Part G (2026-05-15) -- format flipped from ISO pass-through
+// to MM/DD/YYYY (US construction industry convention; matches the
+// hand-written display format on field forms, RFI letterhead, and
+// daily-report PDFs). STORAGE LAYER unchanged: every Mongo write,
+// API payload, CSV export, and <input type="date"> still uses
+// ISO YYYY-MM-DD; this helper is display-only.
+//
+// Input contract:
+//     YYYY-MM-DD             -> MM/DD/YYYY
+//     YYYY-MM-DDTHH:MM:SS    -> MM/DD/YYYY (time portion discarded)
+//     null / "" / undefined  -> "—" (em-dash)
+//     unrecognized format    -> pass-through (defense-in-depth so
+//                                a future date column with an
+//                                already-formatted string doesn't
+//                                render as "—" or break)
+//
+// Output is intentionally a fixed-length 10-char string so it
+// aligns in tabular-num columns (Tasks page Impacted Start /
+// Finish, Lookahead Plan start / Plan finish, etc.). 4-digit year
+// per the updated Part G spec (not 2-digit "YY") -- a 10-char
+// MM/DD/YYYY string still fits the existing column widths and
+// avoids the 19xx/20xx ambiguity that 2-digit years introduce.
 export function formatDateDisplay(iso) {
   if (!iso) return "—";
+  // Take the first 10 chars in case the input is an ISO datetime
+  // string with a time portion (e.g., "2026-05-15T13:00:00Z").
   const s = String(iso).slice(0, 10);
-  // Part F: pass-through. Part G will replace this with MM/DD/YY.
-  return s;
+  // Strict YYYY-MM-DD shape. Anything else falls through untouched
+  // (defensive -- a caller that already passes "05/15/2026" shouldn't
+  // get "—").
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return s;
+  const [, yyyy, mm, dd] = m;
+  return `${mm}/${dd}/${yyyy}`;
 }
 
 // CPM Part F (2026-05-15) -- slip between planned_finish and

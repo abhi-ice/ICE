@@ -447,13 +447,23 @@ export default function Tasks() {
                     : <span className="text-slate-400">—</span>}
                 </td>
                 <td className="text-xs">{t.trade_code || "—"}</td>
-                <td className="font-mono text-xs">{t.planned_start || "—"}</td>
-                <td className="font-mono text-xs">{t.planned_finish || "—"}</td>
+                {/* CPM Part G (2026-05-15) -- existing Plan start /
+                    Plan finish columns now route through
+                    formatDateDisplay so they render MM/DD/YYYY in
+                    the same chokepoint as Impacted Start / Impacted
+                    Finish below. The Tasks page form's <input
+                    type="date"> inputs (lines 305-315 area) keep
+                    using planned_start / planned_finish as ISO
+                    strings -- the HTML date input REQUIRES ISO
+                    YYYY-MM-DD; this is the storage layer, not the
+                    display layer, and Part G leaves storage alone. */}
+                <td className="font-mono text-xs">{formatDateDisplay(t.planned_start)}</td>
+                <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
                 {/* CPM Part F -- Impacted Start. formatDateDisplay
                     returns "—" on null/empty so fresh tasks (no
-                    projection yet) render the em-dash. Part G will
-                    swap the ISO pass-through to MM/DD/YY without
-                    touching this call site. */}
+                    projection yet) render the em-dash. Part G has
+                    flipped the helper output to MM/DD/YYYY app-wide
+                    via this same chokepoint. */}
                 <td
                   data-testid={`task-impacted-start-${t.activity_code}`}
                   className="font-mono text-xs"

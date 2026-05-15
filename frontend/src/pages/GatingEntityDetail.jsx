@@ -8,6 +8,10 @@ import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, AlertTriangle, Clock, FileText, Calendar } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
+// CPM Part G (2026-05-15) -- submitted_at, target_response_at,
+// report_date, projected_finish_date displayed MM/DD/YYYY via the
+// lib/dateUtil chokepoint.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 export default function GatingEntityDetail() {
   const { id } = useParams();
@@ -82,8 +86,8 @@ export default function GatingEntityDetail() {
         </div>
 
         <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
-          <Metric label="Submitted" value={(ge.submitted_at || "").slice(0, 10) || "—"} />
-          <Metric label="Target response" value={(ge.target_response_at || "").slice(0, 10) || "—"} />
+          <Metric label="Submitted" value={formatDateDisplay(ge.submitted_at)} />
+          <Metric label="Target response" value={formatDateDisplay(ge.target_response_at)} />
           <Metric label="SLA (working days)" value={ge.sla_working_days} />
           <Metric label="Working days open" value={ge.current_age_working_days ?? "—"} />
           <Metric label="Calendar days open" value={ge.current_age_calendar_days ?? "—"} />
@@ -111,7 +115,7 @@ export default function GatingEntityDetail() {
                 {t.computed_status && <span className={`pill ${csClass} capitalize`}>{(t.computed_status || "").replace(/_/g, " ")}</span>}
                 {t.is_critical_path && <span className="pill pill-red">CP</span>}
                 {slip && (
-                  <span className="text-amber-700 font-medium">→ {t.projected_finish_date}</span>
+                  <span className="text-amber-700 font-medium">→ {formatDateDisplay(t.projected_finish_date)}</span>
                 )}
               </div>
             );
@@ -147,7 +151,7 @@ export default function GatingEntityDetail() {
               <tbody>
                 {affected.rows.map((r) => (
                   <tr key={r.id}>
-                    <td className="font-mono text-xs">{r.report_date}</td>
+                    <td className="font-mono text-xs">{formatDateDisplay(r.report_date)}</td>
                     <td className="text-xs">
                       <span className="font-mono text-blue-700">{r.activity_code}</span>
                       <span className="ml-2 text-slate-600">{r.activity_description}</span>

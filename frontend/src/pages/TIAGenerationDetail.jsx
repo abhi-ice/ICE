@@ -8,6 +8,8 @@ import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { getUser } from "../lib/auth";
+// CPM Part G (2026-05-15) -- date_range columns rendered MM/DD/YYYY.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 export default function TIAGenerationDetail() {
   const { id } = useParams();
@@ -144,7 +146,7 @@ export default function TIAGenerationDetail() {
 
       <div className="bg-white border border-slate-200 rounded p-4 mb-4 space-y-2 text-sm">
         <div><span className="text-slate-500 text-xs uppercase">Generated:</span> {new Date(doc.generated_at).toLocaleString()}</div>
-        <div><span className="text-slate-500 text-xs uppercase">Date range:</span> {doc.date_range_start} → {doc.date_range_end}</div>
+        <div><span className="text-slate-500 text-xs uppercase">Date range:</span> {formatDateDisplay(doc.date_range_start)} → {formatDateDisplay(doc.date_range_end)}</div>
         <div><span className="text-slate-500 text-xs uppercase">Status:</span> {doc.status}</div>
         {doc.error && <div className="text-rose-600 text-xs">{doc.error}</div>}
         {Object.keys(doc.filters_applied || {}).length > 0 && (
