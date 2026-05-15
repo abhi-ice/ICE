@@ -136,22 +136,30 @@ async def create_synthetic_delay_for_qc(
     )
 
     # Run the existing C1 CPM cascade for the affected tasks.
+    # CPM Part E (2026-05-15) -- the synthetic delay route was a
+    # parallel path that did compute_and_persist_status +
+    # compute_projected_finish_dates directly. Now folded through
+    # auto_recompute_after_event so the synthetic delay benefits from
+    # the same compute_cpm-first-then-project-finish ordering as the
+    # user-facing /delays POST. Idempotent + fail-safe.
     if delay_doc["linked_task_ids"]:
         try:
-            from services.task_status import (
-                compute_and_persist_status, compute_projected_finish_dates,
-            )
+            from services.task_status import compute_and_persist_status
+            from services.cpm import auto_recompute_after_event
             for tid in delay_doc["linked_task_ids"]:
                 await compute_and_persist_status(
                     db, tenant_id, tid, actor_id=actor_id, request_id=request_id,
                 )
-            await compute_projected_finish_dates(
-                db, tenant_id, qc_issue["project_id"],
+            await auto_recompute_after_event(
+                tenant_id, qc_issue["project_id"],
                 actor_id=actor_id, request_id=request_id,
             )
         except Exception:
             # Cascade hiccup shouldn't undo the delay write -- caller
-            # can re-run cascade via the existing endpoints.
+            # can re-run cascade via the existing endpoints. The
+            # auto_recompute_after_event helper is itself fail-safe
+            # internally; this outer try/except guards against import
+            # failures or signature drift.
             pass
 
     return delay_doc
@@ -240,17 +248,20 @@ async def record_rework_outcome(
     # Re-run cascade (delay status changed -> may release float).
     # Bucket D Corrective -- linked_task_ids on the QC are master task
     # ids directly; no DR-activity translation step needed.
+    # CPM Part E (2026-05-15) -- routed through auto_recompute_after_event
+    # so the synthetic delay outcome capture path triggers the same
+    # compute_cpm + projected_finish refresh as the user-facing PATCH
+    # /delays/{id} flow. Fail-safe.
     try:
-        from services.task_status import (
-            compute_and_persist_status, compute_projected_finish_dates,
-        )
+        from services.task_status import compute_and_persist_status
+        from services.cpm import auto_recompute_after_event
         for tid in (qc_issue.get("linked_task_ids") or []):
             await compute_and_persist_status(
                 db, tenant_id, tid,
                 actor_id=actor_id, request_id=request_id,
             )
-        await compute_projected_finish_dates(
-            db, tenant_id, qc_issue["project_id"],
+        await auto_recompute_after_event(
+            tenant_id, qc_issue["project_id"],
             actor_id=actor_id, request_id=request_id,
         )
     except Exception:

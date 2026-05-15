@@ -513,6 +513,33 @@ async def recompute_aging_for_submittal(
         {"$set": updates},
     )
     invalidate_aging_cache(tenant_id=tenant_id, project_id=project_id)
+
+    # CPM Part E (2026-05-15) -- if sla_status crossed the breached
+    # boundary (in or out), the open-blocker aggregation for this
+    # submittal's linked task changed -- trigger an auto-recompute
+    # so downstream projected_finish_date reflects the new gating
+    # state. Only fires on the breached transition; aging-only
+    # updates (approaching <-> on_track etc.) don't affect
+    # count_open_blockers and skip the hook. Fail-safe.
+    prev_status = sub.get("sla_status")
+    new_status = updates.get("sla_status")
+    breached_boundary_crossed = (
+        (prev_status == "breached") != (new_status == "breached")
+    )
+    if breached_boundary_crossed:
+        try:
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(
+                tenant_id, project_id,
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "Part E auto-recompute after submittal SLA flip "
+                "failed (sub=%s, project=%s): %s",
+                submittal_id, project_id, exc,
+            )
+
     return {"ok": True, "updates": updates, "submittal_id": submittal_id}
 
 
@@ -947,6 +974,11 @@ async def detect_breaches(
 
     out = {"scanned": len(rows), "newly_breached": 0,
            "cascade_flagged_tasks": 0, "failures": 0}
+    # CPM Part E (2026-05-15) -- track unique project_ids that had a
+    # newly-breached submittal so we can fire auto_recompute once per
+    # project at the end of the scan rather than once per submittal
+    # (could be hundreds in a tenant-wide breach scan).
+    breached_projects: set = set()
     for r in rows:
         try:
             sid = r["id"]
@@ -984,6 +1016,8 @@ async def detect_breaches(
                 performed_at=now,
             )
             out["newly_breached"] += 1
+            if r.get("project_id"):
+                breached_projects.add(r["project_id"])
             # Phase 4d -- cascade flag linked tasks via gating_entities.
             cascade_count = await _cascade_flag_on_breach(
                 tenant_id=tenant_id, project_id=r.get("project_id") or "",
@@ -1014,6 +1048,29 @@ async def detect_breaches(
             out["failures"] += 1
             log.warning("breach detect failed for %s: %s",
                          r.get("id"), exc)
+
+    # CPM Part E (2026-05-15) -- fire auto-recompute once per project
+    # that had a newly-breached submittal. The recompute refreshes
+    # total_float_days + projected_finish_date so the Tasks UI shows
+    # the cascade impact without waiting for a manual button click.
+    # Fail-safe: a CPM failure on one project does NOT abort the
+    # rest of the breach scan.
+    if breached_projects:
+        try:
+            from services.cpm import auto_recompute_after_event
+            for pid in breached_projects:
+                try:
+                    await auto_recompute_after_event(
+                        tenant_id, pid,
+                        actor_id=actor_id, request_id=request_id,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "Part E auto-recompute after breach detection "
+                        "failed (project=%s): %s", pid, exc,
+                    )
+        except Exception:
+            pass
     return out
 
 
