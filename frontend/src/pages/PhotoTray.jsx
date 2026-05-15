@@ -14,6 +14,10 @@ import TagWizard from "../components/photos/TagWizard";
 import AiAnalysisCard from "../components/photos/AiAnalysisCard";
 import { useUrlState } from "../lib/useUrlState";
 import { AiHelpPanel } from "./SystemPages";
+// CPM Part G (2026-05-15) -- exif_taken_at badge rendered MM/DD/YYYY
+// via the chokepoint. The badge already truncated datetime to date
+// via .slice(0,10); formatDateDisplay does the same plus format.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 // Bucket F Phase 3 -- first-run tooltip dismissable per user via
 // localStorage. Shown the first time a user opens the tray modal
@@ -253,7 +257,7 @@ function TrayCard({ row, onClick }) {
       </span>
       {row.exif_taken_at && (
         <span className="absolute bottom-1 left-1 text-[9px] px-1.5 py-0.5 rounded bg-black/60 text-white inline-flex items-center gap-1">
-          <Clock className="h-2.5 w-2.5" /> {String(row.exif_taken_at).slice(0, 10)}
+          <Clock className="h-2.5 w-2.5" /> {formatDateDisplay(row.exif_taken_at)}
         </span>
       )}
       {row.exif_gps_lat != null && (

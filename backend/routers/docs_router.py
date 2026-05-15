@@ -119,6 +119,18 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
                 db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
             )
+    # CPM Part E (2026-05-15) -- a freshly-created RFI starts in
+    # draft / sent / in_review status (always a blocking status) so
+    # it immediately contributes to has_open_blocker on linked
+    # tasks. Trigger the auto-recompute so total_float_days +
+    # projected_finish_date downstream pick up the new gating
+    # entity. Fail-safe: a CPM bug cannot block the RFI from being
+    # created (it's already in DB).
+    from services.cpm import auto_recompute_after_event
+    await auto_recompute_after_event(
+        ctx["tenant_id"], doc["project_id"],
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
     return Rfi(**doc)
 
 
@@ -249,6 +261,18 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
                 db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
             )
+        # CPM Part E (2026-05-15) -- when an RFI flips into or out
+        # of a blocking status (or its linkage changes), the open-
+        # blocker aggregation on the affected tasks shifts. Trigger
+        # the auto-recompute so projected_finish_date on downstream
+        # tasks reflects the new RFI-blocker state. We only fire
+        # when status_blocking_changed OR linkage_changed -- pure
+        # subject / cost edits don't need a recompute. Fail-safe.
+        from services.cpm import auto_recompute_after_event
+        await auto_recompute_after_event(
+            ctx["tenant_id"], after["project_id"],
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return Rfi(**after)
 
 

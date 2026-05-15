@@ -13,7 +13,7 @@ import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
-import { localTodayISO } from "../lib/dateUtil";
+import { localTodayISO, formatDateDisplay } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
@@ -176,8 +176,10 @@ export default function DailyReports() {
         project_id: activeId, report_date: pickerDate,
       });
       const existed = reports.some((r) => r.report_date === pickerDate);
-      toast.success(existed ? `Opened existing report for ${data.report_date}`
-                            : `Daily report opened for ${data.report_date}`);
+      // CPM Part G (2026-05-15) -- format report_date MM/DD/YYYY in
+      // toast text. The DB-level comparison above stays ISO.
+      toast.success(existed ? `Opened existing report for ${formatDateDisplay(data.report_date)}`
+                            : `Daily report opened for ${formatDateDisplay(data.report_date)}`);
       setPickerOpen(false);
       setOpenId(data.id);
       load();
@@ -188,10 +190,10 @@ export default function DailyReports() {
 
   const removeReport = async (r) => {
     if (r.status !== "draft") return;
-    if (!window.confirm(`Delete the draft daily report for ${r.report_date}? Linked delays/QC/safety/RFIs/photos will keep their records but their daily_report_id will be cleared.`)) return;
+    if (!window.confirm(`Delete the draft daily report for ${formatDateDisplay(r.report_date)}? Linked delays/QC/safety/RFIs/photos will keep their records but their daily_report_id will be cleared.`)) return;
     try {
       await api.delete(`/daily-reports/${r.id}`);
-      toast.success(`Deleted daily report for ${r.report_date}`);
+      toast.success(`Deleted daily report for ${formatDateDisplay(r.report_date)}`);
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Delete failed");
@@ -252,7 +254,7 @@ export default function DailyReports() {
               const canDelete = r.status === "draft";
               return (
                 <tr key={r.id} data-testid={`dr-row-${r.id}`}>
-                  <td className="font-mono">{r.report_date}</td>
+                  <td className="font-mono">{formatDateDisplay(r.report_date)}</td>
                   <td><StatusPill status={r.status} /></td>
                   <td className="text-xs">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
                   <td className="text-right">
@@ -745,7 +747,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
         </div>
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Report date</div>
-          <div className="font-mono text-base">{report.report_date}</div>
+          <div className="font-mono text-base">{formatDateDisplay(report.report_date)}</div>
         </div>
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Status</div>

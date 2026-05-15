@@ -10,6 +10,8 @@ import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+// CPM Part G (2026-05-15) -- added_at displayed MM/DD/YYYY.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 // Bucket J Phase 3 (2026-05-11) -- specialty roles join the dropdown.
 // submittal_tech + scheduling_engineer carry write power on their
@@ -208,7 +210,7 @@ export default function ProjectAccess() {
                           </select>
                         </td>
                         <td className="p-2 font-mono text-xs text-slate-500">
-                          {(m.added_at || "").slice(0, 10)}
+                          {formatDateDisplay(m.added_at)}
                         </td>
                         <td className="p-2 text-right">
                           <button data-testid={`pa-remove-${m.user_id}`}

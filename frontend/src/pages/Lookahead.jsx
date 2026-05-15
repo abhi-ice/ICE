@@ -7,6 +7,13 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import ExportDropdown from "../components/ExportDropdown";
+// CPM Part F (2026-05-15) -- shared display helpers for Impacted
+// Start / Impacted Finish / Slip columns. The local slipDays() helper
+// that used to live in this file was promoted to lib/dateUtil so
+// Tasks.jsx + Lookahead.jsx + the Gantt projected-shift overlay
+// all share one calendar-day computation. Behavior preserved for
+// the Gantt path (slip > 0 only -- acceleration is not a "slip").
+import { formatDateDisplay, slipDays } from "../lib/dateUtil";
 
 const DAY_PX = 32; // pixels per day in Gantt
 const ROW_H = 32;
@@ -16,6 +23,11 @@ export default function Lookahead() {
   const [days, setDays] = useState(14);
   const [rows, setRows] = useState([]);
   const [view, setView] = useState("list");
+  // CPM Part F (2026-05-15) -- sort + filter affordances mirror the
+  // Tasks page so a PM moving between the two surfaces gets the same
+  // controls. Defaults preserve pre-Part-F behavior (no sort, show all).
+  const [sortBySlipDesc, setSortBySlipDesc] = useState(false);
+  const [showOnlyImpacted, setShowOnlyImpacted] = useState(false);
 
   const refresh = async () => {
     if (!activeId) return;
@@ -23,6 +35,22 @@ export default function Lookahead() {
     setRows(data);
   };
   useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId, days]);
+
+  // CPM Part F -- enrich each row with the slip days, then optionally
+  // filter and sort. Same memoization pattern as Tasks.jsx.
+  const displayRows = useMemo(() => {
+    const enriched = rows.map((t) => ({
+      ...t,
+      _slip: slipDays(t.planned_finish, t.projected_finish_date),
+    }));
+    const filtered = showOnlyImpacted
+      ? enriched.filter((t) => t._slip > 0)
+      : enriched;
+    if (sortBySlipDesc) {
+      return [...filtered].sort((a, b) => b._slip - a._slip);
+    }
+    return filtered;
+  }, [rows, sortBySlipDesc, showOnlyImpacted]);
 
   return (
     <div data-testid="lookahead-page" className="space-y-4">
@@ -61,17 +89,58 @@ export default function Lookahead() {
       </div>
 
       {view === "list" && (
+        <>
+          {/* CPM Part F (2026-05-15) -- impact-column controls (sort
+              by slip desc, filter to slip > 0). Mirrors Tasks.jsx so
+              the muscle memory carries between surfaces. Only shown
+              when there are rows to operate on. */}
+          {rows.length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-slate-600">
+              <button
+                data-testid="lookahead-sort-by-slip"
+                onClick={() => setSortBySlipDesc((v) => !v)}
+                className={`h-7 px-2 rounded border text-xs ${sortBySlipDesc ? "bg-rose-50 border-rose-300 text-rose-700" : "bg-white border-slate-200"}`}
+                title="Sort by Slip descending so the worst-hit tasks land at the top."
+              >
+                {sortBySlipDesc ? "✓ Sorted by slip ↓" : "Sort by slip ↓"}
+              </button>
+              <label className="inline-flex items-center gap-1 cursor-pointer">
+                <input
+                  data-testid="lookahead-show-only-impacted"
+                  type="checkbox"
+                  checked={showOnlyImpacted}
+                  onChange={(e) => setShowOnlyImpacted(e.target.checked)}
+                />
+                Show only impacted (slip &gt; 0)
+              </label>
+              <span className="text-slate-400">
+                ·{" "}
+                {rows.filter((t) => slipDays(t.planned_finish, t.projected_finish_date) > 0).length}{" "}
+                impacted of {rows.length}
+              </span>
+            </div>
+          )}
         <div className="surface overflow-hidden">
           <table className="dense-table">
             <thead><tr>
               <th>Code</th><th>Description</th><th>Trade</th>
               <th>Plan start</th><th>Plan finish</th>
-              <th title="Bucket C1 Phase 4 — projected_finish_date when open delays push the task past its planned_finish.">Projected</th>
+              {/* CPM Part F (2026-05-15) -- the single "Projected"
+                  column (which surfaced projected_finish_date with
+                  slip in the cell text) is replaced by three explicit
+                  columns matching the Tasks page contract: Impacted
+                  Start, Impacted Finish, Slip (d). Slip uses the
+                  shared slipDays() helper; Impacted dates use
+                  formatDateDisplay() so Part G can flip the global
+                  format in one place. */}
+              <th title="Projected start date when an open delay or RFI pushes the task forward via CPM walk-forward.">Impacted Start</th>
+              <th title="Projected finish date — planned_finish + accumulated open-delay shift through CPM predecessors.">Impacted Finish</th>
+              <th title="Days of slip: projected_finish_date − planned_finish. Em-dash when zero. Light-red row tint when > 0.">Slip (d)</th>
               <th>%</th>
               <th title="Bucket C1 Phase 2 computed_status">Status</th>
             </tr></thead>
             <tbody>
-              {rows.map((t) => {
+              {displayRows.map((t) => {
                 // Bucket C1 Phase 4 — at-risk highlighting. Red when blocker
                 // present, amber when behind or projected_finish > planned.
                 //
@@ -83,12 +152,17 @@ export default function Lookahead() {
                 // tasks. Now the pill text/color reflects projShifted
                 // even when the underlying computed_status is on_track.
                 const cs = t.computed_status || "on_track";
-                const projShifted = t.projected_finish_date && t.planned_finish &&
-                  t.projected_finish_date > t.planned_finish;
+                const slip = t._slip;
+                const projShifted = slip > 0;
                 const blocked = cs === "blocked" || t.has_open_blocker;
                 const atRisk = !blocked && cs !== "behind" && cs !== "complete" && projShifted;
+                // CPM Part F -- row tint precedence: blocked-red >
+                // projected-slip-rose > behind-amber > clean. Rose for
+                // Part F slip > 0 matches the Tasks page tint so the
+                // two surfaces look consistent.
                 const tint = blocked ? "bg-red-50/50"
-                  : (cs === "behind" || projShifted) ? "bg-amber-50/50"
+                  : projShifted ? "bg-rose-50"
+                  : cs === "behind" ? "bg-amber-50/50"
                   : "";
                 const csClass = cs === "complete" ? "pill-green"
                   : blocked ? "pill-red"
@@ -104,21 +178,44 @@ export default function Lookahead() {
                     <td className="font-mono text-xs">{t.activity_code}</td>
                     <td>{t.description}</td>
                     <td>{t.trade_code || "—"}</td>
-                    <td className="font-mono text-xs">{t.planned_start}</td>
-                    <td className="font-mono text-xs">{t.planned_finish}</td>
-                    <td className="font-mono text-xs">
-                      {t.projected_finish_date
-                        ? <span className={projShifted ? "text-amber-700 font-semibold" : "text-slate-500"}
-                            title={projShifted ? `Projected ${t.projected_finish_date} (${slipDays(t.planned_finish, t.projected_finish_date)}d slip)` : "On schedule"}>
-                            {t.projected_finish_date}
-                          </span>
+                    {/* CPM Part G (2026-05-15) -- existing Plan start /
+                        Plan finish columns routed through
+                        formatDateDisplay for MM/DD/YYYY rendering
+                        from the same chokepoint as the Impacted dates. */}
+                    <td className="font-mono text-xs">{formatDateDisplay(t.planned_start)}</td>
+                    <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
+                    {/* CPM Part F -- Impacted Start. formatDateDisplay
+                        renders "—" on null so fresh tasks (no
+                        projection yet) show the em-dash. Part G now
+                        outputs MM/DD/YYYY via this same helper. */}
+                    <td
+                      data-testid={`lookahead-impacted-start-${t.activity_code}`}
+                      className="font-mono text-xs"
+                    >
+                      {formatDateDisplay(t.projected_start_date)}
+                    </td>
+                    <td
+                      data-testid={`lookahead-impacted-finish-${t.activity_code}`}
+                      className="font-mono text-xs"
+                    >
+                      {formatDateDisplay(t.projected_finish_date)}
+                    </td>
+                    <td
+                      data-testid={`lookahead-slip-${t.activity_code}`}
+                      className="tabular-nums text-xs"
+                      title={slip > 0
+                        ? `Projected slip +${slip}d vs planned_finish`
+                        : "No projected slip"}
+                    >
+                      {slip > 0
+                        ? <span className="text-rose-700 font-semibold">+{slip}</span>
                         : <span className="text-slate-300">—</span>}
                     </td>
                     <td>{t.pct_complete}%</td>
                     <td>
                       <span data-testid={`lookahead-status-${t.activity_code}`}
                         className={`pill ${csClass} inline-flex items-center gap-1`}
-                        title={atRisk ? `Projected slip +${slipDays(t.planned_finish, t.projected_finish_date)}d` : undefined}>
+                        title={atRisk ? `Projected slip +${slip}d` : undefined}>
                         {pillLabel}
                         {t.has_open_blocker && t.open_blocker_count
                           ? <span className="text-[10px] text-red-700/80">({t.open_blocker_count})</span>
@@ -128,10 +225,16 @@ export default function Lookahead() {
                   </tr>
                 );
               })}
-              {!rows.length && <tr><td colSpan="8" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
+              {!displayRows.length && rows.length > 0 && (
+                <tr><td colSpan="10" className="text-center py-8 text-sm text-slate-500">
+                  No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.
+                </td></tr>
+              )}
+              {!rows.length && <tr><td colSpan="10" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {view === "gantt" && (
@@ -141,14 +244,12 @@ export default function Lookahead() {
   );
 }
 
-function slipDays(planned, projected) {
-  if (!planned || !projected) return "?";
-  try {
-    const p = new Date(planned + "T00:00:00");
-    const pr = new Date(projected + "T00:00:00");
-    return Math.round((pr - p) / 86400000);
-  } catch { return "?"; }
-}
+// CPM Part F (2026-05-15) -- local slipDays() was promoted to
+// lib/dateUtil so Tasks.jsx + Lookahead.jsx + the GanttView's
+// projected-shift overlay all share one computation. The shared
+// helper returns 0 (not "?") on missing dates so Gantt overlay's
+// `if (projShiftDays > 0)` guard keeps the same intent without
+// special-casing "?".
 
 function GanttView({ rows, days, onRefresh }) {
   const today = new Date(); today.setHours(0, 0, 0, 0);

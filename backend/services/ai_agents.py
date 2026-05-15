@@ -247,8 +247,15 @@ async def recovery_suggestions(*, tenant_id: str, project_id: str, target_activi
         if code in visited:
             continue
         visited.add(code)
+        # CPM Part A (2026-05-15) -- predecessors is now a list of
+        # dicts {code, type, lag_days}. Mongo array-contains-value
+        # semantics on `{"predecessors": code}` matched legacy
+        # bare-string entries; dot-notation `{"predecessors.code":
+        # code}` matches the new embedded-doc shape. Indexed by
+        # the existing (tenant_id, project_id, ...) prefix so no
+        # performance regression.
         succs = await db.tasks.find(
-            tenant_filter(tenant_id, {"project_id": project_id, "predecessors": code}),
+            tenant_filter(tenant_id, {"project_id": project_id, "predecessors.code": code}),
             {"_id": 0, "activity_code": 1, "description": 1, "is_critical_path": 1, "planned_finish": 1},
         ).limit(15).to_list(15)
         for s in succs:
@@ -678,8 +685,11 @@ async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
         if not code or code in visited:
             continue
         visited.add(code)
+        # CPM Part A (2026-05-15) -- see note at the first identical
+        # query above. predecessors -> predecessors.code dot-notation
+        # for the new embedded-doc shape.
         succs = await db.tasks.find(
-            tenant_filter(tenant_id, {"project_id": project_id, "predecessors": code}),
+            tenant_filter(tenant_id, {"project_id": project_id, "predecessors.code": code}),
             {"_id": 0, "activity_code": 1, "description": 1,
              "is_critical_path": 1, "planned_finish": 1, "total_float_days": 1},
         ).limit(10).to_list(10)

@@ -7,6 +7,9 @@ import { History, FileText, ChevronLeft, ShieldAlert, ShieldOff } from "lucide-r
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
+// CPM Part G (2026-05-15) -- date_range columns rendered MM/DD/YYYY.
+// generated_at stays as toLocaleString (it's a datetime with time).
+import { formatDateDisplay } from "../lib/dateUtil";
 
 export default function TIAGenerationsList() {
   const { activeId } = useProjects();
@@ -59,7 +62,7 @@ export default function TIAGenerationsList() {
               {rows.map((r) => (
                 <tr key={r.id} data-testid={`tia-history-${r.id}`}>
                   <td className="p-2 border border-slate-200">{new Date(r.generated_at).toLocaleString()}</td>
-                  <td className="p-2 border border-slate-200 text-slate-600">{r.date_range_start} → {r.date_range_end}</td>
+                  <td className="p-2 border border-slate-200 text-slate-600">{formatDateDisplay(r.date_range_start)} → {formatDateDisplay(r.date_range_end)}</td>
                   <td className="p-2 border border-slate-200 text-right">{r.total_evidence_items}</td>
                   <td className="p-2 border border-slate-200 text-right">{(r.download_log || []).length}</td>
                   <td className="p-2 border border-slate-200">

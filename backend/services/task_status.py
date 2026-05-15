@@ -34,7 +34,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import tenant_filter
-from models import gen_id
+from models import gen_id, pred_code
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -294,15 +294,29 @@ async def compute_projected_finish_dates(
     an open-delay impact, compute its projected_finish_date as
     planned_finish + (own_impact + max_predecessor_projected_shift).
 
+    CPM Part F (2026-05-15) -- also computes + persists
+    projected_start_date = planned_start + shift_days using the SAME
+    shift_for recursion. Both fields are written in a single $set per
+    changed task; the idempotent skip-if-unchanged check now compares
+    BOTH derived dates. A task counts as "changed" when EITHER date
+    moves, ensuring the Tasks UI's Impacted Start column refreshes
+    even when only the start date shifts (rare edge case where own
+    impact is zero but a predecessor's shift propagates through).
+
     Cycle-safe: bounded BFS by activity_code; tasks not reached keep their
-    existing projected_finish_date (cleared to None when no impact).
+    existing projected_finish_date + projected_start_date (cleared to
+    None when no impact).
 
     Returns {recomputed: int, changed: list[task_id]}.
     """
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        # Part F -- pull planned_start + projected_start_date so the
+        # idempotent skip-if-unchanged check can compare both derived
+        # dates against the prior values.
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
-         "planned_finish": 1, "projected_finish_date": 1},
+         "planned_start": 1, "planned_finish": 1,
+         "projected_start_date": 1, "projected_finish_date": 1},
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
 
@@ -323,8 +337,17 @@ async def compute_projected_finish_dates(
             return shift_by_id[task["id"]]
         own = own_impact.get(task["id"], 0.0)
         max_pred = 0.0
-        for pred_code in (task.get("predecessors") or []):
-            pred_task = by_code.get(pred_code)
+        # CPM Part A (2026-05-15) -- iterate predecessor entries and
+        # extract the activity_code via the pred_code() adapter
+        # (handles both legacy bare-string + post-migration dict).
+        # The local variable was shadowing the imported helper name --
+        # rename the loop var to `pred_entry` to keep the import
+        # accessible inside the closure.
+        for pred_entry in (task.get("predecessors") or []):
+            p_code = pred_code(pred_entry)
+            if not p_code:
+                continue
+            pred_task = by_code.get(p_code)
             if pred_task:
                 max_pred = max(max_pred, shift_for(pred_task, depth + 1))
         shift_by_id[task["id"]] = own + max_pred
@@ -337,19 +360,39 @@ async def compute_projected_finish_dates(
     for t in tasks:
         shift_days = shift_by_id.get(t["id"], 0.0)
         pf = t.get("planned_finish")
+        ps = t.get("planned_start")
         new_pfd = None
-        if shift_days > 0 and pf:
-            try:
-                pf_d = date.fromisoformat(str(pf)[:10])
-                new_pfd = (pf_d + timedelta(days=int(round(shift_days)))).isoformat()
-            except Exception:
-                new_pfd = None
-        # Idempotent: skip if unchanged.
-        if t.get("projected_finish_date") != new_pfd:
+        new_psd = None
+        # CPM Part F (2026-05-15) -- both projected dates are produced
+        # by the SAME shift_days. We round to int days to match the
+        # existing projected_finish behavior (sub-day shifts get
+        # rolled up to the nearest whole day). Failure modes are
+        # isolated per-date so a bad planned_finish doesn't poison
+        # planned_start's projection (or vice versa).
+        if shift_days > 0:
+            shift_int = int(round(shift_days))
+            shift_delta = timedelta(days=shift_int)
+            if pf:
+                try:
+                    pf_d = date.fromisoformat(str(pf)[:10])
+                    new_pfd = (pf_d + shift_delta).isoformat()
+                except Exception:
+                    new_pfd = None
+            if ps:
+                try:
+                    ps_d = date.fromisoformat(str(ps)[:10])
+                    new_psd = (ps_d + shift_delta).isoformat()
+                except Exception:
+                    new_psd = None
+        # Idempotent: skip if BOTH derived dates are unchanged.
+        cur_pfd = t.get("projected_finish_date")
+        cur_psd = t.get("projected_start_date")
+        if cur_pfd != new_pfd or cur_psd != new_psd:
             await db.tasks.update_one(
                 tenant_filter(tenant_id, {"id": t["id"]}),
                 {"$set": {
                     "projected_finish_date": new_pfd,
+                    "projected_start_date": new_psd,
                     "updated_at": datetime.utcnow().isoformat(),
                 }},
             )

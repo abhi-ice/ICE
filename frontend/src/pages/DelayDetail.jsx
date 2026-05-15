@@ -18,6 +18,8 @@ import DelayForm from "../components/forms/DelayForm";
 // suggestion produced by calibration_rag in Phase 2.
 import JigsawField from "../components/forms/JigsawField";
 import { getUser } from "../lib/auth";
+// CPM Part G (2026-05-15) -- delay dates rendered MM/DD/YYYY via chokepoint.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 export default function DelayDetail() {
   const { id } = useParams();
@@ -87,7 +89,7 @@ export default function DelayDetail() {
       <div className="surface p-4">
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex-1 min-w-[280px]">
-            <div className="text-xs text-slate-500 uppercase tracking-wide">Delay logged {delay.date}</div>
+            <div className="text-xs text-slate-500 uppercase tracking-wide">Delay logged {formatDateDisplay(delay.date)}</div>
             <div className="text-base mt-1 whitespace-pre-wrap">{delay.description}</div>
           </div>
           <div className="flex flex-col gap-1">
@@ -101,8 +103,8 @@ export default function DelayDetail() {
         </div>
 
         <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-          <Metric label="Logged date" value={delay.logged_date || delay.date} />
-          <Metric label="Resolved date" value={delay.resolved_date || "—"} />
+          <Metric label="Logged date" value={formatDateDisplay(delay.logged_date || delay.date)} />
+          <Metric label="Resolved date" value={formatDateDisplay(delay.resolved_date)} />
           <Metric label="Days open" value={delay.duration_days ?? "—"} />
           <Metric label="Linked tasks" value={(delay.linked_task_ids || []).length} />
         </div>

@@ -13,6 +13,8 @@ import DelayForm from "../components/forms/DelayForm";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
+// CPM Part G (2026-05-15) -- delay.date rendered MM/DD/YYYY via chokepoint.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 export default function DelayList() {
   // ALL hooks must come before any conditional return per the Rules
@@ -146,9 +148,9 @@ export default function DelayList() {
                   <td className="font-mono text-xs">
                     {r.daily_report_id ? (
                       <Link to={`/daily-reports?openId=${r.daily_report_id}&openEvent=${r.id}&openEventType=delay`} className="text-blue-700 hover:underline">
-                        {r.date}
+                        {formatDateDisplay(r.date)}
                       </Link>
-                    ) : r.date}
+                    ) : formatDateDisplay(r.date)}
                   </td>
                   <td><span className={`pill ${sev}`}>{r.severity}</span></td>
                   <td><span className={`pill ${stat}`}>{(r.status || "open").replace(/_/g, " ")}</span></td>
