@@ -1,11 +1,20 @@
 """Critical-path computation. Master prompt §21.
 
 Walks the activity dependency graph. Pure-Python; runs synchronously inside
-a FastAPI BackgroundTask (substitution for Celery)."""
+a FastAPI BackgroundTask (substitution for Celery).
+
+CPM Part A (2026-05-15) -- tasks.predecessors changed from List[str]
+to List[dict] {code, type, lag_days}. The forward/backward math in
+THIS file still treats every relation as FS+1day implicit (Part C
+ships the full FS/SS/FF/SF + lag math). The `pred_code()` adapter
+from models.py lets the existing graph-walk code keep working
+against either storage shape during the deploy window.
+"""
 from datetime import date, timedelta
 from typing import Iterable
 from collections import defaultdict, deque
 from database import get_db, tenant_filter
+from models import pred_code
 
 
 async def compute_cpm(tenant_id: str, project_id: str) -> dict:
@@ -22,9 +31,14 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
     indeg: dict[str, int] = defaultdict(int)
 
     for t in tasks:
+        # CPM Part A -- extract the activity_code from each
+        # predecessor entry (dict post-migration 018, bare string
+        # for any in-flight legacy rows). Part C will additionally
+        # consume p.type + p.lag_days.
         for p in t.get("predecessors", []) or []:
-            if p in by_id:
-                successors[p].append(t["activity_code"])
+            code = pred_code(p)
+            if code and code in by_id:
+                successors[code].append(t["activity_code"])
                 indeg[t["activity_code"]] += 1
 
     # Forward pass (early start / early finish)
@@ -37,13 +51,19 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
         code = queue.popleft()
         topo.append(code)
         t = by_id[code]
-        preds = [p for p in (t.get("predecessors") or []) if p in by_id]
+        # CPM Part A -- pred_code() handles both legacy bare-string
+        # and post-migration dict entries. Part C adds relationship-
+        # type + lag awareness; today this still does FS+1day.
+        pred_codes = [
+            c for c in (pred_code(p) for p in (t.get("predecessors") or []))
+            if c and c in by_id
+        ]
         dur = float(t.get("duration_days") or 1.0)
-        if not preds:
+        if not pred_codes:
             ps = t.get("planned_start")
             start_d = _to_date(ps) if ps else date.today()
         else:
-            start_d = max(ef[p] for p in preds) + timedelta(days=1)
+            start_d = max(ef[p] for p in pred_codes) + timedelta(days=1)
         es[code] = start_d
         ef[code] = start_d + timedelta(days=max(0, int(round(dur)) - 1))
         for s in successors[code]:

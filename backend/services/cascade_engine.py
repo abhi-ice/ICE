@@ -18,7 +18,7 @@ from typing import Optional
 from collections import defaultdict, deque
 
 from database import get_db, tenant_filter
-from models import gen_id, utc_now
+from models import gen_id, utc_now, pred_code
 from services.gating_entities import compute_age_fields, OPEN_STATUSES_PROXY
 
 
@@ -59,8 +59,16 @@ async def _build_successor_map(tenant_id: str, project_id: str) -> tuple[dict, d
 
     successors: dict[str, list[str]] = defaultdict(list)
     for t in tasks:
-        for p_code in (t.get("predecessors") or []):
-            p_id = code_to_id.get(str(p_code))
+        # CPM Part A (2026-05-15) -- pred_code() extracts the
+        # activity_code from each predecessor entry regardless of
+        # whether storage is legacy bare-string or post-migration
+        # dict {code, type, lag_days}. The legacy str(p_code) call
+        # silently produced "{'code':...}" garbage on dict entries.
+        for p in (t.get("predecessors") or []):
+            p_code = pred_code(p)
+            if not p_code:
+                continue
+            p_id = code_to_id.get(p_code)
             if p_id:
                 successors[p_id].append(t["id"])
     return by_id, successors
