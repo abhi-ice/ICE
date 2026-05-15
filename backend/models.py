@@ -677,6 +677,14 @@ class Task(ReadModel):
     # Bucket C1 Phase 4 — CPM walk-forward result. None until first
     # delay open / status compute writes it.
     projected_finish_date: Optional[date] = None
+    # CPM Part F (2026-05-15) -- companion to projected_finish_date.
+    # Computed alongside it in compute_projected_finish_dates using the
+    # same shift_for recursion: projected_start_date = planned_start +
+    # shift_days. Stored so the Tasks + Lookahead UI can render an
+    # "Impacted Start" column without re-deriving from per-task impacts
+    # on every page load. None on tasks with zero shift (no open delays
+    # propagating through CPM predecessors) or no planned_start.
+    projected_start_date: Optional[date] = None
     # Bucket H Phase 1 -- resource-leveling demand fields. Optional;
     # tasks without these produce no demand (leveling engine skips).
     required_trade: Optional[str] = None

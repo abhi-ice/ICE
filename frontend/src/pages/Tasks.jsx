@@ -1,7 +1,10 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
+// CPM Part F (2026-05-15) -- shared display helpers for the
+// Impacted Start / Impacted Finish / Slip columns.
+import { formatDateDisplay, slipDays } from "../lib/dateUtil";
 // Bug #50 (2026-05-13): added FileText (submittal) icon for the
 // extended blocker tooltip. Bug #53 (2026-05-13): dropped ClipboardCheck
 // (qc_issue) and ShieldAlert (safety_event) imports since those types
@@ -135,6 +138,35 @@ export default function Tasks() {
   // Bucket H Phase 4 -- per-task resource-leveling gap indicator.
   const gapByTaskId = useTaskGapIndicator(activeId);
   const project = projects.find((p) => p.id === activeId);
+  // CPM Part F (2026-05-15) -- sort + filter affordances for the new
+  // Impacted Start / Impacted Finish / Slip columns. Defaults preserve
+  // the pre-Part-F behavior (no sort, no filter -- tasks render in
+  // server order, which is by activity_code).
+  const [sortBySlipDesc, setSortBySlipDesc] = useState(false);
+  const [showOnlyImpacted, setShowOnlyImpacted] = useState(false);
+
+  // CPM Part F (2026-05-15) -- derive the display list. Memoized so
+  // toggling sort / filter doesn't recompute on every keystroke.
+  // Slip is computed from planned_finish vs projected_finish_date
+  // via the shared slipDays helper, which returns 0 (not NaN) on
+  // missing dates -- the "Show only impacted" filter correctly hides
+  // tasks with no projection at all.
+  const displayTasks = useMemo(() => {
+    const enriched = tasks.map((t) => ({
+      ...t,
+      _slip: slipDays(t.planned_finish, t.projected_finish_date),
+    }));
+    const filtered = showOnlyImpacted
+      ? enriched.filter((t) => t._slip > 0)
+      : enriched;
+    if (sortBySlipDesc) {
+      // Stable sort -- equal-slip tasks stay in their original order
+      // (which is activity_code from the server). Slip descending so
+      // worst-hit tasks land at the top, mirroring the Part F spec.
+      return [...filtered].sort((a, b) => b._slip - a._slip);
+    }
+    return filtered;
+  }, [tasks, sortBySlipDesc, showOnlyImpacted]);
 
   const load = () => activeId && api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data));
   useEffect(() => {
@@ -321,6 +353,38 @@ export default function Tasks() {
         </div>
       </div>
 
+      {/* CPM Part F (2026-05-15) -- impact-column controls. Two
+          affordances: sort by slip descending (worst-hit at top),
+          and filter to slip > 0 (hide tasks with no projection
+          shift). Both toggle on/off independently. The slip-count
+          summary is purely informational. */}
+      {tasks.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-slate-600">
+          <button
+            data-testid="tasks-sort-by-slip"
+            onClick={() => setSortBySlipDesc((v) => !v)}
+            className={`h-7 px-2 rounded border text-xs ${sortBySlipDesc ? "bg-rose-50 border-rose-300 text-rose-700" : "bg-white border-slate-200"}`}
+            title="Sort by Slip descending so the worst-hit tasks land at the top."
+          >
+            {sortBySlipDesc ? "✓ Sorted by slip ↓" : "Sort by slip ↓"}
+          </button>
+          <label className="inline-flex items-center gap-1 cursor-pointer">
+            <input
+              data-testid="tasks-show-only-impacted"
+              type="checkbox"
+              checked={showOnlyImpacted}
+              onChange={(e) => setShowOnlyImpacted(e.target.checked)}
+            />
+            Show only impacted (slip &gt; 0)
+          </label>
+          <span className="text-slate-400">
+            ·{" "}
+            {tasks.filter((t) => slipDays(t.planned_finish, t.projected_finish_date) > 0).length}{" "}
+            impacted of {tasks.length}
+          </span>
+        </div>
+      )}
+
       <div className="surface overflow-hidden">
         <table className="dense-table">
           <thead>
@@ -332,6 +396,16 @@ export default function Tasks() {
               <th>Trade</th>
               <th>Plan start</th>
               <th>Plan finish</th>
+              {/* CPM Part F -- Impacted Start / Finish / Slip. The
+                  Impacted dates come from compute_projected_finish_dates
+                  (Bucket C1 Phase 4 + Part F extension); Slip is
+                  derived client-side via slipDays(planned_finish,
+                  projected_finish_date). All three are populated
+                  on first event (delay / RFI / SLA flip / mitigation
+                  choose) that fires auto_recompute_after_event. */}
+              <th title="Projected start date when an open delay or RFI pushes the task forward via CPM walk-forward.">Impacted Start</th>
+              <th title="Projected finish date — planned_finish + accumulated open-delay shift through CPM predecessors.">Impacted Finish</th>
+              <th title="Days of slip: projected_finish_date − planned_finish. Em-dash when zero. Light-red row tint when > 0.">Slip (d)</th>
               <th>Dur (d)</th>
               <th>%</th>
               <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
@@ -343,8 +417,20 @@ export default function Tasks() {
             </tr>
           </thead>
           <tbody>
-            {tasks.map((t, idx) => (
-              <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={t.is_critical_path ? "bg-red-50/40" : ""}>
+            {displayTasks.map((t, idx) => {
+              const slip = t._slip;
+              // CPM Part F -- row tint: light red when slip > 0. The
+              // existing pink critical-path tint (bg-red-50/40) wins
+              // on critical-path tasks; for non-CP tasks a slip > 0
+              // applies a slightly darker rose tint so the user can
+              // tell "this is on the CP" (pink) from "this has
+              // projected slip" (rose).
+              const slipTint = slip > 0 ? "bg-rose-50" : "";
+              const rowClass = t.is_critical_path
+                ? "bg-red-50/40"
+                : slipTint;
+              return (
+              <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={rowClass}>
                 <td className="tabular-nums text-xs text-slate-500">{idx + 1}</td>
                 <td className="truncate max-w-[280px]">
                   <div className="font-medium text-sm">{t.description}</div>
@@ -363,6 +449,34 @@ export default function Tasks() {
                 <td className="text-xs">{t.trade_code || "—"}</td>
                 <td className="font-mono text-xs">{t.planned_start || "—"}</td>
                 <td className="font-mono text-xs">{t.planned_finish || "—"}</td>
+                {/* CPM Part F -- Impacted Start. formatDateDisplay
+                    returns "—" on null/empty so fresh tasks (no
+                    projection yet) render the em-dash. Part G will
+                    swap the ISO pass-through to MM/DD/YY without
+                    touching this call site. */}
+                <td
+                  data-testid={`task-impacted-start-${t.activity_code}`}
+                  className="font-mono text-xs"
+                >
+                  {formatDateDisplay(t.projected_start_date)}
+                </td>
+                <td
+                  data-testid={`task-impacted-finish-${t.activity_code}`}
+                  className="font-mono text-xs"
+                >
+                  {formatDateDisplay(t.projected_finish_date)}
+                </td>
+                <td
+                  data-testid={`task-slip-${t.activity_code}`}
+                  className="tabular-nums text-xs"
+                  title={slip > 0
+                    ? `Projected slip +${slip}d vs planned_finish`
+                    : "No projected slip"}
+                >
+                  {slip > 0
+                    ? <span className="text-rose-700 font-semibold">+{slip}</span>
+                    : <span className="text-slate-300">—</span>}
+                </td>
                 <td className="tabular-nums text-xs">{t.duration_days}</td>
                 <td className="tabular-nums">{t.pct_complete}%</td>
                 <td><ComputedStatusPill task={t} /></td>
@@ -387,8 +501,14 @@ export default function Tasks() {
                   </button>
                 </td>
               </tr>
-            ))}
-            {!tasks.length && <tr><td colSpan="14" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
+              );
+            })}
+            {!displayTasks.length && tasks.length > 0 && (
+              <tr><td colSpan="18" className="text-center py-8 text-sm text-slate-500">
+                No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.
+              </td></tr>
+            )}
+            {!tasks.length && <tr><td colSpan="18" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
           </tbody>
         </table>
       </div>
