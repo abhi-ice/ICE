@@ -1411,21 +1411,18 @@ async def auto_suggest_per_task_impacts_for_submittal(
 #       consumes_float_only                  (stamped)
 #       pushes_critical_path                 (stamped)
 #
-# PRIOR-OPEN SCOPE (K-3 STUB):
-#   Currently calls routers.field_events_router._sum_prior_open_blocker_
-#   impacts_on_task -- which walks db.delays + db.rfis (after J-5 the
-#   helper does cross-collection delay + RFI). Submittals on the same
-#   task do NOT yet contribute to each other's prior-sum here. Part
-#   K-5 extends the helper to also walk db.submittals (over-SLA filter)
-#   and accept an exclude_submittal_id kwarg. After K-5 ships, the
-#   call below picks up cross-collection prior-sum WITHOUT any change
-#   here -- the exclude_submittal_id we're already plumbing through
-#   the signature just needs to be threaded into that helper call.
+# PRIOR-OPEN SCOPE (K-5 LIVE):
+#   Calls routers.field_events_router._sum_prior_open_blocker_impacts_
+#   on_task which walks db.delays + db.rfis + db.submittals (K-5
+#   landed the submittal cross-walk). Submittals on the same task now
+#   contribute to each other's prior-sum, modulo the exclude_submittal_
+#   id self-exclusion threaded below.
 #
 # exclude_submittal_id is plumbed through the signature (matches J-2's
-# exclude_rfi_id pattern) but UNUSED in K-3 (the prior-sum helper
-# doesn't accept it yet). Stable signature so K-5 wires it in without
-# touching this resolver.
+# exclude_rfi_id pattern) AND threaded into the prior-sum helper call.
+# Defaults to sub_doc.id so a post-insert / post-PATCH re-resolve on
+# the same submittal doesn't count its own projected_impact_days
+# toward the prior-sum.
 # =====================================================================
 async def _resolve_submittal_task_impacts(
     db, tenant_id: str, sub_doc: dict, *,
@@ -1502,18 +1499,18 @@ async def _resolve_submittal_task_impacts(
         is_cp = bool(t.get("is_critical_path"))
 
         if proj_id is not None and f_val is not None:
-            # K-3 STUB: prior-sum walks delays + RFIs only (J-5 wired
-            # the RFI walk). K-5 will extend the helper to also walk
-            # db.submittals (over-SLA filter) and accept an
-            # exclude_submittal_id kwarg. The excl_sub variable we
-            # already resolved above is intentionally unused HERE --
-            # it becomes the third kwarg in K-5 without any other
-            # change to this resolver.
+            # CPM Part K-5 (2026-05-15) -- prior-sum now walks delays
+            # + RFIs + submittals (db.submittals with sla_status=
+            # breached). Pass exclude_submittal_id so THIS submittal's
+            # own impacts don't count as prior to itself when we re-
+            # resolve post-insert / post-PATCH. The other two excludes
+            # stay None -- a submittal is not a delay or RFI, so
+            # nothing to exclude on those collections.
             prior = await _sum_prior_open_blocker_impacts_on_task(
                 db, tenant_id, proj_id, tid,
                 exclude_delay_id=None,
                 exclude_rfi_id=None,
-                # exclude_submittal_id=excl_sub,   # K-5 will uncomment
+                exclude_submittal_id=excl_sub,
             )
             # Clamp at 0 -- can't have negative float in the verdict.
             remaining = max(0.0, f_val - prior)

@@ -21,34 +21,50 @@ async def _sum_prior_open_blocker_impacts_on_task(
     db, tenant_id: str, project_id: str, task_id: str, *,
     exclude_delay_id: Optional[str] = None,
     exclude_rfi_id: Optional[str] = None,
+    exclude_submittal_id: Optional[str] = None,
 ) -> float:
-    """CPM Part I (2026-05-15) + Part J-5 (2026-05-15) -- sum of
-    projected_impact_days from per_task_impacts entries across all
-    CURRENTLY-OPEN SCHEDULE BLOCKERS (delays AND RFIs) in this project
-    that touch `task_id`, optionally excluding one delay AND/OR one
-    RFI (the event being logged or edited).
+    """CPM Part I (2026-05-15) + Part J-5 (2026-05-15) + Part K-5
+    (2026-05-15) -- sum of projected_impact_days from per_task_impacts
+    entries across all CURRENTLY-OPEN SCHEDULE BLOCKERS (delays AND
+    RFIs AND submittals) in this project that touch `task_id`,
+    optionally excluding one delay AND/OR one RFI AND/OR one submittal
+    (the event being logged or edited).
 
-    PART J-5 RENAME (2026-05-15): was _sum_prior_open_delay_impacts_on_task
-    in Part I (delays-only walk). Now walks delays + RFIs. The Part I
-    delay-flow caller passes exclude_delay_id only; the Part J-2 RFI-
-    flow caller passes exclude_rfi_id only. Both excludes are
-    optional -- the typical post-insert re-resolve passes the
-    just-inserted event's id to avoid double-counting it as its own
-    prior impact.
+    PART J-5 RENAME: was _sum_prior_open_delay_impacts_on_task in Part
+    I (delays-only walk). J-5 added the RFI walk + exclude_rfi_id.
+    PART K-5 ADDS: db.submittals walk + exclude_submittal_id kwarg.
+
+    Callers pass the exclude_* for their own collection only:
+      * Part I delay flow:        exclude_delay_id
+      * Part J-2 RFI flow:        exclude_rfi_id
+      * Part K-3 submittal flow:  exclude_submittal_id
+    All three are optional -- the typical post-insert re-resolve
+    passes the just-inserted event's id to avoid double-counting it
+    as its own prior impact.
 
     Status filters (must agree with the count_open_blockers convention
     in services.task_status -- both helpers ARE the contract):
 
-        Delays:  status IN ["open", "in_progress"]
-        RFIs:    status IN ["draft", "sent", "in_review"]
+        Delays:      status IN ["open", "in_progress"]
+        RFIs:        status IN ["draft", "sent", "in_review"]
+        Submittals:  status IN ["submitted", "in_review"]
+                     AND sla_status == "breached"
+
+    Submittal linkage is via schedule_activity_id (singular) NOT
+    linked_task_ids -- matches the K-4 Path 1 helper + count_open_
+    blockers convention. When a submittal flips from breached ->
+    approved, the next call drops its impact from the prior-sum
+    automatically (status leaves the $in set AND sla_status leaves
+    "breached"); no retroactive snapshot rewrite.
 
     EDGE CASES (all handled below):
     * Multi-task event: a single delay/RFI row whose per_task_impacts
       contains entries for T1 and T2 contributes its T1 impact to T1's
       sum and its T2 impact to T2's sum -- never crosses tasks.
+      Submittals are singular (one schedule_activity_id) so this
+      doesn't apply to the submittal walk.
     * Event with multiple impact rows on the same task (data error
-      but legal): each row's projected_impact_days summed. Mongo
-      doesn't enforce uniqueness on the embedded array.
+      but legal): each row's projected_impact_days summed.
     * Status migration in flight: the {"$in": [...]} filter
       excludes any status not in the set, so partial deploys with
       new status values default-fail-safe (excluded).
@@ -60,9 +76,7 @@ async def _sum_prior_open_blocker_impacts_on_task(
     rows. That's deliberate: the per_task_impacts snapshot is part
     of the audit trail and must be immutable post-write.
 
-    Submittals + QC issues do NOT contribute here. Submittal SLA-
-    breach impact propagation is deferred to a future bucket (see
-    audit Hidden Issue H1); QC issues by design (Bug #53) only
+    QC issues do NOT contribute here. Per Bug #53, QC issues only
     contribute via the synthetic delay spawned in
     services.qc_rework_cascade.create_synthetic_delay_for_qc, which
     lives in db.delays and is picked up by the delay walk below.
@@ -93,6 +107,23 @@ async def _sum_prior_open_blocker_impacts_on_task(
         {"_id": 0, "id": 1, "per_task_impacts": 1},
     ).to_list(500)
 
+    # ---- Submittals (CPM Part K-5) -----------------------------------
+    # Status + sla_status filter matches count_open_blockers (line 145-
+    # 150 in services/task_status.py) AND _open_blocker_impact_for_task
+    # K-4 walk -- single contract across all three helpers.
+    sub_q: dict = {
+        "project_id": project_id,
+        "status": {"$in": ["submitted", "in_review"]},
+        "sla_status": "breached",
+        "schedule_activity_id": task_id,
+    }
+    if exclude_submittal_id is not None:
+        sub_q["id"] = {"$ne": exclude_submittal_id}
+    submittal_docs = await db.submittals.find(
+        tenant_filter(tenant_id, sub_q),
+        {"_id": 0, "id": 1, "per_task_impacts": 1},
+    ).to_list(500)
+
     total = 0.0
     for d in delay_docs:
         for imp in (d.get("per_task_impacts") or []):
@@ -105,6 +136,13 @@ async def _sum_prior_open_blocker_impacts_on_task(
                     pass
     for r in rfi_docs:
         for imp in (r.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except (TypeError, ValueError):
+                    pass
+    for s in submittal_docs:
+        for imp in (s.get("per_task_impacts") or []):
             if imp.get("task_id") == task_id:
                 try:
                     total += float(imp.get("projected_impact_days") or 0)

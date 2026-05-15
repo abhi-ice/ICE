@@ -270,32 +270,44 @@ async def _open_blocker_impact_for_task(db, tenant_id: str, task_id: str) -> flo
     CPM walk-forward (compute_projected_finish_dates).
 
     CPM Part J-4 (2026-05-15) -- renamed from _open_delay_impact_for_task
-    and extended to walk the rfis collection alongside delays. The two
-    walks use the SAME per_task_impacts shape (Part J-1 added the array
-    to RFI; Part J-2 stamps verdict fields on it), so the per-task
-    summation logic below is identical for both collections.
+    and extended to walk the rfis collection alongside delays.
 
-    Status filters (each matches the upstream
-    services.task_status.count_open_blockers convention):
+    CPM Part K-4 (2026-05-15) -- extended to also walk db.submittals
+    (over-SLA filter). The K-1 schema added per_task_impacts to
+    submittals; the K-2 auto-suggest stamps system_suggested entries
+    on the SLA-breach moment; K-3 stamps the 5 verdict keys after
+    recompute. This helper now sums Path 1 impacts from all three
+    collections so a breached submittal pushes the same Slip-column
+    days as a delay/RFI on the same task.
 
-        Delays:  status IN ["open", "in_progress"]
-        RFIs:    status IN ["draft", "sent", "in_review"]
+    All three walks use the SAME per_task_impacts shape; the per-task
+    summation logic is identical across collections.
 
-    Closed / resolved / cancelled / approved / answered RFIs and
-    delays are excluded -- only events that are CURRENTLY pushing
-    the task contribute to the projected_finish shift. When an RFI
-    is answered or a delay resolved, this helper's next call drops
-    its impact from the sum, and the projected_finish_date on the
-    affected task moves back.
+    Status filters (each matches the upstream count_open_blockers
+    convention in this same module, line 89-153 -- the two helpers
+    ARE the contract):
 
-    Submittals and QC issues do NOT contribute here:
-      - Submittals: over-SLA submittals surface as binary blockers
-        via count_open_blockers but don't carry a per_task_impacts
-        array; impact days propagation is deferred to a future bucket
-        (see audit Hidden Issue H1).
-      - QC issues: per Bug #53, QC is internal-quality flag; only
-        the SYNTHETIC delay spawned by severity=rework_required
-        contributes (and it lives in db.delays).
+        Delays:      status IN ["open", "in_progress"]
+        RFIs:        status IN ["draft", "sent", "in_review"]
+        Submittals:  status IN ["submitted", "in_review"]
+                     AND sla_status == "breached"
+
+    Submittal linkage is via schedule_activity_id (singular) NOT
+    linked_task_ids -- submittals carry one task link, mirroring
+    count_open_blockers (line 147). Each over-SLA submittal can have
+    at most one matching entry in per_task_impacts (the K-2 auto-
+    suggest pass populates exactly one entry per linked task).
+
+    Closed / resolved / approved / answered / voided events are
+    excluded -- only events CURRENTLY pushing contribute. When a
+    submittal flips from breached -> approved, this helper's next
+    call drops its impact (status leaves the $in set AND sla_status
+    leaves "breached"); the projected_finish_date on the affected
+    task moves back automatically. No retroactive rewrite needed.
+
+    QC issues do NOT contribute here: per Bug #53, QC is internal-
+    quality only; the SYNTHETIC delay spawned by severity=rework_
+    required carries the schedule impact and lives in db.delays.
     """
     # ---- Delays ------------------------------------------------------
     delay_docs = await db.delays.find(
@@ -313,6 +325,20 @@ async def _open_blocker_impact_for_task(db, tenant_id: str, task_id: str) -> flo
         }),
         {"_id": 0, "per_task_impacts": 1},
     ).to_list(50)
+    # ---- Submittals (CPM Part K-4) ----------------------------------
+    # Same filter as count_open_blockers (line 145-150). The submittal
+    # collection's linked task lives on schedule_activity_id (singular),
+    # not linked_task_ids. Over-SLA gate (sla_status="breached") is
+    # the contract -- within-SLA submittals are normal procurement
+    # and do not contribute schedule-impact days.
+    submittal_docs = await db.submittals.find(
+        tenant_filter(tenant_id, {
+            "schedule_activity_id": task_id,
+            "status": {"$in": ["submitted", "in_review"]},
+            "sla_status": "breached",
+        }),
+        {"_id": 0, "per_task_impacts": 1},
+    ).to_list(50)
 
     total = 0.0
     for d in delay_docs:
@@ -324,6 +350,13 @@ async def _open_blocker_impact_for_task(db, tenant_id: str, task_id: str) -> flo
                     pass
     for r in rfi_docs:
         for imp in (r.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except Exception:
+                    pass
+    for s in submittal_docs:
+        for imp in (s.get("per_task_impacts") or []):
             if imp.get("task_id") == task_id:
                 try:
                     total += float(imp.get("projected_impact_days") or 0)
