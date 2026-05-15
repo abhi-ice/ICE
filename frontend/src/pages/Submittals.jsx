@@ -33,6 +33,10 @@ import JigsawField from "../components/forms/JigsawField";
 // .toLocaleDateString(); formatDateDisplay does the same truncation
 // (slice(0,10)) plus the format conversion in one place.
 import { formatDateDisplay } from "../lib/dateUtil";
+// CPM Part K-6 (2026-05-15) -- hybrid-mode per-task impact input.
+// Reuses the J-6 component with mode="submittal" for source pills +
+// reset-to-suggestion + within-SLA banner.
+import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 
 const STATUS_OPTIONS = [
   "not_yet_submitted", "submitted", "in_review", "approved",
@@ -570,12 +574,26 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
       submittal.sla_uses_calendar_days_override ?? null,
     sub_responsible: submittal.sub_responsible || "",
   });
+  // CPM Part K-6 (2026-05-15) -- per_task_impacts state. Kept
+  // separate from `form` because PerTaskImpactsInput owns array
+  // semantics (deep equality compare on save). Initial value comes
+  // from the row directly; auto-suggested entries arrive via K-2
+  // server-side stamp when SLA breaches.
+  const [perTaskImpacts, setPerTaskImpacts] = useState(
+    Array.isArray(submittal.per_task_impacts) ? submittal.per_task_impacts : []
+  );
   const [reviewerId, setReviewerId] = useState(submittal.assigned_reviewer_id || "");
   const [eventType, setEventType] = useState("");
   const [eventNotes, setEventNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [events, setEvents] = useState([]);
   const [tab, setTab] = useState("edit");
+
+  // CPM Part K-6 -- linked task ids for the hybrid input. Submittals
+  // link via singular schedule_activity_id; the component takes an
+  // array so we wrap. Empty array if no link.
+  const linkedTaskIds = submittal.schedule_activity_id
+    ? [submittal.schedule_activity_id] : [];
 
   const loadEvents = async () => {
     try {
@@ -599,6 +617,22 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
       else payload.sla_days_override = Number(payload.sla_days_override);
       if (payload.sla_uses_calendar_days_override === null)
         delete payload.sla_uses_calendar_days_override;
+
+      // CPM Part K-6 -- include per_task_impacts only when it changed
+      // from the initial row state. JSON.stringify deep-compare mirrors
+      // the LockedEventEditModal pattern (J-6). When unchanged we
+      // omit it so the backend treats this as a non-impacts PATCH
+      // (skips the K-3 verdict-stamp pass + auto_recompute call).
+      const initialImpacts = Array.isArray(submittal.per_task_impacts)
+        ? submittal.per_task_impacts : [];
+      const impactsChanged = JSON.stringify(initialImpacts) !== JSON.stringify(perTaskImpacts);
+      if (impactsChanged) {
+        // Send the array as-is; backend validator (K-1
+        // _normalize_submittal_per_task_impacts) enforces shape +
+        // source enum. K-3 re-stamps verdict keys post-recompute.
+        payload.per_task_impacts = perTaskImpacts;
+      }
+
       await api.patch(`/submittals/${submittal.id}`, payload);
       toast.success("Saved");
       onSaved?.();
@@ -762,6 +796,29 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                 </div>
               </div>
             )}
+
+            {/* CPM Part K-6 (2026-05-15) -- hybrid-mode per-task impacts.
+                Only renders when this submittal has a linked task (the
+                schedule_activity_id field). For unlinked submittals
+                there's nothing to capture an impact against; the panel
+                hides entirely. When the submittal is within SLA the
+                component shows a banner explaining the math isn't
+                active yet, but inputs remain (super may pre-fill). */}
+            {linkedTaskIds.length > 0 && (
+              <div>
+                <label className="field-label">Schedule impact (per task)</label>
+                <PerTaskImpactsInput
+                  mode="submittal"
+                  slaStatus={submittal.sla_status}
+                  linkedTaskIds={linkedTaskIds}
+                  value={perTaskImpacts}
+                  onChange={setPerTaskImpacts}
+                  projectId={submittal.project_id}
+                  testidPrefix="sub-impacts"
+                />
+              </div>
+            )}
+
             <div className="flex justify-end">
               <Button onClick={save} disabled={busy}
                 data-testid="edit-save"

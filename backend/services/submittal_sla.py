@@ -1324,6 +1324,18 @@ async def auto_suggest_per_task_impacts_for_submittal(
         seen_task_ids.add(tid)
 
     # Auto-suggest a fresh entry for each linked task with no entry yet.
+    # CPM Part K-6 (2026-05-15) -- also stamp `original_suggested_days`
+    # so the frontend hybrid-mode UI can:
+    #   (a) show "was X auto-suggested" tooltip when super edits the
+    #       value (source flips to super_overridden, but the original
+    #       value rides through via this field)
+    #   (b) offer a "Reset to suggestion" button on super_overridden
+    #       entries that restores projected_impact_days = original_
+    #       suggested_days + flips source back to system_suggested
+    # The K-1 validator preserves unknown fields via dict(item), and
+    # K-3 verdict-stamping preserves them too -- this field round-trips
+    # unchanged. Federal audit trail benefits: the auto-suggested
+    # baseline is preserved server-side without needing audit_log lookups.
     for tid in linked_set:
         if tid in seen_task_ids:
             continue
@@ -1331,6 +1343,7 @@ async def auto_suggest_per_task_impacts_for_submittal(
             "task_id": tid,
             "projected_impact_days": projected_impact_default,
             "source": "system_suggested",
+            "original_suggested_days": projected_impact_default,
         }
         suggested.append(new_entry)
         new_impacts.append(new_entry)
