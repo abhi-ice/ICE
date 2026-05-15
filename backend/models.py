@@ -499,6 +499,115 @@ def _normalize_predecessors_list(value: Any) -> List[dict]:
     return out
 
 
+# ============================================================
+# CPM Part J (2026-05-15) -- RFI per_task_impacts schema.
+#
+# RFIs (in blocking statuses draft / sent / in_review) now carry a
+# numeric per-task impact array parallel to the one on Delay. When a
+# super logs an RFI with linked tasks, they can optionally enter
+# estimated impact days per task. The downstream cascade
+# (compute_projected_finish_dates) sums these impacts alongside open
+# delay impacts so a 14-day-open blocking RFI on a critical-path task
+# shows up correctly in the Slip column instead of reading 0.
+#
+# Storage shape is intentionally parallel to delays' per_task_impacts:
+#   user-supplied:   { task_id: str, projected_impact_days: int }
+#   server-stamped:  { float_at_logging_days,
+#                       prior_open_impacts_at_logging_days,
+#                       remaining_float_at_logging_days,
+#                       consumes_float_only,
+#                       pushes_critical_path }
+#
+# Impact days are INTEGER (super-estimate precision), unlike delays
+# which support float (Part E carries half-day precision from
+# qc_rework_cascade). Negative impact_days are REJECTED loudly --
+# RFIs cannot accelerate work, only delay it.
+# ============================================================
+def _normalize_rfi_per_task_impacts(value: Any) -> List[dict]:
+    """Field validator helper for RFI.per_task_impacts.
+
+    Accepts the user-supplied minimal shape AND the post-Part-J-3
+    server-enriched shape (the 5 stamp fields ride through unchanged
+    on read-model deserialization for already-stamped rows).
+
+    Behavior:
+      - bare list[dict] in: each item must have task_id (non-empty
+        string) AND projected_impact_days (coercible to non-negative
+        int). Items missing either field are DROPPED silently
+        (defensive) so a partial-form-submit doesn't 422 the whole
+        RFI patch. NEGATIVE impact_days raise ValueError so the
+        frontend gets a loud 422 -- a negative number is a real
+        user error worth surfacing.
+      - dict with float impact_days: only accepted if the float is
+        exactly an integer value (e.g. 3.0 from a JSON parser that
+        emitted a float for a round number). 3.5 raises ValueError.
+        Matches the "integer per RFI convention" spec.
+      - None / non-list inputs: coerce to [].
+
+    Server-stamped fields (float_at_logging_days,
+    prior_open_impacts_at_logging_days, remaining_float_at_logging_days,
+    consumes_float_only, pushes_critical_path) are preserved if
+    present on the input -- the validator never strips them, so
+    re-deserialization of a previously-stamped row round-trips
+    without losing the audit-traceable fields.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return []
+    out: List[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        tid = item.get("task_id")
+        if not isinstance(tid, str) or not tid.strip():
+            # task_id is the join key -- without it, the entry is
+            # meaningless. Drop silently.
+            continue
+        raw_days = item.get("projected_impact_days")
+        if raw_days is None:
+            # Missing impact_days: defensive drop. The super left the
+            # field blank for this task; UI rule from the spec is
+            # "Empty = treat as 0 (no impact captured yet) ->
+            # per_task_impacts entry NOT created for that task".
+            continue
+        # Coerce to int with fractional-loss check.
+        if isinstance(raw_days, bool):
+            # Bool is technically int subclass in Python; reject because
+            # True/False on impact_days is meaningless.
+            continue
+        if isinstance(raw_days, int):
+            days_int = raw_days
+        elif isinstance(raw_days, float):
+            if raw_days != int(raw_days):
+                raise ValueError(
+                    f"RFI per_task_impacts.projected_impact_days must be "
+                    f"a whole number of days; got fractional value "
+                    f"{raw_days!r} for task_id={tid!r}"
+                )
+            days_int = int(raw_days)
+        else:
+            # Strings or other types -- defensive drop. The frontend
+            # NumberInput component sends int/float; anything else is
+            # a contract violation but we don't want to wedge a whole
+            # RFI patch over a malformed single entry.
+            continue
+        if days_int < 0:
+            raise ValueError(
+                f"RFI per_task_impacts.projected_impact_days must be "
+                f">= 0 (RFIs cannot accelerate work); got {days_int} "
+                f"for task_id={tid!r}"
+            )
+        # Preserve any server-stamped fields the row already carries
+        # (round-trip on read). Merge defensively so user-supplied
+        # task_id + impact_days override any stale values.
+        merged = dict(item)
+        merged["task_id"] = tid.strip()
+        merged["projected_impact_days"] = days_int
+        out.append(merged)
+    return out
+
+
 class TaskCreate(StrictModel):
     """SOURCE OF TRUTH for proposed task payloads.
 
@@ -1340,6 +1449,20 @@ class RfiCreate(StrictModel):
     # post_submit_added=true on the inserted row + writes an
     # EVENT_ADDED_POST_SUBMIT audit op.
     add_reason: Optional[str] = Field(default=None, max_length=500)
+    # CPM Part J (2026-05-15) -- per-task schedule-impact array.
+    # OPTIONAL on create (default []): many RFIs are filed before the
+    # super knows the schedule impact. The Tasks page Slip column +
+    # cumulative remaining-float verdict on subsequent delays both
+    # pick up populated entries automatically via _open_blocker_impact_for_task
+    # (Part J-4) and _sum_prior_open_blocker_impacts_on_task (Part J-5).
+    # Each item: {task_id: str, projected_impact_days: int >= 0}.
+    # Negative impact_days raise 422 -- RFIs can't accelerate work.
+    per_task_impacts: List[dict] = Field(default_factory=list)
+
+    @field_validator("per_task_impacts", mode="before")
+    @classmethod
+    def _coerce_rfi_per_task_impacts_create(cls, v):
+        return _normalize_rfi_per_task_impacts(v)
 
 
 class RfiUpdate(StrictModel):
@@ -1373,6 +1496,23 @@ class RfiUpdate(StrictModel):
     # Addition 4 -- required when the parent DR is locked. Server
     # rejects locked-DR patches with a missing or short reason.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
+    # CPM Part J (2026-05-15) -- per-task schedule-impact array.
+    # Patchable; supers can edit the impact estimates after the RFI
+    # is filed once they have more information. When present, the
+    # docs_router update_rfi flow re-resolves through
+    # _resolve_rfi_task_impacts (Part J-3) and fires
+    # auto_recompute_after_event so the downstream Slip column and
+    # downstream-delay verdicts refresh.
+    per_task_impacts: Optional[List[dict]] = None
+
+    @field_validator("per_task_impacts", mode="before")
+    @classmethod
+    def _coerce_rfi_per_task_impacts_update(cls, v):
+        # None on PATCH means "don't change this field" -- pass through.
+        # Empty-or-populated list goes through the normalizer.
+        if v is None:
+            return None
+        return _normalize_rfi_per_task_impacts(v)
 
 
 class Rfi(ReadModel):
@@ -1420,6 +1560,23 @@ class Rfi(ReadModel):
     # supplement badge renders without a per-row fetch. Server-enriched
     # in /context bundle and /photos list (extend other lists if needed).
     parent_daily_report_date: Optional[str] = None
+    # CPM Part J (2026-05-15) -- per-task schedule-impact array.
+    # Mirrors Delay.per_task_impacts but stored on the RFI row.
+    # On read, items may carry server-stamped fields:
+    #     float_at_logging_days
+    #     prior_open_impacts_at_logging_days
+    #     remaining_float_at_logging_days
+    #     consumes_float_only
+    #     pushes_critical_path
+    # Stamped by _resolve_rfi_task_impacts (Part J-3) after the RFI
+    # is persisted and auto_recompute_after_event runs. Legacy RFIs
+    # backfilled to [] by migration 019.
+    per_task_impacts: List[dict] = Field(default_factory=list)
+
+    @field_validator("per_task_impacts", mode="before")
+    @classmethod
+    def _coerce_rfi_per_task_impacts_read(cls, v):
+        return _normalize_rfi_per_task_impacts(v)
 
 
 class ChangeOrderCreate(StrictModel):
