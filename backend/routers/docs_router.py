@@ -88,9 +88,12 @@ async def _resolve_rfi_task_impacts(
         return (False, [])
 
     proj_id = project_id or rfi_doc.get("project_id")
-    # exclude_rfi_id is plumbed for J-5; the delay-only prior-sum
-    # used in J-2 doesn't need it (RFIs aren't in the walk yet).
-    _ = exclude_rfi_id if exclude_rfi_id is not None else rfi_doc.get("id")
+    # CPM Part J-5 (2026-05-15) -- exclude_rfi_id is now CONSUMED.
+    # When re-resolving an existing RFI's snapshot (e.g., the post-
+    # auto_recompute re-stamp in update_rfi or the post-insert
+    # re-stamp in create_rfi), we must exclude THIS RFI from the
+    # prior-sum so its own impact_days don't double-count.
+    excl_rfi = exclude_rfi_id if exclude_rfi_id is not None else rfi_doc.get("id")
 
     task_ids = [i["task_id"] for i in impacts_in if i.get("task_id")]
     if not task_ids:
@@ -102,10 +105,12 @@ async def _resolve_rfi_task_impacts(
     ).to_list(len(task_ids))
     by_id = {t["id"]: t for t in tasks}
 
-    # J-2 STUB -- delay-only prior-sum. J-5 will extend this helper
-    # to also walk db.rfis with the blocking-status filter and accept
-    # an exclude_rfi_id kwarg. Same import path; same call site.
-    from routers.field_events_router import _sum_prior_open_delay_impacts_on_task
+    # CPM Part J-5 (2026-05-15) -- helper renamed +
+    # cross-collection walk (db.delays + db.rfis). The J-2 stub
+    # ("delay-only prior-sum") is now closed: prior RFIs on the same
+    # task contribute alongside prior delays, modulo the
+    # exclude_rfi_id self-exclusion.
+    from routers.field_events_router import _sum_prior_open_blocker_impacts_on_task
 
     out: list[dict] = []
     changed = False
@@ -124,13 +129,15 @@ async def _resolve_rfi_task_impacts(
         is_cp = bool(t.get("is_critical_path"))
 
         if proj_id is not None and f_val is not None:
-            prior = await _sum_prior_open_delay_impacts_on_task(
+            # CPM Part J-5 (2026-05-15) -- helper now walks both
+            # collections. Pass exclude_rfi_id so THIS RFI's own
+            # impacts don't count as prior to itself. exclude_delay_id
+            # stays None -- an RFI is not a delay, so nothing to
+            # exclude from the delay side of the walk.
+            prior = await _sum_prior_open_blocker_impacts_on_task(
                 db, tenant_id, proj_id, tid,
-                # An RFI is not a delay, so nothing to exclude from
-                # the delay-only walk. When J-5 ships, the helper
-                # grows an exclude_rfi_id kwarg that we thread the
-                # outer kwarg into.
                 exclude_delay_id=None,
+                exclude_rfi_id=excl_rfi,
             )
             # Clamp at 0 -- can't have negative float in the verdict.
             remaining = max(0.0, f_val - prior)

@@ -17,52 +17,84 @@ router = APIRouter(tags=["field-events"])
 
 # --- Delays ---
 
-async def _sum_prior_open_delay_impacts_on_task(
+async def _sum_prior_open_blocker_impacts_on_task(
     db, tenant_id: str, project_id: str, task_id: str, *,
     exclude_delay_id: Optional[str] = None,
+    exclude_rfi_id: Optional[str] = None,
 ) -> float:
-    """CPM Part I (2026-05-15) -- sum of projected_impact_days from
-    per_task_impacts entries across all CURRENTLY-OPEN delays in this
-    project that touch `task_id`, optionally excluding one delay (the
-    delay being logged or edited).
+    """CPM Part I (2026-05-15) + Part J-5 (2026-05-15) -- sum of
+    projected_impact_days from per_task_impacts entries across all
+    CURRENTLY-OPEN SCHEDULE BLOCKERS (delays AND RFIs) in this project
+    that touch `task_id`, optionally excluding one delay AND/OR one
+    RFI (the event being logged or edited).
 
-    "Open" is defined as `status IN ("open", "in_progress")` to match
-    the existing `_open_delay_impact_for_task` filter in services/
-    task_status.py -- both helpers must agree on which delays are
-    actively contributing slip to the schedule. Resolved / closed /
-    deleted / mitigated delays no longer contribute.
+    PART J-5 RENAME (2026-05-15): was _sum_prior_open_delay_impacts_on_task
+    in Part I (delays-only walk). Now walks delays + RFIs. The Part I
+    delay-flow caller passes exclude_delay_id only; the Part J-2 RFI-
+    flow caller passes exclude_rfi_id only. Both excludes are
+    optional -- the typical post-insert re-resolve passes the
+    just-inserted event's id to avoid double-counting it as its own
+    prior impact.
 
-    EDGE CASES (all handled by the query + per-task iteration below):
-    * Multi-task delay: a single delay row whose per_task_impacts
-      contains entries for T1 and T2 contributes its T1 impact to
-      T1's sum and its T2 impact to T2's sum -- never crosses tasks.
-    * Delay with multiple impact rows on the same task (data error
+    Status filters (must agree with the count_open_blockers convention
+    in services.task_status -- both helpers ARE the contract):
+
+        Delays:  status IN ["open", "in_progress"]
+        RFIs:    status IN ["draft", "sent", "in_review"]
+
+    EDGE CASES (all handled below):
+    * Multi-task event: a single delay/RFI row whose per_task_impacts
+      contains entries for T1 and T2 contributes its T1 impact to T1's
+      sum and its T2 impact to T2's sum -- never crosses tasks.
+    * Event with multiple impact rows on the same task (data error
       but legal): each row's projected_impact_days summed. Mongo
       doesn't enforce uniqueness on the embedded array.
-    * Delay status migration in flight: the {"$in": [...]} filter
-      excludes any status that isn't in the set, so partial deploys
-      with new status values default-fail-safe (excluded).
+    * Status migration in flight: the {"$in": [...]} filter
+      excludes any status not in the set, so partial deploys with
+      new status values default-fail-safe (excluded).
 
-    DOES NOT retroactively rewrite snapshots on prior delays. Each
-    delay's per_task_impacts captures state at THAT delay's logging
-    moment. Resolving a prior delay changes the FUTURE behavior of
+    DOES NOT retroactively rewrite snapshots on prior events. Each
+    event's per_task_impacts captures state at THAT event's logging
+    moment. Resolving a prior event changes the FUTURE behavior of
     remaining-float calculations -- it doesn't rewrite past audit
     rows. That's deliberate: the per_task_impacts snapshot is part
     of the audit trail and must be immutable post-write.
+
+    Submittals + QC issues do NOT contribute here. Submittal SLA-
+    breach impact propagation is deferred to a future bucket (see
+    audit Hidden Issue H1); QC issues by design (Bug #53) only
+    contribute via the synthetic delay spawned in
+    services.qc_rework_cascade.create_synthetic_delay_for_qc, which
+    lives in db.delays and is picked up by the delay walk below.
     """
-    q: dict = {
+    # ---- Delays ------------------------------------------------------
+    delay_q: dict = {
         "project_id": project_id,
         "status": {"$in": ["open", "in_progress"]},
         "linked_task_ids": task_id,
     }
     if exclude_delay_id is not None:
-        q["id"] = {"$ne": exclude_delay_id}
-    docs = await db.delays.find(
-        tenant_filter(tenant_id, q),
+        delay_q["id"] = {"$ne": exclude_delay_id}
+    delay_docs = await db.delays.find(
+        tenant_filter(tenant_id, delay_q),
         {"_id": 0, "id": 1, "per_task_impacts": 1},
     ).to_list(500)
+
+    # ---- RFIs (CPM Part J-5) -----------------------------------------
+    rfi_q: dict = {
+        "project_id": project_id,
+        "status": {"$in": ["draft", "sent", "in_review"]},
+        "linked_task_ids": task_id,
+    }
+    if exclude_rfi_id is not None:
+        rfi_q["id"] = {"$ne": exclude_rfi_id}
+    rfi_docs = await db.rfis.find(
+        tenant_filter(tenant_id, rfi_q),
+        {"_id": 0, "id": 1, "per_task_impacts": 1},
+    ).to_list(500)
+
     total = 0.0
-    for d in docs:
+    for d in delay_docs:
         for imp in (d.get("per_task_impacts") or []):
             if imp.get("task_id") == task_id:
                 try:
@@ -71,7 +103,22 @@ async def _sum_prior_open_delay_impacts_on_task(
                     # Defensive: a malformed numeric on a single
                     # entry shouldn't poison the whole sum.
                     pass
+    for r in rfi_docs:
+        for imp in (r.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except (TypeError, ValueError):
+                    pass
     return total
+
+
+# CPM Part J-5 (2026-05-15) -- backward-compat alias. Internal callers
+# have all been updated to the renamed function. Kept here so external
+# code (third-party scripts, smoke harnesses pinned to Part I name) that
+# imported the old name doesn't break on this commit. Safe to drop in a
+# follow-up sweep once we confirm nothing external imports it.
+_sum_prior_open_delay_impacts_on_task = _sum_prior_open_blocker_impacts_on_task
 
 
 async def _resolve_task_impacts(
@@ -183,10 +230,16 @@ async def _resolve_task_impacts(
         is_cp = bool(t.get("is_critical_path"))
 
         # CPM Part I -- cumulative remaining float math.
+        # CPM Part J-5 (2026-05-15) -- helper renamed + now walks RFIs
+        # too. This delay-flow caller passes exclude_delay_id only
+        # (the delay being logged/edited); RFIs on the same task are
+        # NOT excluded -- their impacts contribute to this delay's
+        # prior-sum so a delay logged after an RFI sees its impact.
         if proj_id is not None and f_val is not None:
-            prior = await _sum_prior_open_delay_impacts_on_task(
+            prior = await _sum_prior_open_blocker_impacts_on_task(
                 db, tenant_id, proj_id, tid,
                 exclude_delay_id=excl_id,
+                exclude_rfi_id=None,
             )
             # Clamp at 0 -- can't have negative float in the verdict
             # (a task already past its structural float has 0 remaining

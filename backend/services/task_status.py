@@ -264,19 +264,66 @@ async def recompute_for_tasks(
 
 # ---------- Phase 4: CPM walk-forward for projected_finish_date -----------
 
-async def _open_delay_impact_for_task(db, tenant_id: str, task_id: str) -> float:
-    """Sum of projected_impact_days across open delays directly linked
-    to this task. Used as the 'pushed' days for CPM walk-forward."""
-    docs = await db.delays.find(
+async def _open_blocker_impact_for_task(db, tenant_id: str, task_id: str) -> float:
+    """Sum of projected_impact_days across all OPEN schedule blockers
+    directly linked to this task. Used as the 'pushed' days for the
+    CPM walk-forward (compute_projected_finish_dates).
+
+    CPM Part J-4 (2026-05-15) -- renamed from _open_delay_impact_for_task
+    and extended to walk the rfis collection alongside delays. The two
+    walks use the SAME per_task_impacts shape (Part J-1 added the array
+    to RFI; Part J-2 stamps verdict fields on it), so the per-task
+    summation logic below is identical for both collections.
+
+    Status filters (each matches the upstream
+    services.task_status.count_open_blockers convention):
+
+        Delays:  status IN ["open", "in_progress"]
+        RFIs:    status IN ["draft", "sent", "in_review"]
+
+    Closed / resolved / cancelled / approved / answered RFIs and
+    delays are excluded -- only events that are CURRENTLY pushing
+    the task contribute to the projected_finish shift. When an RFI
+    is answered or a delay resolved, this helper's next call drops
+    its impact from the sum, and the projected_finish_date on the
+    affected task moves back.
+
+    Submittals and QC issues do NOT contribute here:
+      - Submittals: over-SLA submittals surface as binary blockers
+        via count_open_blockers but don't carry a per_task_impacts
+        array; impact days propagation is deferred to a future bucket
+        (see audit Hidden Issue H1).
+      - QC issues: per Bug #53, QC is internal-quality flag; only
+        the SYNTHETIC delay spawned by severity=rework_required
+        contributes (and it lives in db.delays).
+    """
+    # ---- Delays ------------------------------------------------------
+    delay_docs = await db.delays.find(
         tenant_filter(tenant_id, {
             "linked_task_ids": task_id,
             "status": {"$in": ["open", "in_progress"]},
         }),
         {"_id": 0, "per_task_impacts": 1},
     ).to_list(50)
+    # ---- RFIs (CPM Part J-4) ----------------------------------------
+    rfi_docs = await db.rfis.find(
+        tenant_filter(tenant_id, {
+            "linked_task_ids": task_id,
+            "status": {"$in": ["draft", "sent", "in_review"]},
+        }),
+        {"_id": 0, "per_task_impacts": 1},
+    ).to_list(50)
+
     total = 0.0
-    for d in docs:
+    for d in delay_docs:
         for imp in (d.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except Exception:
+                    pass
+    for r in rfi_docs:
+        for imp in (r.get("per_task_impacts") or []):
             if imp.get("task_id") == task_id:
                 try:
                     total += float(imp.get("projected_impact_days") or 0)
@@ -320,10 +367,11 @@ async def compute_projected_finish_dates(
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
 
-    # Pre-compute per-task own_impact (open-delay sum). One query per task.
+    # Pre-compute per-task own_impact (open-BLOCKER sum: open delays
+    # + open RFIs as of Part J-4). One pair of queries per task.
     own_impact: dict[str, float] = {}
     for t in tasks:
-        own_impact[t["id"]] = await _open_delay_impact_for_task(db, tenant_id, t["id"])
+        own_impact[t["id"]] = await _open_blocker_impact_for_task(db, tenant_id, t["id"])
 
     # Topological visit by predecessor walk. We don't have a true topo sort
     # available without re-implementing CPM; this BFS does the safe thing:
