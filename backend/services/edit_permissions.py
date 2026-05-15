@@ -137,20 +137,31 @@ def _projection_equal(before_v, updates_v) -> bool:
 
     Root cause this addresses:
     backend/routers/field_events_router.py:_resolve_task_impacts stamps
-    each per_task_impacts item with 5 keys on storage:
+    each per_task_impacts item with 7 keys on storage (Part I added the
+    last 2 in 2026-05-15):
         task_id, projected_impact_days,
-        float_at_logging_days, consumes_float_only, pushes_critical_path
+        float_at_logging_days, consumes_float_only, pushes_critical_path,
+        prior_open_impacts_at_logging_days,                 # Part I (server-only)
+        remaining_float_at_logging_days                     # Part I (server-only)
 
     DelayForm.jsx echoes back only 2 keys:
         task_id, projected_impact_days
 
     Python dict equality requires identical key sets:
-        {a:1, b:2, c:3, d:4, e:5}  !=  {a:1, b:2}
+        {a:1, b:2, c:3, d:4, e:5, f:6, g:7}  !=  {a:1, b:2}
     so list element-wise == falsely flags per_task_impacts as changed on
     every patch, even when the user touched nothing on the impacts grid.
     That pulled per_task_impacts into changed_fields, which is NOT in
     delay's status-only allowed set, disqualifying the exemption and
     causing the 422 reported in preview.
+
+    Part I (2026-05-15): two new backend-only fields ride along on each
+    per_task_impacts item -- prior_open_impacts_at_logging_days and
+    remaining_float_at_logging_days. The frontend does not know about
+    these (Pydantic StrictModel extra="forbid" on PerTaskImpact would
+    422 if it tried). The subset-check rule below tolerates them
+    automatically -- backend-only keys ABSENT from the frontend's
+    projection are treated as not changed.
 
     Rule:
       - Scalar / dict identity:  use Python ==.

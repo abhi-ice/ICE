@@ -131,12 +131,31 @@ def _matches(row, query):
         $ne, $in, $nin, $gte, $lte, $gt, $lt
         array-contains-scalar (`{field: value}` matches docs where
         `field` is a list containing value)
+        $or (CPM Part J-7): top-level disjunction of subqueries; used
+        by services.task_status.count_open_blockers to match RFIs on
+        EITHER linked_task_ids OR schedule_activity_id (Bug #50).
+        $and (defensive): top-level conjunction; not currently used
+        by any helper but matches Mongo semantics.
         nested AND via top-level keys
     """
     if not query:
         return True
     for k, v in query.items():
         if k == "_id":
+            continue
+        # CPM Part J-7 (2026-05-15) -- handle top-level $or / $and
+        # logical operators before falling into per-field matching.
+        if k == "$or":
+            if not isinstance(v, list) or not v:
+                return False
+            if not any(_matches(row, sub) for sub in v):
+                return False
+            continue
+        if k == "$and":
+            if not isinstance(v, list):
+                return False
+            if not all(_matches(row, sub) for sub in v):
+                return False
             continue
         rv = row.get(k)
         if isinstance(v, dict):
@@ -295,6 +314,19 @@ from services.qc_rework_cascade import (  # noqa: E402
 from routers.field_events_router import (  # noqa: E402
     _resolve_task_impacts,
 )
+# CPM Part J-7 (2026-05-15) -- RFI verdict resolver for the J-7 tests.
+from routers.docs_router import (  # noqa: E402
+    _resolve_rfi_task_impacts,
+)
+# CPM Part K-7 (2026-05-15) -- Submittal cross-collection helpers.
+# The K-2 auto-suggest helper + K-3 verdict resolver + K-3 persist
+# wrapper from services.submittal_sla. Tests call these directly to
+# verify the K-2/K-3/K-4/K-5 chain end-to-end without needing the
+# full SLA date-math from detect_breaches.
+from services.submittal_sla import (  # noqa: E402
+    auto_suggest_per_task_impacts_for_submittal,
+    _resolve_and_persist_submittal_per_task_impacts,
+)
 
 
 # =============================================================================
@@ -363,6 +395,64 @@ def _pred(code: str, rel_type: str = "FS", lag_days: int = 0) -> dict:
     return {"code": code, "type": rel_type, "lag_days": lag_days}
 
 
+def _add_open_rfi(
+    task_id: str | None = None,
+    impact_days: int | None = None,
+    *,
+    rfi_id: str | None = None,
+    status: str = "draft",
+    linked_task_ids: list[str] | None = None,
+    per_task_impacts: list[dict] | None = None,
+) -> dict:
+    """CPM Part J-7 (2026-05-15) -- insert an RFI row into the stub.
+
+    Two ways to call:
+        (a) task_id + impact_days  -- single-task RFI shorthand.
+            Builds linked_task_ids=[task_id] and
+            per_task_impacts=[{task_id, projected_impact_days}].
+        (b) linked_task_ids + per_task_impacts  -- explicit shape
+            (used for multi-task RFIs and zero-impact RFIs that
+            test Path 1 binary-blocker semantics).
+
+    If `per_task_impacts` is None and `impact_days` is given, the
+    one-row array is synthesized. Pass `per_task_impacts=[]`
+    explicitly to test the "RFI logged with no impact captured yet"
+    case (test 6).
+
+    Status defaults to "draft" so the RFI counts as a blocker in
+    count_open_blockers AND contributes to the Path 1 / Path 2
+    blocker walks. Pass status="answered" / "closed" for the
+    resolved-RFI exclusion tests (test 3).
+    """
+    if linked_task_ids is None:
+        if task_id is None:
+            raise ValueError("must pass task_id or linked_task_ids")
+        linked_task_ids = [task_id]
+    if per_task_impacts is None:
+        if impact_days is None or task_id is None:
+            per_task_impacts = []
+        else:
+            per_task_impacts = [{
+                "task_id": task_id,
+                "projected_impact_days": int(impact_days),
+            }]
+    doc = {
+        "id": rfi_id or f"rfi-{uuid.uuid4()}",
+        "tenant_id": TENANT,
+        "project_id": PROJECT,
+        "rfi_number": "RFI-TEST",
+        "subject": "test rfi",
+        "description": "test rfi description",
+        "status": status,
+        "priority": "normal",
+        "linked_task_ids": list(linked_task_ids),
+        "per_task_impacts": list(per_task_impacts),
+        "date_initiated": D(5, 14).isoformat(),
+    }
+    _STUB.rfis.rows.append(doc)
+    return doc
+
+
 def _add_open_delay(
     task_id: str, impact_days: float, logged_date: date | None = None,
     severity: str = "moderate",
@@ -384,6 +474,88 @@ def _add_open_delay(
         }],
     }
     _STUB.delays.rows.append(doc)
+    return doc
+
+
+def _add_open_submittal(
+    task_id: str | None = None,
+    impact_days: int | None = None,
+    *,
+    submittal_id: str | None = None,
+    status: str = "in_review",
+    sla_status: str = "breached",
+    source: str = "system_suggested",
+    aging_working_days: int | None = None,
+    aging_days: int | None = None,
+    per_task_impacts: list[dict] | None = None,
+    schedule_activity_id: str | None = None,
+    original_suggested_days: int | None = None,
+    project_id: str | None = None,
+) -> dict:
+    """CPM Part K-7 (2026-05-15) -- insert a submittal row into the stub.
+
+    Two ways to call:
+        (a) task_id + impact_days  -- single-link submittal shorthand.
+            Builds schedule_activity_id=task_id and per_task_impacts=
+            [{task_id, projected_impact_days, source [, original_
+            suggested_days]}]. source defaults to system_suggested;
+            override via kwarg.
+        (b) per_task_impacts=[]  -- explicitly empty (test 6: super
+            cleared the auto-suggestion to claim no impact).
+
+    Status defaults to "in_review" + sla_status="breached" so the row
+    matches the K-4 Path 1 + K-5 Path 2 + count_open_blockers filter:
+        schedule_activity_id == task_id
+        status IN ["submitted", "in_review"]
+        sla_status == "breached"
+
+    Set sla_status="n_a" + status="approved" for the approved-exclusion
+    case (test 4).
+    """
+    if schedule_activity_id is None:
+        schedule_activity_id = task_id
+    if per_task_impacts is None:
+        if impact_days is None or task_id is None:
+            per_task_impacts = []
+        else:
+            entry = {
+                "task_id": task_id,
+                "projected_impact_days": int(impact_days),
+                "source": source,
+            }
+            if original_suggested_days is not None:
+                entry["original_suggested_days"] = int(original_suggested_days)
+            elif source == "system_suggested":
+                # K-6: K-2 stamps original_suggested_days on every
+                # system_suggested entry it creates. Default mirror.
+                entry["original_suggested_days"] = int(impact_days)
+            per_task_impacts = [entry]
+    doc = {
+        "id": submittal_id or f"sub-{uuid.uuid4()}",
+        "tenant_id": TENANT,
+        "project_id": project_id or PROJECT,
+        "submittal_number": "SUB-TEST",
+        "title": "test submittal",
+        "type": "product_data",
+        "status": status,
+        "sla_status": sla_status,
+        "schedule_activity_id": schedule_activity_id,
+        "per_task_impacts": list(per_task_impacts),
+        # Aging fields drive the K-2 auto-suggest computation:
+        # projected_impact_default = max(0, aging - sla_days).
+        "aging_days": aging_days,
+        "aging_working_days": aging_working_days,
+        "sla_days_override": None,
+        "sla_uses_calendar_days_override": None,
+        # Standard register-depth fields (defensive nulls; not used
+        # by the K-4/K-5 walks but kept for downstream readers).
+        "submitted_to_ae_at": D(5, 1).isoformat(),
+        "a_e_review_due_at": D(5, 14).isoformat(),
+        "is_overdue": sla_status == "breached",
+        "overdue_days": 3 if sla_status == "breached" else None,
+        "urgency_flag": False,
+    }
+    _STUB.submittals.rows.append(doc)
     return doc
 
 
@@ -435,6 +607,56 @@ async def _simulate_create_delay(
     # Step 4: re-resolve with fresh state.
     _, fresh = await _resolve_task_impacts(_STUB, TENANT, doc)
     # Step 5: update if changed (idempotent).
+    if fresh != doc["per_task_impacts"]:
+        doc["per_task_impacts"] = fresh
+        await _STUB.delays.update_one(
+            {"id": doc["id"], "tenant_id": TENANT},
+            {"$set": {"per_task_impacts": fresh}},
+        )
+    return doc
+
+
+async def _simulate_create_multi_task_delay(
+    impacts: list[tuple[str, float]],
+    logged_date: date | None = None,
+) -> dict:
+    """CPM Part I (2026-05-15) -- multi-task variant of
+    _simulate_create_delay for tests that exercise the
+    `per_task_impacts contains multiple tasks` edge case.
+
+    Each entry in `impacts` is (task_id, projected_impact_days).
+    Replays the SAME 5-step create_delay flow but with a multi-task
+    linked_task_ids + per_task_impacts payload.
+    """
+    task_ids = [tid for tid, _ in impacts]
+    payload = {
+        "tenant_id": TENANT, "project_id": PROJECT,
+        "linked_task_ids": task_ids,
+        "per_task_impacts": [
+            {"task_id": tid, "projected_impact_days": float(imp)}
+            for tid, imp in impacts
+        ],
+        "status": "open",
+        "severity": "moderate",
+        "description": "test multi-task delay",
+        "logged_date": (logged_date or D(5, 14)).isoformat(),
+        "date": (logged_date or D(5, 14)).isoformat(),
+        "delay_days": float(max(imp for _, imp in impacts)),
+    }
+    linked_ids, impacts_out = await _resolve_task_impacts(
+        _STUB, TENANT, payload,
+    )
+    doc = {
+        **payload,
+        "id": f"delay-{uuid.uuid4()}",
+        "linked_task_ids": linked_ids,
+        "per_task_impacts": impacts_out,
+    }
+    await _STUB.delays.insert_one(dict(doc))
+    await auto_recompute_after_event(
+        TENANT, PROJECT, actor_id="test", request_id="req-test",
+    )
+    _, fresh = await _resolve_task_impacts(_STUB, TENANT, doc)
     if fresh != doc["per_task_impacts"]:
         doc["per_task_impacts"] = fresh
         await _STUB.delays.update_one(
@@ -978,6 +1200,1022 @@ async def _test_qc_rework_routes_through_synthetic_delay():
 
 
 # =============================================================================
+# CPM PART I (2026-05-15) -- CUMULATIVE REMAINING-FLOAT VERDICT TESTS
+# =============================================================================
+# The 5 new tests cover the gap the audit identified: per-delay verdicts
+# now reflect CUMULATIVE remaining float (structural float - sum of prior
+# OPEN delay impacts on the same task), not structural float in isolation.
+# Test graph: 2 parallel tasks (LONG / SHORT) with no edge between them.
+# LONG drives project_finish; SHORT carries positive structural float.
+
+# -----------------------------------------------------------------------------
+# I-1. test_remaining_float_two_delays_same_task
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_two_delays_same_task():
+    """Two 3-day delays on a task with structural float = 5.
+    Delay 1: prior=0, remaining=5, 3 <= 5 -> within remaining float.
+    Delay 2: prior=3 (delay 1 still open), remaining=2, 3 > 2 -> pushes CP.
+    Delay 1's snapshot stays immutable (history is preserved)."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))   # 5/4..5/13, float 0
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))   # 5/4..5/8,  float 5
+    await compute_cpm(TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 5, (
+        f"setup: SHORT structural float expected 5 (project_finish 5/13 "
+        f"- SHORT planned_finish 5/8 = 5d), got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_1 = (await _get_delay(delay_1["id"]))["per_task_impacts"][0]
+    assert snap_1["float_at_logging_days"] == 5
+    assert snap_1["prior_open_impacts_at_logging_days"] == 0
+    assert snap_1["remaining_float_at_logging_days"] == 5
+    assert snap_1["consumes_float_only"] is True, (
+        f"delay 1 (3d on 5d remaining) should be within float; "
+        f"got snap={snap_1!r}"
+    )
+    assert snap_1["pushes_critical_path"] is False
+
+    delay_2 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["float_at_logging_days"] == 5, (
+        "structural float unchanged between events"
+    )
+    assert snap_2["prior_open_impacts_at_logging_days"] == 3, (
+        f"delay 2 should see delay 1's 3d as prior open impact; got "
+        f"prior={snap_2['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap_2["remaining_float_at_logging_days"] == 2  # 5 - 3
+    assert snap_2["consumes_float_only"] is False, (
+        f"delay 2 (3d) > remaining (2d): NOT within float; got snap={snap_2!r}"
+    )
+    assert snap_2["pushes_critical_path"] is True
+
+    # History preservation: delay 1's snapshot must not have been rewritten
+    # by delay 2's recompute.
+    persisted_1_again = await _get_delay(delay_1["id"])
+    snap_1_after = persisted_1_again["per_task_impacts"][0]
+    assert snap_1_after["remaining_float_at_logging_days"] == 5, (
+        "delay 1 snapshot must remain immutable after delay 2 is logged"
+    )
+
+
+# -----------------------------------------------------------------------------
+# I-2. test_remaining_float_resolved_delay_excluded
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_resolved_delay_excluded():
+    """A RESOLVED prior delay does NOT count toward prior_open_impacts.
+    Setup: SHORT.structural = 5. Log delay 1 (3d), resolve it, log
+    delay 2 (3d). Delay 2 sees prior=0 because delay 1 is closed."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    # Mark delay 1 resolved (mirrors the user clicking "resolve" in UI).
+    # The production update_delay flow also fires auto_recompute_after_event;
+    # we replicate that here so the next delay's create sees fresh state.
+    await _STUB.delays.update_one(
+        {"id": delay_1["id"], "tenant_id": TENANT},
+        {"$set": {"status": "resolved",
+                  "resolved_date": D(5, 15).isoformat()}},
+    )
+    await auto_recompute_after_event(TENANT, PROJECT)
+
+    delay_2 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["prior_open_impacts_at_logging_days"] == 0, (
+        f"resolved delay 1 should be EXCLUDED from prior_open; got "
+        f"prior={snap_2['prior_open_impacts_at_logging_days']!r}. "
+        f"This means the status:open filter in "
+        f"_sum_prior_open_delay_impacts_on_task is not respecting "
+        f"resolved status."
+    )
+    assert snap_2["remaining_float_at_logging_days"] == 5
+    assert snap_2["consumes_float_only"] is True
+    assert snap_2["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# I-3. test_remaining_float_edited_delay_self_excluded
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_edited_delay_self_excluded():
+    """Editing a delay's impact must self-exclude in the prior-sum
+    so the delay doesn't double-count its own pre-edit value when
+    re-computing the snapshot. Setup: SHORT.structural = 5. Log
+    delay 1 (3d), then EDIT delay 1 to 4d. The edit's re-resolve
+    must read prior=0 and remaining=5."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+
+    # Simulate the update_delay flow's _resolve_task_impacts call:
+    # the merged dict carries the EDITED impact (4d), and we pass
+    # exclude_delay_id=delay_1.id so the prior-sum doesn't count
+    # the in-DB version of delay 1 as "prior".
+    edit_merged = {
+        "linked_task_ids": ["task-SHORT"],
+        "per_task_impacts": [
+            {"task_id": "task-SHORT", "projected_impact_days": 4.0},
+        ],
+    }
+    _, edited_impacts = await _resolve_task_impacts(
+        _STUB, TENANT, edit_merged,
+        project_id=PROJECT,
+        exclude_delay_id=delay_1["id"],
+    )
+    snap = edited_impacts[0]
+    assert snap["projected_impact_days"] == 4.0
+    assert snap["prior_open_impacts_at_logging_days"] == 0, (
+        f"self-exclude failed: editing delay 1 from 3d -> 4d should "
+        f"NOT see its own 3d as prior. Got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r} (expected 0)."
+    )
+    assert snap["remaining_float_at_logging_days"] == 5  # 5 - 0
+    assert snap["consumes_float_only"] is True, (
+        f"4d <= 5d remaining -> within float; got snap={snap!r}"
+    )
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# I-4. test_remaining_float_clamps_at_zero
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_clamps_at_zero():
+    """remaining_float = max(0, structural - prior). Cannot go negative.
+    Setup: SHORT.structural = 2. Log delay 1 (3d, already exceeds),
+    then delay 2 (2d). Delay 2 sees remaining = max(0, 2-3) = 0 (NOT -1)."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))   # 5/4..5/13, float 0
+    _add_task("SHORT", duration=8, planned_start=D(5, 4))   # 5/4..5/11, float 2
+    await compute_cpm(TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 2, (
+        f"setup: SHORT structural expected 2 (5/13 - 5/11), got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_1 = (await _get_delay(delay_1["id"]))["per_task_impacts"][0]
+    assert snap_1["remaining_float_at_logging_days"] == 2
+    assert snap_1["consumes_float_only"] is False    # 3 > 2
+    assert snap_1["pushes_critical_path"] is True
+
+    delay_2 = await _simulate_create_delay("task-SHORT", impact_days=2.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["prior_open_impacts_at_logging_days"] == 3, (
+        "delay 1 still open -> 3d prior"
+    )
+    # max(0, 2 - 3) = 0, NOT -1
+    assert snap_2["remaining_float_at_logging_days"] == 0, (
+        f"remaining MUST clamp at 0 (no negative-float verdicts); got "
+        f"remaining={snap_2['remaining_float_at_logging_days']!r}"
+    )
+    assert snap_2["consumes_float_only"] is False    # 2 > 0
+    assert snap_2["pushes_critical_path"] is True
+
+
+# -----------------------------------------------------------------------------
+# I-5. test_remaining_float_multi_task_delay
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_multi_task_delay():
+    """A multi-task delay contributes its PER-TASK impact to each task's
+    prior_open sum, never crosses tasks. Setup: SHORT1 + SHORT2 both
+    structural float 5. Log delay 1 linked to BOTH with 3d-each, then
+    delay 2 linked only to SHORT1 with 3d. Delay 2's prior_open on
+    SHORT1 must equal 3 (only SHORT1's slice of delay 1), NOT 6 (full
+    delay 1 total)."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))    # float 0
+    _add_task("SHORT1", duration=5, planned_start=D(5, 4))   # float 5
+    _add_task("SHORT2", duration=5, planned_start=D(5, 4))   # float 5
+    await compute_cpm(TENANT, PROJECT)
+    t_s1 = await _get_task("task-SHORT1")
+    t_s2 = await _get_task("task-SHORT2")
+    assert t_s1["total_float_days"] == 5
+    assert t_s2["total_float_days"] == 5
+
+    # Delay 1 hits BOTH tasks with 3d-each. Total delay impact across
+    # tasks = 6d, but per-task impact = 3d each.
+    delay_1 = await _simulate_create_multi_task_delay([
+        ("task-SHORT1", 3.0),
+        ("task-SHORT2", 3.0),
+    ])
+    persisted_1 = await _get_delay(delay_1["id"])
+    snap_1_s1 = next(
+        i for i in persisted_1["per_task_impacts"] if i["task_id"] == "task-SHORT1"
+    )
+    snap_1_s2 = next(
+        i for i in persisted_1["per_task_impacts"] if i["task_id"] == "task-SHORT2"
+    )
+    assert snap_1_s1["remaining_float_at_logging_days"] == 5
+    assert snap_1_s2["remaining_float_at_logging_days"] == 5
+
+    # Delay 2 hits ONLY SHORT1 with 3d.
+    delay_2 = await _simulate_create_delay("task-SHORT1", impact_days=3.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["prior_open_impacts_at_logging_days"] == 3, (
+        f"delay 2 prior_open on SHORT1 must be 3 (delay 1's SHORT1 slice "
+        f"only), NOT 6 (full delay 1 total). Got "
+        f"prior={snap_2['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap_2["remaining_float_at_logging_days"] == 2  # 5 - 3
+    assert snap_2["consumes_float_only"] is False  # 3 > 2
+    assert snap_2["pushes_critical_path"] is True
+
+
+# =============================================================================
+# CPM PART J-7 (2026-05-15) -- RFI IMPACT-DAYS REGRESSION TESTS
+# =============================================================================
+# The 6 new tests cover the cross-collection RFI path:
+#   * Path 1 (Slip / Impacted Finish via compute_projected_finish_dates)
+#   * Path 2 (cumulative remaining-float verdict via _resolve_*)
+#   * Bug #53 invariant preserved on no-impact RFIs (binary blocker)
+#
+# Same 2-task LONG/SHORT graph as Part I:
+#   T_LONG  (dur 10, planned 5/4..5/13)  -- structural float 0
+#   T_SHORT (dur 5,  planned 5/4..5/8)   -- structural float 5
+#
+# This is the test-graph contract -- structural float on SHORT is
+# always 5 unless the test explicitly changes durations. Tests log
+# RFIs / delays / synthetic QC delays against SHORT and assert
+# verdict + Slip behavior.
+
+# -----------------------------------------------------------------------------
+# J-7-1. test_rfi_impact_pushes_slip_and_impacted_finish
+# -----------------------------------------------------------------------------
+async def _test_rfi_impact_pushes_slip_and_impacted_finish():
+    """Path 1: an open RFI with 3-day impact on a task pushes that
+    task's projected_finish_date by 3 days (and projected_start_date
+    by 3 days), exactly as a delay would. Confirms compute_projected_
+    finish_dates' Part J-4 extension correctly walks the rfis
+    collection.
+
+    Setup:
+        T_SHORT structural float = 5, planned 5/4..5/8
+        Open RFI on T_SHORT with 3-day impact, status="draft"
+
+    Action:
+        compute_projected_finish_dates(t1, p-msu)
+
+    Assert:
+        T_SHORT.projected_finish_date == 2026-05-11  (5/8 + 3d)
+        T_SHORT.projected_start_date  == 2026-05-07  (5/4 + 3d)
+        T_LONG (no RFI) untouched -> projected_finish_date None
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 5
+
+    _add_open_rfi("task-SHORT", 3)
+
+    await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
+
+    t_short = await _get_task("task-SHORT")
+    t_long = await _get_task("task-LONG")
+    assert t_short["projected_finish_date"] == "2026-05-11", (
+        f"RFI 3d impact should push planned 5/8 -> 5/11; got "
+        f"{t_short['projected_finish_date']!r}"
+    )
+    assert t_short["projected_start_date"] == "2026-05-07", (
+        f"RFI 3d impact should push planned 5/4 -> 5/7; got "
+        f"{t_short['projected_start_date']!r}"
+    )
+    # Slip would be computed by the frontend slipDays helper as
+    # projected_finish - planned_finish = 3. We assert the components
+    # here since the math is what the column renders from.
+    slip = (
+        date.fromisoformat(t_short["projected_finish_date"])
+        - date.fromisoformat(t_short["planned_finish"])
+    ).days
+    assert slip == 3, f"slip expected 3, got {slip}"
+    # T_LONG has no RFI / delay -> no shift.
+    assert t_long.get("projected_finish_date") is None
+    assert t_long.get("projected_start_date") is None
+
+
+# -----------------------------------------------------------------------------
+# J-7-2. test_rfi_contributes_to_delay_remaining_float
+# -----------------------------------------------------------------------------
+async def _test_rfi_contributes_to_delay_remaining_float():
+    """Path 2: an open RFI with 3-day impact is in the prior-sum
+    when a subsequent delay is logged on the same task. The delay's
+    verdict snapshot reads remaining = structural - RFI_prior, not
+    structural alone. Confirms _sum_prior_open_blocker_impacts_on_task
+    walks RFIs.
+
+    Setup:
+        T_SHORT structural float = 5
+        Prior open RFI on T_SHORT with 3-day impact
+
+    Action:
+        Simulate a new delay create on T_SHORT with 3-day impact.
+
+    Assert (the delay's snapshot, NOT the RFI's):
+        prior_open_impacts_at_logging_days == 3  (RFI contributes)
+        remaining_float_at_logging_days    == 2  (5 - 3)
+        consumes_float_only                == False  (3 > 2)
+        pushes_critical_path               == True
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    _add_open_rfi("task-SHORT", 3)
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 3.0, (
+        f"prior RFI (3d) should contribute to the delay's prior-sum; "
+        f"got prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 2.0  # 5 - 3
+    assert snap["consumes_float_only"] is False, (
+        f"delay 3d > remaining 2d -> NOT within float; "
+        f"got snap={snap!r}"
+    )
+    assert snap["pushes_critical_path"] is True
+
+
+# -----------------------------------------------------------------------------
+# J-7-3. test_rfi_resolved_excluded_from_future_calcs
+# -----------------------------------------------------------------------------
+async def _test_rfi_resolved_excluded_from_future_calcs():
+    """Status filter: an answered / closed RFI does NOT count toward
+    the prior-sum. Confirms the status:[draft, sent, in_review] filter
+    in _sum_prior_open_blocker_impacts_on_task (J-5) correctly
+    excludes terminal-state RFIs.
+
+    Setup:
+        T_SHORT structural float = 5
+        Prior RFI on T_SHORT with 3-day impact, status="answered"
+        (the RFI was filed earlier with an impact estimate but has
+        since been answered by the design team -- it no longer
+        constrains the schedule)
+
+    Action:
+        Simulate a new delay create on T_SHORT with 3-day impact.
+
+    Assert:
+        prior_open_impacts_at_logging_days == 0   (RFI excluded)
+        remaining_float_at_logging_days    == 5
+        consumes_float_only                == True   (3 <= 5)
+        pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    _add_open_rfi("task-SHORT", 3, status="answered")
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"answered RFI must NOT count toward prior-sum; "
+        f"got prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 5.0
+    assert snap["consumes_float_only"] is True   # 3 <= 5
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# J-7-4. test_rfi_edit_self_excluded_from_prior_sum
+# -----------------------------------------------------------------------------
+async def _test_rfi_edit_self_excluded_from_prior_sum():
+    """exclude_rfi_id self-exclusion: editing an RFI's impact does
+    NOT double-count its own pre-edit value in the prior-sum.
+    Confirms the exclude_rfi_id kwarg threaded from
+    _resolve_rfi_task_impacts (Part J-2) into the J-5 helper.
+
+    Setup:
+        T_SHORT structural float = 5
+        Existing open RFI on T_SHORT with 3-day impact
+
+    Action:
+        Edit the SAME RFI to 4-day impact via direct call to
+        _resolve_rfi_task_impacts (mirrors what update_rfi flow does
+        post-recompute), passing exclude_rfi_id=<that rfi's id>.
+
+    Assert (on the edited snapshot):
+        prior_open_impacts_at_logging_days == 0   (self excluded)
+        remaining_float_at_logging_days    == 5   (5 - 0)
+        consumes_float_only                == True   (4 <= 5)
+        pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    existing = _add_open_rfi("task-SHORT", 3, rfi_id="rfi-self-edit")
+
+    # Simulate the update_rfi flow's post-recompute re-resolve: the
+    # caller passes the EDITED per_task_impacts (4d, not 3d) plus
+    # exclude_rfi_id=<self> so the in-DB 3d entry is not double-counted.
+    edited_doc = {
+        "id": "rfi-self-edit",
+        "tenant_id": TENANT,
+        "project_id": PROJECT,
+        "linked_task_ids": ["task-SHORT"],
+        "per_task_impacts": [
+            {"task_id": "task-SHORT", "projected_impact_days": 4},
+        ],
+    }
+    _, stamped = await _resolve_rfi_task_impacts(
+        _STUB, TENANT, edited_doc,
+        project_id=PROJECT,
+        exclude_rfi_id="rfi-self-edit",
+    )
+    snap = stamped[0]
+    assert snap["projected_impact_days"] == 4
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"editing 3->4 must exclude self from prior-sum; "
+        f"got prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 5.0
+    assert snap["consumes_float_only"] is True   # 4 <= 5
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# J-7-5. test_mixed_rfi_delay_synthetic_qc_cumulative
+# -----------------------------------------------------------------------------
+async def _test_mixed_rfi_delay_synthetic_qc_cumulative():
+    """Three prior blocker types contributing to a new delay's
+    prior-sum: an open RFI (3d), an open delay (2d), and a QC-
+    synthetic delay (2d via rework_required). The new delay's
+    verdict sees the cumulative prior of 7d.
+
+    Setup:
+        T_SHORT structural float = 10  (use dur 3 for SHORT path
+        to get 10d float against the longer 13d backbone)
+        Open RFI    on T_SHORT, 3d impact
+        Open delay  on T_SHORT, 2d impact
+        QC issue    on T_SHORT, severity=rework_required,
+                    rework_duration_hours=16 -> synthetic delay 2d
+
+    Action:
+        Simulate a new delay create on T_SHORT with 4-day impact.
+
+    Assert:
+        prior_open_impacts_at_logging_days == 7.0  (3 RFI + 2 delay + 2 QC)
+        remaining_float_at_logging_days    == 3.0  (10 - 7)
+        consumes_float_only                == False  (4 > 3)
+        pushes_critical_path               == True   (4 > 3)
+    """
+    _reset()
+    # Use a longer LONG (dur 13) so SHORT (dur 3) has float = 10.
+    _add_task("LONG", duration=13, planned_start=D(5, 4))   # 5/4..5/16
+    _add_task("SHORT", duration=3, planned_start=D(5, 4))   # 5/4..5/6
+    await compute_cpm(TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 10, (
+        f"setup: SHORT structural float expected 10 "
+        f"(LONG.EF 5/16 - SHORT.LS 5/14 + ... = 10); got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    # Prior open RFI 3d.
+    _add_open_rfi("task-SHORT", 3)
+
+    # Prior open delay 2d (direct row, not simulated -- we want it
+    # in DB without firing auto_recompute_after_event for this test
+    # setup; it's "prior" from the new delay's perspective).
+    _add_open_delay("task-SHORT", impact_days=2.0)
+
+    # QC synthetic delay via create_synthetic_delay_for_qc:
+    # rework_duration_hours = 16 -> 2.0d via _hours_to_days.
+    qc_issue = {
+        "id": "qc-rework-mixed",
+        "tenant_id": TENANT,
+        "project_id": PROJECT,
+        "linked_task_ids": ["task-SHORT"],
+        "severity": "rework_required",
+        "rework_duration_hours": 16.0,
+        "rework_duration_basis": "field super estimate",
+        "description": "Slab cracked",
+        "status": "open",
+        "date": D(5, 14).isoformat(),
+    }
+    _STUB.qc_issues.rows.append(qc_issue)
+    synthetic = await create_synthetic_delay_for_qc(
+        tenant_id=TENANT, qc_issue=qc_issue,
+        actor_id="test-user", request_id="req-qc-mixed",
+    )
+    assert synthetic is not None
+    assert synthetic["delay_days"] == 2.0
+
+    # NOW simulate the user logging a fresh delay (4d) on SHORT.
+    new_delay = await _simulate_create_delay(
+        "task-SHORT", impact_days=4.0,
+    )
+    snap = (await _get_delay(new_delay["id"]))["per_task_impacts"][0]
+
+    # Cumulative prior: RFI 3 + delay 2 + QC-synthetic 2 = 7
+    assert snap["prior_open_impacts_at_logging_days"] == 7.0, (
+        f"mixed prior expected 7 (RFI 3 + delay 2 + QC 2); "
+        f"got prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 3.0  # 10 - 7
+    assert snap["consumes_float_only"] is False  # 4 > 3
+    assert snap["pushes_critical_path"] is True
+
+
+# -----------------------------------------------------------------------------
+# J-7-6. test_rfi_no_impact_days_zero_propagation
+# -----------------------------------------------------------------------------
+async def _test_rfi_no_impact_days_zero_propagation():
+    """Bug #53 invariant: an RFI with empty per_task_impacts is still
+    a binary blocker (counts in has_open_blocker / open_blocker_count)
+    but does NOT push Slip / Impacted Finish and does NOT contribute
+    to remaining-float verdicts on subsequent events. Models the
+    "RFI filed before super knows the schedule impact" case --
+    impact_days are deferred but the blocker badge is immediate.
+
+    Setup:
+        T_SHORT structural float = 5
+        RFI on T_SHORT with EMPTY per_task_impacts, status="draft"
+
+    Action 1:
+        compute_projected_finish_dates -> walks RFIs but the empty
+        per_task_impacts array contributes 0 to own_impact.
+
+    Assert 1 (Path 1: no Slip / Impacted Finish change):
+        T_SHORT.projected_finish_date is None
+        T_SHORT.projected_start_date  is None
+
+    Action 2:
+        compute_and_persist_status on T_SHORT.
+
+    Assert 2 (Bug #53 preserved: binary blocker badge):
+        T_SHORT.has_open_blocker      is True
+        T_SHORT.open_blocker_count    >= 1
+
+    Action 3:
+        Simulate a new delay create on T_SHORT with 3d impact.
+
+    Assert 3 (Path 2: RFI doesn't contribute to delay's prior-sum):
+        prior_open_impacts_at_logging_days == 0.0  (no impact captured)
+        remaining_float_at_logging_days    == 5.0
+        consumes_float_only                == True   (3 <= 5)
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    # Empty per_task_impacts -- RFI filed without impact estimate.
+    rfi = _add_open_rfi(
+        "task-SHORT", impact_days=None,
+        per_task_impacts=[],
+        status="draft",
+    )
+    assert rfi["per_task_impacts"] == []   # sanity
+
+    # Action 1 + Assert 1: Path 1 unaffected.
+    await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short.get("projected_finish_date") is None, (
+        f"RFI with empty per_task_impacts must NOT push Slip; "
+        f"got projected_finish_date="
+        f"{t_short.get('projected_finish_date')!r}"
+    )
+    assert t_short.get("projected_start_date") is None
+
+    # Action 2 + Assert 2: Bug #53 invariant preserved.
+    await compute_and_persist_status(_STUB, TENANT, "task-SHORT")
+    t_short = await _get_task("task-SHORT")
+    assert t_short.get("has_open_blocker") is True, (
+        f"Bug #53: open RFI in [draft, sent, in_review] must surface "
+        f"as a binary blocker on the linked task EVEN with empty "
+        f"per_task_impacts; got "
+        f"has_open_blocker={t_short.get('has_open_blocker')!r}"
+    )
+    assert t_short.get("open_blocker_count", 0) >= 1, (
+        f"Bug #53: open_blocker_count expected >= 1; got "
+        f"{t_short.get('open_blocker_count')!r}"
+    )
+
+    # Action 3 + Assert 3: Path 2 (RFI without impact_days contributes 0).
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"RFI with no impact_days captured must contribute 0 to the "
+        f"delay's prior-sum; got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 5.0
+    assert snap["consumes_float_only"] is True   # 3 <= 5
+    assert snap["pushes_critical_path"] is False
+
+
+# =============================================================================
+# CPM Part K-7 (2026-05-15) -- Submittal cross-collection regression tests.
+# Six tests codifying K-2 / K-3 / K-4 / K-5 scenarios across the four-
+# collection blocker walks (delays + RFIs + QC-synthetic + submittals).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# K-7-1. test_submittal_auto_suggest_on_sla_breach
+# -----------------------------------------------------------------------------
+async def _test_submittal_auto_suggest_on_sla_breach():
+    """K-2 + K-4 wiring: a breached submittal with empty per_task_
+    impacts has K-2 auto-suggest fire (one entry with source=
+    system_suggested + original_suggested_days), and Path 1
+    (compute_projected_finish_dates via _open_blocker_impact_for_task
+    K-4 walk) pushes the linked task's projected_finish forward.
+
+    Setup:
+        T_SHORT structural float = 5 (T_LONG 10d, T_SHORT 5d, both root)
+        Project default SLA = 14 working days
+        Over-SLA submittal on T_SHORT:
+          status="in_review", sla_status="breached"
+          aging_working_days=17 (3 days past SLA -- K-2 will suggest 3)
+          per_task_impacts=[]
+
+    Action 1: call auto_suggest_per_task_impacts_for_submittal (K-2)
+    Assert 1: entry stamped with source=system_suggested,
+              projected_impact_days=3, original_suggested_days=3
+
+    Action 2: compute_projected_finish_dates (Path 1)
+    Assert 2: T_SHORT.projected_finish_date moved forward by 3 days
+              T_SHORT planned_finish=5/8 -> projected_finish=5/11
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4),
+              planned_finish=D(5, 8))
+    await compute_cpm(TENANT, PROJECT)
+
+    sub = _add_open_submittal(
+        task_id="task-SHORT",
+        per_task_impacts=[],       # K-2 will fill in the entry
+        aging_working_days=17,     # 17 - 14 = 3 day suggestion
+        submittal_id="sub-k7-1",
+    )
+
+    # Action 1: K-2 fires (only_when_breached=True; sub is breached).
+    res = await auto_suggest_per_task_impacts_for_submittal(
+        tenant_id=TENANT, submittal_id=sub["id"],
+        only_when_breached=True,
+    )
+    assert res.get("ok") and res.get("changed"), res
+    persisted = await _STUB.submittals.find_one(
+        {"id": sub["id"], "tenant_id": TENANT},
+    )
+    assert persisted["per_task_impacts"], (
+        f"K-2 should have written an entry; got {persisted['per_task_impacts']!r}"
+    )
+    entry = persisted["per_task_impacts"][0]
+    assert entry["source"] == "system_suggested", entry
+    assert entry["projected_impact_days"] == 3, entry
+    assert entry["original_suggested_days"] == 3, (
+        f"K-6 baseline stamp expected 3; got {entry!r}"
+    )
+    assert entry["task_id"] == "task-SHORT"
+
+    # Action 2: Path 1 picks up the new submittal impact via K-4 walk.
+    await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["projected_finish_date"] == "2026-05-11", (
+        f"T_SHORT planned 5/8 + 3-day submittal impact -> 5/11; got "
+        f"{t_short['projected_finish_date']!r}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# K-7-2. test_submittal_super_override_preserved_across_re_breach
+# -----------------------------------------------------------------------------
+async def _test_submittal_super_override_preserved_across_re_breach():
+    """K-2 idempotency on re-breach: super_overridden entries are
+    NEVER overwritten when K-2 re-fires after a breach -> unbreach
+    -> rebreach cycle. Also confirms system_suggested entries are
+    skipped on re-breach (not "refreshed" with current aging). Each
+    impact value represents the moment it was captured -- federal
+    TIA defensibility requires immutable per-event snapshots.
+
+    Setup:
+        Task with float = 5 (T_LONG 10d, T_SHORT 5d)
+        Submittal currently breached with entry:
+          { projected_impact_days: 5, source: super_overridden,
+            original_suggested_days: 3 }
+        (super edited the original auto-suggestion of 3 up to 5)
+        aging_working_days bumped to 20 (would suggest 6 if re-fired)
+
+    Action:
+        Call auto_suggest_per_task_impacts_for_submittal (simulates
+        re-breach after the submittal cycled through approved ->
+        rejected/revise -> back to in_review breached).
+
+    Assert:
+        sub.per_task_impacts still has 1 entry
+        entry.projected_impact_days == 5 (super value unchanged)
+        entry.source == "super_overridden" (not flipped back)
+        entry.original_suggested_days == 3 (baseline preserved)
+        res.changed == False (no diff -> no write -> no audit)
+        res.skipped_super_overridden == ["task-SHORT"]
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    sub = _add_open_submittal(
+        task_id="task-SHORT",
+        impact_days=5,
+        source="super_overridden",
+        original_suggested_days=3,
+        aging_working_days=20,    # would suggest 6 fresh -- must NOT overwrite
+        submittal_id="sub-k7-2",
+    )
+
+    res = await auto_suggest_per_task_impacts_for_submittal(
+        tenant_id=TENANT, submittal_id=sub["id"],
+        only_when_breached=True,
+    )
+    assert res.get("ok") and not res.get("changed"), (
+        f"super_overridden on re-breach must NOT trigger a write; "
+        f"got res={res!r}"
+    )
+    assert res.get("skipped_super_overridden") == ["task-SHORT"], res
+
+    persisted = await _STUB.submittals.find_one(
+        {"id": sub["id"], "tenant_id": TENANT},
+    )
+    entry = persisted["per_task_impacts"][0]
+    assert entry["projected_impact_days"] == 5, (
+        f"super override 5 must survive re-breach; got {entry!r}"
+    )
+    assert entry["source"] == "super_overridden", entry
+    assert entry["original_suggested_days"] == 3, (
+        f"original baseline must ride through unchanged; got {entry!r}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# K-7-3. test_submittal_contributes_to_delay_remaining_float
+# -----------------------------------------------------------------------------
+async def _test_submittal_contributes_to_delay_remaining_float():
+    """K-5 Path 2: an open over-SLA submittal with 4-day impact is in
+    the prior-sum when a subsequent delay is logged on the same task.
+    Verifies _sum_prior_open_blocker_impacts_on_task walks submittals.
+
+    Setup:
+        T_SHORT structural float = 10
+        Open over-SLA submittal on T_SHORT, 4-day impact
+
+    Action:
+        Simulate a new delay create on T_SHORT with 4-day impact.
+
+    Assert (delay's snapshot):
+        prior_open_impacts_at_logging_days == 4   (submittal contributes)
+        remaining_float_at_logging_days    == 6   (10 - 4)
+        consumes_float_only                == True  (4 <= 6)
+        pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    _add_open_submittal("task-SHORT", impact_days=4)
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=4.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 4.0, (
+        f"open over-SLA submittal (4d) should contribute to the "
+        f"delay's prior-sum; got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 6.0  # 10 - 4
+    assert snap["consumes_float_only"] is True   # 4 <= 6
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# K-7-4. test_submittal_approved_excluded_from_future_calcs
+# -----------------------------------------------------------------------------
+async def _test_submittal_approved_excluded_from_future_calcs():
+    """K-5 status filter: an approved submittal (status="approved",
+    sla_status="n_a") does NOT contribute to the prior-sum even with
+    per_task_impacts still populated on the row for audit history.
+    Federal TIA defensibility: only currently-active blockers
+    contribute. Auto-drop on disposition is the K-4/K-5 contract --
+    when sla_status leaves "breached" OR status leaves [submitted,
+    in_review], the row disappears from live calcs without
+    retroactive snapshot rewrite.
+
+    Setup:
+        T_SHORT float = 10
+        Approved submittal (status="approved", sla_status="n_a") with
+        per_task_impacts entry of 3 days still present (audit history)
+
+    Action:
+        Simulate a new delay create on T_SHORT with 3-day impact.
+
+    Assert:
+        prior_open_impacts_at_logging_days == 0  (approved excluded)
+        remaining_float_at_logging_days    == 10
+        consumes_float_only                == True
+        pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    # Submittal that WAS breached, now approved. per_task_impacts
+    # stays for audit but stops contributing.
+    _add_open_submittal(
+        "task-SHORT", impact_days=3,
+        status="approved", sla_status="n_a",
+    )
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"approved submittal must NOT count toward prior-sum; "
+        f"got prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 10.0
+    assert snap["consumes_float_only"] is True   # 3 <= 10
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# K-7-5. test_mixed_all_four_event_types_cumulative
+# -----------------------------------------------------------------------------
+async def _test_mixed_all_four_event_types_cumulative():
+    """K-5 cross-collection cumulative: RFI + delay + QC-synthetic +
+    over-SLA submittal ALL on the same task. New delay's verdict
+    reads the cumulative prior = 11 (3+2+2+4); 5d new delay > 4d
+    remaining -> pushes_critical_path.
+
+    Setup:
+        T_SHORT structural float = 15
+          (T_LONG dur 18, T_SHORT dur 3, both root, no convergence)
+        Open RFI    on T_SHORT, 3d impact (status=draft)
+        Open delay  on T_SHORT, 2d impact (status=open)
+        QC issue    on T_SHORT, severity=rework_required,
+                    rework_duration_hours=16 -> synthetic delay 2d
+        Over-SLA submittal on T_SHORT, 4d impact
+
+    Action:
+        Simulate a new delay create on T_SHORT with 5d impact.
+
+    Assert (the NEW delay's snapshot):
+        prior_open_impacts_at_logging_days == 11  (3 RFI + 2 delay + 2 QC + 4 sub)
+        remaining_float_at_logging_days    == 4   (15 - 11)
+        consumes_float_only                == False  (5 > 4)
+        pushes_critical_path               == True
+    """
+    _reset()
+    _add_task("LONG", duration=18, planned_start=D(5, 4))
+    _add_task("SHORT", duration=3, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    # Verify structural float on T_SHORT.
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 15, (
+        f"setup sanity: T_SHORT float expected 15 (18 - 3); got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    # Add three prior blockers.
+    _add_open_rfi("task-SHORT", 3)
+    _add_open_delay("task-SHORT", impact_days=2)
+    # QC-synthetic delay via the rework_required severity flow.
+    qc_doc = {
+        "id": f"qc-{uuid.uuid4()}",
+        "tenant_id": TENANT, "project_id": PROJECT,
+        "linked_task_ids": ["task-SHORT"],
+        "status": "open",
+        "severity": "rework_required",
+        "rework_duration_hours": 16,   # 16h / 8h/day = 2 day synthetic
+        "description": "test qc rework",
+    }
+    _STUB.qc_issues.rows.append(qc_doc)
+    synthetic = await create_synthetic_delay_for_qc(
+        tenant_id=TENANT, qc_issue=qc_doc,
+        actor_id="test", request_id="req-test",
+    )
+    assert synthetic is not None and synthetic.get("delay_days") == 2.0, (
+        f"setup sanity: 16h QC rework -> 2.0d synthetic delay; "
+        f"got {synthetic!r}"
+    )
+    # Add the over-SLA submittal with 4d impact.
+    _add_open_submittal("task-SHORT", impact_days=4)
+
+    # Action: log the 5d delay -- its verdict reads cumulative prior.
+    new_delay = await _simulate_create_delay("task-SHORT", impact_days=5.0)
+    snap = (await _get_delay(new_delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 11.0, (
+        f"mixed four-collection prior expected 11 (RFI 3 + delay 2 + "
+        f"QC 2 + sub 4); got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 4.0  # 15 - 11
+    assert snap["consumes_float_only"] is False, (
+        f"new delay 5d > remaining 4d -> NOT within float; "
+        f"got snap={snap!r}"
+    )
+    assert snap["pushes_critical_path"] is True
+
+
+# -----------------------------------------------------------------------------
+# K-7-6. test_submittal_empty_impacts_no_propagation
+# -----------------------------------------------------------------------------
+async def _test_submittal_empty_impacts_no_propagation():
+    """Mirror of test_rfi_no_impact_days_zero_propagation: an over-
+    SLA submittal with empty per_task_impacts still counts as a
+    binary blocker (Bug #50 invariant) but does NOT contribute to
+    Path 1 slip / Path 2 cumulative verdicts. Models the "super
+    cleared the auto-suggestion to claim no schedule impact despite
+    breach" case AND the "submittal breached before K-2 ran" case
+    (legacy / transient state).
+
+    Setup:
+        T_SHORT structural float = 5
+        Over-SLA submittal on T_SHORT, per_task_impacts=[]
+
+    Action 1: compute_projected_finish_dates (Path 1)
+    Assert 1: T_SHORT.projected_finish_date is None
+              T_SHORT.projected_start_date  is None
+
+    Action 2: compute_and_persist_status (count_open_blockers)
+    Assert 2: T_SHORT.has_open_blocker is True   (Bug #50 preserved)
+              T_SHORT.open_blocker_count >= 1
+
+    Action 3: simulate new delay create with 3d impact (Path 2)
+    Assert 3: prior_open_impacts_at_logging_days == 0
+              remaining_float_at_logging_days    == 5
+              consumes_float_only                == True  (3 <= 5)
+              pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    sub = _add_open_submittal(
+        "task-SHORT", per_task_impacts=[],     # explicitly empty
+    )
+    assert sub["per_task_impacts"] == []   # sanity
+
+    # Action 1 + Assert 1: Path 1 unaffected.
+    await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short.get("projected_finish_date") is None, (
+        f"over-SLA submittal with empty per_task_impacts must NOT push "
+        f"Slip; got projected_finish_date="
+        f"{t_short.get('projected_finish_date')!r}"
+    )
+    assert t_short.get("projected_start_date") is None
+
+    # Action 2 + Assert 2: Bug #50 invariant preserved (binary blocker).
+    await compute_and_persist_status(_STUB, TENANT, "task-SHORT")
+    t_short = await _get_task("task-SHORT")
+    assert t_short.get("has_open_blocker") is True, (
+        f"Bug #50: over-SLA submittal must surface as a binary "
+        f"blocker on the linked task EVEN with empty per_task_impacts; "
+        f"got has_open_blocker={t_short.get('has_open_blocker')!r}"
+    )
+    assert t_short.get("open_blocker_count", 0) >= 1, (
+        f"open_blocker_count expected >= 1; got "
+        f"{t_short.get('open_blocker_count')!r}"
+    )
+
+    # Action 3 + Assert 3: Path 2 (submittal with no impacts -> 0 prior).
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"empty per_task_impacts submittal must contribute 0 to the "
+        f"delay's prior-sum; got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 5.0
+    assert snap["consumes_float_only"] is True   # 3 <= 5
+    assert snap["pushes_critical_path"] is False
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -1024,6 +2262,77 @@ def test_qc_rework_routes_through_synthetic_delay():
     asyncio.run(_test_qc_rework_routes_through_synthetic_delay())
 
 
+# CPM Part I (2026-05-15) -- cumulative remaining-float verdict.
+def test_remaining_float_two_delays_same_task():
+    asyncio.run(_test_remaining_float_two_delays_same_task())
+
+
+def test_remaining_float_resolved_delay_excluded():
+    asyncio.run(_test_remaining_float_resolved_delay_excluded())
+
+
+def test_remaining_float_edited_delay_self_excluded():
+    asyncio.run(_test_remaining_float_edited_delay_self_excluded())
+
+
+def test_remaining_float_clamps_at_zero():
+    asyncio.run(_test_remaining_float_clamps_at_zero())
+
+
+def test_remaining_float_multi_task_delay():
+    asyncio.run(_test_remaining_float_multi_task_delay())
+
+
+# CPM Part J-7 (2026-05-15) -- RFI impact-days regression tests.
+def test_rfi_impact_pushes_slip_and_impacted_finish():
+    asyncio.run(_test_rfi_impact_pushes_slip_and_impacted_finish())
+
+
+def test_rfi_contributes_to_delay_remaining_float():
+    asyncio.run(_test_rfi_contributes_to_delay_remaining_float())
+
+
+def test_rfi_resolved_excluded_from_future_calcs():
+    asyncio.run(_test_rfi_resolved_excluded_from_future_calcs())
+
+
+def test_rfi_edit_self_excluded_from_prior_sum():
+    asyncio.run(_test_rfi_edit_self_excluded_from_prior_sum())
+
+
+def test_mixed_rfi_delay_synthetic_qc_cumulative():
+    asyncio.run(_test_mixed_rfi_delay_synthetic_qc_cumulative())
+
+
+def test_rfi_no_impact_days_zero_propagation():
+    asyncio.run(_test_rfi_no_impact_days_zero_propagation())
+
+
+# CPM Part K-7 (2026-05-15) -- Submittal impact-days regression tests.
+def test_submittal_auto_suggest_on_sla_breach():
+    asyncio.run(_test_submittal_auto_suggest_on_sla_breach())
+
+
+def test_submittal_super_override_preserved_across_re_breach():
+    asyncio.run(_test_submittal_super_override_preserved_across_re_breach())
+
+
+def test_submittal_contributes_to_delay_remaining_float():
+    asyncio.run(_test_submittal_contributes_to_delay_remaining_float())
+
+
+def test_submittal_approved_excluded_from_future_calcs():
+    asyncio.run(_test_submittal_approved_excluded_from_future_calcs())
+
+
+def test_mixed_all_four_event_types_cumulative():
+    asyncio.run(_test_mixed_all_four_event_types_cumulative())
+
+
+def test_submittal_empty_impacts_no_propagation():
+    asyncio.run(_test_submittal_empty_impacts_no_propagation())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -1044,11 +2353,49 @@ def _run_all():
         ("test_qc_link_only_no_cascade", _test_qc_link_only_no_cascade),
         ("test_qc_rework_routes_through_synthetic_delay",
          _test_qc_rework_routes_through_synthetic_delay),
+        # CPM Part I (2026-05-15) -- cumulative remaining-float verdict.
+        ("test_remaining_float_two_delays_same_task",
+         _test_remaining_float_two_delays_same_task),
+        ("test_remaining_float_resolved_delay_excluded",
+         _test_remaining_float_resolved_delay_excluded),
+        ("test_remaining_float_edited_delay_self_excluded",
+         _test_remaining_float_edited_delay_self_excluded),
+        ("test_remaining_float_clamps_at_zero",
+         _test_remaining_float_clamps_at_zero),
+        ("test_remaining_float_multi_task_delay",
+         _test_remaining_float_multi_task_delay),
+        # CPM Part J-7 (2026-05-15) -- RFI impact-days regression.
+        ("test_rfi_impact_pushes_slip_and_impacted_finish",
+         _test_rfi_impact_pushes_slip_and_impacted_finish),
+        ("test_rfi_contributes_to_delay_remaining_float",
+         _test_rfi_contributes_to_delay_remaining_float),
+        ("test_rfi_resolved_excluded_from_future_calcs",
+         _test_rfi_resolved_excluded_from_future_calcs),
+        ("test_rfi_edit_self_excluded_from_prior_sum",
+         _test_rfi_edit_self_excluded_from_prior_sum),
+        ("test_mixed_rfi_delay_synthetic_qc_cumulative",
+         _test_mixed_rfi_delay_synthetic_qc_cumulative),
+        ("test_rfi_no_impact_days_zero_propagation",
+         _test_rfi_no_impact_days_zero_propagation),
+        # CPM Part K-7 (2026-05-15) -- Submittal impact-days regression.
+        ("test_submittal_auto_suggest_on_sla_breach",
+         _test_submittal_auto_suggest_on_sla_breach),
+        ("test_submittal_super_override_preserved_across_re_breach",
+         _test_submittal_super_override_preserved_across_re_breach),
+        ("test_submittal_contributes_to_delay_remaining_float",
+         _test_submittal_contributes_to_delay_remaining_float),
+        ("test_submittal_approved_excluded_from_future_calcs",
+         _test_submittal_approved_excluded_from_future_calcs),
+        ("test_mixed_all_four_event_types_cumulative",
+         _test_mixed_all_four_event_types_cumulative),
+        ("test_submittal_empty_impacts_no_propagation",
+         _test_submittal_empty_impacts_no_propagation),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
-    print("CPM CORRECTNESS REGRESSION SUITE -- Part H (11 tests)")
+    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K "
+          "(11 + 5 + 6 + 6 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -1065,7 +2412,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 11 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 28 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:

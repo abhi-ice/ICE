@@ -264,19 +264,99 @@ async def recompute_for_tasks(
 
 # ---------- Phase 4: CPM walk-forward for projected_finish_date -----------
 
-async def _open_delay_impact_for_task(db, tenant_id: str, task_id: str) -> float:
-    """Sum of projected_impact_days across open delays directly linked
-    to this task. Used as the 'pushed' days for CPM walk-forward."""
-    docs = await db.delays.find(
+async def _open_blocker_impact_for_task(db, tenant_id: str, task_id: str) -> float:
+    """Sum of projected_impact_days across all OPEN schedule blockers
+    directly linked to this task. Used as the 'pushed' days for the
+    CPM walk-forward (compute_projected_finish_dates).
+
+    CPM Part J-4 (2026-05-15) -- renamed from _open_delay_impact_for_task
+    and extended to walk the rfis collection alongside delays.
+
+    CPM Part K-4 (2026-05-15) -- extended to also walk db.submittals
+    (over-SLA filter). The K-1 schema added per_task_impacts to
+    submittals; the K-2 auto-suggest stamps system_suggested entries
+    on the SLA-breach moment; K-3 stamps the 5 verdict keys after
+    recompute. This helper now sums Path 1 impacts from all three
+    collections so a breached submittal pushes the same Slip-column
+    days as a delay/RFI on the same task.
+
+    All three walks use the SAME per_task_impacts shape; the per-task
+    summation logic is identical across collections.
+
+    Status filters (each matches the upstream count_open_blockers
+    convention in this same module, line 89-153 -- the two helpers
+    ARE the contract):
+
+        Delays:      status IN ["open", "in_progress"]
+        RFIs:        status IN ["draft", "sent", "in_review"]
+        Submittals:  status IN ["submitted", "in_review"]
+                     AND sla_status == "breached"
+
+    Submittal linkage is via schedule_activity_id (singular) NOT
+    linked_task_ids -- submittals carry one task link, mirroring
+    count_open_blockers (line 147). Each over-SLA submittal can have
+    at most one matching entry in per_task_impacts (the K-2 auto-
+    suggest pass populates exactly one entry per linked task).
+
+    Closed / resolved / approved / answered / voided events are
+    excluded -- only events CURRENTLY pushing contribute. When a
+    submittal flips from breached -> approved, this helper's next
+    call drops its impact (status leaves the $in set AND sla_status
+    leaves "breached"); the projected_finish_date on the affected
+    task moves back automatically. No retroactive rewrite needed.
+
+    QC issues do NOT contribute here: per Bug #53, QC is internal-
+    quality only; the SYNTHETIC delay spawned by severity=rework_
+    required carries the schedule impact and lives in db.delays.
+    """
+    # ---- Delays ------------------------------------------------------
+    delay_docs = await db.delays.find(
         tenant_filter(tenant_id, {
             "linked_task_ids": task_id,
             "status": {"$in": ["open", "in_progress"]},
         }),
         {"_id": 0, "per_task_impacts": 1},
     ).to_list(50)
+    # ---- RFIs (CPM Part J-4) ----------------------------------------
+    rfi_docs = await db.rfis.find(
+        tenant_filter(tenant_id, {
+            "linked_task_ids": task_id,
+            "status": {"$in": ["draft", "sent", "in_review"]},
+        }),
+        {"_id": 0, "per_task_impacts": 1},
+    ).to_list(50)
+    # ---- Submittals (CPM Part K-4) ----------------------------------
+    # Same filter as count_open_blockers (line 145-150). The submittal
+    # collection's linked task lives on schedule_activity_id (singular),
+    # not linked_task_ids. Over-SLA gate (sla_status="breached") is
+    # the contract -- within-SLA submittals are normal procurement
+    # and do not contribute schedule-impact days.
+    submittal_docs = await db.submittals.find(
+        tenant_filter(tenant_id, {
+            "schedule_activity_id": task_id,
+            "status": {"$in": ["submitted", "in_review"]},
+            "sla_status": "breached",
+        }),
+        {"_id": 0, "per_task_impacts": 1},
+    ).to_list(50)
+
     total = 0.0
-    for d in docs:
+    for d in delay_docs:
         for imp in (d.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except Exception:
+                    pass
+    for r in rfi_docs:
+        for imp in (r.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except Exception:
+                    pass
+    for s in submittal_docs:
+        for imp in (s.get("per_task_impacts") or []):
             if imp.get("task_id") == task_id:
                 try:
                     total += float(imp.get("projected_impact_days") or 0)
@@ -320,10 +400,11 @@ async def compute_projected_finish_dates(
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
 
-    # Pre-compute per-task own_impact (open-delay sum). One query per task.
+    # Pre-compute per-task own_impact (open-BLOCKER sum: open delays
+    # + open RFIs as of Part J-4). One pair of queries per task.
     own_impact: dict[str, float] = {}
     for t in tasks:
-        own_impact[t["id"]] = await _open_delay_impact_for_task(db, tenant_id, t["id"])
+        own_impact[t["id"]] = await _open_blocker_impact_for_task(db, tenant_id, t["id"])
 
     # Topological visit by predecessor walk. We don't have a true topo sort
     # available without re-implementing CPM; this BFS does the safe thing:

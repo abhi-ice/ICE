@@ -33,6 +33,9 @@ import { Button } from "../ui/button";
 // Jigsaw wrapping, since they all reach this modal.
 import JigsawField from "./JigsawField";
 import { getUser } from "../../lib/auth";
+// CPM Part J-6 (2026-05-15) -- per-task RFI impact input. Rendered
+// via FieldEditor when a field carries type: "per_task_impacts".
+import PerTaskImpactsInput from "./PerTaskImpactsInput";
 
 // Map this modal's eventType keys to the field_suggestions entity_type
 // vocabulary. The keys here mirror what the call sites in
@@ -50,6 +53,14 @@ const EVENT_TYPE_TO_ENTITY = {
   delivery:     "delivery",
   photo:        "photo_tag",
   activity:     "daily_report_activity",
+  // CPM Part K-6 (2026-05-15) -- forward-compat. Submittals are
+  // currently edited via Submittals.jsx::EditSubmittalDialog (their
+  // canonical surface). Adding the entry here means any future flow
+  // that invokes LockedEventEditModal with eventType="submittal"
+  // will route JigsawField suggestions correctly + the per_task_
+  // impacts FieldEditor below will receive mode="submittal" via the
+  // field descriptor passed by the caller.
+  submittal:    "submittal",
 };
 
 const REASON_MIN = 10;
@@ -118,13 +129,35 @@ export default function LockedEventEditModal({
   //       matches the modal's existing "Diff: only send fields that
   //       changed" intent, now exposed as a shared computation so
   //       the gate can read the same source of truth)
+  //
+  // CPM Part J-6 (2026-05-15) -- extended the prev/next comparison
+  // to handle ARRAY and OBJECT fields via JSON.stringify deep-equal.
+  // The per_task_impacts field is a list of dicts; with the
+  // pre-J-6 `next !== prev` check, opening the modal flips every
+  // array field into "changed" because setValues({...currentValues})
+  // produces a new array reference even when the user hasn't
+  // touched it -- that incorrectly trips the field-edit gate and
+  // requires an edit_reason for status-only patches. Deep-equal on
+  // arrays/objects fixes that without changing primitive semantics.
   const allowedStatusOnly = STATUS_ONLY_FIELDS_BY_EVENT_TYPE[eventType] || new Set();
   const changedKeys = (() => {
     const out = [];
     for (const f of fields) {
       const prev = currentValues[f.key];
       const next = values[f.key];
-      if (next !== undefined && next !== prev) out.push(f.key);
+      if (next === undefined) continue;
+      const isArrLike = (
+        Array.isArray(prev) || Array.isArray(next)
+        || (prev && typeof prev === "object")
+        || (next && typeof next === "object")
+      );
+      let same;
+      if (isArrLike) {
+        same = JSON.stringify(prev ?? null) === JSON.stringify(next ?? null);
+      } else {
+        same = next === prev;
+      }
+      if (!same) out.push(f.key);
     }
     return out;
   })();
@@ -353,6 +386,33 @@ export default function LockedEventEditModal({
 function FieldEditor({ f, value, onChange, entityType, entityId }) {
   const id = `locked-edit-${f.key}`;
   const userRole = (getUser()?.role || "").toLowerCase();
+  // CPM Part J-6 (2026-05-15) + Part K-6 (2026-05-15) -- per_task_
+  // impacts field type. Renders the PerTaskImpactsInput component
+  // directly (no JigsawField wrap -- suggestions don't apply to per-
+  // task numeric arrays). Caller passes linkedTaskIds + projectId on
+  // the field descriptor so the input can resolve task labels and
+  // prune stale entries on linked_task_ids changes.
+  //
+  // K-6: f.mode + f.slaStatus pass through to PerTaskImpactsInput
+  // for the submittal hybrid UI. Defaults to mode="rfi" when the
+  // caller doesn't supply -- preserves J-6 behavior on existing
+  // RFI/delay callers in DailyReports.jsx.
+  if (f.type === "per_task_impacts") {
+    return (
+      <div>
+        <label className="field-label">{f.label}</label>
+        <PerTaskImpactsInput
+          linkedTaskIds={f.linkedTaskIds || []}
+          value={Array.isArray(value) ? value : []}
+          onChange={onChange}
+          projectId={f.projectId}
+          testidPrefix={id}
+          mode={f.mode || "rfi"}
+          slaStatus={f.slaStatus}
+        />
+      </div>
+    );
+  }
   // For numeric fields, coerce the AI-suggested value through Number()
   // so the input renders correctly + onChange semantics stay numeric.
   const wrap = (input) => (

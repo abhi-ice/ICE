@@ -701,14 +701,23 @@ async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
     task_lines = []
     for t in tasks:
         impact = impacts_by_id.get(t["id"]) or {}
+        # CPM Part I (2026-05-15) -- surface the cumulative remaining-
+        # float math to the AI so the generated narrative reflects
+        # that a verdict of "pushes critical path" can come from
+        # accumulated prior delays consuming float, not just from
+        # this delay alone exceeding structural float. Without these
+        # inputs the AI would re-derive the verdict from
+        # current_float_days alone and lose the cumulative context.
         task_lines.append(
             f"  [{t.get('activity_code')}] {t.get('description')}\n"
             f"    pct_complete={t.get('pct_complete', 0)}%  "
             f"current_float_days={t.get('total_float_days')}  "
             f"is_critical_path={bool(t.get('is_critical_path'))}\n"
             f"    impact_logged={impact.get('projected_impact_days', 0)}d  "
-            f"float_at_logging={impact.get('float_at_logging_days')}d  "
-            f"consumes_float_only={impact.get('consumes_float_only', False)}  "
+            f"structural_float_at_logging={impact.get('float_at_logging_days')}d  "
+            f"prior_open_impacts_on_task={impact.get('prior_open_impacts_at_logging_days', 0)}d  "
+            f"remaining_float_at_logging={impact.get('remaining_float_at_logging_days')}d\n"
+            f"    consumes_float_only={impact.get('consumes_float_only', False)}  "
             f"pushes_critical_path={impact.get('pushes_critical_path', False)}"
         )
     cascade_lines = [
