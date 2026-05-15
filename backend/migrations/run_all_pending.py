@@ -120,6 +120,17 @@ MIGRATIONS = [
     # cascade behavior. PREDECESSOR_SCHEMA_MIGRATED audit per tenant;
     # idempotent via canonical-shape check + per-tenant audit guard.
     "migrations.018_predecessor_relationship_lag",
+    # CPM Part J (2026-05-15) -- RFI per_task_impacts schema. Adds a
+    # per_task_impacts: List[Dict] field to every RFI, default []. Lets
+    # supers capture estimated schedule impact per linked task on RFIs
+    # (parallel to delays' per_task_impacts array). Path 1
+    # (compute_projected_finish_dates) and Path 2 (cumulative
+    # remaining-float verdict) will walk this array on Parts J-4 / J-5.
+    # RFI_PER_TASK_IMPACTS_BACKFILLED audit per tenant; idempotent via
+    # $exists filter + per-tenant audit existence check. Backward-compat
+    # preserved -- empty array = "no impact captured" = current pre-J
+    # blocker-badge-only behavior.
+    "migrations.019_rfi_per_task_impacts_backfill",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

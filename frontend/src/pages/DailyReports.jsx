@@ -30,6 +30,8 @@ import DrActivityPicker from "../components/forms/DrActivityPicker";
 // DrActivityPicker. DrActivityPicker stays imported because nothing else
 // uses it on this page yet -- safe to remove once nothing references it.
 import TaskPicker from "../components/forms/TaskPicker";
+// CPM Part J-6 (2026-05-15) -- per-task RFI impact input.
+import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
@@ -2368,9 +2370,15 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
   // scope) picker. RFIs are REQUIRED to link >=1 task (gates a CPM
   // node via the gating_entities back-pointer).
+  // CPM Part J-6 (2026-05-15) -- per_task_impacts captures the super's
+  // estimated schedule impact per linked task. Optional on create;
+  // empty array means "no impact captured yet" (backend treats the
+  // RFI as a binary blocker via count_open_blockers, doesn't push
+  // Slip on the linked tasks).
   const [draft, setDraft] = useState({
     subject: "", description: "", priority: "normal",
     linked_task_ids: [],
+    per_task_impacts: [],
   });
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
@@ -2385,15 +2393,23 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
     }
     setBusy(true);
     try {
+      // CPM Part J-6 -- include per_task_impacts (cleaned by
+      // PerTaskImpactsInput: empty / 0 inputs already pruned, only
+      // positive integers + task_ids remain). Empty array is fine;
+      // backend treats it as "no impact captured yet".
       await api.post(`/rfis`, {
         project_id: projectId, daily_report_id: dailyReportId,
         subject: draft.subject,
         question: draft.description,  // backend alias -> description
         priority: draft.priority,
         linked_task_ids: draft.linked_task_ids,
+        per_task_impacts: draft.per_task_impacts || [],
         ...(locked ? { add_reason: addReason.trim() } : {}),
       });
-      setDraft({ subject: "", description: "", priority: "normal", linked_task_ids: [] });
+      setDraft({
+        subject: "", description: "", priority: "normal",
+        linked_task_ids: [], per_task_impacts: [],
+      });
       setAddReason("");
       reload();
       if (locked) toast.success("RFI added (post-submit). Audit chain captured.");
@@ -2418,9 +2434,32 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         <textarea data-testid="rfi-new-desc" placeholder="Question / context" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="w-full px-2 py-1 rounded border border-slate-200 text-sm" rows={2} />
         <TaskPicker projectId={projectId}
           value={draft.linked_task_ids}
-          onChange={(v) => setDraft({ ...draft, linked_task_ids: v })}
+          onChange={(v) => setDraft((d) => ({
+            // CPM Part J-6 -- when super removes a task from linked
+            // tasks, prune its per_task_impacts entry so the cleaned
+            // array PerTaskImpactsInput later receives doesn't carry
+            // stale rows. (PerTaskImpactsInput's own auto-sync useEffect
+            // catches this defensively too, but pruning at the source
+            // avoids a transient inconsistent state.)
+            ...d,
+            linked_task_ids: v,
+            per_task_impacts: (d.per_task_impacts || []).filter(
+              (imp) => (v || []).includes(imp.task_id),
+            ),
+          }))}
           required={true} label="Linked tasks"
           testidPrefix="rfi-activity" />
+        {/* CPM Part J-6 -- per-task schedule-impact input. Only
+            renders when there are linked tasks. Empty array (super
+            hasn't entered any impact_days yet) is a valid state and
+            keeps the RFI as a binary blocker only. */}
+        <PerTaskImpactsInput
+          linkedTaskIds={draft.linked_task_ids}
+          value={draft.per_task_impacts}
+          onChange={(v) => setDraft((d) => ({ ...d, per_task_impacts: v }))}
+          projectId={projectId}
+          testidPrefix="rfi-impacts"
+        />
         <div className="flex items-center gap-2">
           <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
             {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
@@ -2466,10 +2505,20 @@ function RfiRowInline({ row, locked, dailyReportId, reload }) {
             { key: "status", label: "Status", type: "select",
               options: ["draft", "open", "responded", "closed"].map((s) => ({ value: s, label: s })) },
             { key: "response_text", label: "Response (when status=responded)", type: "textarea" },
+            // CPM Part J-6 (2026-05-15) -- per_task_impacts editor.
+            // Linked tasks are FIXED in this modal (the modal only
+            // edits impact magnitudes; linkage edits live on the
+            // standalone /rfis page). Empty value renders zero inputs;
+            // user adding a value emits the cleaned array on submit.
+            { key: "per_task_impacts", label: "Schedule impact (optional)",
+              type: "per_task_impacts",
+              linkedTaskIds: row.linked_task_ids || [],
+              projectId: row.project_id },
           ]}
           currentValues={{
             subject: row.subject, description: row.description,
             status: row.status, response_text: row.response_text,
+            per_task_impacts: row.per_task_impacts || [],
           }}
           onSaved={reload}
         />
