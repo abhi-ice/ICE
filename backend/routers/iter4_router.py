@@ -568,6 +568,16 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
     # covers the OTHER case: schedule_activity_id change on a row
     # that's ALREADY breached (no boundary cross, so the recompute
     # path's K-2 hook wouldn't fire).
+    #
+    # CPM Part K-3 (2026-05-15) -- after K-2 (or a direct
+    # per_task_impacts PATCH from the super), stamp the 5 server-only
+    # verdict keys via _resolve_and_persist_submittal_per_task_impacts.
+    # The K-1 `source` field rides through unchanged. We fire K-3 in
+    # two cases:
+    #   (a) the patch directly touched per_task_impacts (super edit)
+    #   (b) K-2 made changes that need fresh verdict stamps
+    k2_changed = False
+    k2_did_recompute = False
     if "schedule_activity_id" in updates:
         try:
             from services import submittal_sla
@@ -583,6 +593,7 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
             # recompute is idempotent but cost-bearing on big
             # projects; gate to avoid no-op work.
             if k2_res.get("changed"):
+                k2_changed = True
                 from services.cpm import auto_recompute_after_event
                 # Need project_id for the recompute call; pull from
                 # the post-update row (cheap; we'd read it shortly
@@ -599,6 +610,7 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
                             actor_id=ctx["user"]["id"],
                             request_id=ctx["request_id"],
                         )
+                        k2_did_recompute = True
                     except Exception:
                         import logging
                         logging.getLogger("iter4_router").warning(
@@ -610,6 +622,56 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
             import logging
             logging.getLogger("iter4_router").warning(
                 "K-2 auto-suggest on schedule_activity_id change failed",
+                exc_info=True,
+            )
+
+    # CPM Part K-3 (2026-05-15) -- verdict-stamping pass. Fires when
+    # either the super directly patched per_task_impacts (typical
+    # override-edit flow) OR K-2 just suggested fresh entries
+    # (above). Mirrors the J-2 RFI update_rfi pattern: gate on
+    # per_task_impacts in updates, run a recompute first, then resolve
+    # + persist. When K-2 already triggered the recompute we skip the
+    # second recompute (idempotent but cost-bearing). Fail-safe.
+    impacts_in_patch = "per_task_impacts" in updates
+    needs_k3_stamp = impacts_in_patch or k2_changed
+    if needs_k3_stamp:
+        try:
+            from services import submittal_sla as _sla_mod
+            _sub_pid_row = await db.submittals.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": submittal_id}),
+                {"_id": 0, "project_id": 1},
+            )
+            _pid = (_sub_pid_row or {}).get("project_id")
+            if _pid and impacts_in_patch and not k2_did_recompute:
+                # Direct super-override path -- recompute first so
+                # total_float_days is fresh before stamping.
+                try:
+                    from services.cpm import auto_recompute_after_event
+                    await auto_recompute_after_event(
+                        ctx["tenant_id"], _pid,
+                        actor_id=ctx["user"]["id"],
+                        request_id=ctx["request_id"],
+                    )
+                except Exception:
+                    import logging
+                    logging.getLogger("iter4_router").warning(
+                        "K-3 pre-stamp recompute failed (sub=%s)",
+                        submittal_id, exc_info=True,
+                    )
+            # Resolve + persist. exclude_submittal_id defaults to
+            # the helper's read of sub_doc.id -- explicit kwarg
+            # avoids the self-counting subtlety once K-5 wires
+            # cross-collection prior-sum.
+            await _sla_mod._resolve_and_persist_submittal_per_task_impacts(
+                tenant_id=ctx["tenant_id"],
+                submittal_id=submittal_id,
+                project_id=_pid,
+                exclude_submittal_id=submittal_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger("iter4_router").warning(
+                "K-3 verdict stamp on update_submittal failed",
                 exc_info=True,
             )
     row = await db.submittals.find_one(tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"_id": 0})

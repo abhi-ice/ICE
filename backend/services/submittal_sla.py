@@ -534,13 +534,16 @@ async def recompute_aging_for_submittal(
     entered_breached = (
         prev_status != "breached" and new_status == "breached"
     )
+    k2_suggested_impacts = False
     if entered_breached:
         try:
-            await auto_suggest_per_task_impacts_for_submittal(
+            k2_res = await auto_suggest_per_task_impacts_for_submittal(
                 tenant_id=tenant_id, submittal_id=submittal_id,
                 only_when_breached=False,  # we know it's breached
                 actor_id=actor_id, request_id=request_id,
             )
+            if k2_res.get("suggested"):
+                k2_suggested_impacts = True
         except Exception as exc:
             log.warning(
                 "K-2 auto-suggest after recompute flip failed "
@@ -558,6 +561,25 @@ async def recompute_aging_for_submittal(
             log.warning(
                 "Part E auto-recompute after submittal SLA flip "
                 "failed (sub=%s, project=%s): %s",
+                submittal_id, project_id, exc,
+            )
+
+    # CPM Part K-3 (2026-05-15) -- after K-2 wrote fresh entries AND
+    # auto_recompute_after_event refreshed total_float_days, stamp the
+    # 5 verdict keys via the resolver. Mirrors the order in
+    # detect_breaches (K-2 -> recompute -> K-3). The source field
+    # rides through unchanged. Fail-safe.
+    if k2_suggested_impacts:
+        try:
+            await _resolve_and_persist_submittal_per_task_impacts(
+                tenant_id=tenant_id, submittal_id=submittal_id,
+                project_id=project_id,
+                exclude_submittal_id=submittal_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "K-3 verdict stamping after recompute flip failed "
+                "(sub=%s, project=%s): %s",
                 submittal_id, project_id, exc,
             )
 
@@ -1000,6 +1022,11 @@ async def detect_breaches(
     # project at the end of the scan rather than once per submittal
     # (could be hundreds in a tenant-wide breach scan).
     breached_projects: set = set()
+    # CPM Part K-3 (2026-05-15) -- track submittals that K-2 just
+    # auto-suggested impacts on. After the batch recompute fires per
+    # project, we walk this list to stamp the 5 verdict keys (which
+    # require fresh total_float_days from the recompute).
+    k2_stamped_submittals: list[tuple[str, str]] = []  # (sid, project_id)
     for r in rows:
         try:
             sid = r["id"]
@@ -1066,6 +1093,13 @@ async def detect_breaches(
                     out["auto_suggested_count"] += len(k2_res.get("suggested") or [])
                     out.setdefault("cleaned_orphan_count", 0)
                     out["cleaned_orphan_count"] += len(k2_res.get("cleaned") or [])
+                    # CPM Part K-3 -- queue this submittal for the
+                    # post-recompute verdict-stamping pass. Only when
+                    # K-2 actually suggested entries (cleaned-only
+                    # cases don't need new stamps because cleaned
+                    # entries are removed, not replaced).
+                    if k2_res.get("suggested") and r.get("project_id"):
+                        k2_stamped_submittals.append((sid, r["project_id"]))
             except Exception as exc:
                 log.warning(
                     "K-2 auto-suggest after breach failed for sub=%s: %s",
@@ -1115,6 +1149,31 @@ async def detect_breaches(
                     )
         except Exception:
             pass
+
+    # CPM Part K-3 (2026-05-15) -- verdict-stamping pass. Runs AFTER
+    # the batch recompute so each submittal's resolver reads fresh
+    # total_float_days (refreshed by auto_recompute_after_event
+    # above). For each submittal K-2 just suggested impacts on, we
+    # stamp the 5 server-only verdict keys (float_at_logging_days,
+    # prior_open_impacts_at_logging_days, remaining_float_at_logging_
+    # days, consumes_float_only, pushes_critical_path). The K-1
+    # `source` field rides through unchanged. Fail-safe per row.
+    k3_stamped_count = 0
+    for sid, pid in k2_stamped_submittals:
+        try:
+            res = await _resolve_and_persist_submittal_per_task_impacts(
+                tenant_id=tenant_id, submittal_id=sid,
+                project_id=pid, exclude_submittal_id=sid,
+            )
+            if res.get("changed"):
+                k3_stamped_count += 1
+        except Exception as exc:
+            log.warning(
+                "K-3 verdict stamping after breach failed for sub=%s: %s",
+                sid, exc,
+            )
+    if k3_stamped_count:
+        out["k3_verdict_stamped_count"] = k3_stamped_count
     return out
 
 
@@ -1321,6 +1380,241 @@ async def auto_suggest_per_task_impacts_for_submittal(
         "projected_impact_days_default": projected_impact_default,
         "sla_days": sla_days,
     }
+
+
+# =====================================================================
+# CPM Part K-3 (2026-05-15) -- Submittal per_task_impacts verdict
+# resolver. Mirror of routers.docs_router._resolve_rfi_task_impacts
+# (Part J-2) but for submittals.
+#
+# Stamps the SAME 5 server-only verdict keys on each per_task_impacts
+# entry that the RFI + delay flows do:
+#
+#     float_at_logging_days
+#     prior_open_impacts_at_logging_days
+#     remaining_float_at_logging_days
+#     consumes_float_only
+#     pushes_critical_path
+#
+# K-1 SOURCE FIELD PRESERVATION (HARD CONTRACT):
+#   The K-1 schema added a REQUIRED user-supplied `source` field to
+#   each entry (system_suggested | super_overridden). The verdict-
+#   stamping pass MUST NOT touch `source` -- it preserves what came
+#   in. After stamping, each entry carries 8 keys:
+#
+#       task_id                              (preserved)
+#       projected_impact_days                (preserved, coerced to int)
+#       source                               (PRESERVED -- K-1 / K-2 owned)
+#       float_at_logging_days                (stamped)
+#       prior_open_impacts_at_logging_days   (stamped)
+#       remaining_float_at_logging_days      (stamped)
+#       consumes_float_only                  (stamped)
+#       pushes_critical_path                 (stamped)
+#
+# PRIOR-OPEN SCOPE (K-3 STUB):
+#   Currently calls routers.field_events_router._sum_prior_open_blocker_
+#   impacts_on_task -- which walks db.delays + db.rfis (after J-5 the
+#   helper does cross-collection delay + RFI). Submittals on the same
+#   task do NOT yet contribute to each other's prior-sum here. Part
+#   K-5 extends the helper to also walk db.submittals (over-SLA filter)
+#   and accept an exclude_submittal_id kwarg. After K-5 ships, the
+#   call below picks up cross-collection prior-sum WITHOUT any change
+#   here -- the exclude_submittal_id we're already plumbing through
+#   the signature just needs to be threaded into that helper call.
+#
+# exclude_submittal_id is plumbed through the signature (matches J-2's
+# exclude_rfi_id pattern) but UNUSED in K-3 (the prior-sum helper
+# doesn't accept it yet). Stable signature so K-5 wires it in without
+# touching this resolver.
+# =====================================================================
+async def _resolve_submittal_task_impacts(
+    db, tenant_id: str, sub_doc: dict, *,
+    project_id: Optional[str] = None,
+    exclude_submittal_id: Optional[str] = None,
+) -> tuple[bool, list[dict]]:
+    """Compute + stamp the 5 server-only verdict keys on each
+    per_task_impacts entry in `sub_doc`. Returns (changed, enriched).
+
+    `changed` is True iff any item in the returned list differs from
+    the input in any of the 5 stamped keys -- callers can short-
+    circuit the DB write when nothing moved (mirrors J-2 idempotency).
+
+    Args:
+        db: motor database handle.
+        tenant_id: required.
+        sub_doc: dict with per_task_impacts. Reads project_id +
+            id for prior-sum scope + self-exclusion when the kwargs
+            are not provided.
+        project_id: kwarg override (defaults to sub_doc.project_id).
+            Required because the prior-sum query is project-scoped.
+        exclude_submittal_id: kwarg override (defaults to sub_doc.id).
+            Plumbed for K-5 (submittal walk in prior-sum). Unused in
+            K-3 itself -- the prior-sum helper does not accept an
+            exclude_submittal_id kwarg until K-5.
+
+    Returns:
+        (changed: bool, enriched: list[dict])
+    """
+    impacts_in = list(sub_doc.get("per_task_impacts") or [])
+    if not impacts_in:
+        # No impacts on this submittal -- nothing to stamp. Mirrors
+        # J-2 short-circuit so callers can skip the DB write.
+        return (False, [])
+
+    proj_id = project_id or sub_doc.get("project_id")
+    # K-3: exclude_submittal_id defaults to sub_doc.id so a re-resolve
+    # on the same submittal doesn't count its own impact_days toward
+    # the prior-sum when K-5 wires submittal-on-submittal coverage.
+    excl_sub = (
+        exclude_submittal_id
+        if exclude_submittal_id is not None
+        else sub_doc.get("id")
+    )
+
+    task_ids = [i["task_id"] for i in impacts_in if i.get("task_id")]
+    if not task_ids:
+        return (False, [])
+
+    tasks = await db.tasks.find(
+        tenant_filter(tenant_id, {"id": {"$in": task_ids}}),
+        {"_id": 0, "id": 1, "total_float_days": 1, "is_critical_path": 1},
+    ).to_list(len(task_ids))
+    by_id = {t["id"]: t for t in tasks}
+
+    # Local import to avoid a circular-import at module load
+    # (routers.field_events_router imports from services.* itself).
+    # Same pattern as J-2 / Part I in docs_router + field_events_router.
+    from routers.field_events_router import _sum_prior_open_blocker_impacts_on_task
+
+    out: list[dict] = []
+    changed = False
+    for item in impacts_in:
+        tid = item.get("task_id")
+        if not tid:
+            # K-1 validator drops items without task_id, but defensive
+            # guard here too -- legacy rows shouldn't reach this path
+            # but skip silently rather than 422 if they do.
+            continue
+        t = by_id.get(tid) or {}
+        impact = float(item.get("projected_impact_days") or 0)
+        f = t.get("total_float_days")
+        f_val = float(f) if f is not None else None
+        is_cp = bool(t.get("is_critical_path"))
+
+        if proj_id is not None and f_val is not None:
+            # K-3 STUB: prior-sum walks delays + RFIs only (J-5 wired
+            # the RFI walk). K-5 will extend the helper to also walk
+            # db.submittals (over-SLA filter) and accept an
+            # exclude_submittal_id kwarg. The excl_sub variable we
+            # already resolved above is intentionally unused HERE --
+            # it becomes the third kwarg in K-5 without any other
+            # change to this resolver.
+            prior = await _sum_prior_open_blocker_impacts_on_task(
+                db, tenant_id, proj_id, tid,
+                exclude_delay_id=None,
+                exclude_rfi_id=None,
+                # exclude_submittal_id=excl_sub,   # K-5 will uncomment
+            )
+            # Clamp at 0 -- can't have negative float in the verdict.
+            remaining = max(0.0, f_val - prior)
+            consumes = impact <= remaining
+            pushes_cp = impact > remaining
+        else:
+            # Fallback: structural float unknown (compute_cpm hasn't
+            # run on this project) OR project_id resolution failed.
+            # Mirrors I/J-2 fallback so the snapshot is well-formed
+            # in transient states.
+            prior = 0.0
+            remaining = None
+            consumes = False
+            pushes_cp = is_cp
+
+        # ============================================================
+        # K-1 SOURCE FIELD: must ride through unchanged. dict(item)
+        # copies every key (including `source` and any future ones);
+        # we then OVERWRITE task_id / projected_impact_days / the 5
+        # verdict keys. `source` is NEVER on the overwrite list and
+        # is preserved exactly as the K-1 validator accepted it.
+        # ============================================================
+        merged = dict(item)
+        merged["task_id"] = tid
+        # Integer convention (K-1 validator enforced this at the API
+        # layer; int() here is defense-in-depth for legacy rows that
+        # may have stored 3.0 instead of 3).
+        merged["projected_impact_days"] = int(impact)
+        merged["float_at_logging_days"] = f_val
+        merged["prior_open_impacts_at_logging_days"] = prior
+        merged["remaining_float_at_logging_days"] = remaining
+        merged["consumes_float_only"] = consumes
+        merged["pushes_critical_path"] = pushes_cp
+        # `source` rides through via dict(item) -- explicit comment so
+        # a future refactor doesn't accidentally strip it. If `source`
+        # is somehow absent on a legacy row (pre-K), it stays absent
+        # here (the read model + K-1 validator will tolerate it on
+        # the next deserialization pass).
+        out.append(merged)
+
+        # Change detector -- True iff any of the 5 stamped keys
+        # differs from what the input carried. Empty/missing keys
+        # on input (typical fresh user-supplied items) always count
+        # as changed since None != f_val for any populated float.
+        if (
+            item.get("float_at_logging_days") != f_val
+            or item.get("prior_open_impacts_at_logging_days") != prior
+            or item.get("remaining_float_at_logging_days") != remaining
+            or item.get("consumes_float_only") != consumes
+            or item.get("pushes_critical_path") != pushes_cp
+        ):
+            changed = True
+
+    return (changed, out)
+
+
+async def _resolve_and_persist_submittal_per_task_impacts(
+    *, tenant_id: str, submittal_id: str,
+    project_id: Optional[str] = None,
+    exclude_submittal_id: Optional[str] = None,
+) -> dict:
+    """Thin orchestration wrapper: read submittal -> resolve via K-3 ->
+    persist if changed. Used by detect_breaches (post-batch-recompute
+    second pass), recompute_aging_for_submittal (post-CPM-recompute),
+    and update_submittal (when per_task_impacts touched).
+
+    Returns:
+        {ok, changed, reason?}. Fail-safe: any exception is caught
+        and reported as ok=False with the exception class in reason.
+    """
+    db = get_db()
+    try:
+        sub = await db.submittals.find_one(
+            tenant_filter(tenant_id, {"id": submittal_id}),
+            {"_id": 0},
+        )
+        if not sub:
+            return {"ok": False, "reason": "not_found"}
+        if not sub.get("per_task_impacts"):
+            return {"ok": True, "changed": False, "reason": "no_impacts"}
+        changed, stamped = await _resolve_submittal_task_impacts(
+            db, tenant_id, sub,
+            project_id=project_id or sub.get("project_id"),
+            exclude_submittal_id=exclude_submittal_id or submittal_id,
+        )
+        if changed:
+            await db.submittals.update_one(
+                {"id": submittal_id, "tenant_id": tenant_id},
+                {"$set": {"per_task_impacts": stamped}},
+            )
+            invalidate_aging_cache(
+                tenant_id=tenant_id,
+                project_id=sub.get("project_id"),
+            )
+        return {"ok": True, "changed": changed}
+    except Exception as exc:
+        log.warning(
+            "K-3 resolve-and-persist failed for sub=%s: %s",
+            submittal_id, exc,
+        )
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 async def _cascade_flag_on_breach(
