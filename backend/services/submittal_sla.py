@@ -526,6 +526,30 @@ async def recompute_aging_for_submittal(
     breached_boundary_crossed = (
         (prev_status == "breached") != (new_status == "breached")
     )
+    # CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest fires ONLY on
+    # the in-to-breached transition (not on out-to-breached or every
+    # recompute). detect_breaches handles the bulk scan; this path
+    # handles single-row recomputes that cross the boundary (e.g.,
+    # PATCH /submittals that bumped aging past the SLA window).
+    entered_breached = (
+        prev_status != "breached" and new_status == "breached"
+    )
+    k2_suggested_impacts = False
+    if entered_breached:
+        try:
+            k2_res = await auto_suggest_per_task_impacts_for_submittal(
+                tenant_id=tenant_id, submittal_id=submittal_id,
+                only_when_breached=False,  # we know it's breached
+                actor_id=actor_id, request_id=request_id,
+            )
+            if k2_res.get("suggested"):
+                k2_suggested_impacts = True
+        except Exception as exc:
+            log.warning(
+                "K-2 auto-suggest after recompute flip failed "
+                "(sub=%s, project=%s): %s",
+                submittal_id, project_id, exc,
+            )
     if breached_boundary_crossed:
         try:
             from services.cpm import auto_recompute_after_event
@@ -537,6 +561,25 @@ async def recompute_aging_for_submittal(
             log.warning(
                 "Part E auto-recompute after submittal SLA flip "
                 "failed (sub=%s, project=%s): %s",
+                submittal_id, project_id, exc,
+            )
+
+    # CPM Part K-3 (2026-05-15) -- after K-2 wrote fresh entries AND
+    # auto_recompute_after_event refreshed total_float_days, stamp the
+    # 5 verdict keys via the resolver. Mirrors the order in
+    # detect_breaches (K-2 -> recompute -> K-3). The source field
+    # rides through unchanged. Fail-safe.
+    if k2_suggested_impacts:
+        try:
+            await _resolve_and_persist_submittal_per_task_impacts(
+                tenant_id=tenant_id, submittal_id=submittal_id,
+                project_id=project_id,
+                exclude_submittal_id=submittal_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "K-3 verdict stamping after recompute flip failed "
+                "(sub=%s, project=%s): %s",
                 submittal_id, project_id, exc,
             )
 
@@ -979,6 +1022,11 @@ async def detect_breaches(
     # project at the end of the scan rather than once per submittal
     # (could be hundreds in a tenant-wide breach scan).
     breached_projects: set = set()
+    # CPM Part K-3 (2026-05-15) -- track submittals that K-2 just
+    # auto-suggested impacts on. After the batch recompute fires per
+    # project, we walk this list to stamp the 5 verdict keys (which
+    # require fresh total_float_days from the recompute).
+    k2_stamped_submittals: list[tuple[str, str]] = []  # (sid, project_id)
     for r in rows:
         try:
             sid = r["id"]
@@ -1027,6 +1075,36 @@ async def detect_breaches(
                 actor_id=actor_id, request_id=request_id,
             )
             out["cascade_flagged_tasks"] += cascade_count
+            # CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest. The row
+            # was JUST flipped to sla_status=breached (above), so we
+            # call the helper with only_when_breached=False to skip
+            # the re-read sla_status check (we know we're at the
+            # breach moment). The helper itself re-reads the row from
+            # db so it picks up the freshly-written breached state +
+            # current aging fields.
+            try:
+                k2_res = await auto_suggest_per_task_impacts_for_submittal(
+                    tenant_id=tenant_id, submittal_id=sid,
+                    only_when_breached=False,
+                    actor_id=actor_id, request_id=request_id,
+                )
+                if k2_res.get("changed"):
+                    out.setdefault("auto_suggested_count", 0)
+                    out["auto_suggested_count"] += len(k2_res.get("suggested") or [])
+                    out.setdefault("cleaned_orphan_count", 0)
+                    out["cleaned_orphan_count"] += len(k2_res.get("cleaned") or [])
+                    # CPM Part K-3 -- queue this submittal for the
+                    # post-recompute verdict-stamping pass. Only when
+                    # K-2 actually suggested entries (cleaned-only
+                    # cases don't need new stamps because cleaned
+                    # entries are removed, not replaced).
+                    if k2_res.get("suggested") and r.get("project_id"):
+                        k2_stamped_submittals.append((sid, r["project_id"]))
+            except Exception as exc:
+                log.warning(
+                    "K-2 auto-suggest after breach failed for sub=%s: %s",
+                    sid, exc,
+                )
             try:
                 await write_audit(
                     tenant_id=tenant_id, table_name="submittals",
@@ -1071,7 +1149,482 @@ async def detect_breaches(
                     )
         except Exception:
             pass
+
+    # CPM Part K-3 (2026-05-15) -- verdict-stamping pass. Runs AFTER
+    # the batch recompute so each submittal's resolver reads fresh
+    # total_float_days (refreshed by auto_recompute_after_event
+    # above). For each submittal K-2 just suggested impacts on, we
+    # stamp the 5 server-only verdict keys (float_at_logging_days,
+    # prior_open_impacts_at_logging_days, remaining_float_at_logging_
+    # days, consumes_float_only, pushes_critical_path). The K-1
+    # `source` field rides through unchanged. Fail-safe per row.
+    k3_stamped_count = 0
+    for sid, pid in k2_stamped_submittals:
+        try:
+            res = await _resolve_and_persist_submittal_per_task_impacts(
+                tenant_id=tenant_id, submittal_id=sid,
+                project_id=pid, exclude_submittal_id=sid,
+            )
+            if res.get("changed"):
+                k3_stamped_count += 1
+        except Exception as exc:
+            log.warning(
+                "K-3 verdict stamping after breach failed for sub=%s: %s",
+                sid, exc,
+            )
+    if k3_stamped_count:
+        out["k3_verdict_stamped_count"] = k3_stamped_count
     return out
+
+
+# =====================================================================
+# CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest per_task_impacts on
+# SLA breach.
+#
+# Fires ONLY at the just-now-crossed-into-breached transition (caller
+# is responsible for the boundary detection). Builds per_task_impacts
+# entries for the submittal's currently-linked task using days-past-SLA
+# in the project's aging mode (working vs calendar) as the projected
+# impact days. Source is stamped "system_suggested" so downstream UI
+# (Part K-6) can pin a "suggested" pill that the super can override
+# (flipping source to "super_overridden").
+#
+# Skip semantics on re-breach:
+#   * super_overridden entries are NEVER touched (preserve super
+#     judgment across breach <-> unbreach <-> rebreach cycles)
+#   * system_suggested entries are NEVER refreshed (the original
+#     suggestion stays; re-breach is not a license to overwrite the
+#     prior estimate; super still has final word)
+#   * Only tasks with NO existing entry get a fresh auto-suggestion
+#
+# Cleanup semantics:
+#   * Entries whose task_id is no longer the linked task (e.g., super
+#     changed schedule_activity_id while submittal was over SLA) are
+#     dropped from the array -- captured in the audit payload as
+#     "cleaned_orphans" so the federal auditor sees why an entry
+#     disappeared.
+#
+# Audit: SUBMITTAL_IMPACT_AUTO_SUGGESTED carries the full before/after
+# array + suggested / skipped_super_overridden / skipped_already_
+# suggested / cleaned_orphans / sla_days / aging_metric_used / linked_
+# task_id so a TIA defensibility audit can reconstruct the heuristic
+# exactly.
+# =====================================================================
+
+async def auto_suggest_per_task_impacts_for_submittal(
+    *, tenant_id: str, submittal_id: str,
+    only_when_breached: bool = True,
+    actor_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> dict:
+    """Idempotent re-sync of submittal.per_task_impacts.
+
+    Args:
+      only_when_breached: When True (default), the helper SKIPS rows
+        whose sla_status is not 'breached'. Set False from callers
+        that have already confirmed the breach (e.g., detect_breaches
+        inside the per-submittal loop where the row was JUST flipped
+        to breached and the in-DB read reflects that).
+
+    Returns:
+      {ok, changed, suggested: [...], cleaned: [...],
+       skipped_super_overridden: [task_id...],
+       skipped_already_suggested: [task_id...],
+       linked_task_id, aging_metric_used,
+       projected_impact_days_default, sla_days, reason?}
+
+    Behavior:
+      * No-op when submittal not found, not breached (and gate is
+        enabled), or when the current state already matches expected
+        (no diff vs. existing per_task_impacts).
+      * Fires SUBMITTAL_IMPACT_AUTO_SUGGESTED audit only when changed.
+      * Caller is responsible for the auto_recompute_after_event hook
+        (detect_breaches batches this once per project; the recompute
+        path calls it for the single project).
+    """
+    db = get_db()
+    sub = await db.submittals.find_one(
+        tenant_filter(tenant_id, {"id": submittal_id}), {"_id": 0},
+    )
+    if not sub:
+        return {"ok": False, "reason": "not_found"}
+    if only_when_breached and sub.get("sla_status") != "breached":
+        return {"ok": True, "changed": False, "reason": "not_breached"}
+
+    project_id = sub.get("project_id") or ""
+    project = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "submittal_review_sla_days": 1,
+         "submittal_sla_uses_calendar_days": 1},
+    ) or {}
+
+    # Resolve SLA mode (project default + per-submittal override) and
+    # SLA day count (per-submittal override takes precedence).
+    uses_calendar = bool(project.get("submittal_sla_uses_calendar_days", False))
+    if sub.get("sla_uses_calendar_days_override") is not None:
+        uses_calendar = bool(sub["sla_uses_calendar_days_override"])
+    sla_days = int(
+        sub.get("sla_days_override")
+        or project.get("submittal_review_sla_days")
+        or SUBMITTAL_DEFAULT_SLA_DAYS
+    )
+
+    # Aging-past-SLA in the project's preferred unit. Mirrors the
+    # overdue_days calculation already in this module (line 491) but
+    # uses aging_working_days when the project runs working-day SLAs
+    # (the ICE Schedule Ops Architecture default). At the breach
+    # moment this is typically 1 (just crossed) and grows daily.
+    if uses_calendar:
+        aging_value = int(sub.get("aging_days") or 0)
+        aging_metric = "aging_days"
+    else:
+        aging_value = int(sub.get("aging_working_days") or 0)
+        aging_metric = "aging_working_days"
+    projected_impact_default = max(0, aging_value - sla_days)
+
+    # Currently linked task set. Submittals have a singular
+    # schedule_activity_id (not a list), so the set is 0 or 1 entries.
+    # Future-proofing: this code uses set logic so multi-task submittals
+    # would Just Work if the schema ever extends.
+    linked_task = sub.get("schedule_activity_id")
+    linked_set: set = {linked_task} if linked_task else set()
+
+    current_impacts = list(sub.get("per_task_impacts") or [])
+    new_impacts: list[dict] = []
+    suggested: list[dict] = []
+    skipped_overridden: list[str] = []
+    skipped_already_suggested: list[str] = []
+    cleaned: list[dict] = []
+    seen_task_ids: set = set()
+
+    for entry in current_impacts:
+        if not isinstance(entry, dict):
+            cleaned.append({"reason": "non_dict_entry", "entry": entry})
+            continue
+        tid = entry.get("task_id")
+        if not tid:
+            cleaned.append({"reason": "missing_task_id", "entry": entry})
+            continue
+        if tid not in linked_set:
+            # Task was unlinked from this submittal while over SLA --
+            # drop the orphaned impact entry.
+            cleaned.append({
+                "task_id": tid, "reason": "task_no_longer_linked",
+                "dropped_entry": entry,
+            })
+            continue
+        source = entry.get("source")
+        if source == "super_overridden":
+            skipped_overridden.append(tid)
+        elif source == "system_suggested":
+            skipped_already_suggested.append(tid)
+        # Keep the entry as-is (super_overridden or already-suggested
+        # both ride through unchanged on re-breach).
+        new_impacts.append(entry)
+        seen_task_ids.add(tid)
+
+    # Auto-suggest a fresh entry for each linked task with no entry yet.
+    # CPM Part K-6 (2026-05-15) -- also stamp `original_suggested_days`
+    # so the frontend hybrid-mode UI can:
+    #   (a) show "was X auto-suggested" tooltip when super edits the
+    #       value (source flips to super_overridden, but the original
+    #       value rides through via this field)
+    #   (b) offer a "Reset to suggestion" button on super_overridden
+    #       entries that restores projected_impact_days = original_
+    #       suggested_days + flips source back to system_suggested
+    # The K-1 validator preserves unknown fields via dict(item), and
+    # K-3 verdict-stamping preserves them too -- this field round-trips
+    # unchanged. Federal audit trail benefits: the auto-suggested
+    # baseline is preserved server-side without needing audit_log lookups.
+    for tid in linked_set:
+        if tid in seen_task_ids:
+            continue
+        new_entry = {
+            "task_id": tid,
+            "projected_impact_days": projected_impact_default,
+            "source": "system_suggested",
+            "original_suggested_days": projected_impact_default,
+        }
+        suggested.append(new_entry)
+        new_impacts.append(new_entry)
+        seen_task_ids.add(tid)
+
+    changed = bool(suggested or cleaned)
+    if changed:
+        await db.submittals.update_one(
+            {"id": submittal_id, "tenant_id": tenant_id},
+            {"$set": {"per_task_impacts": new_impacts}},
+        )
+        invalidate_aging_cache(tenant_id=tenant_id, project_id=project_id)
+        try:
+            await write_audit(
+                tenant_id=tenant_id, table_name="submittals",
+                op="SUBMITTAL_IMPACT_AUTO_SUGGESTED",
+                record_id=submittal_id,
+                before={"per_task_impacts": current_impacts},
+                after={
+                    "per_task_impacts": new_impacts,
+                    "suggested": suggested,
+                    "skipped_super_overridden": skipped_overridden,
+                    "skipped_already_suggested": skipped_already_suggested,
+                    "cleaned_orphans": cleaned,
+                    "linked_task_id": linked_task,
+                    "aging_metric_used": aging_metric,
+                    "aging_value": aging_value,
+                    "sla_days": sla_days,
+                    "projected_impact_days_default": projected_impact_default,
+                    "sla_uses_calendar_days": uses_calendar,
+                },
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "K-2 audit write failed for sub=%s: %s",
+                submittal_id, exc,
+            )
+
+    return {
+        "ok": True, "changed": changed,
+        "suggested": suggested, "cleaned": cleaned,
+        "skipped_super_overridden": skipped_overridden,
+        "skipped_already_suggested": skipped_already_suggested,
+        "linked_task_id": linked_task,
+        "aging_metric_used": aging_metric,
+        "projected_impact_days_default": projected_impact_default,
+        "sla_days": sla_days,
+    }
+
+
+# =====================================================================
+# CPM Part K-3 (2026-05-15) -- Submittal per_task_impacts verdict
+# resolver. Mirror of routers.docs_router._resolve_rfi_task_impacts
+# (Part J-2) but for submittals.
+#
+# Stamps the SAME 5 server-only verdict keys on each per_task_impacts
+# entry that the RFI + delay flows do:
+#
+#     float_at_logging_days
+#     prior_open_impacts_at_logging_days
+#     remaining_float_at_logging_days
+#     consumes_float_only
+#     pushes_critical_path
+#
+# K-1 SOURCE FIELD PRESERVATION (HARD CONTRACT):
+#   The K-1 schema added a REQUIRED user-supplied `source` field to
+#   each entry (system_suggested | super_overridden). The verdict-
+#   stamping pass MUST NOT touch `source` -- it preserves what came
+#   in. After stamping, each entry carries 8 keys:
+#
+#       task_id                              (preserved)
+#       projected_impact_days                (preserved, coerced to int)
+#       source                               (PRESERVED -- K-1 / K-2 owned)
+#       float_at_logging_days                (stamped)
+#       prior_open_impacts_at_logging_days   (stamped)
+#       remaining_float_at_logging_days      (stamped)
+#       consumes_float_only                  (stamped)
+#       pushes_critical_path                 (stamped)
+#
+# PRIOR-OPEN SCOPE (K-5 LIVE):
+#   Calls routers.field_events_router._sum_prior_open_blocker_impacts_
+#   on_task which walks db.delays + db.rfis + db.submittals (K-5
+#   landed the submittal cross-walk). Submittals on the same task now
+#   contribute to each other's prior-sum, modulo the exclude_submittal_
+#   id self-exclusion threaded below.
+#
+# exclude_submittal_id is plumbed through the signature (matches J-2's
+# exclude_rfi_id pattern) AND threaded into the prior-sum helper call.
+# Defaults to sub_doc.id so a post-insert / post-PATCH re-resolve on
+# the same submittal doesn't count its own projected_impact_days
+# toward the prior-sum.
+# =====================================================================
+async def _resolve_submittal_task_impacts(
+    db, tenant_id: str, sub_doc: dict, *,
+    project_id: Optional[str] = None,
+    exclude_submittal_id: Optional[str] = None,
+) -> tuple[bool, list[dict]]:
+    """Compute + stamp the 5 server-only verdict keys on each
+    per_task_impacts entry in `sub_doc`. Returns (changed, enriched).
+
+    `changed` is True iff any item in the returned list differs from
+    the input in any of the 5 stamped keys -- callers can short-
+    circuit the DB write when nothing moved (mirrors J-2 idempotency).
+
+    Args:
+        db: motor database handle.
+        tenant_id: required.
+        sub_doc: dict with per_task_impacts. Reads project_id +
+            id for prior-sum scope + self-exclusion when the kwargs
+            are not provided.
+        project_id: kwarg override (defaults to sub_doc.project_id).
+            Required because the prior-sum query is project-scoped.
+        exclude_submittal_id: kwarg override (defaults to sub_doc.id).
+            Plumbed for K-5 (submittal walk in prior-sum). Unused in
+            K-3 itself -- the prior-sum helper does not accept an
+            exclude_submittal_id kwarg until K-5.
+
+    Returns:
+        (changed: bool, enriched: list[dict])
+    """
+    impacts_in = list(sub_doc.get("per_task_impacts") or [])
+    if not impacts_in:
+        # No impacts on this submittal -- nothing to stamp. Mirrors
+        # J-2 short-circuit so callers can skip the DB write.
+        return (False, [])
+
+    proj_id = project_id or sub_doc.get("project_id")
+    # K-3: exclude_submittal_id defaults to sub_doc.id so a re-resolve
+    # on the same submittal doesn't count its own impact_days toward
+    # the prior-sum when K-5 wires submittal-on-submittal coverage.
+    excl_sub = (
+        exclude_submittal_id
+        if exclude_submittal_id is not None
+        else sub_doc.get("id")
+    )
+
+    task_ids = [i["task_id"] for i in impacts_in if i.get("task_id")]
+    if not task_ids:
+        return (False, [])
+
+    tasks = await db.tasks.find(
+        tenant_filter(tenant_id, {"id": {"$in": task_ids}}),
+        {"_id": 0, "id": 1, "total_float_days": 1, "is_critical_path": 1},
+    ).to_list(len(task_ids))
+    by_id = {t["id"]: t for t in tasks}
+
+    # Local import to avoid a circular-import at module load
+    # (routers.field_events_router imports from services.* itself).
+    # Same pattern as J-2 / Part I in docs_router + field_events_router.
+    from routers.field_events_router import _sum_prior_open_blocker_impacts_on_task
+
+    out: list[dict] = []
+    changed = False
+    for item in impacts_in:
+        tid = item.get("task_id")
+        if not tid:
+            # K-1 validator drops items without task_id, but defensive
+            # guard here too -- legacy rows shouldn't reach this path
+            # but skip silently rather than 422 if they do.
+            continue
+        t = by_id.get(tid) or {}
+        impact = float(item.get("projected_impact_days") or 0)
+        f = t.get("total_float_days")
+        f_val = float(f) if f is not None else None
+        is_cp = bool(t.get("is_critical_path"))
+
+        if proj_id is not None and f_val is not None:
+            # CPM Part K-5 (2026-05-15) -- prior-sum now walks delays
+            # + RFIs + submittals (db.submittals with sla_status=
+            # breached). Pass exclude_submittal_id so THIS submittal's
+            # own impacts don't count as prior to itself when we re-
+            # resolve post-insert / post-PATCH. The other two excludes
+            # stay None -- a submittal is not a delay or RFI, so
+            # nothing to exclude on those collections.
+            prior = await _sum_prior_open_blocker_impacts_on_task(
+                db, tenant_id, proj_id, tid,
+                exclude_delay_id=None,
+                exclude_rfi_id=None,
+                exclude_submittal_id=excl_sub,
+            )
+            # Clamp at 0 -- can't have negative float in the verdict.
+            remaining = max(0.0, f_val - prior)
+            consumes = impact <= remaining
+            pushes_cp = impact > remaining
+        else:
+            # Fallback: structural float unknown (compute_cpm hasn't
+            # run on this project) OR project_id resolution failed.
+            # Mirrors I/J-2 fallback so the snapshot is well-formed
+            # in transient states.
+            prior = 0.0
+            remaining = None
+            consumes = False
+            pushes_cp = is_cp
+
+        # ============================================================
+        # K-1 SOURCE FIELD: must ride through unchanged. dict(item)
+        # copies every key (including `source` and any future ones);
+        # we then OVERWRITE task_id / projected_impact_days / the 5
+        # verdict keys. `source` is NEVER on the overwrite list and
+        # is preserved exactly as the K-1 validator accepted it.
+        # ============================================================
+        merged = dict(item)
+        merged["task_id"] = tid
+        # Integer convention (K-1 validator enforced this at the API
+        # layer; int() here is defense-in-depth for legacy rows that
+        # may have stored 3.0 instead of 3).
+        merged["projected_impact_days"] = int(impact)
+        merged["float_at_logging_days"] = f_val
+        merged["prior_open_impacts_at_logging_days"] = prior
+        merged["remaining_float_at_logging_days"] = remaining
+        merged["consumes_float_only"] = consumes
+        merged["pushes_critical_path"] = pushes_cp
+        # `source` rides through via dict(item) -- explicit comment so
+        # a future refactor doesn't accidentally strip it. If `source`
+        # is somehow absent on a legacy row (pre-K), it stays absent
+        # here (the read model + K-1 validator will tolerate it on
+        # the next deserialization pass).
+        out.append(merged)
+
+        # Change detector -- True iff any of the 5 stamped keys
+        # differs from what the input carried. Empty/missing keys
+        # on input (typical fresh user-supplied items) always count
+        # as changed since None != f_val for any populated float.
+        if (
+            item.get("float_at_logging_days") != f_val
+            or item.get("prior_open_impacts_at_logging_days") != prior
+            or item.get("remaining_float_at_logging_days") != remaining
+            or item.get("consumes_float_only") != consumes
+            or item.get("pushes_critical_path") != pushes_cp
+        ):
+            changed = True
+
+    return (changed, out)
+
+
+async def _resolve_and_persist_submittal_per_task_impacts(
+    *, tenant_id: str, submittal_id: str,
+    project_id: Optional[str] = None,
+    exclude_submittal_id: Optional[str] = None,
+) -> dict:
+    """Thin orchestration wrapper: read submittal -> resolve via K-3 ->
+    persist if changed. Used by detect_breaches (post-batch-recompute
+    second pass), recompute_aging_for_submittal (post-CPM-recompute),
+    and update_submittal (when per_task_impacts touched).
+
+    Returns:
+        {ok, changed, reason?}. Fail-safe: any exception is caught
+        and reported as ok=False with the exception class in reason.
+    """
+    db = get_db()
+    try:
+        sub = await db.submittals.find_one(
+            tenant_filter(tenant_id, {"id": submittal_id}),
+            {"_id": 0},
+        )
+        if not sub:
+            return {"ok": False, "reason": "not_found"}
+        if not sub.get("per_task_impacts"):
+            return {"ok": True, "changed": False, "reason": "no_impacts"}
+        changed, stamped = await _resolve_submittal_task_impacts(
+            db, tenant_id, sub,
+            project_id=project_id or sub.get("project_id"),
+            exclude_submittal_id=exclude_submittal_id or submittal_id,
+        )
+        if changed:
+            await db.submittals.update_one(
+                {"id": submittal_id, "tenant_id": tenant_id},
+                {"$set": {"per_task_impacts": stamped}},
+            )
+            invalidate_aging_cache(
+                tenant_id=tenant_id,
+                project_id=sub.get("project_id"),
+            )
+        return {"ok": True, "changed": changed}
+    except Exception as exc:
+        log.warning(
+            "K-3 resolve-and-persist failed for sub=%s: %s",
+            submittal_id, exc,
+        )
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 async def _cascade_flag_on_breach(

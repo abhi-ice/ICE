@@ -53,6 +53,14 @@ const EVENT_TYPE_TO_ENTITY = {
   delivery:     "delivery",
   photo:        "photo_tag",
   activity:     "daily_report_activity",
+  // CPM Part K-6 (2026-05-15) -- forward-compat. Submittals are
+  // currently edited via Submittals.jsx::EditSubmittalDialog (their
+  // canonical surface). Adding the entry here means any future flow
+  // that invokes LockedEventEditModal with eventType="submittal"
+  // will route JigsawField suggestions correctly + the per_task_
+  // impacts FieldEditor below will receive mode="submittal" via the
+  // field descriptor passed by the caller.
+  submittal:    "submittal",
 };
 
 const REASON_MIN = 10;
@@ -378,14 +386,17 @@ export default function LockedEventEditModal({
 function FieldEditor({ f, value, onChange, entityType, entityId }) {
   const id = `locked-edit-${f.key}`;
   const userRole = (getUser()?.role || "").toLowerCase();
-  // CPM Part J-6 (2026-05-15) -- per_task_impacts field type. Renders
-  // the PerTaskImpactsInput component directly (no JigsawField wrap --
-  // suggestions don't apply to per-task numeric arrays). Caller passes
-  // linkedTaskIds + projectId on the field descriptor so the input can
-  // resolve task labels and prune stale entries on linked_task_ids
-  // changes (in this locked-edit context, linkedTaskIds is fixed --
-  // the modal only edits the impact magnitudes, not the linkage; if
-  // linkage needs changing, that's a separate edit on the row).
+  // CPM Part J-6 (2026-05-15) + Part K-6 (2026-05-15) -- per_task_
+  // impacts field type. Renders the PerTaskImpactsInput component
+  // directly (no JigsawField wrap -- suggestions don't apply to per-
+  // task numeric arrays). Caller passes linkedTaskIds + projectId on
+  // the field descriptor so the input can resolve task labels and
+  // prune stale entries on linked_task_ids changes.
+  //
+  // K-6: f.mode + f.slaStatus pass through to PerTaskImpactsInput
+  // for the submittal hybrid UI. Defaults to mode="rfi" when the
+  // caller doesn't supply -- preserves J-6 behavior on existing
+  // RFI/delay callers in DailyReports.jsx.
   if (f.type === "per_task_impacts") {
     return (
       <div>
@@ -396,6 +407,8 @@ function FieldEditor({ f, value, onChange, entityType, entityId }) {
           onChange={onChange}
           projectId={f.projectId}
           testidPrefix={id}
+          mode={f.mode || "rfi"}
+          slaStatus={f.slaStatus}
         />
       </div>
     );

@@ -318,6 +318,15 @@ from routers.field_events_router import (  # noqa: E402
 from routers.docs_router import (  # noqa: E402
     _resolve_rfi_task_impacts,
 )
+# CPM Part K-7 (2026-05-15) -- Submittal cross-collection helpers.
+# The K-2 auto-suggest helper + K-3 verdict resolver + K-3 persist
+# wrapper from services.submittal_sla. Tests call these directly to
+# verify the K-2/K-3/K-4/K-5 chain end-to-end without needing the
+# full SLA date-math from detect_breaches.
+from services.submittal_sla import (  # noqa: E402
+    auto_suggest_per_task_impacts_for_submittal,
+    _resolve_and_persist_submittal_per_task_impacts,
+)
 
 
 # =============================================================================
@@ -465,6 +474,88 @@ def _add_open_delay(
         }],
     }
     _STUB.delays.rows.append(doc)
+    return doc
+
+
+def _add_open_submittal(
+    task_id: str | None = None,
+    impact_days: int | None = None,
+    *,
+    submittal_id: str | None = None,
+    status: str = "in_review",
+    sla_status: str = "breached",
+    source: str = "system_suggested",
+    aging_working_days: int | None = None,
+    aging_days: int | None = None,
+    per_task_impacts: list[dict] | None = None,
+    schedule_activity_id: str | None = None,
+    original_suggested_days: int | None = None,
+    project_id: str | None = None,
+) -> dict:
+    """CPM Part K-7 (2026-05-15) -- insert a submittal row into the stub.
+
+    Two ways to call:
+        (a) task_id + impact_days  -- single-link submittal shorthand.
+            Builds schedule_activity_id=task_id and per_task_impacts=
+            [{task_id, projected_impact_days, source [, original_
+            suggested_days]}]. source defaults to system_suggested;
+            override via kwarg.
+        (b) per_task_impacts=[]  -- explicitly empty (test 6: super
+            cleared the auto-suggestion to claim no impact).
+
+    Status defaults to "in_review" + sla_status="breached" so the row
+    matches the K-4 Path 1 + K-5 Path 2 + count_open_blockers filter:
+        schedule_activity_id == task_id
+        status IN ["submitted", "in_review"]
+        sla_status == "breached"
+
+    Set sla_status="n_a" + status="approved" for the approved-exclusion
+    case (test 4).
+    """
+    if schedule_activity_id is None:
+        schedule_activity_id = task_id
+    if per_task_impacts is None:
+        if impact_days is None or task_id is None:
+            per_task_impacts = []
+        else:
+            entry = {
+                "task_id": task_id,
+                "projected_impact_days": int(impact_days),
+                "source": source,
+            }
+            if original_suggested_days is not None:
+                entry["original_suggested_days"] = int(original_suggested_days)
+            elif source == "system_suggested":
+                # K-6: K-2 stamps original_suggested_days on every
+                # system_suggested entry it creates. Default mirror.
+                entry["original_suggested_days"] = int(impact_days)
+            per_task_impacts = [entry]
+    doc = {
+        "id": submittal_id or f"sub-{uuid.uuid4()}",
+        "tenant_id": TENANT,
+        "project_id": project_id or PROJECT,
+        "submittal_number": "SUB-TEST",
+        "title": "test submittal",
+        "type": "product_data",
+        "status": status,
+        "sla_status": sla_status,
+        "schedule_activity_id": schedule_activity_id,
+        "per_task_impacts": list(per_task_impacts),
+        # Aging fields drive the K-2 auto-suggest computation:
+        # projected_impact_default = max(0, aging - sla_days).
+        "aging_days": aging_days,
+        "aging_working_days": aging_working_days,
+        "sla_days_override": None,
+        "sla_uses_calendar_days_override": None,
+        # Standard register-depth fields (defensive nulls; not used
+        # by the K-4/K-5 walks but kept for downstream readers).
+        "submitted_to_ae_at": D(5, 1).isoformat(),
+        "a_e_review_due_at": D(5, 14).isoformat(),
+        "is_overdue": sla_status == "breached",
+        "overdue_days": 3 if sla_status == "breached" else None,
+        "urgency_flag": False,
+    }
+    _STUB.submittals.rows.append(doc)
     return doc
 
 
@@ -1733,6 +1824,398 @@ async def _test_rfi_no_impact_days_zero_propagation():
 
 
 # =============================================================================
+# CPM Part K-7 (2026-05-15) -- Submittal cross-collection regression tests.
+# Six tests codifying K-2 / K-3 / K-4 / K-5 scenarios across the four-
+# collection blocker walks (delays + RFIs + QC-synthetic + submittals).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# K-7-1. test_submittal_auto_suggest_on_sla_breach
+# -----------------------------------------------------------------------------
+async def _test_submittal_auto_suggest_on_sla_breach():
+    """K-2 + K-4 wiring: a breached submittal with empty per_task_
+    impacts has K-2 auto-suggest fire (one entry with source=
+    system_suggested + original_suggested_days), and Path 1
+    (compute_projected_finish_dates via _open_blocker_impact_for_task
+    K-4 walk) pushes the linked task's projected_finish forward.
+
+    Setup:
+        T_SHORT structural float = 5 (T_LONG 10d, T_SHORT 5d, both root)
+        Project default SLA = 14 working days
+        Over-SLA submittal on T_SHORT:
+          status="in_review", sla_status="breached"
+          aging_working_days=17 (3 days past SLA -- K-2 will suggest 3)
+          per_task_impacts=[]
+
+    Action 1: call auto_suggest_per_task_impacts_for_submittal (K-2)
+    Assert 1: entry stamped with source=system_suggested,
+              projected_impact_days=3, original_suggested_days=3
+
+    Action 2: compute_projected_finish_dates (Path 1)
+    Assert 2: T_SHORT.projected_finish_date moved forward by 3 days
+              T_SHORT planned_finish=5/8 -> projected_finish=5/11
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4),
+              planned_finish=D(5, 8))
+    await compute_cpm(TENANT, PROJECT)
+
+    sub = _add_open_submittal(
+        task_id="task-SHORT",
+        per_task_impacts=[],       # K-2 will fill in the entry
+        aging_working_days=17,     # 17 - 14 = 3 day suggestion
+        submittal_id="sub-k7-1",
+    )
+
+    # Action 1: K-2 fires (only_when_breached=True; sub is breached).
+    res = await auto_suggest_per_task_impacts_for_submittal(
+        tenant_id=TENANT, submittal_id=sub["id"],
+        only_when_breached=True,
+    )
+    assert res.get("ok") and res.get("changed"), res
+    persisted = await _STUB.submittals.find_one(
+        {"id": sub["id"], "tenant_id": TENANT},
+    )
+    assert persisted["per_task_impacts"], (
+        f"K-2 should have written an entry; got {persisted['per_task_impacts']!r}"
+    )
+    entry = persisted["per_task_impacts"][0]
+    assert entry["source"] == "system_suggested", entry
+    assert entry["projected_impact_days"] == 3, entry
+    assert entry["original_suggested_days"] == 3, (
+        f"K-6 baseline stamp expected 3; got {entry!r}"
+    )
+    assert entry["task_id"] == "task-SHORT"
+
+    # Action 2: Path 1 picks up the new submittal impact via K-4 walk.
+    await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["projected_finish_date"] == "2026-05-11", (
+        f"T_SHORT planned 5/8 + 3-day submittal impact -> 5/11; got "
+        f"{t_short['projected_finish_date']!r}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# K-7-2. test_submittal_super_override_preserved_across_re_breach
+# -----------------------------------------------------------------------------
+async def _test_submittal_super_override_preserved_across_re_breach():
+    """K-2 idempotency on re-breach: super_overridden entries are
+    NEVER overwritten when K-2 re-fires after a breach -> unbreach
+    -> rebreach cycle. Also confirms system_suggested entries are
+    skipped on re-breach (not "refreshed" with current aging). Each
+    impact value represents the moment it was captured -- federal
+    TIA defensibility requires immutable per-event snapshots.
+
+    Setup:
+        Task with float = 5 (T_LONG 10d, T_SHORT 5d)
+        Submittal currently breached with entry:
+          { projected_impact_days: 5, source: super_overridden,
+            original_suggested_days: 3 }
+        (super edited the original auto-suggestion of 3 up to 5)
+        aging_working_days bumped to 20 (would suggest 6 if re-fired)
+
+    Action:
+        Call auto_suggest_per_task_impacts_for_submittal (simulates
+        re-breach after the submittal cycled through approved ->
+        rejected/revise -> back to in_review breached).
+
+    Assert:
+        sub.per_task_impacts still has 1 entry
+        entry.projected_impact_days == 5 (super value unchanged)
+        entry.source == "super_overridden" (not flipped back)
+        entry.original_suggested_days == 3 (baseline preserved)
+        res.changed == False (no diff -> no write -> no audit)
+        res.skipped_super_overridden == ["task-SHORT"]
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    sub = _add_open_submittal(
+        task_id="task-SHORT",
+        impact_days=5,
+        source="super_overridden",
+        original_suggested_days=3,
+        aging_working_days=20,    # would suggest 6 fresh -- must NOT overwrite
+        submittal_id="sub-k7-2",
+    )
+
+    res = await auto_suggest_per_task_impacts_for_submittal(
+        tenant_id=TENANT, submittal_id=sub["id"],
+        only_when_breached=True,
+    )
+    assert res.get("ok") and not res.get("changed"), (
+        f"super_overridden on re-breach must NOT trigger a write; "
+        f"got res={res!r}"
+    )
+    assert res.get("skipped_super_overridden") == ["task-SHORT"], res
+
+    persisted = await _STUB.submittals.find_one(
+        {"id": sub["id"], "tenant_id": TENANT},
+    )
+    entry = persisted["per_task_impacts"][0]
+    assert entry["projected_impact_days"] == 5, (
+        f"super override 5 must survive re-breach; got {entry!r}"
+    )
+    assert entry["source"] == "super_overridden", entry
+    assert entry["original_suggested_days"] == 3, (
+        f"original baseline must ride through unchanged; got {entry!r}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# K-7-3. test_submittal_contributes_to_delay_remaining_float
+# -----------------------------------------------------------------------------
+async def _test_submittal_contributes_to_delay_remaining_float():
+    """K-5 Path 2: an open over-SLA submittal with 4-day impact is in
+    the prior-sum when a subsequent delay is logged on the same task.
+    Verifies _sum_prior_open_blocker_impacts_on_task walks submittals.
+
+    Setup:
+        T_SHORT structural float = 10
+        Open over-SLA submittal on T_SHORT, 4-day impact
+
+    Action:
+        Simulate a new delay create on T_SHORT with 4-day impact.
+
+    Assert (delay's snapshot):
+        prior_open_impacts_at_logging_days == 4   (submittal contributes)
+        remaining_float_at_logging_days    == 6   (10 - 4)
+        consumes_float_only                == True  (4 <= 6)
+        pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    _add_open_submittal("task-SHORT", impact_days=4)
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=4.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 4.0, (
+        f"open over-SLA submittal (4d) should contribute to the "
+        f"delay's prior-sum; got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 6.0  # 10 - 4
+    assert snap["consumes_float_only"] is True   # 4 <= 6
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# K-7-4. test_submittal_approved_excluded_from_future_calcs
+# -----------------------------------------------------------------------------
+async def _test_submittal_approved_excluded_from_future_calcs():
+    """K-5 status filter: an approved submittal (status="approved",
+    sla_status="n_a") does NOT contribute to the prior-sum even with
+    per_task_impacts still populated on the row for audit history.
+    Federal TIA defensibility: only currently-active blockers
+    contribute. Auto-drop on disposition is the K-4/K-5 contract --
+    when sla_status leaves "breached" OR status leaves [submitted,
+    in_review], the row disappears from live calcs without
+    retroactive snapshot rewrite.
+
+    Setup:
+        T_SHORT float = 10
+        Approved submittal (status="approved", sla_status="n_a") with
+        per_task_impacts entry of 3 days still present (audit history)
+
+    Action:
+        Simulate a new delay create on T_SHORT with 3-day impact.
+
+    Assert:
+        prior_open_impacts_at_logging_days == 0  (approved excluded)
+        remaining_float_at_logging_days    == 10
+        consumes_float_only                == True
+        pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    # Submittal that WAS breached, now approved. per_task_impacts
+    # stays for audit but stops contributing.
+    _add_open_submittal(
+        "task-SHORT", impact_days=3,
+        status="approved", sla_status="n_a",
+    )
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"approved submittal must NOT count toward prior-sum; "
+        f"got prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 10.0
+    assert snap["consumes_float_only"] is True   # 3 <= 10
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# K-7-5. test_mixed_all_four_event_types_cumulative
+# -----------------------------------------------------------------------------
+async def _test_mixed_all_four_event_types_cumulative():
+    """K-5 cross-collection cumulative: RFI + delay + QC-synthetic +
+    over-SLA submittal ALL on the same task. New delay's verdict
+    reads the cumulative prior = 11 (3+2+2+4); 5d new delay > 4d
+    remaining -> pushes_critical_path.
+
+    Setup:
+        T_SHORT structural float = 15
+          (T_LONG dur 18, T_SHORT dur 3, both root, no convergence)
+        Open RFI    on T_SHORT, 3d impact (status=draft)
+        Open delay  on T_SHORT, 2d impact (status=open)
+        QC issue    on T_SHORT, severity=rework_required,
+                    rework_duration_hours=16 -> synthetic delay 2d
+        Over-SLA submittal on T_SHORT, 4d impact
+
+    Action:
+        Simulate a new delay create on T_SHORT with 5d impact.
+
+    Assert (the NEW delay's snapshot):
+        prior_open_impacts_at_logging_days == 11  (3 RFI + 2 delay + 2 QC + 4 sub)
+        remaining_float_at_logging_days    == 4   (15 - 11)
+        consumes_float_only                == False  (5 > 4)
+        pushes_critical_path               == True
+    """
+    _reset()
+    _add_task("LONG", duration=18, planned_start=D(5, 4))
+    _add_task("SHORT", duration=3, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    # Verify structural float on T_SHORT.
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 15, (
+        f"setup sanity: T_SHORT float expected 15 (18 - 3); got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    # Add three prior blockers.
+    _add_open_rfi("task-SHORT", 3)
+    _add_open_delay("task-SHORT", impact_days=2)
+    # QC-synthetic delay via the rework_required severity flow.
+    qc_doc = {
+        "id": f"qc-{uuid.uuid4()}",
+        "tenant_id": TENANT, "project_id": PROJECT,
+        "linked_task_ids": ["task-SHORT"],
+        "status": "open",
+        "severity": "rework_required",
+        "rework_duration_hours": 16,   # 16h / 8h/day = 2 day synthetic
+        "description": "test qc rework",
+    }
+    _STUB.qc_issues.rows.append(qc_doc)
+    synthetic = await create_synthetic_delay_for_qc(
+        tenant_id=TENANT, qc_issue=qc_doc,
+        actor_id="test", request_id="req-test",
+    )
+    assert synthetic is not None and synthetic.get("delay_days") == 2.0, (
+        f"setup sanity: 16h QC rework -> 2.0d synthetic delay; "
+        f"got {synthetic!r}"
+    )
+    # Add the over-SLA submittal with 4d impact.
+    _add_open_submittal("task-SHORT", impact_days=4)
+
+    # Action: log the 5d delay -- its verdict reads cumulative prior.
+    new_delay = await _simulate_create_delay("task-SHORT", impact_days=5.0)
+    snap = (await _get_delay(new_delay["id"]))["per_task_impacts"][0]
+
+    assert snap["prior_open_impacts_at_logging_days"] == 11.0, (
+        f"mixed four-collection prior expected 11 (RFI 3 + delay 2 + "
+        f"QC 2 + sub 4); got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 4.0  # 15 - 11
+    assert snap["consumes_float_only"] is False, (
+        f"new delay 5d > remaining 4d -> NOT within float; "
+        f"got snap={snap!r}"
+    )
+    assert snap["pushes_critical_path"] is True
+
+
+# -----------------------------------------------------------------------------
+# K-7-6. test_submittal_empty_impacts_no_propagation
+# -----------------------------------------------------------------------------
+async def _test_submittal_empty_impacts_no_propagation():
+    """Mirror of test_rfi_no_impact_days_zero_propagation: an over-
+    SLA submittal with empty per_task_impacts still counts as a
+    binary blocker (Bug #50 invariant) but does NOT contribute to
+    Path 1 slip / Path 2 cumulative verdicts. Models the "super
+    cleared the auto-suggestion to claim no schedule impact despite
+    breach" case AND the "submittal breached before K-2 ran" case
+    (legacy / transient state).
+
+    Setup:
+        T_SHORT structural float = 5
+        Over-SLA submittal on T_SHORT, per_task_impacts=[]
+
+    Action 1: compute_projected_finish_dates (Path 1)
+    Assert 1: T_SHORT.projected_finish_date is None
+              T_SHORT.projected_start_date  is None
+
+    Action 2: compute_and_persist_status (count_open_blockers)
+    Assert 2: T_SHORT.has_open_blocker is True   (Bug #50 preserved)
+              T_SHORT.open_blocker_count >= 1
+
+    Action 3: simulate new delay create with 3d impact (Path 2)
+    Assert 3: prior_open_impacts_at_logging_days == 0
+              remaining_float_at_logging_days    == 5
+              consumes_float_only                == True  (3 <= 5)
+              pushes_critical_path               == False
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    sub = _add_open_submittal(
+        "task-SHORT", per_task_impacts=[],     # explicitly empty
+    )
+    assert sub["per_task_impacts"] == []   # sanity
+
+    # Action 1 + Assert 1: Path 1 unaffected.
+    await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short.get("projected_finish_date") is None, (
+        f"over-SLA submittal with empty per_task_impacts must NOT push "
+        f"Slip; got projected_finish_date="
+        f"{t_short.get('projected_finish_date')!r}"
+    )
+    assert t_short.get("projected_start_date") is None
+
+    # Action 2 + Assert 2: Bug #50 invariant preserved (binary blocker).
+    await compute_and_persist_status(_STUB, TENANT, "task-SHORT")
+    t_short = await _get_task("task-SHORT")
+    assert t_short.get("has_open_blocker") is True, (
+        f"Bug #50: over-SLA submittal must surface as a binary "
+        f"blocker on the linked task EVEN with empty per_task_impacts; "
+        f"got has_open_blocker={t_short.get('has_open_blocker')!r}"
+    )
+    assert t_short.get("open_blocker_count", 0) >= 1, (
+        f"open_blocker_count expected >= 1; got "
+        f"{t_short.get('open_blocker_count')!r}"
+    )
+
+    # Action 3 + Assert 3: Path 2 (submittal with no impacts -> 0 prior).
+    delay = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+    assert snap["prior_open_impacts_at_logging_days"] == 0.0, (
+        f"empty per_task_impacts submittal must contribute 0 to the "
+        f"delay's prior-sum; got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 5.0
+    assert snap["consumes_float_only"] is True   # 3 <= 5
+    assert snap["pushes_critical_path"] is False
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -1825,6 +2308,31 @@ def test_rfi_no_impact_days_zero_propagation():
     asyncio.run(_test_rfi_no_impact_days_zero_propagation())
 
 
+# CPM Part K-7 (2026-05-15) -- Submittal impact-days regression tests.
+def test_submittal_auto_suggest_on_sla_breach():
+    asyncio.run(_test_submittal_auto_suggest_on_sla_breach())
+
+
+def test_submittal_super_override_preserved_across_re_breach():
+    asyncio.run(_test_submittal_super_override_preserved_across_re_breach())
+
+
+def test_submittal_contributes_to_delay_remaining_float():
+    asyncio.run(_test_submittal_contributes_to_delay_remaining_float())
+
+
+def test_submittal_approved_excluded_from_future_calcs():
+    asyncio.run(_test_submittal_approved_excluded_from_future_calcs())
+
+
+def test_mixed_all_four_event_types_cumulative():
+    asyncio.run(_test_mixed_all_four_event_types_cumulative())
+
+
+def test_submittal_empty_impacts_no_propagation():
+    asyncio.run(_test_submittal_empty_impacts_no_propagation())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -1869,11 +2377,25 @@ def _run_all():
          _test_mixed_rfi_delay_synthetic_qc_cumulative),
         ("test_rfi_no_impact_days_zero_propagation",
          _test_rfi_no_impact_days_zero_propagation),
+        # CPM Part K-7 (2026-05-15) -- Submittal impact-days regression.
+        ("test_submittal_auto_suggest_on_sla_breach",
+         _test_submittal_auto_suggest_on_sla_breach),
+        ("test_submittal_super_override_preserved_across_re_breach",
+         _test_submittal_super_override_preserved_across_re_breach),
+        ("test_submittal_contributes_to_delay_remaining_float",
+         _test_submittal_contributes_to_delay_remaining_float),
+        ("test_submittal_approved_excluded_from_future_calcs",
+         _test_submittal_approved_excluded_from_future_calcs),
+        ("test_mixed_all_four_event_types_cumulative",
+         _test_mixed_all_four_event_types_cumulative),
+        ("test_submittal_empty_impacts_no_propagation",
+         _test_submittal_empty_impacts_no_propagation),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
-    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J (11 + 5 + 6 tests)")
+    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K "
+          "(11 + 5 + 6 + 6 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -1890,7 +2412,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 22 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 28 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
