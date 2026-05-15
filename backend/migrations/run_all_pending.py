@@ -113,6 +113,13 @@ MIGRATIONS = [
     # POST_SUBMIT_ADD_FIELDS_INITIALIZED audit per tenant. Idempotent
     # via $exists field guards + per-tenant audit existence check.
     "migrations.017_post_submit_add_flow",
+    # CPM Part A (2026-05-15) -- predecessor schema with relationship
+    # type + lag. Converts tasks.predecessors from List[str] (legacy
+    # activity_code only) to List[dict] {code, type, lag_days}.
+    # Bare-string entries default to FS+0 preserving current MSU
+    # cascade behavior. PREDECESSOR_SCHEMA_MIGRATED audit per tenant;
+    # idempotent via canonical-shape check + per-tenant audit guard.
+    "migrations.018_predecessor_relationship_lag",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

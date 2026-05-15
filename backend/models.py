@@ -342,6 +342,122 @@ TaskStatus = Literal["not_started", "in_progress", "blocked", "complete", "delet
 LookaheadStatus = Literal["not_in_window", "in_window", "proposed_new", "modified_from_master"]
 
 
+# ============================================================
+# CPM Part A (2026-05-15) — Predecessor schema with type + lag
+# ============================================================
+# Pre-Part-A storage:   tasks.predecessors = ["1.5", "1.6"]
+# Post-Part-A storage:  tasks.predecessors = [
+#                         {"code": "1.5", "type": "FS", "lag_days": 0},
+#                         ...
+#                       ]
+#
+# A bare-string predecessor in old data converts to {code, "FS", 0}.
+# The forward/backward CPM math still treats every relation as FS+1day
+# in Part A (the math change ships in Part C); Part A only changes the
+# storage shape + Pydantic acceptance + the Mongo queries that look up
+# tasks by predecessor.code.
+#
+# All lag values are CALENDAR days (not working days). Working-day
+# support is intentionally deferred per the build spec.
+
+RelationshipType = Literal["FS", "SS", "FF", "SF"]
+
+
+class Predecessor(StrictModel):
+    """One dependency edge from a task back to a predecessor activity.
+
+    code:     activity_code of the predecessor task in the same project.
+              Existence is NOT validated here (import order matters; a
+              forward reference to an activity that hasn't been parsed
+              yet must still validate). Cross-task referential integrity
+              is the import pipeline's responsibility.
+    type:     FS (Finish-to-Start, default) | SS | FF | SF.
+    lag_days: integer calendar days. Negative allowed (lead/overlap).
+    """
+    code: str
+    type: RelationshipType = "FS"
+    lag_days: int = 0
+
+
+def pred_code(p) -> Optional[str]:
+    """Adapter — return the activity_code of a predecessor entry
+    regardless of whether storage is the legacy bare-string form
+    (pre-migration 018) or the new dict / Predecessor form.
+
+    Used by services/cpm.py, services/cascade_engine.py,
+    services/task_status.py, services/schedule_diff.py during the
+    Part-A transition window. After Part C lands, these readers
+    consume `type` and `lag_days` directly and pred_code() becomes
+    a convenience for log lines + tests."""
+    if p is None:
+        return None
+    if isinstance(p, str):
+        return p
+    if isinstance(p, dict):
+        return p.get("code")
+    code = getattr(p, "code", None)
+    return code if isinstance(code, str) else None
+
+
+def _normalize_predecessors_list(value: Any) -> List[dict]:
+    """Field validator helper. Coerces a list of mixed
+    string-or-dict-or-Predecessor entries into a list of well-formed
+    dicts with all three keys present.
+
+    - bare string         -> {"code": str, "type": "FS", "lag_days": 0}
+    - partial dict        -> {"code": ..., "type": "FS"|<provided>,
+                              "lag_days": 0|<provided>, ...preserved extras}
+    - complete dict       -> pass through (any extras flow to Pydantic
+                              which rejects them via extra="forbid")
+    - None / empty        -> []
+    - any other shape     -> dropped (defensive)
+
+    Design note: this normalizer ONLY fills in missing type / lag_days
+    defaults and converts bare strings. It does NOT strip unknown keys
+    from input dicts -- those are passed through to Predecessor's
+    extra="forbid" validator which surfaces schema drift as 422. The
+    only "stripping" is when input is bare-string or shaped differently
+    from a dict (e.g. a Predecessor instance, which doesn't carry
+    arbitrary extras anyway).
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return []
+    out: List[dict] = []
+    for item in value:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                out.append({"code": stripped, "type": "FS", "lag_days": 0})
+        elif isinstance(item, dict):
+            code = item.get("code")
+            if not isinstance(code, str) or not code.strip():
+                continue
+            # Preserve all keys the caller provided; fill defaults only
+            # for the two known optional fields. Unknown keys fall
+            # through to Predecessor's extras-forbid for a loud 422.
+            merged = dict(item)
+            merged["code"] = code.strip()
+            merged.setdefault("type", "FS")
+            merged.setdefault("lag_days", 0)
+            out.append(merged)
+        elif hasattr(item, "code"):
+            # Predecessor instance or duck-typed equivalent. Build
+            # only the 3 canonical keys -- instances don't carry
+            # arbitrary extras (the class itself is strict), so no
+            # round-trip risk.
+            code = getattr(item, "code", None)
+            if isinstance(code, str) and code.strip():
+                out.append({
+                    "code": code.strip(),
+                    "type": getattr(item, "type", "FS"),
+                    "lag_days": getattr(item, "lag_days", 0),
+                })
+        # else: drop silently (defensive against malformed data)
+    return out
+
+
 class TaskCreate(StrictModel):
     """SOURCE OF TRUTH for proposed task payloads.
 
@@ -364,7 +480,11 @@ class TaskCreate(StrictModel):
     budgeted_quantity: Optional[float] = None
     quantity_unit: Optional[str] = None
     is_milestone: bool = False
-    predecessors: List[str] = Field(default_factory=list)
+    # CPM Part A (2026-05-15) -- predecessors gained relationship type
+    # + lag_days. The @field_validator below normalizes legacy bare
+    # strings into Predecessor dicts so existing API callers and
+    # imported schedules with the old shape keep working.
+    predecessors: List[Predecessor] = Field(default_factory=list)
     source: str = "master_schedule"
     # Source-file ordering — preserves the row index from the imported MPP/XER/CSV
     # so the Tasks page can list activities in the same sequence the project
@@ -391,6 +511,14 @@ class TaskCreate(StrictModel):
     required_headcount: Optional[int] = None
     required_hours: Optional[float] = None
 
+    # CPM Part A (2026-05-15) -- accept the legacy bare-string form
+    # alongside the new dict form for backward compat with schedule
+    # imports + tests + seed.py.
+    @field_validator("predecessors", mode="before")
+    @classmethod
+    def _coerce_predecessors_create(cls, v):
+        return _normalize_predecessors_list(v)
+
 
 class TaskUpdate(StrictModel):
     description: Optional[str] = None
@@ -407,7 +535,9 @@ class TaskUpdate(StrictModel):
     trade_code: Optional[str] = None
     lookahead_status: Optional[LookaheadStatus] = None
     duration_days: Optional[float] = None
-    predecessors: Optional[List[str]] = None
+    # CPM Part A (2026-05-15) -- Optional[List[Predecessor]] post-Part-A.
+    # The validator below normalizes legacy bare-string inputs.
+    predecessors: Optional[List[Predecessor]] = None
     is_milestone: Optional[bool] = None
     wbs: Optional[str] = None
     trade_code: Optional[str] = None
@@ -419,6 +549,15 @@ class TaskUpdate(StrictModel):
     required_trade: Optional[str] = None
     required_headcount: Optional[int] = None
     required_hours: Optional[float] = None
+
+    # CPM Part A (2026-05-15) -- same legacy-bare-string coercion as
+    # TaskCreate. None stays None (means "do not patch this field").
+    @field_validator("predecessors", mode="before")
+    @classmethod
+    def _coerce_predecessors_update(cls, v):
+        if v is None:
+            return None
+        return _normalize_predecessors_list(v)
 
 
 class CrewAssignmentEntry(ReadModel):
@@ -467,7 +606,11 @@ class Task(ReadModel):
     is_critical_path: bool = False
     total_float_days: Optional[int] = None
     lookahead_status: LookaheadStatus = "not_in_window"
-    predecessors: List[str] = Field(default_factory=list)
+    # CPM Part A (2026-05-15) -- read model accepts both legacy bare-
+    # string predecessors and the new dict form. Migration 018 converts
+    # all stored data to dicts; the validator handles in-flight rows
+    # that haven't been migrated yet (e.g. during a deploy window).
+    predecessors: List[Predecessor] = Field(default_factory=list)
     sequence: Optional[int] = None
     resource_names: List[str] = Field(default_factory=list)
     # Field-created (Daily Report) flags
@@ -498,6 +641,16 @@ class Task(ReadModel):
     required_trade: Optional[str] = None
     required_headcount: Optional[int] = None
     required_hours: Optional[float] = None
+
+    # CPM Part A (2026-05-15) -- normalize legacy bare-string
+    # predecessors during the migration window. Once migration 018
+    # has run on all tenants this is mostly a no-op (data is already
+    # in dict form), but the validator stays as defense-in-depth in
+    # case any legacy writer slips through.
+    @field_validator("predecessors", mode="before")
+    @classmethod
+    def _coerce_predecessors_read(cls, v):
+        return _normalize_predecessors_list(v)
 
 
 # ---------- Daily reports ----------

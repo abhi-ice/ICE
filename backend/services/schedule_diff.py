@@ -7,10 +7,20 @@ PMs/Admins can review before the rows commit.
 Federal-contract context: every baseline change must be justifiable. The
 proposal flow gives an immutable audit trail: who uploaded, what changed,
 who approved, when.
+
+CPM Part A (2026-05-15) -- predecessors changed from List[str] to
+List[dict] {code, type, lag_days}. The diff renderer now extracts the
+activity_code via pred_code() so the "predecessors_added /
+predecessors_removed / predecessors_modified" stats stay code-based.
+A future enhancement could surface type/lag changes separately
+(e.g. "FS+0 changed to FS+7" without the code itself changing); not
+in scope for Part A.
 """
 from __future__ import annotations
 from datetime import date, datetime
 from typing import Iterable, Optional
+
+from models import pred_code
 
 DATE_SHIFT_THRESHOLD_DAYS = 3  # User spec: "date shifts > 3 days"
 
@@ -131,8 +141,11 @@ def compute_schedule_diff(current_tasks: Iterable[dict], parsed_rows: Iterable[d
                 pass
 
         # Predecessor change
-        old_p = sorted([str(x) for x in (old.get("predecessors") or [])])
-        new_p = sorted([str(x) for x in (new.get("predecessors") or [])])
+        # CPM Part A -- extract activity_code from each predecessor
+        # entry. str(dict) would produce "{'code':...}" garbage on
+        # post-migration data; pred_code() returns the code itself.
+        old_p = sorted(c for c in (pred_code(x) for x in (old.get("predecessors") or [])) if c)
+        new_p = sorted(c for c in (pred_code(x) for x in (new.get("predecessors") or [])) if c)
         if old_p != new_p:
             predecessor_changes.append({
                 "activity_code": code,
@@ -174,7 +187,10 @@ def compute_schedule_diff(current_tasks: Iterable[dict], parsed_rows: Iterable[d
 
 
 def _row_predecessors(row: dict) -> list[str]:
-    return sorted(str(p) for p in (row.get("predecessors") or []) if p)
+    # CPM Part A -- return sorted activity_codes regardless of
+    # whether row.predecessors is the legacy bare-string form or
+    # the post-migration dict form. pred_code() handles both.
+    return sorted(c for c in (pred_code(p) for p in (row.get("predecessors") or [])) if c)
 
 
 def _to_iso(v) -> Optional[str]:

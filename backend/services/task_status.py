@@ -34,7 +34,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import tenant_filter
-from models import gen_id
+from models import gen_id, pred_code
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -323,8 +323,17 @@ async def compute_projected_finish_dates(
             return shift_by_id[task["id"]]
         own = own_impact.get(task["id"], 0.0)
         max_pred = 0.0
-        for pred_code in (task.get("predecessors") or []):
-            pred_task = by_code.get(pred_code)
+        # CPM Part A (2026-05-15) -- iterate predecessor entries and
+        # extract the activity_code via the pred_code() adapter
+        # (handles both legacy bare-string + post-migration dict).
+        # The local variable was shadowing the imported helper name --
+        # rename the loop var to `pred_entry` to keep the import
+        # accessible inside the closure.
+        for pred_entry in (task.get("predecessors") or []):
+            p_code = pred_code(pred_entry)
+            if not p_code:
+                continue
+            pred_task = by_code.get(p_code)
             if pred_task:
                 max_pred = max(max_pred, shift_for(pred_task, depth + 1))
         shift_by_id[task["id"]] = own + max_pred
