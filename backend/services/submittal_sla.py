@@ -526,6 +526,27 @@ async def recompute_aging_for_submittal(
     breached_boundary_crossed = (
         (prev_status == "breached") != (new_status == "breached")
     )
+    # CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest fires ONLY on
+    # the in-to-breached transition (not on out-to-breached or every
+    # recompute). detect_breaches handles the bulk scan; this path
+    # handles single-row recomputes that cross the boundary (e.g.,
+    # PATCH /submittals that bumped aging past the SLA window).
+    entered_breached = (
+        prev_status != "breached" and new_status == "breached"
+    )
+    if entered_breached:
+        try:
+            await auto_suggest_per_task_impacts_for_submittal(
+                tenant_id=tenant_id, submittal_id=submittal_id,
+                only_when_breached=False,  # we know it's breached
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "K-2 auto-suggest after recompute flip failed "
+                "(sub=%s, project=%s): %s",
+                submittal_id, project_id, exc,
+            )
     if breached_boundary_crossed:
         try:
             from services.cpm import auto_recompute_after_event
@@ -1027,6 +1048,29 @@ async def detect_breaches(
                 actor_id=actor_id, request_id=request_id,
             )
             out["cascade_flagged_tasks"] += cascade_count
+            # CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest. The row
+            # was JUST flipped to sla_status=breached (above), so we
+            # call the helper with only_when_breached=False to skip
+            # the re-read sla_status check (we know we're at the
+            # breach moment). The helper itself re-reads the row from
+            # db so it picks up the freshly-written breached state +
+            # current aging fields.
+            try:
+                k2_res = await auto_suggest_per_task_impacts_for_submittal(
+                    tenant_id=tenant_id, submittal_id=sid,
+                    only_when_breached=False,
+                    actor_id=actor_id, request_id=request_id,
+                )
+                if k2_res.get("changed"):
+                    out.setdefault("auto_suggested_count", 0)
+                    out["auto_suggested_count"] += len(k2_res.get("suggested") or [])
+                    out.setdefault("cleaned_orphan_count", 0)
+                    out["cleaned_orphan_count"] += len(k2_res.get("cleaned") or [])
+            except Exception as exc:
+                log.warning(
+                    "K-2 auto-suggest after breach failed for sub=%s: %s",
+                    sid, exc,
+                )
             try:
                 await write_audit(
                     tenant_id=tenant_id, table_name="submittals",
@@ -1072,6 +1116,211 @@ async def detect_breaches(
         except Exception:
             pass
     return out
+
+
+# =====================================================================
+# CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest per_task_impacts on
+# SLA breach.
+#
+# Fires ONLY at the just-now-crossed-into-breached transition (caller
+# is responsible for the boundary detection). Builds per_task_impacts
+# entries for the submittal's currently-linked task using days-past-SLA
+# in the project's aging mode (working vs calendar) as the projected
+# impact days. Source is stamped "system_suggested" so downstream UI
+# (Part K-6) can pin a "suggested" pill that the super can override
+# (flipping source to "super_overridden").
+#
+# Skip semantics on re-breach:
+#   * super_overridden entries are NEVER touched (preserve super
+#     judgment across breach <-> unbreach <-> rebreach cycles)
+#   * system_suggested entries are NEVER refreshed (the original
+#     suggestion stays; re-breach is not a license to overwrite the
+#     prior estimate; super still has final word)
+#   * Only tasks with NO existing entry get a fresh auto-suggestion
+#
+# Cleanup semantics:
+#   * Entries whose task_id is no longer the linked task (e.g., super
+#     changed schedule_activity_id while submittal was over SLA) are
+#     dropped from the array -- captured in the audit payload as
+#     "cleaned_orphans" so the federal auditor sees why an entry
+#     disappeared.
+#
+# Audit: SUBMITTAL_IMPACT_AUTO_SUGGESTED carries the full before/after
+# array + suggested / skipped_super_overridden / skipped_already_
+# suggested / cleaned_orphans / sla_days / aging_metric_used / linked_
+# task_id so a TIA defensibility audit can reconstruct the heuristic
+# exactly.
+# =====================================================================
+
+async def auto_suggest_per_task_impacts_for_submittal(
+    *, tenant_id: str, submittal_id: str,
+    only_when_breached: bool = True,
+    actor_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> dict:
+    """Idempotent re-sync of submittal.per_task_impacts.
+
+    Args:
+      only_when_breached: When True (default), the helper SKIPS rows
+        whose sla_status is not 'breached'. Set False from callers
+        that have already confirmed the breach (e.g., detect_breaches
+        inside the per-submittal loop where the row was JUST flipped
+        to breached and the in-DB read reflects that).
+
+    Returns:
+      {ok, changed, suggested: [...], cleaned: [...],
+       skipped_super_overridden: [task_id...],
+       skipped_already_suggested: [task_id...],
+       linked_task_id, aging_metric_used,
+       projected_impact_days_default, sla_days, reason?}
+
+    Behavior:
+      * No-op when submittal not found, not breached (and gate is
+        enabled), or when the current state already matches expected
+        (no diff vs. existing per_task_impacts).
+      * Fires SUBMITTAL_IMPACT_AUTO_SUGGESTED audit only when changed.
+      * Caller is responsible for the auto_recompute_after_event hook
+        (detect_breaches batches this once per project; the recompute
+        path calls it for the single project).
+    """
+    db = get_db()
+    sub = await db.submittals.find_one(
+        tenant_filter(tenant_id, {"id": submittal_id}), {"_id": 0},
+    )
+    if not sub:
+        return {"ok": False, "reason": "not_found"}
+    if only_when_breached and sub.get("sla_status") != "breached":
+        return {"ok": True, "changed": False, "reason": "not_breached"}
+
+    project_id = sub.get("project_id") or ""
+    project = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "submittal_review_sla_days": 1,
+         "submittal_sla_uses_calendar_days": 1},
+    ) or {}
+
+    # Resolve SLA mode (project default + per-submittal override) and
+    # SLA day count (per-submittal override takes precedence).
+    uses_calendar = bool(project.get("submittal_sla_uses_calendar_days", False))
+    if sub.get("sla_uses_calendar_days_override") is not None:
+        uses_calendar = bool(sub["sla_uses_calendar_days_override"])
+    sla_days = int(
+        sub.get("sla_days_override")
+        or project.get("submittal_review_sla_days")
+        or SUBMITTAL_DEFAULT_SLA_DAYS
+    )
+
+    # Aging-past-SLA in the project's preferred unit. Mirrors the
+    # overdue_days calculation already in this module (line 491) but
+    # uses aging_working_days when the project runs working-day SLAs
+    # (the ICE Schedule Ops Architecture default). At the breach
+    # moment this is typically 1 (just crossed) and grows daily.
+    if uses_calendar:
+        aging_value = int(sub.get("aging_days") or 0)
+        aging_metric = "aging_days"
+    else:
+        aging_value = int(sub.get("aging_working_days") or 0)
+        aging_metric = "aging_working_days"
+    projected_impact_default = max(0, aging_value - sla_days)
+
+    # Currently linked task set. Submittals have a singular
+    # schedule_activity_id (not a list), so the set is 0 or 1 entries.
+    # Future-proofing: this code uses set logic so multi-task submittals
+    # would Just Work if the schema ever extends.
+    linked_task = sub.get("schedule_activity_id")
+    linked_set: set = {linked_task} if linked_task else set()
+
+    current_impacts = list(sub.get("per_task_impacts") or [])
+    new_impacts: list[dict] = []
+    suggested: list[dict] = []
+    skipped_overridden: list[str] = []
+    skipped_already_suggested: list[str] = []
+    cleaned: list[dict] = []
+    seen_task_ids: set = set()
+
+    for entry in current_impacts:
+        if not isinstance(entry, dict):
+            cleaned.append({"reason": "non_dict_entry", "entry": entry})
+            continue
+        tid = entry.get("task_id")
+        if not tid:
+            cleaned.append({"reason": "missing_task_id", "entry": entry})
+            continue
+        if tid not in linked_set:
+            # Task was unlinked from this submittal while over SLA --
+            # drop the orphaned impact entry.
+            cleaned.append({
+                "task_id": tid, "reason": "task_no_longer_linked",
+                "dropped_entry": entry,
+            })
+            continue
+        source = entry.get("source")
+        if source == "super_overridden":
+            skipped_overridden.append(tid)
+        elif source == "system_suggested":
+            skipped_already_suggested.append(tid)
+        # Keep the entry as-is (super_overridden or already-suggested
+        # both ride through unchanged on re-breach).
+        new_impacts.append(entry)
+        seen_task_ids.add(tid)
+
+    # Auto-suggest a fresh entry for each linked task with no entry yet.
+    for tid in linked_set:
+        if tid in seen_task_ids:
+            continue
+        new_entry = {
+            "task_id": tid,
+            "projected_impact_days": projected_impact_default,
+            "source": "system_suggested",
+        }
+        suggested.append(new_entry)
+        new_impacts.append(new_entry)
+        seen_task_ids.add(tid)
+
+    changed = bool(suggested or cleaned)
+    if changed:
+        await db.submittals.update_one(
+            {"id": submittal_id, "tenant_id": tenant_id},
+            {"$set": {"per_task_impacts": new_impacts}},
+        )
+        invalidate_aging_cache(tenant_id=tenant_id, project_id=project_id)
+        try:
+            await write_audit(
+                tenant_id=tenant_id, table_name="submittals",
+                op="SUBMITTAL_IMPACT_AUTO_SUGGESTED",
+                record_id=submittal_id,
+                before={"per_task_impacts": current_impacts},
+                after={
+                    "per_task_impacts": new_impacts,
+                    "suggested": suggested,
+                    "skipped_super_overridden": skipped_overridden,
+                    "skipped_already_suggested": skipped_already_suggested,
+                    "cleaned_orphans": cleaned,
+                    "linked_task_id": linked_task,
+                    "aging_metric_used": aging_metric,
+                    "aging_value": aging_value,
+                    "sla_days": sla_days,
+                    "projected_impact_days_default": projected_impact_default,
+                    "sla_uses_calendar_days": uses_calendar,
+                },
+                actor_id=actor_id, request_id=request_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "K-2 audit write failed for sub=%s: %s",
+                submittal_id, exc,
+            )
+
+    return {
+        "ok": True, "changed": changed,
+        "suggested": suggested, "cleaned": cleaned,
+        "skipped_super_overridden": skipped_overridden,
+        "skipped_already_suggested": skipped_already_suggested,
+        "linked_task_id": linked_task,
+        "aging_metric_used": aging_metric,
+        "projected_impact_days_default": projected_impact_default,
+        "sla_days": sla_days,
+    }
 
 
 async def _cascade_flag_on_breach(

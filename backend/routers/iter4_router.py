@@ -552,6 +552,66 @@ async def update_submittal(submittal_id: str, payload: SubmittalUpdate, ctx: dic
                     "submittal SLA auto-event on status change failed",
                     exc_info=True,
                 )
+    # CPM Part K-2 (2026-05-15) -- HYBRID auto-suggest on linked task
+    # change. If schedule_activity_id was explicitly set in this PATCH
+    # AND the submittal is currently over SLA, the K-2 helper:
+    #   * cleans up any orphaned per_task_impacts entry whose task_id
+    #     is no longer the linked task (audit captures the drop)
+    #   * auto-suggests a fresh system_suggested entry for the new
+    #     linked task using aging-past-SLA in the project's mode
+    # No-op when sla_status != 'breached' (only_when_breached=True).
+    # Fail-safe so a K-2 helper error doesn't abort the PATCH.
+    #
+    # Note: the status-transition path above already routes through
+    # record_review_event -> recompute_aging_for_submittal, which
+    # itself wires K-2 on the in-to-breached transition. This branch
+    # covers the OTHER case: schedule_activity_id change on a row
+    # that's ALREADY breached (no boundary cross, so the recompute
+    # path's K-2 hook wouldn't fire).
+    if "schedule_activity_id" in updates:
+        try:
+            from services import submittal_sla
+            k2_res = await submittal_sla.auto_suggest_per_task_impacts_for_submittal(
+                tenant_id=ctx["tenant_id"],
+                submittal_id=submittal_id,
+                only_when_breached=True,
+                actor_id=ctx["user"]["id"],
+                request_id=ctx["request_id"],
+            )
+            # Only fire auto_recompute_after_event when the helper
+            # actually made changes (suggested or cleaned). The
+            # recompute is idempotent but cost-bearing on big
+            # projects; gate to avoid no-op work.
+            if k2_res.get("changed"):
+                from services.cpm import auto_recompute_after_event
+                # Need project_id for the recompute call; pull from
+                # the post-update row (cheap; we'd read it shortly
+                # anyway for the response).
+                _sub_for_pid = await db.submittals.find_one(
+                    tenant_filter(ctx["tenant_id"], {"id": submittal_id}),
+                    {"_id": 0, "project_id": 1},
+                )
+                _pid = (_sub_for_pid or {}).get("project_id")
+                if _pid:
+                    try:
+                        await auto_recompute_after_event(
+                            ctx["tenant_id"], _pid,
+                            actor_id=ctx["user"]["id"],
+                            request_id=ctx["request_id"],
+                        )
+                    except Exception:
+                        import logging
+                        logging.getLogger("iter4_router").warning(
+                            "K-2 auto-recompute after schedule_activity_id "
+                            "change failed (sub=%s)", submittal_id,
+                            exc_info=True,
+                        )
+        except Exception:
+            import logging
+            logging.getLogger("iter4_router").warning(
+                "K-2 auto-suggest on schedule_activity_id change failed",
+                exc_info=True,
+            )
     row = await db.submittals.find_one(tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"_id": 0})
     # Bucket C3a Phase 1 — mirror status / response timestamp onto the
     # gating_entities CPM node.
