@@ -17,11 +17,126 @@ router = APIRouter(tags=["field-events"])
 
 # --- Delays ---
 
-async def _resolve_task_impacts(db, tenant_id: str, payload_dict: dict) -> tuple[list[str], list[dict]]:
+async def _sum_prior_open_delay_impacts_on_task(
+    db, tenant_id: str, project_id: str, task_id: str, *,
+    exclude_delay_id: Optional[str] = None,
+) -> float:
+    """CPM Part I (2026-05-15) -- sum of projected_impact_days from
+    per_task_impacts entries across all CURRENTLY-OPEN delays in this
+    project that touch `task_id`, optionally excluding one delay (the
+    delay being logged or edited).
+
+    "Open" is defined as `status IN ("open", "in_progress")` to match
+    the existing `_open_delay_impact_for_task` filter in services/
+    task_status.py -- both helpers must agree on which delays are
+    actively contributing slip to the schedule. Resolved / closed /
+    deleted / mitigated delays no longer contribute.
+
+    EDGE CASES (all handled by the query + per-task iteration below):
+    * Multi-task delay: a single delay row whose per_task_impacts
+      contains entries for T1 and T2 contributes its T1 impact to
+      T1's sum and its T2 impact to T2's sum -- never crosses tasks.
+    * Delay with multiple impact rows on the same task (data error
+      but legal): each row's projected_impact_days summed. Mongo
+      doesn't enforce uniqueness on the embedded array.
+    * Delay status migration in flight: the {"$in": [...]} filter
+      excludes any status that isn't in the set, so partial deploys
+      with new status values default-fail-safe (excluded).
+
+    DOES NOT retroactively rewrite snapshots on prior delays. Each
+    delay's per_task_impacts captures state at THAT delay's logging
+    moment. Resolving a prior delay changes the FUTURE behavior of
+    remaining-float calculations -- it doesn't rewrite past audit
+    rows. That's deliberate: the per_task_impacts snapshot is part
+    of the audit trail and must be immutable post-write.
+    """
+    q: dict = {
+        "project_id": project_id,
+        "status": {"$in": ["open", "in_progress"]},
+        "linked_task_ids": task_id,
+    }
+    if exclude_delay_id is not None:
+        q["id"] = {"$ne": exclude_delay_id}
+    docs = await db.delays.find(
+        tenant_filter(tenant_id, q),
+        {"_id": 0, "id": 1, "per_task_impacts": 1},
+    ).to_list(500)
+    total = 0.0
+    for d in docs:
+        for imp in (d.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                try:
+                    total += float(imp.get("projected_impact_days") or 0)
+                except (TypeError, ValueError):
+                    # Defensive: a malformed numeric on a single
+                    # entry shouldn't poison the whole sum.
+                    pass
+    return total
+
+
+async def _resolve_task_impacts(
+    db, tenant_id: str, payload_dict: dict, *,
+    project_id: Optional[str] = None,
+    exclude_delay_id: Optional[str] = None,
+) -> tuple[list[str], list[dict]]:
     """Build the linked_task_ids + per_task_impacts arrays for a delay
-    create/update. Snapshots each task's float at logging time and
-    derives consumes_float_only / pushes_critical_path. Returns
-    (linked_task_ids, per_task_impacts)."""
+    create/update.
+
+    CPM Part I (2026-05-15) -- the per-delay verdict now reflects
+    CUMULATIVE remaining float at logging time, not the structural
+    CPM float in isolation. For each linked task, the snapshot
+    captures four numbers:
+
+        float_at_logging_days        = task.total_float_days (structural,
+                                        unchanged from Part E)
+        prior_open_impacts_at_logging_days = sum of
+                                        projected_impact_days from OTHER
+                                        currently-open delays on the
+                                        same task (excludes self for
+                                        the EDIT case via exclude_delay_id)
+        remaining_float_at_logging_days = max(0, structural - prior)
+                                        clamped at zero -- can't have
+                                        negative float in the verdict
+        projected_impact_days        = this delay's contribution to
+                                        this specific task
+
+    Verdict (Part I shift from structural to cumulative):
+
+        consumes_float_only  = (this_delay_impact <= remaining_float)
+        pushes_critical_path = (this_delay_impact >  remaining_float)
+
+    The new semantic catches the case where two delays of 3 days each
+    on a task with 5 days of structural float would BOTH have read
+    "within float" under the old (structural-only) verdict, even
+    though the project actually slipped past contract completion.
+    With Part I, delay 1 reads `remaining=5, within float`; delay 2
+    reads `remaining=2, pushes critical path`. The audit row carries
+    the math transparently for TIA defensibility.
+
+    FALL-BACK: if `task.total_float_days` is None (compute_cpm has
+    never run on this project), we preserve the pre-Part-E behavior:
+        consumes_float_only  = False  (None-comparison fails)
+        pushes_critical_path = bool(task.is_critical_path)
+    auto_recompute_after_event in Part E populates total_float_days
+    on every event, so this fallback should only fire on transient
+    states (first event after schedule import; compute_cpm failure
+    during auto-recompute).
+
+    Returns (linked_task_ids, per_task_impacts).
+
+    kwargs (Part I):
+        project_id           -- required for the cumulative-impact
+                                  query. Defaults to
+                                  payload_dict.get("project_id") so
+                                  unchanged callers keep working.
+        exclude_delay_id     -- delay id to exclude from the sum
+                                  (the delay being edited, OR the
+                                  delay being re-resolved post-insert
+                                  in the Part E auto-recompute path).
+                                  Defaults to payload_dict.get("id")
+                                  so create-flow re-resolves correctly
+                                  exclude self.
+    """
     impacts_in: list[dict] = list(payload_dict.get("per_task_impacts") or [])
     explicit_ids: list[str] = list(payload_dict.get("linked_task_ids") or [])
 
@@ -45,6 +160,12 @@ async def _resolve_task_impacts(db, tenant_id: str, payload_dict: dict) -> tuple
     if not ordered_ids:
         return [], []
 
+    # CPM Part I -- resolve project_id + exclude_delay_id with payload-dict
+    # fallback so existing call sites that don't pass them explicitly
+    # still get the right behavior.
+    proj_id = project_id or payload_dict.get("project_id")
+    excl_id = exclude_delay_id if exclude_delay_id is not None else payload_dict.get("id")
+
     # Pull current float / critical-path snapshot for the referenced tasks
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"id": {"$in": ordered_ids}}),
@@ -59,12 +180,47 @@ async def _resolve_task_impacts(db, tenant_id: str, payload_dict: dict) -> tuple
         proj = float((impacts_by_id.get(tid) or {}).get("projected_impact_days") or 0)
         f = t.get("total_float_days")
         f_val = float(f) if f is not None else None
-        consumes = f_val is not None and proj <= f_val
-        pushes_cp = (not consumes) and bool(t.get("is_critical_path"))
+        is_cp = bool(t.get("is_critical_path"))
+
+        # CPM Part I -- cumulative remaining float math.
+        if proj_id is not None and f_val is not None:
+            prior = await _sum_prior_open_delay_impacts_on_task(
+                db, tenant_id, proj_id, tid,
+                exclude_delay_id=excl_id,
+            )
+            # Clamp at 0 -- can't have negative float in the verdict
+            # (a task already past its structural float has 0 remaining
+            # to consume; any further impact pushes the critical path).
+            remaining = max(0.0, f_val - prior)
+            consumes = proj <= remaining
+            pushes_cp = proj > remaining
+        else:
+            # Fallback when structural float is unknown (compute_cpm
+            # has not run, or project_id resolution failed). Mirror
+            # the pre-Part-I behavior so the snapshot isn't broken
+            # in transient states: consumes is False, pushes_cp
+            # tracks is_critical_path. auto_recompute_after_event
+            # in the calling endpoint should have populated
+            # total_float_days before reaching this code path on the
+            # post-insert re-resolve; the fallback is defense-in-depth.
+            prior = 0.0
+            remaining = None
+            consumes = False
+            pushes_cp = is_cp
+
         out.append({
             "task_id": tid,
             "projected_impact_days": proj,
+            # Pre-Part-I field, retained for audit-chain stability
+            # (the AI delay report PDF + TIA Section 12 still reference it).
             "float_at_logging_days": f_val,
+            # CPM Part I (new) -- the cumulative-aware inputs to the
+            # verdict. Server-only fields; tolerated by
+            # services.edit_permissions._projection_equal because the
+            # frontend never echoes them (Pydantic StrictModel
+            # extra="forbid" prevents that).
+            "prior_open_impacts_at_logging_days": prior,
+            "remaining_float_at_logging_days": remaining,
             "consumes_float_only": consumes,
             "pushes_critical_path": pushes_cp,
         })
@@ -277,7 +433,17 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
             "linked_task_ids": updates.get("linked_task_ids", before.get("linked_task_ids", [])),
             "per_task_impacts": updates.get("per_task_impacts", before.get("per_task_impacts", [])),
         }
-        new_ids, new_impacts = await _resolve_task_impacts(db, ctx["tenant_id"], merged)
+        # CPM Part I (2026-05-15) -- merged dict lacks project_id and
+        # id (those live on `before`). Pass them explicitly so
+        # _resolve_task_impacts can query prior open-delay impacts
+        # and exclude THIS delay from its own sum (the edit case --
+        # we don't want a 5d-impact edit-to-4d to double-count the
+        # 5d original when computing remaining float).
+        new_ids, new_impacts = await _resolve_task_impacts(
+            db, ctx["tenant_id"], merged,
+            project_id=before["project_id"],
+            exclude_delay_id=delay_id,
+        )
         # Bucket D Corrective -- validate the resolved task ids against
         # master schedule (cross-project safety + min-1 invariant).
         from services.dr_activity_linkage import validate_linked_task_ids
@@ -536,13 +702,28 @@ async def export_delay_ai_report_pdf(delay_id: str, ctx: dict = Depends(require_
         desc = t.get("description") or ""
         return f"{code} — {desc}" if desc else code
 
+    # CPM Part I (2026-05-15) -- expanded impact row surfaces the
+    # full remaining-float math so a litigator can trace the verdict
+    # back to its inputs (structural float, prior open impacts,
+    # remaining float, this delay's impact). The verdict text shifts
+    # from "within float" -> "within remaining float" so the
+    # cumulative semantic is explicit on the printed exhibit.
+    def _fmt_num(v):
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):g}"
+        except (TypeError, ValueError):
+            return esc(v)
     impact_rows = "".join(
         f"<tr><td>{esc(_task_label(i.get('task_id') or ''))}</td>"
-        f"<td class='num'>{esc(i.get('projected_impact_days'))}</td>"
-        f"<td class='num'>{esc(i.get('float_at_logging_days'))}</td>"
-        f"<td>{('within float' if i.get('consumes_float_only') else 'pushes CP' if i.get('pushes_critical_path') else 'exceeds non-CP float')}</td></tr>"
+        f"<td class='num'>{_fmt_num(i.get('projected_impact_days'))}</td>"
+        f"<td class='num'>{_fmt_num(i.get('float_at_logging_days'))}</td>"
+        f"<td class='num'>{_fmt_num(i.get('prior_open_impacts_at_logging_days'))}</td>"
+        f"<td class='num'>{_fmt_num(i.get('remaining_float_at_logging_days'))}</td>"
+        f"<td>{('within remaining float' if i.get('consumes_float_only') else 'pushes critical path' if i.get('pushes_critical_path') else 'no verdict (float unknown)')}</td></tr>"
         for i in impacts
-    ) or "<tr><td colspan='4' class='muted'>No linked tasks.</td></tr>"
+    ) or "<tr><td colspan='6' class='muted'>No linked tasks.</td></tr>"
 
     body_html = esc(delay.get("ai_report") or "").replace("\n", "<br/>")
 
@@ -569,9 +750,16 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
   · {esc(delay.get('duration_days') or 0)}d open</div>
 <div class='banner'><b>Description:</b> {esc(delay.get('description'))}</div>
 
-<h2>Linked tasks · projected impact at logging</h2>
+<h2>Linked tasks · remaining-float verdict at logging</h2>
 <table>
-<thead><tr><th>Task</th><th>Impact (d)</th><th>Float at log (d)</th><th>Verdict</th></tr></thead>
+<thead><tr>
+  <th>Task</th>
+  <th>Impact (d)</th>
+  <th title="Pure CPM structural float -- task can slip this many days without delaying project finish.">Structural float (d)</th>
+  <th title="Sum of projected_impact_days from OTHER currently-open delays on this same task at the moment this delay was logged.">Prior open impacts (d)</th>
+  <th title="max(0, structural float - prior open impacts). The slack this delay actually had to consume.">Remaining float (d)</th>
+  <th>Verdict</th>
+</tr></thead>
 <tbody>{impact_rows}</tbody>
 </table>
 
