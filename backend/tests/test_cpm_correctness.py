@@ -444,6 +444,56 @@ async def _simulate_create_delay(
     return doc
 
 
+async def _simulate_create_multi_task_delay(
+    impacts: list[tuple[str, float]],
+    logged_date: date | None = None,
+) -> dict:
+    """CPM Part I (2026-05-15) -- multi-task variant of
+    _simulate_create_delay for tests that exercise the
+    `per_task_impacts contains multiple tasks` edge case.
+
+    Each entry in `impacts` is (task_id, projected_impact_days).
+    Replays the SAME 5-step create_delay flow but with a multi-task
+    linked_task_ids + per_task_impacts payload.
+    """
+    task_ids = [tid for tid, _ in impacts]
+    payload = {
+        "tenant_id": TENANT, "project_id": PROJECT,
+        "linked_task_ids": task_ids,
+        "per_task_impacts": [
+            {"task_id": tid, "projected_impact_days": float(imp)}
+            for tid, imp in impacts
+        ],
+        "status": "open",
+        "severity": "moderate",
+        "description": "test multi-task delay",
+        "logged_date": (logged_date or D(5, 14)).isoformat(),
+        "date": (logged_date or D(5, 14)).isoformat(),
+        "delay_days": float(max(imp for _, imp in impacts)),
+    }
+    linked_ids, impacts_out = await _resolve_task_impacts(
+        _STUB, TENANT, payload,
+    )
+    doc = {
+        **payload,
+        "id": f"delay-{uuid.uuid4()}",
+        "linked_task_ids": linked_ids,
+        "per_task_impacts": impacts_out,
+    }
+    await _STUB.delays.insert_one(dict(doc))
+    await auto_recompute_after_event(
+        TENANT, PROJECT, actor_id="test", request_id="req-test",
+    )
+    _, fresh = await _resolve_task_impacts(_STUB, TENANT, doc)
+    if fresh != doc["per_task_impacts"]:
+        doc["per_task_impacts"] = fresh
+        await _STUB.delays.update_one(
+            {"id": doc["id"], "tenant_id": TENANT},
+            {"$set": {"per_task_impacts": fresh}},
+        )
+    return doc
+
+
 async def _get_task(task_id: str) -> dict:
     t = await _STUB.tasks.find_one({"id": task_id, "tenant_id": TENANT})
     assert t is not None, f"task {task_id} not in stub"
@@ -978,6 +1028,237 @@ async def _test_qc_rework_routes_through_synthetic_delay():
 
 
 # =============================================================================
+# CPM PART I (2026-05-15) -- CUMULATIVE REMAINING-FLOAT VERDICT TESTS
+# =============================================================================
+# The 5 new tests cover the gap the audit identified: per-delay verdicts
+# now reflect CUMULATIVE remaining float (structural float - sum of prior
+# OPEN delay impacts on the same task), not structural float in isolation.
+# Test graph: 2 parallel tasks (LONG / SHORT) with no edge between them.
+# LONG drives project_finish; SHORT carries positive structural float.
+
+# -----------------------------------------------------------------------------
+# I-1. test_remaining_float_two_delays_same_task
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_two_delays_same_task():
+    """Two 3-day delays on a task with structural float = 5.
+    Delay 1: prior=0, remaining=5, 3 <= 5 -> within remaining float.
+    Delay 2: prior=3 (delay 1 still open), remaining=2, 3 > 2 -> pushes CP.
+    Delay 1's snapshot stays immutable (history is preserved)."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))   # 5/4..5/13, float 0
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))   # 5/4..5/8,  float 5
+    await compute_cpm(TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 5, (
+        f"setup: SHORT structural float expected 5 (project_finish 5/13 "
+        f"- SHORT planned_finish 5/8 = 5d), got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_1 = (await _get_delay(delay_1["id"]))["per_task_impacts"][0]
+    assert snap_1["float_at_logging_days"] == 5
+    assert snap_1["prior_open_impacts_at_logging_days"] == 0
+    assert snap_1["remaining_float_at_logging_days"] == 5
+    assert snap_1["consumes_float_only"] is True, (
+        f"delay 1 (3d on 5d remaining) should be within float; "
+        f"got snap={snap_1!r}"
+    )
+    assert snap_1["pushes_critical_path"] is False
+
+    delay_2 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["float_at_logging_days"] == 5, (
+        "structural float unchanged between events"
+    )
+    assert snap_2["prior_open_impacts_at_logging_days"] == 3, (
+        f"delay 2 should see delay 1's 3d as prior open impact; got "
+        f"prior={snap_2['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap_2["remaining_float_at_logging_days"] == 2  # 5 - 3
+    assert snap_2["consumes_float_only"] is False, (
+        f"delay 2 (3d) > remaining (2d): NOT within float; got snap={snap_2!r}"
+    )
+    assert snap_2["pushes_critical_path"] is True
+
+    # History preservation: delay 1's snapshot must not have been rewritten
+    # by delay 2's recompute.
+    persisted_1_again = await _get_delay(delay_1["id"])
+    snap_1_after = persisted_1_again["per_task_impacts"][0]
+    assert snap_1_after["remaining_float_at_logging_days"] == 5, (
+        "delay 1 snapshot must remain immutable after delay 2 is logged"
+    )
+
+
+# -----------------------------------------------------------------------------
+# I-2. test_remaining_float_resolved_delay_excluded
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_resolved_delay_excluded():
+    """A RESOLVED prior delay does NOT count toward prior_open_impacts.
+    Setup: SHORT.structural = 5. Log delay 1 (3d), resolve it, log
+    delay 2 (3d). Delay 2 sees prior=0 because delay 1 is closed."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    # Mark delay 1 resolved (mirrors the user clicking "resolve" in UI).
+    # The production update_delay flow also fires auto_recompute_after_event;
+    # we replicate that here so the next delay's create sees fresh state.
+    await _STUB.delays.update_one(
+        {"id": delay_1["id"], "tenant_id": TENANT},
+        {"$set": {"status": "resolved",
+                  "resolved_date": D(5, 15).isoformat()}},
+    )
+    await auto_recompute_after_event(TENANT, PROJECT)
+
+    delay_2 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["prior_open_impacts_at_logging_days"] == 0, (
+        f"resolved delay 1 should be EXCLUDED from prior_open; got "
+        f"prior={snap_2['prior_open_impacts_at_logging_days']!r}. "
+        f"This means the status:open filter in "
+        f"_sum_prior_open_delay_impacts_on_task is not respecting "
+        f"resolved status."
+    )
+    assert snap_2["remaining_float_at_logging_days"] == 5
+    assert snap_2["consumes_float_only"] is True
+    assert snap_2["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# I-3. test_remaining_float_edited_delay_self_excluded
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_edited_delay_self_excluded():
+    """Editing a delay's impact must self-exclude in the prior-sum
+    so the delay doesn't double-count its own pre-edit value when
+    re-computing the snapshot. Setup: SHORT.structural = 5. Log
+    delay 1 (3d), then EDIT delay 1 to 4d. The edit's re-resolve
+    must read prior=0 and remaining=5."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+
+    # Simulate the update_delay flow's _resolve_task_impacts call:
+    # the merged dict carries the EDITED impact (4d), and we pass
+    # exclude_delay_id=delay_1.id so the prior-sum doesn't count
+    # the in-DB version of delay 1 as "prior".
+    edit_merged = {
+        "linked_task_ids": ["task-SHORT"],
+        "per_task_impacts": [
+            {"task_id": "task-SHORT", "projected_impact_days": 4.0},
+        ],
+    }
+    _, edited_impacts = await _resolve_task_impacts(
+        _STUB, TENANT, edit_merged,
+        project_id=PROJECT,
+        exclude_delay_id=delay_1["id"],
+    )
+    snap = edited_impacts[0]
+    assert snap["projected_impact_days"] == 4.0
+    assert snap["prior_open_impacts_at_logging_days"] == 0, (
+        f"self-exclude failed: editing delay 1 from 3d -> 4d should "
+        f"NOT see its own 3d as prior. Got "
+        f"prior={snap['prior_open_impacts_at_logging_days']!r} (expected 0)."
+    )
+    assert snap["remaining_float_at_logging_days"] == 5  # 5 - 0
+    assert snap["consumes_float_only"] is True, (
+        f"4d <= 5d remaining -> within float; got snap={snap!r}"
+    )
+    assert snap["pushes_critical_path"] is False
+
+
+# -----------------------------------------------------------------------------
+# I-4. test_remaining_float_clamps_at_zero
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_clamps_at_zero():
+    """remaining_float = max(0, structural - prior). Cannot go negative.
+    Setup: SHORT.structural = 2. Log delay 1 (3d, already exceeds),
+    then delay 2 (2d). Delay 2 sees remaining = max(0, 2-3) = 0 (NOT -1)."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))   # 5/4..5/13, float 0
+    _add_task("SHORT", duration=8, planned_start=D(5, 4))   # 5/4..5/11, float 2
+    await compute_cpm(TENANT, PROJECT)
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 2, (
+        f"setup: SHORT structural expected 2 (5/13 - 5/11), got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    delay_1 = await _simulate_create_delay("task-SHORT", impact_days=3.0)
+    snap_1 = (await _get_delay(delay_1["id"]))["per_task_impacts"][0]
+    assert snap_1["remaining_float_at_logging_days"] == 2
+    assert snap_1["consumes_float_only"] is False    # 3 > 2
+    assert snap_1["pushes_critical_path"] is True
+
+    delay_2 = await _simulate_create_delay("task-SHORT", impact_days=2.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["prior_open_impacts_at_logging_days"] == 3, (
+        "delay 1 still open -> 3d prior"
+    )
+    # max(0, 2 - 3) = 0, NOT -1
+    assert snap_2["remaining_float_at_logging_days"] == 0, (
+        f"remaining MUST clamp at 0 (no negative-float verdicts); got "
+        f"remaining={snap_2['remaining_float_at_logging_days']!r}"
+    )
+    assert snap_2["consumes_float_only"] is False    # 2 > 0
+    assert snap_2["pushes_critical_path"] is True
+
+
+# -----------------------------------------------------------------------------
+# I-5. test_remaining_float_multi_task_delay
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_multi_task_delay():
+    """A multi-task delay contributes its PER-TASK impact to each task's
+    prior_open sum, never crosses tasks. Setup: SHORT1 + SHORT2 both
+    structural float 5. Log delay 1 linked to BOTH with 3d-each, then
+    delay 2 linked only to SHORT1 with 3d. Delay 2's prior_open on
+    SHORT1 must equal 3 (only SHORT1's slice of delay 1), NOT 6 (full
+    delay 1 total)."""
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))    # float 0
+    _add_task("SHORT1", duration=5, planned_start=D(5, 4))   # float 5
+    _add_task("SHORT2", duration=5, planned_start=D(5, 4))   # float 5
+    await compute_cpm(TENANT, PROJECT)
+    t_s1 = await _get_task("task-SHORT1")
+    t_s2 = await _get_task("task-SHORT2")
+    assert t_s1["total_float_days"] == 5
+    assert t_s2["total_float_days"] == 5
+
+    # Delay 1 hits BOTH tasks with 3d-each. Total delay impact across
+    # tasks = 6d, but per-task impact = 3d each.
+    delay_1 = await _simulate_create_multi_task_delay([
+        ("task-SHORT1", 3.0),
+        ("task-SHORT2", 3.0),
+    ])
+    persisted_1 = await _get_delay(delay_1["id"])
+    snap_1_s1 = next(
+        i for i in persisted_1["per_task_impacts"] if i["task_id"] == "task-SHORT1"
+    )
+    snap_1_s2 = next(
+        i for i in persisted_1["per_task_impacts"] if i["task_id"] == "task-SHORT2"
+    )
+    assert snap_1_s1["remaining_float_at_logging_days"] == 5
+    assert snap_1_s2["remaining_float_at_logging_days"] == 5
+
+    # Delay 2 hits ONLY SHORT1 with 3d.
+    delay_2 = await _simulate_create_delay("task-SHORT1", impact_days=3.0)
+    snap_2 = (await _get_delay(delay_2["id"]))["per_task_impacts"][0]
+    assert snap_2["prior_open_impacts_at_logging_days"] == 3, (
+        f"delay 2 prior_open on SHORT1 must be 3 (delay 1's SHORT1 slice "
+        f"only), NOT 6 (full delay 1 total). Got "
+        f"prior={snap_2['prior_open_impacts_at_logging_days']!r}"
+    )
+    assert snap_2["remaining_float_at_logging_days"] == 2  # 5 - 3
+    assert snap_2["consumes_float_only"] is False  # 3 > 2
+    assert snap_2["pushes_critical_path"] is True
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -1024,6 +1305,27 @@ def test_qc_rework_routes_through_synthetic_delay():
     asyncio.run(_test_qc_rework_routes_through_synthetic_delay())
 
 
+# CPM Part I (2026-05-15) -- cumulative remaining-float verdict.
+def test_remaining_float_two_delays_same_task():
+    asyncio.run(_test_remaining_float_two_delays_same_task())
+
+
+def test_remaining_float_resolved_delay_excluded():
+    asyncio.run(_test_remaining_float_resolved_delay_excluded())
+
+
+def test_remaining_float_edited_delay_self_excluded():
+    asyncio.run(_test_remaining_float_edited_delay_self_excluded())
+
+
+def test_remaining_float_clamps_at_zero():
+    asyncio.run(_test_remaining_float_clamps_at_zero())
+
+
+def test_remaining_float_multi_task_delay():
+    asyncio.run(_test_remaining_float_multi_task_delay())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -1044,11 +1346,22 @@ def _run_all():
         ("test_qc_link_only_no_cascade", _test_qc_link_only_no_cascade),
         ("test_qc_rework_routes_through_synthetic_delay",
          _test_qc_rework_routes_through_synthetic_delay),
+        # CPM Part I (2026-05-15) -- cumulative remaining-float verdict.
+        ("test_remaining_float_two_delays_same_task",
+         _test_remaining_float_two_delays_same_task),
+        ("test_remaining_float_resolved_delay_excluded",
+         _test_remaining_float_resolved_delay_excluded),
+        ("test_remaining_float_edited_delay_self_excluded",
+         _test_remaining_float_edited_delay_self_excluded),
+        ("test_remaining_float_clamps_at_zero",
+         _test_remaining_float_clamps_at_zero),
+        ("test_remaining_float_multi_task_delay",
+         _test_remaining_float_multi_task_delay),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
-    print("CPM CORRECTNESS REGRESSION SUITE -- Part H (11 tests)")
+    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I (11 + 5 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -1065,7 +1378,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 11 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 16 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
