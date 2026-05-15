@@ -251,13 +251,22 @@ async def choose_mitigation(
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
 
-    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    # CPM Part E (2026-05-15) -- choosing a mitigation redistributes
+    # the delay's per_task_impacts (line 232-242 above), which
+    # changes the open-delay impact sum for each linked task. The
+    # full project recompute folds compute_cpm (silent) +
+    # compute_projected_finish_dates (writes the existing
+    # CPM_RECOMPUTE audit on change). Fail-safe.
+    from services.task_status import compute_and_persist_status
+    from services.cpm import auto_recompute_after_event
     for tid in (delay.get("linked_task_ids") or []):
         await compute_and_persist_status(db, ctx["tenant_id"], tid,
                                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     if delay.get("linked_task_ids"):
-        await compute_projected_finish_dates(db, ctx["tenant_id"], delay["project_id"],
-                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+        await auto_recompute_after_event(
+            ctx["tenant_id"], delay["project_id"],
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
 
     after_m = await db.mitigations.find_one(
         tenant_filter(ctx["tenant_id"], {"id": mitigation_id}), {"_id": 0},
@@ -338,13 +347,20 @@ async def unchoose_mitigation(mitigation_id: str, ctx: dict = Depends(require_te
 
     # 3. CPM recompute so projected_finish_date unwinds to the original
     #    delay impact (or stays the same if snapshot equalled new impacts).
-    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    # CPM Part E (2026-05-15) -- unchoosing restores the delay's
+    # per_task_impacts to the pre-choose snapshot. The full project
+    # recompute folds compute_cpm + compute_projected_finish_dates
+    # so float reflects the restored impact magnitudes. Fail-safe.
+    from services.task_status import compute_and_persist_status
+    from services.cpm import auto_recompute_after_event
     for tid in (delay.get("linked_task_ids") or []):
         await compute_and_persist_status(db, ctx["tenant_id"], tid,
                                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     if delay.get("linked_task_ids"):
-        await compute_projected_finish_dates(db, ctx["tenant_id"], delay["project_id"],
-                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+        await auto_recompute_after_event(
+            ctx["tenant_id"], delay["project_id"],
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     return {"ok": True, "delay_id": delay["id"]}
 
 

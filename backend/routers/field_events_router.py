@@ -150,6 +150,33 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
         )
     sup_audit = stamp_supplement_metadata(doc, actor_id=ctx["user"]["id"], fact_type="delay")
     await db.delays.insert_one(doc.copy())
+
+    # CPM Part E (2026-05-15) -- auto-recompute fires BEFORE the audit
+    # so the re-resolve below sees fresh float and the INSERT audit
+    # captures the correct consumes_float_only / pushes_critical_path
+    # / float_at_logging_days values. Fail-safe -- a CPM bug cannot
+    # block the delay from being saved (it's already in the DB).
+    from services.cpm import auto_recompute_after_event
+    await auto_recompute_after_event(
+        ctx["tenant_id"], doc["project_id"],
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    # Re-snapshot per_task_impacts with FRESH total_float_days +
+    # is_critical_path (the stale-float fix). _resolve_task_impacts
+    # rebuilds the array from doc.per_task_impacts.projected_impact_days
+    # (unchanged user input) and the now-current task float fields.
+    # Idempotent on FS+0 schedules where compute_cpm produces the
+    # same float as before -- the dict comparison short-circuits the
+    # extra DB write when nothing changed.
+    if linked_ids:
+        _, fresh_impacts = await _resolve_task_impacts(db, ctx["tenant_id"], doc)
+        if fresh_impacts != doc.get("per_task_impacts"):
+            doc["per_task_impacts"] = fresh_impacts
+            await db.delays.update_one(
+                tenant_filter(ctx["tenant_id"], {"id": doc["id"]}),
+                {"$set": {"per_task_impacts": fresh_impacts}},
+            )
+
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="INSERT",
                       record_id=doc["id"], before=None, after=doc,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
@@ -171,14 +198,15 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
         )
     # Bucket C1 Phase 2 — opening a delay flips has_open_blocker on every
     # linked task and may shift its computed_status to 'blocked'.
-    # Bucket C1 Phase 4 — and pushes downstream projected_finish dates.
-    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    # CPM Part E (2026-05-15) -- the projected_finish recompute that
+    # used to live below was folded into auto_recompute_after_event
+    # above so it runs BEFORE the audit (per the Part E ordering
+    # spec). compute_and_persist_status stays here -- it depends on
+    # blocker aggregation, not float, so its position is unchanged.
+    from services.task_status import compute_and_persist_status
     for tid in (linked_ids or []):
         await compute_and_persist_status(db, ctx["tenant_id"], tid,
                                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
-    if linked_ids:
-        await compute_projected_finish_dates(db, ctx["tenant_id"], doc["project_id"],
-                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(doc))
 
 
@@ -285,8 +313,9 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     # Bucket C1 Phase 5 — when a delay transitions to resolved, compute
     # actual-vs-projected impact per linked task and stamp a release/
     # absorb summary on the delay so the AI report and detail page can
-    # surface it. Pure calculation; the projected_finish recompute below
-    # picks up the resolved state (excluded from the open-delay sum).
+    # surface it. Pure calculation; the projected_finish recompute (now
+    # in auto_recompute_after_event below) picks up the resolved state
+    # (excluded from the open-delay sum).
     if updates.get("status") == "resolved" and before.get("status") != "resolved":
         await _stamp_resolution_release(db, ctx["tenant_id"], delay_id, after)
         # Bucket C2 Phase 3 — if a mitigation was chosen for this delay,
@@ -302,6 +331,29 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
                            "updated_at": utc_now().isoformat()}},
             )
         after = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
+
+    # CPM Part E (2026-05-15) -- auto-recompute fires BEFORE the audit
+    # so the re-resolve sees fresh float. Wrapped fail-safe; a CPM bug
+    # cannot block the delay UPDATE from completing (the row is
+    # already updated in DB above).
+    from services.cpm import auto_recompute_after_event
+    await auto_recompute_after_event(
+        ctx["tenant_id"], after["project_id"],
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    # Re-snapshot per_task_impacts with fresh float. Operates on the
+    # current `after` doc -- whatever per_task_impacts shape exists
+    # after Phase 4 _resolve_task_impacts above, the second resolve
+    # rebuilds float_at_logging_days / consumes_float_only /
+    # pushes_critical_path from the now-current task fields.
+    if after.get("linked_task_ids"):
+        _, fresh_impacts = await _resolve_task_impacts(db, ctx["tenant_id"], after)
+        if fresh_impacts != after.get("per_task_impacts"):
+            after["per_task_impacts"] = fresh_impacts
+            await db.delays.update_one(
+                tenant_filter(ctx["tenant_id"], {"id": delay_id}),
+                {"$set": {"per_task_impacts": fresh_impacts}},
+            )
 
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
@@ -324,18 +376,18 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         )
 
     # Bucket C1 Phase 2 + 4 — recompute status for the union of OLD and
-    # NEW linked tasks (in case linkage changed) AND walk projected_finish
-    # forward across the project (a status change on one task can shift
-    # downstream activities even if their own linkage didn't move).
-    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    # NEW linked tasks (in case linkage changed). CPM Part E (2026-05-15)
+    # -- the project-wide compute_projected_finish_dates that used to
+    # live here was folded into auto_recompute_after_event above so
+    # the re-resolve sees fresh state. compute_and_persist_status stays
+    # here -- it depends on blocker aggregation, not float, so its
+    # position relative to the audit is unchanged.
+    from services.task_status import compute_and_persist_status
     affected_task_ids = list({*(before.get("linked_task_ids") or []),
                                *(after.get("linked_task_ids") or [])})
     for tid in affected_task_ids:
         await compute_and_persist_status(db, ctx["tenant_id"], tid,
                                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
-    if affected_task_ids:
-        await compute_projected_finish_dates(db, ctx["tenant_id"], after["project_id"],
-                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return Delay(**_enrich_delay_for_read(after))
 
 
@@ -392,18 +444,29 @@ async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
     if not before:
         raise HTTPException(404, "Delay not found")
     await db.delays.delete_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}))
+
+    # CPM Part E (2026-05-15) -- auto-recompute fires immediately
+    # after the delete so the project's float / projected_finish
+    # state is fresh by the time the audit op records DELETE. There
+    # is no per_task_impacts to re-resolve here (the delay row is
+    # gone); the audit captures `before` as-is. Fail-safe.
+    from services.cpm import auto_recompute_after_event
+    await auto_recompute_after_event(
+        ctx["tenant_id"], before["project_id"],
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="DELETE",
                       record_id=delay_id, before=before, after=None,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     # Bucket C1 Phase 2 + 4 — deleting a delay may unblock its linked
-    # tasks AND shift downstream projected_finish dates back in.
-    from services.task_status import compute_and_persist_status, compute_projected_finish_dates
+    # tasks. CPM Part E (2026-05-15) -- the project-wide
+    # compute_projected_finish_dates that used to live here was
+    # folded into auto_recompute_after_event above.
+    from services.task_status import compute_and_persist_status
     for tid in (before.get("linked_task_ids") or []):
         await compute_and_persist_status(db, ctx["tenant_id"], tid,
                                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
-    if before.get("linked_task_ids"):
-        await compute_projected_finish_dates(db, ctx["tenant_id"], before["project_id"],
-                                              actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     return {"ok": True}
 
 

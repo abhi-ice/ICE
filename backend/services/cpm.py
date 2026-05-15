@@ -9,6 +9,11 @@ CPM Part C (2026-05-15) -- forward pass now consumes type + lag.
 CPM Part D (2026-05-15) -- backward pass now mirrors the forward
 math: per-successor implied-late-finish derivation with MIN
 convergence, preserving the +1 day FS asymmetry in reverse.
+CPM Part E (2026-05-15) -- auto-recompute hook fires after every
+delay / RFI / submittal-SLA-flip / mitigation event. Closes the
+stale-float gap: the second delay logged in a request cycle now
+sees fresh float instead of the values from before the first
+delay's cascade ran. See auto_recompute_after_event() below.
 
 Per-predecessor implied-start derivation (forward pass) handles
 all 4 PDM relationships:
@@ -328,3 +333,93 @@ def _to_date(v):
         except ValueError:
             return date.today()
     return date.today()
+
+
+# ---------------------------------------------------------------------------
+# CPM Part E (2026-05-15) -- auto-recompute hook
+# ---------------------------------------------------------------------------
+async def auto_recompute_after_event(
+    tenant_id: str,
+    project_id: str,
+    *,
+    actor_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> None:
+    """Fail-safe CPM auto-recompute hook fired immediately after a
+    field event (delay / RFI / submittal SLA flip / mitigation
+    choose-unchoose) has been persisted.
+
+    Run order is the one the Part E spec mandates:
+
+      1. compute_cpm() -- refreshes total_float_days +
+         is_critical_path on every task in the project. Silent
+         recompute (writes per-task field updates only; NO audit
+         op). This is the missing link before Part E -- without it,
+         the per_task_impacts snapshot on the second delay in a
+         request cycle reads stale float and mis-classifies
+         consumes_float_only / pushes_critical_path.
+
+      2. compute_projected_finish_dates() -- walks open-delay
+         impacts forward to refresh projected_finish_date /
+         projected_start_date on each task. Writes the EXISTING
+         tasks.CPM_RECOMPUTE audit when the projected dates change.
+         This audit op pre-dates Part E (Bucket C1 Phase 4) -- we
+         did NOT add a new audit for the compute_cpm step. The
+         audit chain looks identical to before Part E, just with
+         correct float behind it.
+
+    BOTH calls are wrapped in try/except + warning log. A CPM bug
+    -- cycle detection, malformed predecessor, missing field, even
+    a transient DB hiccup -- MUST NOT block the field event from
+    being saved. The event row is already in the DB by the time
+    this hook runs; the hook only refreshes derived columns
+    (total_float_days, is_critical_path, projected_finish_date).
+    On failure, the manual 'Recompute CPM' button remains the
+    fallback path and the affected fields keep their previous
+    values until the next event triggers another recompute.
+
+    Callers from routers:
+      - field_events_router.create_delay / update_delay / delete_delay
+      - docs_router.create_rfi / update_rfi (status flip)
+      - mitigations_router.choose_mitigation / unchoose_mitigation
+      - submittal_sla service (detect_breaches + recompute_aging
+        when sla_status crosses the breached boundary)
+      - qc_rework_cascade.create_synthetic_delay_for_qc /
+        record_rework_outcome (synthetic delay flow)
+
+    The audit op the calling endpoint writes (DELAY_CREATE, RFI_UPDATE,
+    MITIGATION_CHOOSE, etc.) fires AFTER this hook completes so that
+    -- for delays specifically -- the re-resolved per_task_impacts
+    snapshot is captured in the audit with the fresh float values.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    db = get_db()
+
+    # Step 1 -- compute_cpm (silent, no audit).
+    try:
+        await compute_cpm(tenant_id, project_id)
+    except Exception as exc:
+        log.warning(
+            "Part E auto-recompute: compute_cpm failed "
+            "(tenant=%s, project=%s): %s",
+            tenant_id, project_id, exc,
+        )
+
+    # Step 2 -- compute_projected_finish_dates (writes the EXISTING
+    # CPM_RECOMPUTE audit on change; pre-Part-E behavior preserved).
+    try:
+        # Lazy import to avoid the services.cpm <-> services.task_status
+        # circular at module load.
+        from services.task_status import compute_projected_finish_dates
+        await compute_projected_finish_dates(
+            db, tenant_id, project_id,
+            actor_id=actor_id, request_id=request_id,
+        )
+    except Exception as exc:
+        log.warning(
+            "Part E auto-recompute: compute_projected_finish_dates "
+            "failed (tenant=%s, project=%s): %s",
+            tenant_id, project_id, exc,
+        )
