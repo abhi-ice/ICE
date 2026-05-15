@@ -6,12 +6,19 @@
 
 All endpoints respect tenant isolation via tenant_filter().
 """
+import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from typing import Optional, Literal
-from pydantic import Field
+from typing import Any, Optional, Literal, List
+from pydantic import Field, field_validator
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
+
+# CPM Part K-1 (2026-05-15) -- module-level logger for the per-task
+# impacts normalizer's "drop with log warning" semantics on malformed
+# entries (e.g., missing required field). Centralized so future
+# Submittal helper additions can reuse it.
+log = logging.getLogger("iter4_router")
 
 router = APIRouter(tags=["iter4"])
 
@@ -53,6 +60,143 @@ SubmittalStatus = Literal[
 ]
 
 
+# ============================================================
+# CPM Part K (2026-05-15) -- Submittal per_task_impacts schema.
+#
+# Over-SLA submittals contribute numeric impact_days to the CPM
+# cascade (Path 1 Slip column + Path 2 cumulative remaining-float
+# verdict), same shape as delay and RFI per_task_impacts arrays.
+#
+# Hybrid auto-suggest UX (the K-specific trait not in Parts I/J):
+#   - When a submittal flips to over-SLA (detect_breaches in
+#     services/submittal_sla.py), the system auto-suggests
+#     projected_impact_days = aging_days_past_sla for each linked
+#     task and stamps source="system_suggested".
+#   - When the super edits an impact value, the source flips to
+#     "super_overridden" and the auto-suggest is suppressed for
+#     that task_id on subsequent re-breach events (audit-defensible
+#     "super judgment supersedes the heuristic").
+#
+# Per-task entry shape:
+#   { task_id: str,                       # required, non-empty
+#     projected_impact_days: int >= 0,    # required
+#     source: "system_suggested"
+#             | "super_overridden",       # required (Part K-specific)
+#     # Server-stamped (set by _resolve_submittal_task_impacts in K-3):
+#     float_at_logging_days,
+#     prior_open_impacts_at_logging_days,
+#     remaining_float_at_logging_days,
+#     consumes_float_only,
+#     pushes_critical_path }
+#
+# Items missing any required field are DROPPED with a log warning
+# (defensive against legacy/malformed rows; the row keeps the rest
+# of its per_task_impacts entries). Items with NEGATIVE
+# projected_impact_days or UNKNOWN source values raise ValueError
+# loudly (422 to the API caller) -- those are real contract
+# violations worth surfacing.
+# ============================================================
+SubmittalImpactSource = Literal["system_suggested", "super_overridden"]
+_SUBMITTAL_IMPACT_SOURCES = frozenset(("system_suggested", "super_overridden"))
+
+
+def _normalize_submittal_per_task_impacts(value: Any) -> List[dict]:
+    """Field validator helper for Submittal.per_task_impacts.
+
+    Behavior contract (matches the docstring above):
+      * bare list[dict] in: each item must have task_id (non-empty
+        string), projected_impact_days (coercible to non-negative int),
+        AND source (one of the SubmittalImpactSource values). Items
+        missing any required field are DROPPED with a log warning.
+      * Negative projected_impact_days raise ValueError -> 422.
+      * Unknown source values raise ValueError -> 422.
+      * Float projected_impact_days: 3.0 -> 3 (coerce); 3.5 raises
+        ValueError ("whole number of days") to match the RFI
+        integer convention -- aging_days is always an int from the
+        SLA breach computation, and a super override is captured
+        via a number input that emits int.
+      * None / non-list inputs coerce to [].
+      * Server-stamped fields ride through unchanged on read-model
+        deserialization (validator never strips the 5 stamp keys).
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return []
+    out: List[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            log.warning(
+                "Submittal per_task_impacts: dropping non-dict entry: %r",
+                item,
+            )
+            continue
+        tid = item.get("task_id")
+        if not isinstance(tid, str) or not tid.strip():
+            log.warning(
+                "Submittal per_task_impacts: dropping entry with "
+                "missing/empty task_id: %r", item,
+            )
+            continue
+        raw_days = item.get("projected_impact_days")
+        if raw_days is None:
+            log.warning(
+                "Submittal per_task_impacts: dropping entry with "
+                "missing projected_impact_days for task_id=%r", tid,
+            )
+            continue
+        if isinstance(raw_days, bool):
+            # bool is technically int subclass; meaningless here.
+            log.warning(
+                "Submittal per_task_impacts: dropping entry with "
+                "bool projected_impact_days for task_id=%r", tid,
+            )
+            continue
+        if isinstance(raw_days, int):
+            days_int = raw_days
+        elif isinstance(raw_days, float):
+            if raw_days != int(raw_days):
+                raise ValueError(
+                    f"Submittal per_task_impacts.projected_impact_days "
+                    f"must be a whole number of days; got fractional "
+                    f"value {raw_days!r} for task_id={tid!r}"
+                )
+            days_int = int(raw_days)
+        else:
+            log.warning(
+                "Submittal per_task_impacts: dropping entry with "
+                "non-numeric projected_impact_days (type=%s) for "
+                "task_id=%r", type(raw_days).__name__, tid,
+            )
+            continue
+        if days_int < 0:
+            raise ValueError(
+                f"Submittal per_task_impacts.projected_impact_days "
+                f"must be >= 0; got {days_int} for task_id={tid!r}"
+            )
+        source = item.get("source")
+        if not isinstance(source, str) or not source.strip():
+            log.warning(
+                "Submittal per_task_impacts: dropping entry with "
+                "missing/empty source for task_id=%r", tid,
+            )
+            continue
+        if source not in _SUBMITTAL_IMPACT_SOURCES:
+            raise ValueError(
+                f"Submittal per_task_impacts.source must be one of "
+                f"{sorted(_SUBMITTAL_IMPACT_SOURCES)!r}; got "
+                f"{source!r} for task_id={tid!r}"
+            )
+        # Preserve any server-stamped fields the entry already carries
+        # (round-trip on read). User-supplied keys override.
+        merged = dict(item)
+        merged["task_id"] = tid.strip()
+        merged["projected_impact_days"] = days_int
+        merged["source"] = source
+        out.append(merged)
+    return out
+
+
 class SubmittalCreate(StrictModel):
     project_id: str
     spec_section_id: Optional[str] = None
@@ -77,6 +221,19 @@ class SubmittalCreate(StrictModel):
     # submittal type (e.g. "fire protection submittals reviewed
     # within 7 days").
     sla_days_override: Optional[int] = Field(default=None, ge=1, le=365)
+    # CPM Part K-1 (2026-05-15) -- per-task schedule-impact array.
+    # OPTIONAL on create (default []). Auto-suggested by
+    # detect_breaches when the submittal flips to over-SLA;
+    # editable by the super to override (source flips to
+    # super_overridden). Empty array on a within-SLA submittal is
+    # the expected default; populated only when SLA-breached
+    # (or pre-populated via API for testing / data migration).
+    per_task_impacts: List[dict] = Field(default_factory=list)
+
+    @field_validator("per_task_impacts", mode="before")
+    @classmethod
+    def _coerce_submittal_per_task_impacts_create(cls, v):
+        return _normalize_submittal_per_task_impacts(v)
 
 
 class Submittal(ReadModel):
@@ -145,6 +302,25 @@ class Submittal(ReadModel):
     aging_working_days: Optional[int] = None
     is_overdue: bool = False
     overdue_days: Optional[int] = None
+
+    # CPM Part K-1 (2026-05-15) -- per-task schedule-impact array.
+    # Auto-suggested by detect_breaches on the SLA-breach moment;
+    # editable by the super (source flips to super_overridden).
+    # Path 1 (compute_projected_finish_dates K-4 extension) +
+    # Path 2 (_sum_prior_open_blocker_impacts_on_task K-5 extension)
+    # walk over-SLA submittals' per_task_impacts when computing Slip
+    # and cumulative remaining-float verdicts. Legacy submittals
+    # backfilled to [] by migration 020.
+    #
+    # The aging_days / overdue_days / aging_working_days fields above
+    # remain pure aging metrics (NOT touched by Part K) -- this is a
+    # separate field with its own propagation semantic.
+    per_task_impacts: List[dict] = Field(default_factory=list)
+
+    @field_validator("per_task_impacts", mode="before")
+    @classmethod
+    def _coerce_submittal_per_task_impacts_read(cls, v):
+        return _normalize_submittal_per_task_impacts(v)
 
 
 async def _next_submittal_number(db, tenant_id: str, project_id: str) -> str:
@@ -293,6 +469,23 @@ class SubmittalUpdate(StrictModel):
     sla_uses_calendar_days_override: Optional[bool] = None
     drawings_affected: Optional[list[str]] = None
     spec_section_code: Optional[str] = None
+    # CPM Part K-1 (2026-05-15) -- per-task schedule-impact array
+    # patchable. None on PATCH means "leave unchanged" (the typical
+    # state-transition PATCH); empty list explicitly clears all
+    # impacts (super decides this submittal has no schedule impact
+    # despite being over SLA); populated array replaces the existing
+    # snapshot (super override -- on save, the K-3 helper stamps
+    # source="super_overridden" if not already set, then routes
+    # through auto_recompute_after_event).
+    per_task_impacts: Optional[List[dict]] = None
+
+    @field_validator("per_task_impacts", mode="before")
+    @classmethod
+    def _coerce_submittal_per_task_impacts_update(cls, v):
+        # None on PATCH means "don't change this field" -- pass through.
+        if v is None:
+            return None
+        return _normalize_submittal_per_task_impacts(v)
 
 
 @router.patch("/submittals/{submittal_id}", response_model=Submittal)
