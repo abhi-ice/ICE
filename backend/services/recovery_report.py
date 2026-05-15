@@ -681,11 +681,14 @@ def _render_docx_bytes(report: dict) -> bytes:
         hdr[2].text = "Due"
         hdr[3].text = "Confidence"
         hdr[4].text = "Rationale"
+        # CPM Part G (2026-05-15) -- recovery action due_date rendered
+        # MM/DD/YYYY via the shared backend chokepoint.
+        from services.date_format import format_date_mmddyyyy
         for i, a in enumerate(actions, start=1):
             cells = t.rows[i].cells
             cells[0].text = str(a.get("action") or "")[:200]
             cells[1].text = str(a.get("owner") or "—")
-            cells[2].text = str(a.get("due_date") or "—")
+            cells[2].text = format_date_mmddyyyy(a.get("due_date"))
             cells[3].text = (
                 f"{int((a.get('confidence') or 0) * 100)}%"
                 if a.get("confidence") is not None else "—"
@@ -729,11 +732,15 @@ def _render_pdf_bytes(report: dict) -> bytes:
         for k, v in vs.items()
     )
 
+    # CPM Part G (2026-05-15) -- recovery action due_date rendered
+    # MM/DD/YYYY in the PDF. period_start / period_end on the cover
+    # also go through the same helper below.
+    from services.date_format import format_date_mmddyyyy
     rows_actions = "".join(
         "<tr>"
         f"<td>{_html.escape(str(a.get('action') or '')[:200])}</td>"
         f"<td>{_html.escape(str(a.get('owner') or '—'))}</td>"
-        f"<td>{_html.escape(str(a.get('due_date') or '—'))}</td>"
+        f"<td>{_html.escape(format_date_mmddyyyy(a.get('due_date')))}</td>"
         f"<td>{int((a.get('confidence') or 0) * 100)}%</td>"
         f"<td>{_html.escape(str(a.get('rationale') or '')[:240])}</td>"
         "</tr>"
@@ -764,7 +771,7 @@ def _render_pdf_bytes(report: dict) -> bytes:
       <h1>{_html.escape(label)}</h1>
       <div class='meta'>
         Generated: {_html.escape(str(report.get('generated_at') or ''))}<br>
-        Period: {_html.escape(str(report.get('period_start') or ''))} to {_html.escape(str(report.get('period_end') or ''))}<br>
+        Period: {_html.escape(format_date_mmddyyyy(report.get('period_start')))} to {_html.escape(format_date_mmddyyyy(report.get('period_end')))}<br>
         Status: {_html.escape(str(report.get('status') or ''))}
       </div>
       {degraded_html}

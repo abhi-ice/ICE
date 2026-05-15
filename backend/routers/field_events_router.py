@@ -495,6 +495,11 @@ async def export_delay_ai_report_pdf(delay_id: str, ctx: dict = Depends(require_
     has not been generated yet — UI should generate first."""
     from fastapi import Response
     from weasyprint import HTML
+    # CPM Part G (2026-05-15) -- logged_date rendered MM/DD/YYYY via
+    # the shared backend chokepoint. The PDF letterhead pulls the
+    # "Delay logged" date prominently; MM/DD/YYYY matches the
+    # on-screen page display (formatDateDisplay in lib/dateUtil.js).
+    from services.date_format import format_date_mmddyyyy
     db = get_db()
     delay = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not delay:
@@ -558,7 +563,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 .report {{ font-size: 10pt; line-height: 1.55; margin-top: 6px; }}
 </style></head><body>
 <h1>AI Delay Report — {esc(proj.get('name') or delay.get('project_id'))}</h1>
-<div class='meta'>Delay logged: <b>{esc(delay.get('logged_date') or delay.get('date'))}</b>
+<div class='meta'>Delay logged: <b>{esc(format_date_mmddyyyy(delay.get('logged_date') or delay.get('date')))}</b>
   · severity <b>{esc(delay.get('severity'))}</b>
   · status <b>{esc(delay.get('status'))}</b>
   · {esc(delay.get('duration_days') or 0)}d open</div>

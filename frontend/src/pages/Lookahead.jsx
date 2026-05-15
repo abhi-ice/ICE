@@ -178,11 +178,16 @@ export default function Lookahead() {
                     <td className="font-mono text-xs">{t.activity_code}</td>
                     <td>{t.description}</td>
                     <td>{t.trade_code || "—"}</td>
-                    <td className="font-mono text-xs">{t.planned_start}</td>
-                    <td className="font-mono text-xs">{t.planned_finish}</td>
+                    {/* CPM Part G (2026-05-15) -- existing Plan start /
+                        Plan finish columns routed through
+                        formatDateDisplay for MM/DD/YYYY rendering
+                        from the same chokepoint as the Impacted dates. */}
+                    <td className="font-mono text-xs">{formatDateDisplay(t.planned_start)}</td>
+                    <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
                     {/* CPM Part F -- Impacted Start. formatDateDisplay
                         renders "—" on null so fresh tasks (no
-                        projection yet) show the em-dash. */}
+                        projection yet) show the em-dash. Part G now
+                        outputs MM/DD/YYYY via this same helper. */}
                     <td
                       data-testid={`lookahead-impacted-start-${t.activity_code}`}
                       className="font-mono text-xs"

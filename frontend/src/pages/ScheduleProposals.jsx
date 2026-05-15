@@ -17,6 +17,9 @@ import {
   CheckCircle2, XCircle, Sparkles, Plus, Minus, ArrowRight, Clock, RefreshCw,
   ListFilter, MessageCircle, Send,
 } from "lucide-react";
+// CPM Part G (2026-05-15) -- planned_start / planned_finish in the
+// activity diff table rendered MM/DD/YYYY via chokepoint.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 const STATUS_PILL = {
   pending_review: "pill-blue",
@@ -441,8 +444,8 @@ function ParsedRowsPanel({ doc, reload }) {
                 </td>
                 <td className="font-mono text-xs">{r.activity_code}</td>
                 <td className="text-xs truncate max-w-[280px]">{r.description}</td>
-                <td className="text-xs font-mono">{r.planned_start || "—"}</td>
-                <td className="text-xs font-mono">{r.planned_finish || "—"}</td>
+                <td className="text-xs font-mono">{formatDateDisplay(r.planned_start)}</td>
+                <td className="text-xs font-mono">{formatDateDisplay(r.planned_finish)}</td>
                 <td className="tabular-nums text-xs">{r.duration_days ?? "—"}</td>
                 <td className="text-xs text-amber-700 italic">{r.summary_reason || ""}</td>
               </tr>

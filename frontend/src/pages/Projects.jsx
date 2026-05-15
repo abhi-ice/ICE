@@ -6,6 +6,9 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
+// CPM Part G (2026-05-15) -- planned_completion_date rendered
+// MM/DD/YYYY via the lib/dateUtil chokepoint.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 // Followup-fix 6 (2026-05-07): TIA header inputs added to project form
 // so TIA Section 1 (Project Header) renders real values instead of nulls.
@@ -216,7 +219,7 @@ export default function Projects() {
                   <td className="text-xs">{loc || <span className="text-muted-foreground">—</span>}</td>
                   <td><span className={`pill ${p.status === "active" ? "pill-green" : "pill-slate"}`}>{p.status}</span></td>
                   <td className="tabular-nums">{p.contract_value_usd ? `$${(p.contract_value_usd / 1_000_000).toFixed(2)}M` : "—"}</td>
-                  <td className="font-mono text-xs">{p.planned_completion_date || "—"}</td>
+                  <td className="font-mono text-xs">{formatDateDisplay(p.planned_completion_date)}</td>
                   <td className="text-right pr-3">
                     <button
                       data-testid={`edit-project-${p.id}`}

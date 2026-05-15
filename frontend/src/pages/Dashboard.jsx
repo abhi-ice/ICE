@@ -4,6 +4,9 @@ import {
 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
+// CPM Part G (2026-05-15) -- dates rendered MM/DD/YYYY app-wide via
+// the lib/dateUtil chokepoint.
+import { formatDateDisplay } from "../lib/dateUtil";
 
 const Tile = ({ label, value, icon: Icon, tone = "slate", testid }) => (
   <div data-testid={testid} className="bg-card border border-border rounded-lg p-4">
@@ -68,7 +71,7 @@ export default function Dashboard() {
                       {t.status}
                     </span>
                   </td>
-                  <td className="font-mono text-xs">{t.planned_finish || "—"}</td>
+                  <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
                   <td className="tabular-nums">{t.pct_complete}%</td>
                 </tr>
               ))}

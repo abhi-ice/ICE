@@ -573,6 +573,11 @@ def render_tasks_pdf(payload: dict) -> bytes:
 
 
 def render_lookahead_pdf(payload: dict) -> bytes:
+    # CPM Part G (2026-05-15) -- window_start / window_end on the
+    # cover render MM/DD/YYYY via the shared backend chokepoint.
+    # generated_at is left as the existing ISO datetime; the cover
+    # label semantic ("Generated: <full timestamp>") expects time.
+    from services.date_format import format_date_mmddyyyy
     proj = payload.get("project") or {}
     cover = {
         "title":       "Look-ahead — Forward-looking window",
@@ -582,8 +587,8 @@ def render_lookahead_pdf(payload: dict) -> bytes:
         "generated_at": payload.get("generated_at", ""),
         "count_label": f"Tasks in window: {payload.get('count', 0)}",
         "extra_label": (
-            f"Look-ahead: {payload.get('window_start')} to "
-            f"{payload.get('window_end')} | At-risk: "
+            f"Look-ahead: {format_date_mmddyyyy(payload.get('window_start'))} to "
+            f"{format_date_mmddyyyy(payload.get('window_end'))} | At-risk: "
             f"{payload.get('at_risk_count', 0)}"
         ),
     }
@@ -641,8 +646,10 @@ def _render_pdf(
             at_risk_key and bool(r.get(at_risk_key))
         )
         cls = " class='at-risk'" if flagged else ""
+        # CPM Part G -- pass the column key so date cells render
+        # MM/DD/YYYY (see _PDF_DATE_COLUMN_KEYS).
         cells = "".join(
-            f"<td>{_format_cell_html(r.get(key))}</td>"
+            f"<td>{_format_cell_html(r.get(key), key)}</td>"
             for key, _ in columns
         )
         body_rows += f"<tr{cls}>{cells}</tr>"
@@ -885,10 +892,30 @@ def _date_diff_days(a_iso: str, b_iso: str) -> int:
     return (b - a).days
 
 
-def _format_cell_html(v: Any) -> str:
+# CPM Part G (2026-05-15) -- column keys whose cell values are pure
+# ISO YYYY-MM-DD dates. The PDF cell renderer converts these to
+# MM/DD/YYYY via services.date_format.format_date_mmddyyyy; CSV / XLSX
+# cells stay ISO (data-interchange semantic). Datetime columns like
+# last_synced_at are intentionally NOT in this set -- they need full
+# date+time and the existing _iso_datetime() rendering handles them.
+_PDF_DATE_COLUMN_KEYS = frozenset({
+    "planned_start",
+    "planned_finish",
+    "projected_finish",
+})
+
+
+def _format_cell_html(v: Any, key: str | None = None) -> str:
     """Render a single cell value for the PDF table. Booleans
-    render as ✓ / —, None as —, lists as comma-joined, everything
-    else as escaped string."""
+    render as ✓ / —, None as —, lists as comma-joined.
+
+    CPM Part G (2026-05-15) -- when `key` is one of
+    _PDF_DATE_COLUMN_KEYS, ISO date string values are converted to
+    MM/DD/YYYY via the shared backend chokepoint
+    services.date_format.format_date_mmddyyyy. Callers pre-Part-G
+    invoked this helper with one argument (the value only); the
+    `key` kwarg is optional so the older call-shape still works.
+    """
     if v is None or v == "":
         return "<span style='color:#aaa'>—</span>"
     if isinstance(v, bool):
@@ -896,6 +923,10 @@ def _format_cell_html(v: Any) -> str:
                 if v else "<span style='color:#aaa'>—</span>")
     if isinstance(v, list):
         return _html.escape(", ".join(str(x) for x in v[:10]))
+    # Part G -- per-column date formatting.
+    if key and key in _PDF_DATE_COLUMN_KEYS:
+        from services.date_format import format_date_mmddyyyy
+        return _html.escape(format_date_mmddyyyy(v))
     return _html.escape(str(v))
 
 

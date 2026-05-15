@@ -635,11 +635,17 @@ def _render_docx(data: dict) -> bytes:
     meta = data.get("_meta", {})
     proj = meta.get("project", {}) or {}
 
+    # CPM Part G (2026-05-15) -- date range rendered MM/DD/YYYY via
+    # the shared backend chokepoint. generated_at carries a full
+    # datetime (timestamp at generation) and stays in ISO -- it is a
+    # provenance fingerprint, not a calendar date the reader scans.
+    from services.date_format import format_date_mmddyyyy
     title = doc.add_heading(f"{proj.get('name', 'Project')} — Time Impact Analysis Source Document", level=0)
     p = doc.add_paragraph()
     p.add_run(
         f"Generated: {meta.get('generated_at')}  ·  "
-        f"Date range: {meta.get('date_range', {}).get('start')} to {meta.get('date_range', {}).get('end')}"
+        f"Date range: {format_date_mmddyyyy(meta.get('date_range', {}).get('start'))} "
+        f"to {format_date_mmddyyyy(meta.get('date_range', {}).get('end'))}"
     ).italic = True
     if (meta.get("filters") or {}):
         doc.add_paragraph(
@@ -1250,14 +1256,18 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
         "via /tia/generations/{id}/unflag-privilege.</div>"
     )
 
+    # CPM Part G (2026-05-15) -- date range rendered MM/DD/YYYY via
+    # the shared backend chokepoint. generated_at is a datetime
+    # provenance stamp and stays in ISO for traceability.
+    from services.date_format import format_date_mmddyyyy
     body = f"""
     <html><head><meta charset='utf-8'><style>{css}</style></head>
     <body>
       <h1>Time Impact Analysis — Evidence Index</h1>
       <div class='meta'>
         Project: {html.escape(str(proj.get('name') or ''))}<br>
-        Date range: {html.escape(str(meta.get('date_range', {}).get('start') or ''))}
-        to {html.escape(str(meta.get('date_range', {}).get('end') or ''))}<br>
+        Date range: {html.escape(format_date_mmddyyyy(meta.get('date_range', {}).get('start')))}
+        to {html.escape(format_date_mmddyyyy(meta.get('date_range', {}).get('end')))}<br>
         Generated: {html.escape(str(meta.get('generated_at') or ''))}<br>
         Generation ID: {html.escape(generation_id)}
       </div>
