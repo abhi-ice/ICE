@@ -385,10 +385,7 @@ def pred_code(p) -> Optional[str]:
     (pre-migration 018) or the new dict / Predecessor form.
 
     Used by services/cpm.py, services/cascade_engine.py,
-    services/task_status.py, services/schedule_diff.py during the
-    Part-A transition window. After Part C lands, these readers
-    consume `type` and `lag_days` directly and pred_code() becomes
-    a convenience for log lines + tests."""
+    services/task_status.py, services/schedule_diff.py."""
     if p is None:
         return None
     if isinstance(p, str):
@@ -397,6 +394,50 @@ def pred_code(p) -> Optional[str]:
         return p.get("code")
     code = getattr(p, "code", None)
     return code if isinstance(code, str) else None
+
+
+def pred_relationship(p) -> tuple:
+    """CPM Part C (2026-05-15) adapter -- return (type, lag_days) for
+    a predecessor entry. Defaults to ("FS", 0) for bare-string entries
+    and for any field that doesn't deserialize cleanly.
+
+    Used by the forward pass in services/cpm.py (Part C) and the
+    backward pass / cascade walks in Part D + E.
+
+    Bare string         -> ("FS", 0)       MSU's canonical case
+    dict missing keys   -> ("FS", 0)       defensive
+    dict full           -> (type.upper(), int(lag_days))
+    Predecessor instance-> (type, lag_days) read from attrs
+    None / unknown      -> ("FS", 0)       safe fallback
+    """
+    if p is None:
+        return ("FS", 0)
+    if isinstance(p, str):
+        return ("FS", 0)
+    if isinstance(p, dict):
+        rel = p.get("type") or "FS"
+        lag = p.get("lag_days")
+        try:
+            lag_int = int(lag) if lag is not None else 0
+        except (TypeError, ValueError):
+            lag_int = 0
+        try:
+            rel_str = str(rel).upper()
+        except Exception:
+            rel_str = "FS"
+        if rel_str not in ("FS", "SS", "FF", "SF"):
+            rel_str = "FS"
+        return (rel_str, lag_int)
+    rel = getattr(p, "type", None) or "FS"
+    lag = getattr(p, "lag_days", None)
+    try:
+        lag_int = int(lag) if lag is not None else 0
+    except (TypeError, ValueError):
+        lag_int = 0
+    rel_str = str(rel).upper() if rel else "FS"
+    if rel_str not in ("FS", "SS", "FF", "SF"):
+        rel_str = "FS"
+    return (rel_str, lag_int)
 
 
 def _normalize_predecessors_list(value: Any) -> List[dict]:
