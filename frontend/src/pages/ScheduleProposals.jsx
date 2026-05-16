@@ -19,7 +19,11 @@ import {
 } from "lucide-react";
 // CPM Part G (2026-05-15) -- planned_start / planned_finish in the
 // activity diff table rendered MM/DD/YYYY via chokepoint.
-import { formatDateDisplay } from "../lib/dateUtil";
+// CPM Part A frontend follow-up (2026-05-15) -- formatPredecessors
+// handles post-018 dict-shape predecessors in the predecessor_changes
+// diff section. Without it, dict entries would render as
+// "[object Object], [object Object]".
+import { formatDateDisplay, formatPredecessors } from "../lib/dateUtil";
 
 const STATUS_PILL = {
   pending_review: "pill-blue",
@@ -260,8 +264,12 @@ function ProposalDetail({ id, onBack }) {
             ["old_predecessors", "Old preds"], ["new_predecessors", "New preds"],
           ]}
           render={{
-            old_predecessors: (v) => (v || []).join(", ") || "—",
-            new_predecessors: (v) => (v || []).join(", ") || "—",
+            // CPM Part A frontend follow-up (2026-05-15) -- handle
+            // dict-shape predecessors {code, type, lag_days} produced
+            // by migration 018. formatPredecessors returns "—" when
+            // the array is empty/missing.
+            old_predecessors: (v) => formatPredecessors(v),
+            new_predecessors: (v) => formatPredecessors(v),
           }} />
       )}
 
