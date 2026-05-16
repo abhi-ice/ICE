@@ -755,6 +755,13 @@ class Task(ReadModel):
     is_milestone: bool = False
     is_critical_path: bool = False
     total_float_days: Optional[int] = None
+    # CPM Part L-2 (2026-05-16) -- live remaining float column.
+    # structural_float_days minus sum of currently-open blocker
+    # impacts on this task (delays + RFIs + over-SLA submittals).
+    # Refreshed by compute_remaining_float_for_tasks on every
+    # auto_recompute_after_event. Clamped at 0. Migration 021
+    # backfills this field on all existing tasks.
+    remaining_float_days: Optional[int] = None
     lookahead_status: LookaheadStatus = "not_in_window"
     # CPM Part A (2026-05-15) -- read model accepts both legacy bare-
     # string predecessors and the new dict form. Migration 018 converts
@@ -1741,6 +1748,16 @@ class Delay(ReadModel):
     resolved_note: Optional[str] = None
     resolved_by_user_id: Optional[str] = None
     duration_days: Optional[int] = None  # computed at read time
+    # CPM Part L-3 (2026-05-16) -- actual_impact_days captured at the
+    # moment the delay transitions to status="resolved". Computed as
+    # working_days_between(logged_date, resolved_date). Federal TIA
+    # defensibility: the variance (projected_impact_days at log time
+    # vs actual_impact_days at resolution) tells the schedule analyst
+    # "the super's day-one estimate of 5 days was actually 3 working
+    # days." projected_impact_days STAYS on per_task_impacts
+    # snapshots (audit immutability); actual_impact_days lives here
+    # on the parent delay row.
+    actual_impact_days: Optional[int] = None
     # AI report (Phase B) — saved between views so regen is opt-in.
     ai_report: Optional[str] = None
     ai_report_generated_at: Optional[datetime] = None

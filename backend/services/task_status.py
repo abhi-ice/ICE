@@ -451,18 +451,22 @@ async def compute_projected_finish_dates(
         # isolated per-date so a bad planned_finish doesn't poison
         # planned_start's projection (or vice versa).
         if shift_days > 0:
+            # CPM Part L (2026-05-16) -- shift is in WORKING days, not
+            # calendar. A 2-day delay on Fri lands the projected_
+            # finish on the next Tue (not Sat). Field crews see dates
+            # that match real calendar pages they post on the trailer.
+            from services.working_days import add_working_days
             shift_int = int(round(shift_days))
-            shift_delta = timedelta(days=shift_int)
             if pf:
                 try:
                     pf_d = date.fromisoformat(str(pf)[:10])
-                    new_pfd = (pf_d + shift_delta).isoformat()
+                    new_pfd = add_working_days(pf_d, shift_int).isoformat()
                 except Exception:
                     new_pfd = None
             if ps:
                 try:
                     ps_d = date.fromisoformat(str(ps)[:10])
-                    new_psd = (ps_d + shift_delta).isoformat()
+                    new_psd = add_working_days(ps_d, shift_int).isoformat()
                 except Exception:
                     new_psd = None
         # Idempotent: skip if BOTH derived dates are unchanged.
@@ -488,3 +492,76 @@ async def compute_projected_finish_dates(
             actor_id=actor_id, request_id=request_id or gen_id(),
         )
     return {"recomputed": len(tasks), "changed": changed}
+
+
+# =========================================================================
+# CPM Part L-2 (2026-05-16) -- live remaining-float column.
+#
+# Tasks page Float column currently shows STRUCTURAL float (the
+# network's slack independent of any logged events). Field PMs
+# expect: "Task A has 22 days float. I log a 2-day delay. The
+# float should now read 20 days remaining." That's LIVE remaining
+# float -- structural minus the sum of all currently-open blocker
+# impact days on that task.
+#
+# This helper walks all 3 collections (delays + RFIs + over-SLA
+# submittals) per task, computes the sum, subtracts from structural
+# float, clamps at 0, and persists to tasks.remaining_float_days.
+# Fires after compute_projected_finish_dates in
+# auto_recompute_after_event so every event refresh keeps this
+# column live.
+#
+# CONTRACT:
+#   * structural total_float_days STAYS UNCHANGED (pure network metric)
+#   * remaining_float_days = max(0, structural - sum_open_impacts)
+#   * is_critical_path still derives from structural <= 0 (not from
+#     remaining_float)
+#   * Resolved / closed / approved events do NOT contribute (the same
+#     filters K-4 / K-5 / count_open_blockers use)
+#   * remaining_float_days RECOVERS when a delay is resolved -- its
+#     impact stops counting toward the open-sum on the next recompute
+#
+# Audit chain immutability: the per-event audit snapshots stay
+# frozen at log-time. remaining_float_days is a DERIVED VIEW
+# refreshed on every event, NOT a rewrite of audit history.
+# =========================================================================
+async def compute_remaining_float_for_tasks(
+    db, tenant_id: str, project_id: str,
+) -> dict:
+    """For each task in the project, stamp remaining_float_days =
+    max(0, structural_float_days - sum_open_blocker_impacts).
+
+    Idempotent: skip write when the value didn't change. Returns
+    {scanned, changed}.
+    """
+    tasks = await db.tasks.find(
+        tenant_filter(tenant_id, {
+            "project_id": project_id, "status": {"$ne": "deleted"},
+        }),
+        {"_id": 0, "id": 1, "total_float_days": 1,
+         "remaining_float_days": 1},
+    ).to_list(5000)
+
+    scanned = 0
+    changed = 0
+    for t in tasks:
+        scanned += 1
+        structural = t.get("total_float_days") or 0
+        # Walks all 3 collections via the same helper Path 1 uses.
+        # _open_blocker_impact_for_task already gates on the K-4
+        # filter (delays open/in_progress, RFIs draft/sent/in_review,
+        # submittals in_review breached) -- so resolved/closed
+        # events automatically drop out.
+        total_open = await _open_blocker_impact_for_task(
+            db, tenant_id, t["id"],
+        )
+        # Clamp at 0: remaining can't be negative (per Part I
+        # cumulative-float verdict convention).
+        remaining = max(0, int(structural) - int(round(total_open)))
+        if t.get("remaining_float_days") != remaining:
+            await db.tasks.update_one(
+                tenant_filter(tenant_id, {"id": t["id"]}),
+                {"$set": {"remaining_float_days": remaining}},
+            )
+            changed += 1
+    return {"scanned": scanned, "changed": changed}
