@@ -406,12 +406,21 @@ async def auto_recompute_after_event(
     *,
     actor_id: Optional[str] = None,
     request_id: Optional[str] = None,
-) -> None:
+) -> Optional[dict]:
     """Fail-safe CPM auto-recompute hook fired immediately after a
     field event (delay / RFI / submittal SLA flip / mitigation
     choose-unchoose) has been persisted.
 
-    Run order is the one the Part E spec mandates:
+    CPM Bug 2.E (2026-05-16) -- this hook is ALSO the body of the
+    manual "Recompute CPM" button. routers.tasks_router.recompute_cpm
+    now routes through here (was bare compute_cpm) so one click
+    refreshes Float + Slip + Impacted dates + Rem Float in lock-step.
+    Returns the compute_cpm result dict ({updated, critical_count,
+    project_finish} or {error: ...}) so the endpoint has a payload
+    for the frontend. Event-flow callers ignore the return.
+
+    Run order (the ordering is now load-bearing -- Step 3 depends
+    on Step 2):
 
       1. compute_cpm() -- refreshes total_float_days +
          is_critical_path on every task in the project. Silent
@@ -421,16 +430,18 @@ async def auto_recompute_after_event(
          request cycle reads stale float and mis-classifies
          consumes_float_only / pushes_critical_path.
 
-      2. compute_projected_finish_dates() -- walks open-delay
+      2. compute_projected_finish_dates() -- walks open-blocker
          impacts forward to refresh projected_finish_date /
-         projected_start_date on each task. Writes the EXISTING
-         tasks.CPM_RECOMPUTE audit when the projected dates change.
-         This audit op pre-dates Part E (Bucket C1 Phase 4) -- we
-         did NOT add a new audit for the compute_cpm step. The
-         audit chain looks identical to before Part E, just with
-         correct float behind it.
+         projected_start_date / slip_days on each task. Writes the
+         EXISTING tasks.CPM_RECOMPUTE audit when the projected
+         dates change.
 
-    BOTH calls are wrapped in try/except + warning log. A CPM bug
+      3. compute_remaining_float_for_tasks() -- stamps
+         remaining_float_days + is_currently_critical. MUST run
+         AFTER Step 2: Bug 3.E derives remaining float from the
+         projected_finish_date that Step 2 writes.
+
+    All three calls are wrapped in try/except + warning log. A CPM bug
     -- cycle detection, malformed predecessor, missing field, even
     a transient DB hiccup -- MUST NOT block the field event from
     being saved. The event row is already in the DB by the time
@@ -459,9 +470,12 @@ async def auto_recompute_after_event(
 
     db = get_db()
 
-    # Step 1 -- compute_cpm (silent, no audit).
+    # Step 1 -- compute_cpm (silent, no audit). Capture the result
+    # so the recompute_cpm endpoint (Bug 2.E) has a payload to
+    # return; event-flow callers ignore it.
+    cpm_result: Optional[dict] = None
     try:
-        await compute_cpm(tenant_id, project_id)
+        cpm_result = await compute_cpm(tenant_id, project_id)
     except Exception as exc:
         log.warning(
             "Part E auto-recompute: compute_cpm failed "
@@ -486,13 +500,13 @@ async def auto_recompute_after_event(
             tenant_id, project_id, exc,
         )
 
-    # CPM Part L (2026-05-16) -- Step 3: live remaining-float refresh.
-    # Walks all 3 open-blocker collections (delays + RFIs + over-SLA
-    # submittals) and stamps remaining_float_days = max(0,
-    # structural - sum_open_impacts) on every task. Independent
-    # try/except so a remaining-float bug doesn't break the existing
-    # CPM + projected-finish chain. Idempotent: a no-op when the
-    # value hasn't changed.
+    # Step 3 -- live remaining-float refresh (CPM Part L + Bug 3.E/3.F).
+    # Stamps remaining_float_days (signed; Bug 3.E -- derived from the
+    # projected_finish_date Step 2 just wrote, NOT clamped at 0) +
+    # is_currently_critical (Bug 3.F). MUST run after Step 2 -- the
+    # remaining-float formula reads projected_finish_date. Independent
+    # try/except so a remaining-float bug doesn't break the CPM +
+    # projected-finish chain. Idempotent.
     try:
         from services.task_status import compute_remaining_float_for_tasks
         await compute_remaining_float_for_tasks(
@@ -504,3 +518,7 @@ async def auto_recompute_after_event(
             "failed (tenant=%s, project=%s): %s",
             tenant_id, project_id, exc,
         )
+
+    # Bug 2.E -- return the compute_cpm result for the recompute_cpm
+    # endpoint. None when compute_cpm raised (handled above).
+    return cpm_result

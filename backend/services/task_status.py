@@ -449,7 +449,10 @@ async def compute_projected_finish_dates(
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
          "duration_days": 1,
          "planned_start": 1, "planned_finish": 1,
-         "projected_start_date": 1, "projected_finish_date": 1},
+         # CPM Cruft 3.G -- slip_days pulled so the idempotent
+         # skip-if-unchanged check below can compare it.
+         "projected_start_date": 1, "projected_finish_date": 1,
+         "slip_days": 1},
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
 
@@ -580,17 +583,28 @@ async def compute_projected_finish_dates(
         if total_shift > 0 and imp_start is not None and imp_finish is not None:
             new_psd = imp_start.isoformat()
             new_pfd = imp_finish.isoformat()
+            # CPM Cruft 3.G (2026-05-16) -- persist the working-day
+            # slip alongside the projected dates. total_shift IS
+            # working_days_between(planned_finish, projected_finish)
+            # by construction (imp_finish = add_working_days(pf,
+            # total_shift)), so we use it directly -- no recompute.
+            new_slip = total_shift
         else:
             new_psd = None
             new_pfd = None
+            # Unmoved task -- slip_days is None, mirroring how
+            # projected_finish_date itself is cleared to None.
+            new_slip = None
         cur_pfd = t.get("projected_finish_date")
         cur_psd = t.get("projected_start_date")
-        if cur_pfd != new_pfd or cur_psd != new_psd:
+        cur_slip = t.get("slip_days")
+        if cur_pfd != new_pfd or cur_psd != new_psd or cur_slip != new_slip:
             await db.tasks.update_one(
                 tenant_filter(tenant_id, {"id": t["id"]}),
                 {"$set": {
                     "projected_finish_date": new_pfd,
                     "projected_start_date": new_psd,
+                    "slip_days": new_slip,
                     "updated_at": datetime.utcnow().isoformat(),
                 }},
             )
@@ -610,83 +624,131 @@ async def compute_projected_finish_dates(
 # =========================================================================
 # CPM Part L-2 (2026-05-16) -- live remaining-float column.
 #
-# Tasks page Float column currently shows STRUCTURAL float (the
-# network's slack independent of any logged events). Field PMs
-# expect: "Task A has 22 days float. I log a 2-day delay. The
-# float should now read 20 days remaining." That's LIVE remaining
-# float -- structural minus the sum of all currently-open blocker
-# impact days on that task.
+# Tasks page Float column shows STRUCTURAL float (the network's
+# slack independent of any logged events). Field PMs expect a LIVE
+# number: "Task A had 22 days float; after a delay it should read
+# the remaining slack."
 #
-# This helper walks all 3 collections (delays + RFIs + over-SLA
-# submittals) per task, computes the sum, subtracts from structural
-# float, clamps at 0, and persists to tasks.remaining_float_days.
-# Fires after compute_projected_finish_dates in
-# auto_recompute_after_event so every event refresh keeps this
-# column live.
+# CPM Bug 3.E (2026-05-16) -- remaining float is now derived from
+# the CASCADE'S projected dates, NOT from a direct-blocker sum.
 #
-# CONTRACT:
-#   * structural total_float_days STAYS UNCHANGED (pure network metric)
-#   * remaining_float_days = max(0, structural - sum_open_impacts)
-#   * is_critical_path still derives from structural <= 0 (not from
-#     remaining_float)
-#   * Resolved / closed / approved events do NOT contribute (the same
-#     filters K-4 / K-5 / count_open_blockers use)
-#   * remaining_float_days RECOVERS when a delay is resolved -- its
-#     impact stops counting toward the open-sum on the next recompute
+# THE PRE-3.E FAULT:
+#   remaining_float_days = max(0, structural - sum_DIRECT_impacts)
+#   where the sum walked only blockers DIRECTLY linked to the task.
+#   Two faults:
+#     (a) A task impacted purely by an UPSTREAM delay (inherited
+#         cascade slip) had sum_direct = 0, so it showed
+#         remaining = structural -- falsely reassuring. (Task 15
+#         slipped +10 from Task 6's delay but showed Rem Float 5.)
+#     (b) The max(0, ...) clamp hid how far underwater a task was.
+#         A task 5 working days past its float read 0, not -5.
 #
-# Audit chain immutability: the per-event audit snapshots stay
-# frozen at log-time. remaining_float_days is a DERIVED VIEW
-# refreshed on every event, NOT a rewrite of audit history.
+# THE 3.E FIX (option (c) -- both diagnostic reports concur):
+#   remaining_float_days = structural_float_days
+#                          - working_days_between(planned_finish,
+#                                                  projected_finish_date)
+#   * Counts INHERITED cascade slip (the projected date already
+#     merges direct + inherited via the cascade's MAX convergence
+#     -- no double-counting; option (a) structural-direct-inherited
+#     WOULD double-count and is NOT used).
+#   * NO max(0, ...) clamp -- negative is the honest value (D-3E).
+#     A task with structural float 5 pushed 10 working days shows
+#     -5: it has consumed all its float and is 5 days into the red,
+#     driving the project finish. Primavera P6 surfaces negative
+#     float the same way.
+#   * For a DIRECTLY-delayed task cascade_slip == own_impact, so
+#     this returns the same MAGNITUDE as the old direct-sum -- only
+#     difference is negatives are now shown instead of clamped.
+#   * Unmoved task (projected_finish_date is None) -> cascade_slip
+#     is 0 -> remaining == structural.
+#
+# CPM Bug 3.F (2026-05-16) -- also stamps is_currently_critical =
+# (remaining_float_days <= 0). True when the task has consumed all
+# its float by direct delay OR inherited cascade -- it now drives
+# the project finish. DISTINCT from is_critical_path (structural,
+# unchanged). A structural-CP task (float 0, no delay) is trivially
+# is_currently_critical (0 <= 0).
+#
+# ORDERING: this helper now DEPENDS on projected_finish_date being
+# already computed. auto_recompute_after_event MUST call it AFTER
+# compute_projected_finish_dates (Step 3, after Step 2). The bare
+# compute_cpm path does not refresh projected dates -- the
+# recompute_cpm endpoint (Bug 2.E) routes through
+# auto_recompute_after_event so the full chain fires.
+#
+# CONTRACT (unchanged where not noted):
+#   * structural total_float_days STAYS a pure network metric.
+#   * is_critical_path stays STRUCTURAL (float <= 0). Bug 3.F adds
+#     is_currently_critical as a SEPARATE field.
+#   * Audit chain immutability: per-event verdict snapshots stay
+#     frozen; remaining_float_days / is_currently_critical are
+#     DERIVED VIEWS refreshed on every recompute.
 # =========================================================================
 async def compute_remaining_float_for_tasks(
     db, tenant_id: str, project_id: str,
 ) -> dict:
-    """For each task in the project, stamp remaining_float_days =
-    max(0, structural_float_days - sum_open_blocker_impacts).
+    """For each task, stamp remaining_float_days (SIGNED -- may be
+    negative) + is_currently_critical, derived from the cascade's
+    projected_finish_date.
 
-    Idempotent: skip write when the value didn't change. Returns
+      remaining_float_days = total_float_days
+                             - working_days_between(planned_finish,
+                                                     projected_finish_date)
+      is_currently_critical = (remaining_float_days <= 0)
+
+    Idempotent: skip write when neither value changed. Returns
     {scanned, changed}.
 
-    CPM Bug 3.B (2026-05-16) -- UNITS-CONSISTENT working days. Both
-    operands are working-day counts:
-      * structural (total_float_days) -- working days, set by
-        compute_cpm via working_days_between(ES, LS).
-      * total_open (sum of open blocker impacts) -- working days,
-        since delay / RFI / submittal projected_impact_days are
-        entered + summed in working days.
-    The subtraction is therefore units-clean: remaining_float_days
-    is a working-day count. Pre-Bug-3.B the structural side was
-    calendar days and the impact side working days -- the mismatch
-    produced a remaining-float number nobody could reconcile.
+    DEPENDS ON projected_finish_date already being computed -- call
+    AFTER compute_projected_finish_dates (Bug 3.E ordering).
     """
+    from services.working_days import working_days_between
+
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id, "status": {"$ne": "deleted"},
         }),
         {"_id": 0, "id": 1, "total_float_days": 1,
-         "remaining_float_days": 1},
+         "remaining_float_days": 1, "is_currently_critical": 1,
+         "planned_finish": 1, "projected_finish_date": 1},
     ).to_list(5000)
 
     scanned = 0
     changed = 0
     for t in tasks:
         scanned += 1
-        structural = t.get("total_float_days") or 0
-        # Walks all 3 collections via the same helper Path 1 uses.
-        # _open_blocker_impact_for_task already gates on the K-4
-        # filter (delays open/in_progress, RFIs draft/sent/in_review,
-        # submittals in_review breached) -- so resolved/closed
-        # events automatically drop out.
-        total_open = await _open_blocker_impact_for_task(
-            db, tenant_id, t["id"],
-        )
-        # Clamp at 0: remaining can't be negative (per Part I
-        # cumulative-float verdict convention).
-        remaining = max(0, int(structural) - int(round(total_open)))
-        if t.get("remaining_float_days") != remaining:
+        structural = int(t.get("total_float_days") or 0)
+        pf = t.get("planned_finish")
+        proj = t.get("projected_finish_date")
+        # cascade_slip = working days the task's finish moved. The
+        # cascade (compute_projected_finish_dates) sets projected_
+        # finish_date = add_working_days(planned_finish, total_shift)
+        # where total_shift = inherited cascade + own direct impact
+        # -- so the slip already merges both. None projected -> the
+        # task did not move -> 0 slip.
+        cascade_slip = 0
+        if pf and proj:
+            try:
+                cascade_slip = working_days_between(
+                    date.fromisoformat(str(pf)[:10]),
+                    date.fromisoformat(str(proj)[:10]),
+                )
+            except Exception:
+                cascade_slip = 0
+        # Bug 3.E -- SIGNED, NOT clamped. Negative => task has
+        # consumed all its float and is that many working days in
+        # the red.
+        remaining = structural - int(cascade_slip)
+        # Bug 3.F -- effectively-critical when no float remains.
+        is_currently_critical = remaining <= 0
+        if (t.get("remaining_float_days") != remaining
+                or t.get("is_currently_critical") != is_currently_critical):
             await db.tasks.update_one(
                 tenant_filter(tenant_id, {"id": t["id"]}),
-                {"$set": {"remaining_float_days": remaining}},
+                {"$set": {
+                    "remaining_float_days": remaining,
+                    "is_currently_critical": is_currently_critical,
+                }},
             )
             changed += 1
     return {"scanned": scanned, "changed": changed}

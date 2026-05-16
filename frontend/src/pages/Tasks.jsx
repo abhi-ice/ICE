@@ -430,19 +430,18 @@ export default function Tasks() {
               // applies a slightly darker rose tint so the user can
               // tell "this is on the CP" (pink) from "this has
               // projected slip" (rose).
-              // CPM Part L-2 (2026-05-16) -- live remaining-float
-              // tint. When remaining_float_days is exactly 0 (and
-              // structural float is > 0, so the task wasn't already
-              // CP), the row is at the cliff: any new event pushes
-              // it onto the critical path. Tint slightly darker than
-              // the slip-rose tint so PMs can scan for "tasks that
-              // can't absorb another delay."
+              // CPM Bug 3.E (2026-05-16) -- remaining_float_days is
+              // now SIGNED (may be negative). A task with
+              // remaining <= 0 has consumed all its float (by direct
+              // delay OR inherited cascade) and is at/over the cliff
+              // -- any further slip drives the project finish. Tint
+              // those rows darker than the slip-rose tint so PMs can
+              // scan for tasks with no slack left.
               const slipTint = slip > 0 ? "bg-rose-50" : "";
               const structural = t.total_float_days;
               const remaining = t.remaining_float_days;
               const cliffTint = (
-                remaining === 0
-                && structural != null && structural > 0
+                remaining != null && remaining <= 0
               ) ? "bg-rose-100" : "";
               const rowClass = t.is_critical_path
                 ? "bg-red-50/40"
@@ -521,35 +520,53 @@ export default function Tasks() {
                     onToggle={() => setOpenBlockerId(openBlockerId === t.id ? null : t.id)}
                   />
                 </td>
-                <td>{t.is_critical_path ? <span className="pill pill-red" title="Critical Path">CP</span> : null}</td>
+                {/* CPM Bug 3.F (2026-05-16) -- CP column shows TWO
+                    badges. "CP" = structural critical path
+                    (is_critical_path, zero structural float).
+                    "CP*" = effectively critical (is_currently_
+                    critical) -- the task has consumed all its float
+                    by direct delay or inherited cascade and now
+                    drives the project finish, even though it is NOT
+                    on the structural critical path. Structural CP
+                    tasks are trivially also currently-critical, so
+                    "CP" alone is shown for them (no redundant CP*). */}
+                <td>
+                  {t.is_critical_path ? (
+                    <span className="pill pill-red" title="Critical Path — zero structural float; any slip pushes the project finish.">CP</span>
+                  ) : t.is_currently_critical ? (
+                    <span
+                      className="pill bg-amber-100 text-amber-900 border border-amber-300"
+                      title="Effectively critical — all float consumed by delays/cascade. NOT on the structural critical path, but currently driving the project finish."
+                    >CP*</span>
+                  ) : null}
+                </td>
                 <td className="tabular-nums text-xs" title="Structural working-day float — does NOT decrease from logged events">
                   {t.total_float_days ?? "—"}
                 </td>
-                {/* CPM Part L-2 (2026-05-16) -- live remaining float.
-                    Em-dash when null/undefined (legacy rows pre-
-                    migration 021 OR tasks where compute_remaining_
-                    float hasn't run yet). Rendered with subtle
-                    text color cue: green when full (= structural),
-                    amber when partially consumed, red when 0. */}
+                {/* CPM Bug 3.E (2026-05-16) -- live remaining float,
+                    SIGNED. Derived from the cascade's projected
+                    finish: structural − working-day cascade slip.
+                    Negative => task is that many working days past
+                    its slack, driving the project finish. Em-dash
+                    when null (not yet computed). RED text when <= 0
+                    (at or past the cliff); normal when > 0. */}
                 <td
                   data-testid={`task-remaining-float-${t.activity_code}`}
                   className="tabular-nums text-xs"
                   title={
                     remaining == null
                       ? "Remaining float not yet computed"
-                      : structural != null && remaining === structural
-                        ? "Full float available — no open blockers consuming impact"
+                      : remaining > 0
+                        ? `${remaining} working days of float remaining of ${structural ?? "?"} structural`
                         : remaining === 0
-                          ? "All float consumed — any new event pushes this task onto the critical path"
-                          : `${remaining}d remaining of ${structural}d structural float (consumed by open blockers)`
+                          ? "Zero float remaining — at the edge; any further slip drives the project finish"
+                          : `All float consumed — this task is ${Math.abs(remaining)} working days past its slack and is driving the project finish.`
                   }
                 >
                   {remaining == null ? (
                     <span className="text-slate-300">—</span>
-                  ) : remaining === 0 && structural != null && structural > 0 ? (
-                    <span className="text-rose-700 font-semibold">0</span>
-                  ) : structural != null && remaining < structural ? (
-                    <span className="text-amber-700">{remaining}</span>
+                  ) : remaining <= 0 ? (
+                    <span className="text-rose-700 font-semibold">{remaining}</span>
                   ) : (
                     <span className="text-slate-700">{remaining}</span>
                   )}
@@ -579,8 +596,12 @@ export default function Tasks() {
       {/* CP / Float legend */}
       {tasks.length > 0 && (
         <div className="text-xs text-slate-500 mt-2 flex flex-wrap gap-4">
-          <span><span className="pill pill-red">CP</span> Critical Path — zero float, any slip delays the project finish.</span>
-          <span><strong>Float</strong> (slack) — calendar days an activity can slip without delaying the project. High floats (e.g. 40+) usually mean the source schedule has no predecessor links between activities.</span>
+          <span><span className="pill pill-red">CP</span> Critical Path — zero structural float, any slip delays the project finish.</span>
+          <span><span className="pill bg-amber-100 text-amber-900 border border-amber-300">CP*</span> Effectively critical — all float consumed by delays/cascade; driving the project finish.</span>
+          {/* CPM Bug 3.B/3.G (2026-05-16) -- float is WORKING days
+              (Mon-Fri), not calendar. */}
+          <span><strong>Float</strong> (slack) — working days an activity can slip without delaying the project. High floats (e.g. 40+) usually mean the source schedule has no predecessor links between activities.</span>
+          <span><strong>Rem Float</strong> — structural float minus working-day cascade slip. Negative (red) = task is past its slack and driving the finish.</span>
         </div>
       )}
     </div>

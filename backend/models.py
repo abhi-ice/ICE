@@ -756,12 +756,38 @@ class Task(ReadModel):
     is_critical_path: bool = False
     total_float_days: Optional[int] = None
     # CPM Part L-2 (2026-05-16) -- live remaining float column.
-    # structural_float_days minus sum of currently-open blocker
-    # impacts on this task (delays + RFIs + over-SLA submittals).
-    # Refreshed by compute_remaining_float_for_tasks on every
-    # auto_recompute_after_event. Clamped at 0. Migration 021
-    # backfills this field on all existing tasks.
+    #
+    # CPM Bug 3.E (2026-05-16) -- now derived from the CASCADE'S
+    # projected dates, not the direct-blocker sum:
+    #   remaining_float_days = total_float_days
+    #                          - working_days_between(planned_finish,
+    #                                                  projected_finish_date)
+    # This counts INHERITED cascade slip, not just delays directly
+    # linked to the task. SIGNED -- may be NEGATIVE (NOT clamped at
+    # 0). A negative value means the task has consumed all its
+    # structural float and is that many working days into the red,
+    # driving the project finish (standard CPM negative-float
+    # semantics, same as Primavera P6). Refreshed by
+    # compute_remaining_float_for_tasks; ordering depends on
+    # compute_projected_finish_dates running first.
     remaining_float_days: Optional[int] = None
+    # CPM Bug 3.F (2026-05-16) -- "effectively critical" flag.
+    # True when remaining_float_days <= 0 -- the task has consumed
+    # all its float (by direct delay OR inherited cascade) and now
+    # drives the project finish. DISTINCT from is_critical_path,
+    # which stays a pure STRUCTURAL network metric (float <= 0 in
+    # the un-delayed schedule). A structural-CP task is trivially
+    # also is_currently_critical (0 <= 0). Computed alongside
+    # remaining_float_days in compute_remaining_float_for_tasks.
+    is_currently_critical: Optional[bool] = None
+    # CPM Cruft 3.G (2026-05-16) -- persisted working-day slip.
+    # working_days_between(planned_finish, projected_finish_date),
+    # or None when the task did not move. Written by
+    # compute_projected_finish_dates in lock-step with
+    # projected_finish_date. The Tasks page Slip column can read
+    # this directly; exports / API consumers get a real value
+    # instead of recomputing.
+    slip_days: Optional[int] = None
     lookahead_status: LookaheadStatus = "not_in_window"
     # CPM Part A (2026-05-15) -- read model accepts both legacy bare-
     # string predecessors and the new dict form. Migration 018 converts

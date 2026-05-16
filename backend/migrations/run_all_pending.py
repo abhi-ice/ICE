@@ -160,6 +160,16 @@ MIGRATIONS = [
     # backfills the remaining_float_days field; 022 corrects its
     # units.
     "migrations.022_working_day_float_recompute",
+    # CPM Bug 3.E/3.F/3.G (2026-05-16) -- rem-float cascade recompute.
+    # Refreshes remaining_float_days (now SIGNED -- derived from the
+    # cascade's projected_finish_date, counts inherited slip, not
+    # clamped at 0), is_currently_critical (new field), and slip_days
+    # (new persisted field) on every existing task. Per project: runs
+    # the full auto_recompute_after_event chain. REM_FLOAT_CASCADE_
+    # RECOMPUTED audit per tenant; idempotent. Must run AFTER 022 --
+    # 022 sets working-day total_float_days; 023 derives the cascade-
+    # aware remaining float from it.
+    "migrations.023_rem_float_cascade_recompute",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
