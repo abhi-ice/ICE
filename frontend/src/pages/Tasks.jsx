@@ -415,7 +415,8 @@ export default function Tasks() {
               <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
               <th title="Open blockers (delays / RFIs / SLA-breached submittals / field-issues linked to this task). Click to see them. QC issues + safety events stay linked for the gallery but don't surface here.">Blockers</th>
               <th title="Critical Path — these activities have zero float, any slip pushes the project finish.">CP</th>
-              <th title="Float (a.k.a. slack): how many calendar days an activity can slip without delaying the project finish. High floats mean weak or missing predecessor links in the source file.">Float (d)</th>
+              <th title="Float (a.k.a. slack): how many working days an activity can slip without delaying the project finish. Structural metric — does NOT decrease from logged delays. (CPM Part L: working days, was calendar days pre-Part-L.)">Float (d)</th>
+              <th title="Remaining float: structural float minus the sum of impact days from currently-open blockers (delays + RFIs + over-SLA submittals) on this task. Updates live as events are added or resolved. Goes UP when delays close. Light-red row tint when 0 (any new event pushes CP). CPM Part L-2.">Rem Float (d)</th>
               <th title="Resource gap. Surfaces when the master schedule's trade demand exceeds crew supply on at least one day in this task's date range.">Gap</th>
               <th></th>
             </tr>
@@ -429,10 +430,23 @@ export default function Tasks() {
               // applies a slightly darker rose tint so the user can
               // tell "this is on the CP" (pink) from "this has
               // projected slip" (rose).
+              // CPM Part L-2 (2026-05-16) -- live remaining-float
+              // tint. When remaining_float_days is exactly 0 (and
+              // structural float is > 0, so the task wasn't already
+              // CP), the row is at the cliff: any new event pushes
+              // it onto the critical path. Tint slightly darker than
+              // the slip-rose tint so PMs can scan for "tasks that
+              // can't absorb another delay."
               const slipTint = slip > 0 ? "bg-rose-50" : "";
+              const structural = t.total_float_days;
+              const remaining = t.remaining_float_days;
+              const cliffTint = (
+                remaining === 0
+                && structural != null && structural > 0
+              ) ? "bg-rose-100" : "";
               const rowClass = t.is_critical_path
                 ? "bg-red-50/40"
-                : slipTint;
+                : (cliffTint || slipTint);
               return (
               <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={rowClass}>
                 <td className="tabular-nums text-xs text-slate-500">{idx + 1}</td>
@@ -508,8 +522,37 @@ export default function Tasks() {
                   />
                 </td>
                 <td>{t.is_critical_path ? <span className="pill pill-red" title="Critical Path">CP</span> : null}</td>
-                <td className="tabular-nums text-xs" title="Days of slack before this task delays the project finish">
+                <td className="tabular-nums text-xs" title="Structural working-day float — does NOT decrease from logged events">
                   {t.total_float_days ?? "—"}
+                </td>
+                {/* CPM Part L-2 (2026-05-16) -- live remaining float.
+                    Em-dash when null/undefined (legacy rows pre-
+                    migration 021 OR tasks where compute_remaining_
+                    float hasn't run yet). Rendered with subtle
+                    text color cue: green when full (= structural),
+                    amber when partially consumed, red when 0. */}
+                <td
+                  data-testid={`task-remaining-float-${t.activity_code}`}
+                  className="tabular-nums text-xs"
+                  title={
+                    remaining == null
+                      ? "Remaining float not yet computed"
+                      : structural != null && remaining === structural
+                        ? "Full float available — no open blockers consuming impact"
+                        : remaining === 0
+                          ? "All float consumed — any new event pushes this task onto the critical path"
+                          : `${remaining}d remaining of ${structural}d structural float (consumed by open blockers)`
+                  }
+                >
+                  {remaining == null ? (
+                    <span className="text-slate-300">—</span>
+                  ) : remaining === 0 && structural != null && structural > 0 ? (
+                    <span className="text-rose-700 font-semibold">0</span>
+                  ) : structural != null && remaining < structural ? (
+                    <span className="text-amber-700">{remaining}</span>
+                  ) : (
+                    <span className="text-slate-700">{remaining}</span>
+                  )}
                 </td>
                 <td><TaskGapIcon gap={gapByTaskId[t.id]} /></td>
                 <td className="text-right">
@@ -524,11 +567,11 @@ export default function Tasks() {
               );
             })}
             {!displayTasks.length && tasks.length > 0 && (
-              <tr><td colSpan="18" className="text-center py-8 text-sm text-slate-500">
+              <tr><td colSpan="19" className="text-center py-8 text-sm text-slate-500">
                 No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.
               </td></tr>
             )}
-            {!tasks.length && <tr><td colSpan="18" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
+            {!tasks.length && <tr><td colSpan="19" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
           </tbody>
         </table>
       </div>

@@ -136,6 +136,11 @@ export default function Lookahead() {
               <th title="Projected start date when an open delay or RFI pushes the task forward via CPM walk-forward.">Impacted Start</th>
               <th title="Projected finish date — planned_finish + accumulated open-delay shift through CPM predecessors.">Impacted Finish</th>
               <th title="Days of slip: projected_finish_date − planned_finish. Em-dash when zero. Light-red row tint when > 0.">Slip (d)</th>
+              {/* CPM Part L-2 (2026-05-16) -- live remaining float
+                  on Lookahead page mirrors the Tasks page column.
+                  PMs scanning the 14-day window see at a glance
+                  which tasks are at the cliff (rem float = 0). */}
+              <th title="Remaining float (working days) = structural float minus open blocker impact days. Updates live as delays/RFIs/submittals open and close.">Rem Float</th>
               <th>%</th>
               <th title="Bucket C1 Phase 2 computed_status">Status</th>
             </tr></thead>
@@ -211,6 +216,22 @@ export default function Lookahead() {
                         ? <span className="text-rose-700 font-semibold">+{slip}</span>
                         : <span className="text-slate-300">—</span>}
                     </td>
+                    {/* CPM Part L-2 (2026-05-16) -- remaining float cell.
+                        Same coloring as Tasks page: red when 0, amber
+                        when partial, neutral when full / null. */}
+                    <td
+                      data-testid={`lookahead-remaining-float-${t.activity_code}`}
+                      className="tabular-nums text-xs"
+                    >
+                      {(() => {
+                        const r = t.remaining_float_days;
+                        const s = t.total_float_days;
+                        if (r == null) return <span className="text-slate-300">—</span>;
+                        if (r === 0 && s != null && s > 0) return <span className="text-rose-700 font-semibold">0</span>;
+                        if (s != null && r < s) return <span className="text-amber-700">{r}</span>;
+                        return <span className="text-slate-700">{r}</span>;
+                      })()}
+                    </td>
                     <td>{t.pct_complete}%</td>
                     <td>
                       <span data-testid={`lookahead-status-${t.activity_code}`}
@@ -226,11 +247,11 @@ export default function Lookahead() {
                 );
               })}
               {!displayRows.length && rows.length > 0 && (
-                <tr><td colSpan="10" className="text-center py-8 text-sm text-slate-500">
+                <tr><td colSpan="11" className="text-center py-8 text-sm text-slate-500">
                   No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.
                 </td></tr>
               )}
-              {!rows.length && <tr><td colSpan="10" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
+              {!rows.length && <tr><td colSpan="11" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
             </tbody>
           </table>
         </div>
