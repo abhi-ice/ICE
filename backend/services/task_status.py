@@ -646,6 +646,18 @@ async def compute_remaining_float_for_tasks(
 
     Idempotent: skip write when the value didn't change. Returns
     {scanned, changed}.
+
+    CPM Bug 3.B (2026-05-16) -- UNITS-CONSISTENT working days. Both
+    operands are working-day counts:
+      * structural (total_float_days) -- working days, set by
+        compute_cpm via working_days_between(ES, LS).
+      * total_open (sum of open blocker impacts) -- working days,
+        since delay / RFI / submittal projected_impact_days are
+        entered + summed in working days.
+    The subtraction is therefore units-clean: remaining_float_days
+    is a working-day count. Pre-Bug-3.B the structural side was
+    calendar days and the impact side working days -- the mismatch
+    produced a remaining-float number nobody could reconcile.
     """
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {

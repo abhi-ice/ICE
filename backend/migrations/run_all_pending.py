@@ -150,6 +150,16 @@ MIGRATIONS = [
     # per-tenant audit existence check + helper's per-task idempotent
     # skip-when-unchanged.
     "migrations.021_remaining_float_backfill",
+    # CPM Bug 3.B (2026-05-16) -- working-day float recompute. Forces
+    # a one-time refresh of total_float_days + remaining_float_days
+    # to WORKING-day counts on every existing task (pre-Bug-3.B they
+    # were calendar-day). Per project: compute_cpm() then compute_
+    # remaining_float_for_tasks(). WORKING_DAY_FLOAT_RECOMPUTED audit
+    # per tenant; idempotent (both helpers skip unchanged writes +
+    # per-tenant audit existence check). Must run AFTER 021 -- 021
+    # backfills the remaining_float_days field; 022 corrects its
+    # units.
+    "migrations.022_working_day_float_recompute",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

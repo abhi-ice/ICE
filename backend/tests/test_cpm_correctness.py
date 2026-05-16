@@ -1572,21 +1572,22 @@ async def _test_rfi_impact_pushes_slip_and_impacted_finish():
         f"RFI 3d impact should push 5/4 -> 5/7 (no weekend in span); "
         f"got {t_short['projected_start_date']!r}"
     )
-    # Slip in calendar days from planned_finish (5/8 Fri) to
-    # projected (5/13 Wed) = 5 calendar days (Sat, Sun, Mon, Tue,
-    # Wed). The Tasks UI's slipDays() helper renders calendar days
-    # because users read off a calendar — that's the displayed
-    # slip column. The underlying SHIFT was 3 working days; calendar
-    # slip reflects the 2 weekend days inside the span. Part L
-    # working-day fix doesn't change slipDays() (frontend), only
-    # the projected_finish_date (backend). Slip changes from 3
-    # calendar (pre-Part-L) to 5 calendar (Part L) because the
-    # weekend now contributes to the calendar slip count.
-    slip = (
-        date.fromisoformat(t_short["projected_finish_date"])
-        - date.fromisoformat(t_short["planned_finish"])
-    ).days
-    assert slip == 5, f"slip (calendar) expected 5, got {slip}"
+    # CPM Bug 3.B (2026-05-16) -- Slip is now a WORKING-DAY count.
+    # working_days_between(planned_finish 5/8 Fri, projected 5/13
+    # Wed) = Fri(5/8), Mon(5/11), Tue(5/12) = 3 -- exactly the
+    # 3-working-day RFI impact the super entered. The frontend
+    # slipDays() helper (dateUtil.js) computes the same working-day
+    # count. Pre-Bug-3.B this test asserted 5 (calendar days, which
+    # counted the 5/9-5/10 weekend); that mismatch -- PM enters "3",
+    # sees "+5" -- is precisely the units bug Bug 3.B fixes.
+    slip = working_days_between(
+        date.fromisoformat(t_short["planned_finish"]),
+        date.fromisoformat(t_short["projected_finish_date"]),
+    )
+    assert slip == 3, (
+        f"slip (working days) expected 3 -- equals the RFI impact "
+        f"the super entered; got {slip}"
+    )
     # T_LONG has no RFI / delay -> no shift.
     assert t_long.get("projected_finish_date") is None
     assert t_long.get("projected_start_date") is None
@@ -2932,6 +2933,217 @@ async def _test_two_predecessors_only_binding_one_cascades():
 
 
 # =============================================================================
+# CPM Bug 3.B (2026-05-16) -- Float / Slip / Remaining-float in WORKING
+# days. Part L moved DATE arithmetic to working days; Bug 3.B confirms
+# all the SCALAR float values (structural float, slip, remaining float,
+# verdict inputs) are working-day counts too -- units-consistent with
+# the working-day impact values supers enter. 4 regression tests.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# WD-1. test_structural_float_in_working_days
+# -----------------------------------------------------------------------------
+async def _test_structural_float_in_working_days():
+    """Structural float (total_float_days) is a WORKING-DAY count.
+
+    Setup:
+        T_LONG  dur 10, root, planned_start 5/4 Mon  -> EF 5/15 Fri
+        T_SHORT dur 5,  root, planned_start 5/4 Mon  -> EF 5/8 Fri
+        (unconnected; both anchor the project tail)
+
+    compute_cpm backward pass:
+        project_finish = 5/15 Fri
+        T_SHORT.LF = 5/15, LS = 5/15 - 4 wd = 5/11 Mon
+        T_SHORT.ES = 5/4 Mon
+
+    The ES->LS span is Mon 5/4 -> Mon 5/11: exactly one calendar
+    week. Calendar diff = 7 days; WORKING-day diff = 5 (Mon-Fri).
+
+    Assert: T_SHORT.total_float_days == 5  (working days, NOT 7).
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    t_short = await _get_task("task-SHORT")
+    # The structural float must be the working-day count (5), NOT the
+    # calendar span (7) between ES Mon 5/4 and LS Mon 5/11.
+    assert t_short["total_float_days"] == 5, (
+        f"structural float must be a WORKING-day count: ES Mon 5/4 "
+        f"-> LS Mon 5/11 is 5 working days (calendar span is 7); "
+        f"got {t_short['total_float_days']!r}"
+    )
+    print("WD-1 PASS: structural float = 5 working days (not 7 calendar)")
+
+
+# -----------------------------------------------------------------------------
+# WD-2. test_slip_in_working_days
+# -----------------------------------------------------------------------------
+async def _test_slip_in_working_days():
+    """Slip is a WORKING-DAY count: a 5-working-day delay shows
+    Slip "+5", not the calendar "+7" a Fri->Fri span produces.
+
+    Setup:
+        T  dur 5, planned 5/4 Mon - 5/8 Fri
+
+    Action: log a 5-working-day delay on T.
+
+    The projected_finish lands the following Friday 5/15 (5/8 + 5
+    working days). Slip = working_days_between(planned_finish 5/8,
+    projected 5/15) = Fri,Mon,Tue,Wed,Thu = 5. The calendar span
+    5/8 -> 5/15 is 7 days (includes the 5/9-5/10 weekend).
+
+    Assert: working-day slip == 5 (matches the entered delay), and
+    the calendar span is 7 (the wrong number the PM used to see).
+    """
+    _reset()
+    _add_task("T", duration=5, planned_start=D(5, 4),
+              planned_finish=D(5, 8))
+    await compute_cpm(TENANT, PROJECT)
+
+    await _simulate_create_delay("task-T", impact_days=5)
+    t = await _get_task("task-T")
+    assert t["projected_finish_date"] == "2026-05-15", (
+        f"T + 5 working days from 5/8 -> 5/15; got "
+        f"{t['projected_finish_date']!r}"
+    )
+    # Slip the way the fixed frontend slipDays() computes it.
+    slip_working = working_days_between(
+        date.fromisoformat(t["planned_finish"]),
+        date.fromisoformat(t["projected_finish_date"]),
+    )
+    assert slip_working == 5, (
+        f"slip must be 5 WORKING days (== the entered delay); got "
+        f"{slip_working}"
+    )
+    # The calendar span is the misleading 7 the PM used to see.
+    slip_calendar = (
+        date.fromisoformat(t["projected_finish_date"])
+        - date.fromisoformat(t["planned_finish"])
+    ).days
+    assert slip_calendar == 7, (
+        f"sanity: calendar span is 7 (the pre-Bug-3.B wrong value); "
+        f"got {slip_calendar}"
+    )
+    print("WD-2 PASS: slip = 5 working days (calendar span was 7)")
+
+
+# -----------------------------------------------------------------------------
+# WD-3. test_remaining_float_units_consistent
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_units_consistent():
+    """remaining_float_days = structural_float - sum_open_impacts,
+    with BOTH operands in working days.
+
+    Setup:
+        T_LONG  dur 15, root  (backbone -> T_SHORT working float 10)
+        T_SHORT dur 5,  root
+
+    compute_cpm gives T_SHORT a working-day structural float of 10.
+
+    Action: log a 6-working-day delay on T_SHORT.
+
+    Assert: T_SHORT.remaining_float_days == 4  (10 - 6, both
+            working-day counts -- units-clean subtraction).
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    t = await _get_task("task-SHORT")
+    assert t["total_float_days"] == 10, (
+        f"setup sanity: T_SHORT working-day structural float should "
+        f"be 10 (15 - 5); got {t['total_float_days']!r}"
+    )
+
+    await _simulate_create_delay("task-SHORT", impact_days=6)
+    t = await _get_task("task-SHORT")
+    # Structural float unchanged (pure network metric).
+    assert t["total_float_days"] == 10
+    # remaining = 10 working - 6 working = 4 working. Units-clean.
+    assert t["remaining_float_days"] == 4, (
+        f"remaining_float should be 4 (10 working - 6 working); got "
+        f"{t.get('remaining_float_days')!r}"
+    )
+    print("WD-3 PASS: remaining float 4 (10 - 6, units-consistent)")
+
+
+# -----------------------------------------------------------------------------
+# WD-4. test_verdict_uses_working_day_float
+# -----------------------------------------------------------------------------
+async def _test_verdict_uses_working_day_float():
+    """The "within float / pushes critical path" verdict compares
+    working-day impact against working-day float. THIS is the
+    correctness-critical, federal-TIA-defensibility part of Bug 3.B.
+
+    Setup (chosen so calendar float != working float):
+        T_LONG  dur 9, root, planned_start 5/7 Thu  -> EF 5/19 Tue
+        T_SHORT dur 5, root, planned_start 5/7 Thu  -> EF 5/13 Wed
+
+    compute_cpm backward pass:
+        project_finish = 5/19 Tue
+        T_SHORT.LF = 5/19, LS = 5/19 - 4 wd = 5/13 Wed
+        T_SHORT.ES = 5/7 Thu
+
+    The ES->LS span is Thu 5/7 -> Wed 5/13:
+        WORKING-day float = 4  (Thu, Fri, Mon, Tue)
+        calendar-day span = 6  (includes the 5/9-5/10 weekend)
+
+    Action: log a 5-working-day delay on T_SHORT.
+
+    Verdict math (_resolve_task_impacts):
+        float_at_logging_days = 4   (working-day structural float)
+        prior_open_impacts    = 0   (first event on the task)
+        remaining_float       = 4
+        impact = 5  ->  consumes_float_only  = (5 <= 4) = False
+                        pushes_critical_path = (5 >  4) = True
+
+    Under the OLD calendar-day float (6) the verdict would have
+    WRONGLY read "within float" (5 <= 6) -- a delay that actually
+    exhausts the working-day slack mis-classified as harmless. That
+    is precisely the TIA-defensibility risk Bug 3.B closes.
+
+    Assert: pushes_critical_path == True, consumes_float_only ==
+    False, float_at_logging_days == 4 (working, not the calendar 6).
+    """
+    _reset()
+    _add_task("LONG", duration=9, planned_start=D(5, 7))
+    _add_task("SHORT", duration=5, planned_start=D(5, 7))
+    await compute_cpm(TENANT, PROJECT)
+
+    t_short = await _get_task("task-SHORT")
+    assert t_short["total_float_days"] == 4, (
+        f"setup sanity: T_SHORT working-day float should be 4 "
+        f"(ES Thu 5/7 -> LS Wed 5/13, weekend excluded); got "
+        f"{t_short['total_float_days']!r}"
+    )
+
+    delay = await _simulate_create_delay("task-SHORT", impact_days=5)
+    snap = (await _get_delay(delay["id"]))["per_task_impacts"][0]
+    # The verdict snapshot inputs are working-day counts.
+    assert snap["float_at_logging_days"] == 4, (
+        f"float_at_logging_days must be the WORKING-day float (4), "
+        f"not the calendar span (6); got "
+        f"{snap['float_at_logging_days']!r}"
+    )
+    assert snap["remaining_float_at_logging_days"] == 4
+    # 5 working-day impact > 4 working-day remaining float.
+    assert snap["consumes_float_only"] is False, (
+        f"5-day impact EXCEEDS 4-day working float -> NOT within "
+        f"float; got consumes_float_only={snap['consumes_float_only']!r}"
+    )
+    assert snap["pushes_critical_path"] is True, (
+        f"5 > 4 (working days) -> pushes_critical_path must be True. "
+        f"Under the old calendar-day float (6) this would WRONGLY "
+        f"read within-float; got "
+        f"pushes_critical_path={snap['pushes_critical_path']!r}"
+    )
+    print("WD-4 PASS: verdict uses working-day float "
+          "(5 > 4 -> pushes CP; calendar float 6 would have lied)")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -3099,6 +3311,23 @@ def test_two_predecessors_only_binding_one_cascades():
     asyncio.run(_test_two_predecessors_only_binding_one_cascades())
 
 
+# CPM Bug 3.B (2026-05-16) -- working-day float / slip / remaining tests.
+def test_structural_float_in_working_days():
+    asyncio.run(_test_structural_float_in_working_days())
+
+
+def test_slip_in_working_days():
+    asyncio.run(_test_slip_in_working_days())
+
+
+def test_remaining_float_units_consistent():
+    asyncio.run(_test_remaining_float_units_consistent())
+
+
+def test_verdict_uses_working_day_float():
+    asyncio.run(_test_verdict_uses_working_day_float())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -3181,12 +3410,21 @@ def _run_all():
          _test_delay_partially_absorbed_then_cascades),
         ("test_two_predecessors_only_binding_one_cascades",
          _test_two_predecessors_only_binding_one_cascades),
+        # CPM Bug 3.B (2026-05-16) -- working-day float / slip / remaining.
+        ("test_structural_float_in_working_days",
+         _test_structural_float_in_working_days),
+        ("test_slip_in_working_days",
+         _test_slip_in_working_days),
+        ("test_remaining_float_units_consistent",
+         _test_remaining_float_units_consistent),
+        ("test_verdict_uses_working_day_float",
+         _test_verdict_uses_working_day_float),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
-    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L "
-          "+ Slip-cascade fix (11 + 5 + 6 + 6 + 7 + 5 tests)")
+    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L + "
+          "Slip-cascade + Bug 3.B (11 + 5 + 6 + 6 + 7 + 5 + 4 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -3203,7 +3441,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 40 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 44 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
