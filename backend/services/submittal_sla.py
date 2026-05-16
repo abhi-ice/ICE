@@ -40,28 +40,26 @@ from typing import Optional, Any
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, SUBMITTAL_DEFAULT_SLA_DAYS
 from audit import write_audit
+# CPM Step 1 (2026-05-17) -- federal-holiday set consolidated into
+# services/working_days.py (single source of truth). submittal_sla
+# previously held its own FEDERAL_HOLIDAYS_2026 copy; it now imports
+# the canonical multi-year set. For any 2026 date the membership is
+# byte-identical to the old 2026-only copy, so 2026 SLA math is
+# unchanged; SLAs spanning 2027+ now correctly skip those years'
+# holidays too.
+from services.working_days import FEDERAL_HOLIDAYS
 
 log = logging.getLogger("submittal_sla")
 
 
 # =====================================================================
-# Federal holiday set (2026). Hardcoded per spec; future bucket reads
-# a holidays library or per-project table. List sourced from OPM
-# 2026 calendar.
+# Federal holiday set -- CPM Step 1 (2026-05-17): consolidated into
+# services/working_days.py::FEDERAL_HOLIDAYS (single source of truth,
+# 2025-2028, observed-date rules). Imported above. The old module-
+# local FEDERAL_HOLIDAYS_2026 frozenset has been removed; the alias
+# below keeps any out-of-module reference to the old name working.
 # =====================================================================
-FEDERAL_HOLIDAYS_2026: set[date] = {
-    date(2026, 1, 1),    # New Year's Day
-    date(2026, 1, 19),   # Martin Luther King Jr. Day
-    date(2026, 2, 16),   # Presidents' Day
-    date(2026, 5, 25),   # Memorial Day
-    date(2026, 6, 19),   # Juneteenth
-    date(2026, 7, 3),    # Independence Day (observed; July 4 is Sat)
-    date(2026, 9, 7),    # Labor Day
-    date(2026, 10, 12),  # Columbus Day
-    date(2026, 11, 11),  # Veterans Day
-    date(2026, 11, 26),  # Thanksgiving
-    date(2026, 12, 25),  # Christmas Day
-}
+FEDERAL_HOLIDAYS_2026 = FEDERAL_HOLIDAYS  # backward-compat alias
 
 # Aging buckets per Phase 5 spec. Inclusive-lower, exclusive-upper.
 AGING_BUCKETS = [
@@ -144,10 +142,17 @@ async def _project_no_work_days(
 # =====================================================================
 
 def _is_working_day(d: date, no_work: set[date]) -> bool:
-    """True if `d` counts as a working day for SLA purposes."""
+    """True if `d` counts as a working day for SLA purposes.
+
+    CPM Step 1 -- the federal-holiday check now uses the consolidated
+    FEDERAL_HOLIDAYS set (imported from services.working_days). For
+    2026 dates this is byte-identical to the old 2026-only set, so
+    submittal SLA results for 2026 are unchanged; SLAs spanning
+    2027+ correctly skip those years' holidays too.
+    """
     if d.weekday() >= 5:        # Sat / Sun
         return False
-    if d in FEDERAL_HOLIDAYS_2026:
+    if d in FEDERAL_HOLIDAYS:
         return False
     if d in no_work:
         return False

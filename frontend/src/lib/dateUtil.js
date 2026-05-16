@@ -115,17 +115,54 @@ export function formatPredecessors(preds) {
 }
 
 
+// CPM Step 1 (2026-05-17) -- federal-holiday calendar, JS MIRROR of
+// backend/services/working_days.py::FEDERAL_HOLIDAYS. MUST be kept
+// in sync with that set. Observed dates (a Saturday holiday observes
+// on the preceding Friday, a Sunday holiday on the following Monday).
+// Stored as "YYYY-MM-DD" strings for O(1) membership from a Date.
+// Range 2025-2028; outside that, weekends still skip but the holiday
+// filter is inert (graceful degradation -- same as the backend).
+const FEDERAL_HOLIDAYS = new Set([
+  // 2025
+  "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-19",
+  "2025-07-04", "2025-09-01", "2025-10-13", "2025-11-11", "2025-11-27",
+  "2025-12-25",
+  // 2026
+  "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25", "2026-06-19",
+  "2026-07-03", "2026-09-07", "2026-10-12", "2026-11-11", "2026-11-26",
+  "2026-12-25",
+  // 2027
+  "2027-01-01", "2027-01-18", "2027-02-15", "2027-05-31", "2027-06-18",
+  "2027-07-05", "2027-09-06", "2027-10-11", "2027-11-11", "2027-11-25",
+  "2027-12-24", "2027-12-31",
+  // 2028
+  "2028-01-17", "2028-02-21", "2028-05-29", "2028-06-19", "2028-07-04",
+  "2028-09-04", "2028-10-09", "2028-11-10", "2028-11-23", "2028-12-25",
+]);
+
+// Local YYYY-MM-DD string for a Date (uses the Date's local fields,
+// matching how the Date objects below are constructed at T00:00:00).
+function _isoKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
 // CPM Bug 3.B (2026-05-16) -- working-day helpers, JS mirror of
 // backend/services/working_days.py. Slip / float scalars must be
-// WORKING-DAY counts (Mon-Fri), consistent with the working-day
-// Impacted dates (Part L) and the working-day impact values supers
-// enter. A PM who logs a "5 day" delay must see Slip "+5", not the
-// calendar "+7" that a Fri->Fri span produced pre-Bug-3.B.
+// WORKING-DAY counts, consistent with the working-day Impacted dates
+// (Part L) and the working-day impact values supers enter.
+//
+// CPM Step 1 (2026-05-17) -- now also FEDERAL-HOLIDAY-AWARE: a
+// business day is Mon-Fri AND not a federal holiday. This keeps the
+// frontend Slip computation in sync with the holiday-aware backend.
 //
 // JS Date.getDay(): Sun=0, Mon=1, ..., Fri=5, Sat=6.
 export function isBusinessDay(d) {
   const wd = d.getDay();
-  return wd >= 1 && wd <= 5;
+  if (wd < 1 || wd > 5) return false;       // weekend
+  return !FEDERAL_HOLIDAYS.has(_isoKey(d));  // federal holiday
 }
 
 // Count of working days from `startIso` (inclusive) to `endIso`
