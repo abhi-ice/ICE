@@ -466,6 +466,11 @@ async def compute_projected_finish_dates(
     # derivation. Local import keeps the services.cpm <-> services.
     # task_status pairing free of a module-load cycle (cpm.py imports
     # task_status only lazily inside auto_recompute_after_event).
+    #
+    # CPM Step 1 (2026-05-17) -- add_working_days / working_days_between
+    # are FEDERAL-HOLIDAY-AWARE by default. The projected-date shifts
+    # and slip computed below now skip federal holidays, so an
+    # Impacted Start / Finish can no longer land on July 4 etc.
     from services.working_days import add_working_days, working_days_between
     from services.cpm import _derive_implied_start
 

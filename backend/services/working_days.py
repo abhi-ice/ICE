@@ -1,135 +1,185 @@
 """CPM Part L-1 (2026-05-16) -- working-day date arithmetic helpers.
 
-Federal construction CPM math operates in WORKING DAYS (Mon-Fri),
-NOT calendar days. Pre-Part-L cpm.py used pure calendar arithmetic
-throughout, which produced dates landing on Saturdays and Sundays
-when delays / RFIs / submittals shifted tasks forward. Field
-supers lost trust immediately ("Impacted Finish 05/17 Sunday? Our
-crew doesn't work weekends.").
+CPM Step 1 (2026-05-17, Issue 3.D) -- FEDERAL-HOLIDAY-AWARE.
 
-Part L moves ALL date arithmetic to working days. The forward
-pass, backward pass, lag handling, duration accumulation, and
-projected_finish_date / projected_start_date shifts all use the
-helpers in this module. Only INPUT lag values can be calendar
-(e.g., "concrete cure 7 days" is genuine calendar) -- but the
-predecessor schema {code, type, lag_days} has no elapsed flag,
-so this module treats ALL lag values as working days.
+Federal construction CPM math operates in WORKING DAYS, NOT calendar
+days. Pre-Part-L cpm.py used pure calendar arithmetic, producing
+dates that landed on Saturdays / Sundays. Part L fixed weekends.
+Step 1 closes the remaining gap: working days also skip US FEDERAL
+HOLIDAYS.
 
-This matches MS Project's default behavior for project schedules
-(Schedule From > Working Days), Primavera P6's day-count default,
-and the federal Critical Path Method conventions documented in
-FAR Part 36.
+WHY (Issue 3.D root cause): MS Project schedules -- and therefore
+the imported planned dates -- are built on a calendar that skips
+federal holidays. Pre-Step-1 this module skipped only Mon-Fri, so:
+  * compute_cpm re-derived dates treating July 4 / Memorial Day /
+    Juneteenth as ordinary working days, packing the schedule
+    tighter than the imported MS Project dates.
+  * the cascade could land an Impacted Start ON a federal holiday.
+Step 1 makes ALL working-day arithmetic holiday-aware so the
+engine's day-counting matches the contract schedule.
 
-DESIGN DECISIONS (resolved during Part L implementation):
+DESIGN DECISION D1 (Step 1) -- the `holidays` parameter on every
+helper defaults to None, and None means "use the built-in
+FEDERAL_HOLIDAYS set" (OPTION A: federal-aware BY DEFAULT). This
+guarantees no call site can accidentally stay holiday-blind -- a
+caller must OPT OUT explicitly by passing `holidays=frozenset()`
+(empty set) for the rare pure-weekend-only case. Each helper
+resolves the effective set ONCE at the top and threads the concrete
+set (never None) into its internal calls, so an explicit empty set
+propagates correctly through the recursion.
 
-  D1. Lag is working days unless explicitly flagged otherwise.
-      The predecessor dict {code, type, lag_days} has no elapsed
-      flag, so EVERY lag is working days. If a future schema
-      adds is_elapsed: bool, this module gains a calendar-mode
-      branch -- but that's future work.
+SCOPE: this is a FIXED federal-holiday calendar (the 11 US federal
+holidays, observed-date rules applied -- a Saturday holiday observes
+on the preceding Friday, a Sunday holiday on the following Monday).
+Project-specific calendars, state holidays, and per-project no-work
+days are OUT OF SCOPE for Step 1. (services/submittal_sla.py layers
+project no-work days on top of this set for SLA math; it imports
+FEDERAL_HOLIDAYS from here -- single source of truth.)
 
-  D2. If a predecessor finishes on a weekend (legacy data from
-      pre-Part-L imports), the forward pass rolls the pred_ef
-      back to prev_business_day BEFORE applying the +1 offset.
-      This prevents weekend successor starts on legacy schedules.
+DESIGN DECISIONS (Part L, unchanged):
+  D-L1. Lag is working days unless explicitly flagged otherwise.
+  D-L2. Weekend / holiday predecessor finishes get rolled back to
+        the prior business day before the +1 FS offset.
+  D-L3. Duration = 0 (milestones): no working-day accumulation.
+  D-L4. Empty / null lag treated as 0 working days.
+  D-L5. Backward pass mirrors forward: prev_business_day for the
+        FS offset.
 
-  D3. Duration = 0 (milestones) skip working-day arithmetic.
-      Milestone date = pred-derived start. Anchoring to a weekend
-      is still tolerated and rolled forward by next_business_day.
-
-  D4. Empty / null / missing lag treated as 0 working days.
-
-  D5. Backward pass mirrors forward: prev_business_day for FS
-      offset (instead of next_business_day in reverse).
-
-Holiday awareness is OUT OF SCOPE for Part L. Federal holidays
-live in services/submittal_sla.py::FEDERAL_HOLIDAYS_2026 already
-but are not yet wired into the CPM core. A future Part M can add
-a project-level holidays_calendar field and thread it through
-this module (every helper would take an optional holidays: set[date]
-kwarg). The current Mon-Fri filter handles the dominant case --
-field crews work Mon-Fri.
-
-ALL helpers operate on datetime.date. They DO NOT touch datetime.
-datetime (callers convert from ISO strings via date.fromisoformat).
+ALL helpers operate on datetime.date.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Optional
 
 
-def is_business_day(d: date) -> bool:
-    """True iff `d` is Mon-Fri.
+# =====================================================================
+# CPM Step 1 (2026-05-17) -- canonical US federal-holiday calendar.
+#
+# SINGLE SOURCE OF TRUTH. services/submittal_sla.py imports this set
+# (it previously held its own FEDERAL_HOLIDAYS_2026 copy -- now
+# consolidated here). The frontend mirror lives in
+# frontend/src/lib/dateUtil.js and MUST be kept in sync with this set.
+#
+# Each entry is the OBSERVED date (the actual day off):
+#   * a holiday on Saturday  -> observed the preceding Friday
+#   * a holiday on Sunday    -> observed the following Monday
+# Sourced from the US OPM federal-holiday calendars, 2025-2028.
+# Schedules running outside 2025-2028 degrade gracefully -- weekends
+# are still skipped, only the holiday filter is inert for those years.
+# A future bucket can swap this for python-holidays or a per-project
+# table; the helper signatures already accept an injected set.
+# =====================================================================
+FEDERAL_HOLIDAYS: frozenset[date] = frozenset({
+    # ---- 2025 ----
+    date(2025, 1, 1),     # New Year's Day (Wed)
+    date(2025, 1, 20),    # Martin Luther King Jr. Day
+    date(2025, 2, 17),    # Presidents' Day
+    date(2025, 5, 26),    # Memorial Day
+    date(2025, 6, 19),    # Juneteenth (Thu)
+    date(2025, 7, 4),     # Independence Day (Fri)
+    date(2025, 9, 1),     # Labor Day
+    date(2025, 10, 13),   # Columbus Day
+    date(2025, 11, 11),   # Veterans Day (Tue)
+    date(2025, 11, 27),   # Thanksgiving
+    date(2025, 12, 25),   # Christmas Day (Thu)
+    # ---- 2026 ----
+    date(2026, 1, 1),     # New Year's Day (Thu)
+    date(2026, 1, 19),    # Martin Luther King Jr. Day
+    date(2026, 2, 16),    # Presidents' Day
+    date(2026, 5, 25),    # Memorial Day
+    date(2026, 6, 19),    # Juneteenth (Fri)
+    date(2026, 7, 3),     # Independence Day observed (July 4 is Sat)
+    date(2026, 9, 7),     # Labor Day
+    date(2026, 10, 12),   # Columbus Day
+    date(2026, 11, 11),   # Veterans Day (Wed)
+    date(2026, 11, 26),   # Thanksgiving
+    date(2026, 12, 25),   # Christmas Day (Fri)
+    # ---- 2027 ----
+    date(2027, 1, 1),     # New Year's Day (Fri)
+    date(2027, 1, 18),    # Martin Luther King Jr. Day
+    date(2027, 2, 15),    # Presidents' Day
+    date(2027, 5, 31),    # Memorial Day
+    date(2027, 6, 18),    # Juneteenth observed (June 19 is Sat)
+    date(2027, 7, 5),     # Independence Day observed (July 4 is Sun)
+    date(2027, 9, 6),     # Labor Day
+    date(2027, 10, 11),   # Columbus Day
+    date(2027, 11, 11),   # Veterans Day (Thu)
+    date(2027, 11, 25),   # Thanksgiving
+    date(2027, 12, 24),   # Christmas Day observed (Dec 25 is Sat)
+    date(2027, 12, 31),   # New Year's Day 2028 observed (Jan 1 is Sat)
+    # ---- 2028 ----
+    date(2028, 1, 17),    # Martin Luther King Jr. Day
+    date(2028, 2, 21),    # Presidents' Day
+    date(2028, 5, 29),    # Memorial Day
+    date(2028, 6, 19),    # Juneteenth (Mon)
+    date(2028, 7, 4),     # Independence Day (Tue)
+    date(2028, 9, 4),     # Labor Day
+    date(2028, 10, 9),    # Columbus Day
+    date(2028, 11, 10),   # Veterans Day observed (Nov 11 is Sat)
+    date(2028, 11, 23),   # Thanksgiving
+    date(2028, 12, 25),   # Christmas Day (Mon)
+})
 
-    Used by every helper below. Future extension: a project-level
-    holidays_calendar would also filter out specific federal /
-    project no-work dates.
+
+def _resolve(holidays: Optional[frozenset]) -> frozenset:
+    """D1 -- None means the built-in federal set; an explicit set
+    (including an empty frozenset, to opt out) is used verbatim."""
+    return FEDERAL_HOLIDAYS if holidays is None else holidays
+
+
+def is_business_day(d: date, holidays: Optional[frozenset] = None) -> bool:
+    """True iff `d` is Mon-Fri AND not a federal holiday.
+
+    holidays=None -> built-in FEDERAL_HOLIDAYS (D1, Option A).
+    Pass holidays=frozenset() for weekend-only (no holiday filter).
     """
-    # datetime.date.weekday(): Mon=0, Tue=1, ..., Fri=4, Sat=5, Sun=6.
-    return d.weekday() < 5
+    # datetime.date.weekday(): Mon=0, ..., Fri=4, Sat=5, Sun=6.
+    return d.weekday() < 5 and d not in _resolve(holidays)
 
 
-def next_business_day(d: date) -> date:
-    """Returns the next business day strictly AFTER d.
+def next_business_day(d: date, holidays: Optional[frozenset] = None) -> date:
+    """Next business day strictly AFTER d, skipping weekends + holidays.
 
-    Examples:
-        Mon -> Tue
-        Fri -> next Mon (skipping Sat + Sun)
-        Sat -> next Mon
-        Sun -> next Mon
+    Examples (federal-aware default):
+        Fri before Memorial Day -> the Tuesday after (Mon is the
+        holiday, Sat/Sun the weekend).
     """
+    hol = _resolve(holidays)
     nd = d + timedelta(days=1)
-    while not is_business_day(nd):
+    while not is_business_day(nd, hol):
         nd += timedelta(days=1)
     return nd
 
 
-def prev_business_day(d: date) -> date:
-    """Returns the next business day strictly BEFORE d.
+def prev_business_day(d: date, holidays: Optional[frozenset] = None) -> date:
+    """Next business day strictly BEFORE d, skipping weekends + holidays.
 
-    Mirror of next_business_day for the backward pass. The CPM
-    backward-pass FS offset uses this to produce a predecessor's
-    LF candidate from a successor's LS on a weekend.
-
-    Examples:
-        Tue -> Mon
-        Mon -> prev Fri (skipping Sun + Sat)
-        Sun -> prev Fri
-        Sat -> prev Fri
+    Mirror of next_business_day for the backward pass.
     """
+    hol = _resolve(holidays)
     pd = d - timedelta(days=1)
-    while not is_business_day(pd):
+    while not is_business_day(pd, hol):
         pd -= timedelta(days=1)
     return pd
 
 
-def add_working_days(start: date, n: int) -> date:
-    """Add n working days. n can be 0, positive, or negative.
+def add_working_days(
+    start: date, n: int, holidays: Optional[frozenset] = None,
+) -> date:
+    """Add n working days, skipping weekends + federal holidays.
 
-    Semantic:
-      n = 0: returns start UNCHANGED if start is a business day;
-             rolls forward to next business day if start is weekend
-             (defensive against legacy weekend planned_start values).
-      n > 0: rolls forward n business days. add_working_days(Mon, 1)
-             returns Tue. add_working_days(Fri, 1) returns next Mon.
-             add_working_days(Mon, 5) returns next Mon (skipping
-             1 weekend).
-      n < 0: rolls backward |n| business days. add_working_days(Mon, -1)
-             returns prev Fri.
-
-    Used by:
-      * Forward pass: EF = add_working_days(ES, dur - 1)
-      * Forward pass FS lag: add_working_days(ef_rolled_forward, lag)
-      * Backward pass: LS = add_working_days(LF, -(dur - 1))
-      * Projected-finish shift: projected = add_working_days(planned, shift)
+    n = 0: returns start unchanged if it is a business day; rolls
+           forward to the next business day if start is a weekend
+           OR a holiday (D-L2 / D-L3).
+    n > 0 / n < 0: rolls forward / backward |n| business days.
     """
-    # First, anchor start onto a business day if it isn't already
-    # (D2: weekend predecessor finish gets rolled forward; D3: zero-
-    # duration milestones land on a business day too).
-    if not is_business_day(start):
-        # next_business_day takes "strictly after"; we want "today or next"
-        # so we step back one day and then call next_business_day.
-        start = next_business_day(start - timedelta(days=1))
+    hol = _resolve(holidays)
+    # Anchor start onto a business day if it isn't already (weekend
+    # OR holiday). next_business_day takes "strictly after", so step
+    # back one calendar day first to get "today or next".
+    if not is_business_day(start, hol):
+        start = next_business_day(start - timedelta(days=1), hol)
     if n == 0:
         return start
     d = start
@@ -137,49 +187,37 @@ def add_working_days(start: date, n: int) -> date:
     direction = 1 if n > 0 else -1
     while remaining > 0:
         d = d + timedelta(days=direction)
-        if is_business_day(d):
+        if is_business_day(d, hol):
             remaining -= 1
     return d
 
 
-def working_days_between(start: date, end: date) -> int:
+def working_days_between(
+    start: date, end: date, holidays: Optional[frozenset] = None,
+) -> int:
     """Count of working days from `start` (inclusive) to `end`
-    (exclusive). Negative when end < start.
+    (exclusive), skipping weekends + federal holidays. Negative when
+    end < start.
 
-    Used by:
-      * Part L-3 actual_impact_days computation when a delay is
-        resolved: actual = working_days_between(logged_date,
-        resolved_date).
-      * Future TIA narrative for "delay aged N working days before
-        resolution."
-
-    Semantic notes:
-      working_days_between(Mon, Mon) == 0
-      working_days_between(Mon, Tue) == 1   (Mon is the only WD in range)
-      working_days_between(Fri, Mon) == 1   (Fri is the only WD in range)
-      working_days_between(Mon, NextMon) == 5  (Mon..Fri)
+    Semantic notes (federal-aware default):
+      working_days_between(Mon, Mon)      == 0
+      working_days_between(Mon, Tue)      == 1
+      a span that contains July 4 does NOT count July 4.
     """
+    hol = _resolve(holidays)
     if start > end:
-        return -working_days_between(end, start)
+        return -working_days_between(end, start, hol)
     d = start
     count = 0
     while d < end:
-        if is_business_day(d):
+        if is_business_day(d, hol):
             count += 1
         d += timedelta(days=1)
     return count
 
 
 def calendar_days_between(start: date, end: date) -> int:
-    """Plain calendar-day count between two dates.
-
-    Provided for the (currently empty) case where a predecessor lag
-    is genuinely calendar (e.g., concrete cure 7 calendar days
-    regardless of weekends). Pre-Part-L cpm.py treated ALL lag as
-    calendar; Part L treats ALL as working. This helper is here
-    for when the schema adds an is_elapsed: bool flag and per-lag
-    routing becomes possible.
-
-    Equivalent to (end - start).days.
-    """
+    """Plain calendar-day count between two dates. Unchanged by Step 1
+    -- calendar days never skip anything. Here for the (still empty)
+    case where a predecessor lag is genuinely elapsed/calendar."""
     return (end - start).days

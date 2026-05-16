@@ -109,6 +109,15 @@ from typing import Iterable, Optional
 from collections import defaultdict, deque
 from database import get_db, tenant_filter
 from models import pred_code, pred_relationship
+# CPM Step 1 (2026-05-17) -- these working-day helpers are now
+# FEDERAL-HOLIDAY-AWARE by default (working_days.py D1 / Option A).
+# Every call below passes no `holidays` argument, so each uses the
+# built-in FEDERAL_HOLIDAYS set: the forward pass, backward pass,
+# duration accumulation, and float = working_days_between(es, ls)
+# all skip federal holidays. No call-site change was needed -- the
+# helper defaults carry it. Step 1 does NOT change WHERE the forward
+# pass anchors (still planned_start for roots, still re-derived for
+# non-roots) -- that anchor question is Step 2.
 from services.working_days import (
     is_business_day, next_business_day, prev_business_day,
     add_working_days,
