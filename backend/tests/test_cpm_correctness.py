@@ -327,6 +327,9 @@ from services.submittal_sla import (  # noqa: E402
     auto_suggest_per_task_impacts_for_submittal,
     _resolve_and_persist_submittal_per_task_impacts,
 )
+# CPM Slip-cascade fix (2026-05-16) -- working-day delta helper used
+# by the SC-* cascade tests to assert exact overflow magnitudes.
+from services.working_days import working_days_between  # noqa: E402
 
 
 # =============================================================================
@@ -2634,6 +2637,301 @@ async def _test_actual_impact_days_calculation():
 
 
 # =============================================================================
+# CPM Slip-cascade float-aware fix (2026-05-16) -- 5 regression tests.
+# The pre-fix compute_projected_finish_dates over-propagated: a delay
+# on a task with float cascaded its full impact to every downstream
+# successor, even when the delayed task absorbed the delay entirely
+# within its own float / gap. These tests pin the float-aware,
+# date-based cascade: only genuine OVERFLOW past a successor's
+# planned start propagates.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# SC-1. test_delay_within_float_does_not_cascade
+# -----------------------------------------------------------------------------
+async def _test_delay_within_float_does_not_cascade():
+    """A delay on a task whose successor is gated by a DIFFERENT
+    (later) predecessor must not cascade. The delayed task moves;
+    nothing downstream does.
+
+    Setup:
+        A  dur 2, planned 5/4 Mon - 5/5 Tue   (lots of float)
+        B  dur 20, planned 5/4 Mon - 5/29 Fri (binding predecessor)
+        C  dur 3, planned 6/1 Mon - 6/3 Wed, preds=[A FS+0, B FS+0]
+           -- C is gated by B (finishes 5/29), not A (finishes 5/5)
+
+    Action: log a 2-day delay on A.
+
+    Assert:
+        A.projected_finish_date moved to 5/7 (5/5 + 2 working days)
+        C.projected_finish_date is None   (delay absorbed by float)
+        C.projected_start_date  is None
+    """
+    _reset()
+    _add_task("A", duration=2, planned_start=D(5, 4),
+              planned_finish=D(5, 5))
+    _add_task("B", duration=20, planned_start=D(5, 4),
+              planned_finish=D(5, 29))
+    _add_task("C", duration=3, planned_start=D(6, 1),
+              planned_finish=D(6, 3),
+              predecessors=[_pred("A", "FS", 0), _pred("B", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+
+    # Sanity: A carries substantial structural float (B is binding).
+    t_a_pre = await _get_task("task-A")
+    assert (t_a_pre["total_float_days"] or 0) > 2, (
+        f"setup sanity: A should have float > 2 (B binding); got "
+        f"{t_a_pre['total_float_days']!r}"
+    )
+
+    await _simulate_create_delay("task-A", impact_days=2)
+
+    t_a = await _get_task("task-A")
+    t_c = await _get_task("task-C")
+    # A itself moved +2 working days (5/5 -> 5/7 Thu).
+    assert t_a["projected_finish_date"] == "2026-05-07", (
+        f"directly-delayed A should move to 5/7; got "
+        f"{t_a['projected_finish_date']!r}"
+    )
+    # C did NOT move -- A's 2-day delay is fully absorbed.
+    assert t_c.get("projected_finish_date") is None, (
+        f"C must NOT cascade -- A's delay absorbed by float / B "
+        f"binding; got projected_finish_date="
+        f"{t_c.get('projected_finish_date')!r}"
+    )
+    assert t_c.get("projected_start_date") is None, (
+        f"C.projected_start_date must be None; got "
+        f"{t_c.get('projected_start_date')!r}"
+    )
+    print("SC-1 PASS: delay within float does NOT cascade")
+
+
+# -----------------------------------------------------------------------------
+# SC-2. test_delay_exceeding_gap_cascades_only_overflow
+# -----------------------------------------------------------------------------
+async def _test_delay_exceeding_gap_cascades_only_overflow():
+    """When a delay EXCEEDS the gap to a successor, only the overflow
+    cascades -- not the full delay.
+
+    Setup:
+        A  dur 5, planned 5/4 Mon - 5/8 Fri
+        C  dur 3, planned 5/18 Mon - 5/20 Wed, preds=[A FS+0]
+           -- 5-working-day gap (A FS+0 implies 5/11; C planned 5/18)
+
+    Action: log an 8-day delay on A.
+
+    Assert:
+        A.projected_finish_date = 5/20 (5/8 + 8 working days)
+        C moves by EXACTLY 3 working days (8 delay - 5 gap), NOT 8.
+        C.projected_finish_date = 5/25 (5/20 + 3 working days)
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4),
+              planned_finish=D(5, 8))
+    _add_task("C", duration=3, planned_start=D(5, 18),
+              planned_finish=D(5, 20),
+              predecessors=[_pred("A", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+
+    await _simulate_create_delay("task-A", impact_days=8)
+
+    t_a = await _get_task("task-A")
+    t_c = await _get_task("task-C")
+    assert t_a["projected_finish_date"] == "2026-05-20", (
+        f"A + 8 working days from 5/8 -> 5/20; got "
+        f"{t_a['projected_finish_date']!r}"
+    )
+    assert t_c["projected_finish_date"] == "2026-05-25", (
+        f"C should move only the 3-day overflow (8 delay - 5 gap) "
+        f"-> 5/20 + 3 wd = 5/25; got {t_c['projected_finish_date']!r}"
+    )
+    # Verify the overflow magnitude precisely.
+    c_move = working_days_between(
+        date.fromisoformat("2026-05-20"),   # C planned_finish
+        date.fromisoformat(t_c["projected_finish_date"]),
+    )
+    assert c_move == 3, (
+        f"C should move exactly 3 working days (overflow), not 8; "
+        f"got {c_move}"
+    )
+    print("SC-2 PASS: delay exceeding gap cascades only the overflow")
+
+
+# -----------------------------------------------------------------------------
+# SC-3. test_delay_on_critical_path_cascades_fully
+# -----------------------------------------------------------------------------
+async def _test_delay_on_critical_path_cascades_fully():
+    """A delay on a CRITICAL-PATH task (zero gaps downstream) MUST
+    cascade fully -- that's correct behavior, NOT the bug.
+
+    Setup (pure FS+0 zero-gap chain, all critical):
+        A  dur 3, planned 5/4 Mon - 5/6 Wed
+        B  dur 2, planned 5/7 Thu - 5/8 Fri, preds=[A FS+0]
+        C  dur 4, planned 5/11 Mon - 5/14 Thu, preds=[B FS+0]
+
+    Action: log a 3-day delay on A.
+
+    Assert: A, B, C ALL move +3 working days. The project finish
+    (C, the tail) moves +3.
+    """
+    _reset()
+    _add_task("A", duration=3, planned_start=D(5, 4),
+              planned_finish=D(5, 6))
+    _add_task("B", duration=2, planned_start=D(5, 7),
+              planned_finish=D(5, 8),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=4, planned_start=D(5, 11),
+              planned_finish=D(5, 14),
+              predecessors=[_pred("B", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+
+    await _simulate_create_delay("task-A", impact_days=3)
+
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    t_c = await _get_task("task-C")
+    # A: 5/6 + 3 wd = 5/11 Mon.
+    assert t_a["projected_finish_date"] == "2026-05-11", (
+        f"A + 3 wd -> 5/11; got {t_a['projected_finish_date']!r}"
+    )
+    # B: 5/8 + 3 wd = 5/13 Wed (zero gap -> full cascade).
+    assert t_b["projected_finish_date"] == "2026-05-13", (
+        f"B should cascade fully (+3) on a zero-float chain -> 5/13; "
+        f"got {t_b['projected_finish_date']!r}"
+    )
+    # C: 5/14 + 3 wd = 5/19 Tue.
+    assert t_c["projected_finish_date"] == "2026-05-19", (
+        f"C (project tail) should cascade fully (+3) -> 5/19; got "
+        f"{t_c['projected_finish_date']!r}"
+    )
+    # Project finish (the tail task C) moved exactly 3 working days.
+    proj_move = working_days_between(
+        date.fromisoformat("2026-05-14"),   # C planned_finish
+        date.fromisoformat(t_c["projected_finish_date"]),
+    )
+    assert proj_move == 3, (
+        f"project finish should move +3 on a CP delay; got {proj_move}"
+    )
+    print("SC-3 PASS: delay on critical path cascades fully (+3 all)")
+
+
+# -----------------------------------------------------------------------------
+# SC-4. test_delay_partially_absorbed_then_cascades
+# -----------------------------------------------------------------------------
+async def _test_delay_partially_absorbed_then_cascades():
+    """A delay larger than the available gap: the delayed task moves
+    by its full delay; the downstream task moves only by the
+    overflow (delay - gap).
+
+    Setup:
+        T  dur 3, planned 5/4 Mon - 5/6 Wed
+        D  dur 4, planned 5/11 Mon - 5/14 Thu, preds=[T FS+0]
+           -- 2-working-day gap (T FS+0 implies 5/7; D planned 5/11)
+
+    Action: log a 5-day delay on T.
+
+    Assert:
+        T moves +5 (5/6 -> 5/13 Wed)
+        D moves +3 (5 delay - 2 gap absorbed) -> 5/14 + 3 = 5/19 Tue
+    """
+    _reset()
+    _add_task("T", duration=3, planned_start=D(5, 4),
+              planned_finish=D(5, 6))
+    _add_task("D", duration=4, planned_start=D(5, 11),
+              planned_finish=D(5, 14),
+              predecessors=[_pred("T", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+
+    await _simulate_create_delay("task-T", impact_days=5)
+
+    t_t = await _get_task("task-T")
+    t_d = await _get_task("task-D")
+    # T itself moves the full 5 working days: 5/6 + 5 wd = 5/13 Wed.
+    assert t_t["projected_finish_date"] == "2026-05-13", (
+        f"directly-delayed T should move +5 -> 5/13; got "
+        f"{t_t['projected_finish_date']!r}"
+    )
+    # D moves only the 3-day overflow (5 - 2 gap): 5/14 + 3 = 5/19.
+    assert t_d["projected_finish_date"] == "2026-05-19", (
+        f"D should move only +3 (5 delay - 2 gap) -> 5/19; got "
+        f"{t_d['projected_finish_date']!r}"
+    )
+    d_move = working_days_between(
+        date.fromisoformat("2026-05-14"),   # D planned_finish
+        date.fromisoformat(t_d["projected_finish_date"]),
+    )
+    assert d_move == 3, (
+        f"D should move exactly 3 working days; got {d_move}"
+    )
+    print("SC-4 PASS: 5-day delay, 2-day gap absorbs -> downstream +3")
+
+
+# -----------------------------------------------------------------------------
+# SC-5. test_two_predecessors_only_binding_one_cascades
+# -----------------------------------------------------------------------------
+async def _test_two_predecessors_only_binding_one_cascades():
+    """A successor with two predecessors moves only when its BINDING
+    predecessor is delayed. Delaying the non-binding (earlier) one
+    within the gap does nothing.
+
+    Setup:
+        A  dur 2, planned 5/4 Mon - 5/5 Tue   (non-binding, earlier)
+        B  dur 6, planned 5/4 Mon - 5/11 Mon  (binding, later)
+        C  dur 3, planned 5/12 Tue - 5/14 Thu,
+           preds=[A FS+0, B FS+0]  -- gated by B
+
+    Action 1: log a 3-day delay on A (non-binding, within the gap).
+    Assert 1: C does NOT move.
+
+    Action 2: log a 4-day delay on B (binding).
+    Assert 2: C moves with B (+4).
+    """
+    _reset()
+    _add_task("A", duration=2, planned_start=D(5, 4),
+              planned_finish=D(5, 5))
+    _add_task("B", duration=6, planned_start=D(5, 4),
+              planned_finish=D(5, 11))
+    _add_task("C", duration=3, planned_start=D(5, 12),
+              planned_finish=D(5, 14),
+              predecessors=[_pred("A", "FS", 0), _pred("B", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+
+    # Action 1: delay the non-binding predecessor A.
+    await _simulate_create_delay("task-A", impact_days=3)
+    t_a = await _get_task("task-A")
+    t_c = await _get_task("task-C")
+    assert t_a["projected_finish_date"] == "2026-05-08", (
+        f"A + 3 wd from 5/5 -> 5/8; got {t_a['projected_finish_date']!r}"
+    )
+    assert t_c.get("projected_finish_date") is None, (
+        f"C must NOT move -- A is non-binding, delay within gap; "
+        f"got {t_c.get('projected_finish_date')!r}"
+    )
+
+    # Action 2: delay the binding predecessor B.
+    await _simulate_create_delay("task-B", impact_days=4)
+    t_b = await _get_task("task-B")
+    t_c = await _get_task("task-C")
+    # B: 5/11 + 4 wd = 5/15 Fri.
+    assert t_b["projected_finish_date"] == "2026-05-15", (
+        f"B + 4 wd from 5/11 -> 5/15; got {t_b['projected_finish_date']!r}"
+    )
+    # C now moves with B: 5/14 + 4 wd = 5/20 Wed.
+    assert t_c["projected_finish_date"] == "2026-05-20", (
+        f"C should cascade with binding B (+4) -> 5/20; got "
+        f"{t_c.get('projected_finish_date')!r}"
+    )
+    c_move = working_days_between(
+        date.fromisoformat("2026-05-14"),   # C planned_finish
+        date.fromisoformat(t_c["projected_finish_date"]),
+    )
+    assert c_move == 4, (
+        f"C should move +4 with the binding predecessor; got {c_move}"
+    )
+    print("SC-5 PASS: only the binding predecessor's delay cascades")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -2780,6 +3078,27 @@ def test_actual_impact_days_calculation():
     asyncio.run(_test_actual_impact_days_calculation())
 
 
+# CPM Slip-cascade float-aware fix (2026-05-16) -- 5 cascade tests.
+def test_delay_within_float_does_not_cascade():
+    asyncio.run(_test_delay_within_float_does_not_cascade())
+
+
+def test_delay_exceeding_gap_cascades_only_overflow():
+    asyncio.run(_test_delay_exceeding_gap_cascades_only_overflow())
+
+
+def test_delay_on_critical_path_cascades_fully():
+    asyncio.run(_test_delay_on_critical_path_cascades_fully())
+
+
+def test_delay_partially_absorbed_then_cascades():
+    asyncio.run(_test_delay_partially_absorbed_then_cascades())
+
+
+def test_two_predecessors_only_binding_one_cascades():
+    asyncio.run(_test_two_predecessors_only_binding_one_cascades())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -2851,12 +3170,23 @@ def _run_all():
          _test_remaining_float_multi_event_cumulative),
         ("test_actual_impact_days_calculation",
          _test_actual_impact_days_calculation),
+        # CPM Slip-cascade float-aware fix (2026-05-16).
+        ("test_delay_within_float_does_not_cascade",
+         _test_delay_within_float_does_not_cascade),
+        ("test_delay_exceeding_gap_cascades_only_overflow",
+         _test_delay_exceeding_gap_cascades_only_overflow),
+        ("test_delay_on_critical_path_cascades_fully",
+         _test_delay_on_critical_path_cascades_fully),
+        ("test_delay_partially_absorbed_then_cascades",
+         _test_delay_partially_absorbed_then_cascades),
+        ("test_two_predecessors_only_binding_one_cascades",
+         _test_two_predecessors_only_binding_one_cascades),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
     print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L "
-          "(11 + 5 + 6 + 6 + 7 tests)")
+          "+ Slip-cascade fix (11 + 5 + 6 + 6 + 7 + 5 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -2873,7 +3203,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 35 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 40 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
