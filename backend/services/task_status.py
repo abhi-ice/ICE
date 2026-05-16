@@ -34,7 +34,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import tenant_filter
-from models import gen_id, pred_code
+from models import gen_id, pred_code, pred_relationship
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -370,106 +370,219 @@ async def compute_projected_finish_dates(
     actor_id: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> dict:
-    """Phase 4 — walk the dependency graph forward. For each task with
-    an open-delay impact, compute its projected_finish_date as
-    planned_finish + (own_impact + max_predecessor_projected_shift).
+    """Phase 4 — walk the dependency graph forward, computing each
+    task's IMPACTED start / finish date when open blockers push it.
 
-    CPM Part F (2026-05-15) -- also computes + persists
-    projected_start_date = planned_start + shift_days using the SAME
-    shift_for recursion. Both fields are written in a single $set per
-    changed task; the idempotent skip-if-unchanged check now compares
-    BOTH derived dates. A task counts as "changed" when EITHER date
-    moves, ensuring the Tasks UI's Impacted Start column refreshes
-    even when only the start date shifts (rare edge case where own
-    impact is zero but a predecessor's shift propagates through).
+    CPM Slip-cascade fix (2026-05-16) -- DATE-BASED, FLOAT-AWARE
+    cascade. The pre-fix algorithm was SHIFT-BASED:
 
-    Cycle-safe: bounded BFS by activity_code; tasks not reached keep their
-    existing projected_finish_date + projected_start_date (cleared to
-    None when no impact).
+        successor_shift = own_delay_impact + MAX(predecessor_shifts)
+
+    which blindly carried any predecessor's shift forward EVEN WHEN
+    the delayed predecessor still finishes long before the successor
+    needs it (because the successor was waiting on a different,
+    later predecessor, or had float / gap absorbing the delay). A
+    2-day delay on a task with 22 days of float over-propagated to
+    36 of 53 downstream tasks and moved the project finish.
+
+    THE FIX -- per predecessor, only the OVERFLOW past the
+    successor's planned start cascades:
+
+      For each task (memoized topological recursion):
+        own_impact   = sum of open blocker impact days directly
+                       linked to THIS task (delays + RFIs +
+                       over-SLA submittals; _open_blocker_impact_
+                       for_task).
+        inherited    = MAX over predecessors P of:
+                         IP  = implied successor start from P's
+                               PLANNED dates  (working-day math)
+                         II  = implied successor start from P's
+                               IMPACTED dates
+                         shift_from_P  = wd_between(IP, II)   (>= 0;
+                               how much P's delay shifts the gated
+                               start)
+                         push_past    = wd_between(planned_start, II)
+                               (how far II lands past the
+                               successor's own planned start)
+                         overflow_P   = max(0, min(shift_from_P,
+                                                   push_past))
+        total_shift  = inherited + own_impact
+        impacted_start  = add_working_days(planned_start, total_shift)
+        impacted_finish = add_working_days(planned_finish, total_shift)
+        slip = total_shift  (== wd_between(planned_finish,
+                              impacted_finish))
+
+      total_shift == 0  ->  projected_start_date /
+                            projected_finish_date written as None
+                            (Tasks page shows em-dash; the task
+                            did NOT move -- float absorbed it).
+      total_shift  > 0  ->  projected dates written.
+
+    Why min(shift_from_P, push_past): a predecessor can never push a
+    successor by MORE than the predecessor's own delay (shift_from_P
+    caps it), and only the part landing past the successor's planned
+    start counts (push_past gates it). When P is not delayed,
+    shift_from_P == 0 so overflow is 0 regardless of any calendar
+    drift between the imported planned dates and our working-day
+    math -- robust against MS-Project import quirks.
+
+    DECISION D1 (slip-cascade fix, documented): the directly-delayed
+    task SLIDES -- both impacted_start AND impacted_finish move by
+    total_shift. This matches the existing Part F / Part L behavior
+    (test_rfi_impact_pushes_slip asserts BOTH dates move by the
+    impact) and the GSA Office Test expected output (Task 5 with a
+    2-day own delay shows impacted_start +2 AND impacted_finish +2).
+    The task is modeled as sliding, not stretching.
+
+    DECISION D2: a successor never starts EARLIER than planned from
+    cascade math -- overflow is clamped at 0. Pure-downstream tasks
+    only ever move later.
+
+    Working-day math (Part L) used throughout: _derive_implied_start
+    (FS/SS/FF/SF, working-day offsets + lag) and add_working_days /
+    working_days_between.
 
     Returns {recomputed: int, changed: list[task_id]}.
     """
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
-        # Part F -- pull planned_start + projected_start_date so the
-        # idempotent skip-if-unchanged check can compare both derived
-        # dates against the prior values.
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
+         "duration_days": 1,
          "planned_start": 1, "planned_finish": 1,
          "projected_start_date": 1, "projected_finish_date": 1},
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
 
-    # Pre-compute per-task own_impact (open-BLOCKER sum: open delays
-    # + open RFIs as of Part J-4). One pair of queries per task.
+    # Per-task own_impact (open-blocker sum across delays + RFIs +
+    # over-SLA submittals). One walk per task.
     own_impact: dict[str, float] = {}
     for t in tasks:
         own_impact[t["id"]] = await _open_blocker_impact_for_task(db, tenant_id, t["id"])
 
-    # Topological visit by predecessor walk. We don't have a true topo sort
-    # available without re-implementing CPM; this BFS does the safe thing:
-    # process each task once, looking up max(predecessor.shift) on demand.
-    shift_by_id: dict[str, float] = {}
+    # Working-day helpers + the shared CPM per-edge implied-start
+    # derivation. Local import keeps the services.cpm <-> services.
+    # task_status pairing free of a module-load cycle (cpm.py imports
+    # task_status only lazily inside auto_recompute_after_event).
+    from services.working_days import add_working_days, working_days_between
+    from services.cpm import _derive_implied_start
 
-    def shift_for(task: dict, depth: int = 0) -> float:
-        if depth > 200:  # cycle guard
-            return shift_by_id.get(task["id"], own_impact.get(task["id"], 0.0))
-        if task["id"] in shift_by_id:
-            return shift_by_id[task["id"]]
-        own = own_impact.get(task["id"], 0.0)
-        max_pred = 0.0
-        # CPM Part A (2026-05-15) -- iterate predecessor entries and
-        # extract the activity_code via the pred_code() adapter
-        # (handles both legacy bare-string + post-migration dict).
-        # The local variable was shadowing the imported helper name --
-        # rename the loop var to `pred_entry` to keep the import
-        # accessible inside the closure.
-        for pred_entry in (task.get("predecessors") or []):
-            p_code = pred_code(pred_entry)
-            if not p_code:
-                continue
-            pred_task = by_code.get(p_code)
-            if pred_task:
-                max_pred = max(max_pred, shift_for(pred_task, depth + 1))
-        shift_by_id[task["id"]] = own + max_pred
-        return shift_by_id[task["id"]]
+    def _parse(v):
+        if not v:
+            return None
+        try:
+            return date.fromisoformat(str(v)[:10])
+        except Exception:
+            return None
+
+    # Memoized recursion. computed[task_id] = (impacted_start: date|None,
+    # impacted_finish: date|None, total_shift: int).
+    computed: dict[str, tuple] = {}
+
+    def compute(task: dict, depth: int = 0) -> tuple:
+        tid = task["id"]
+        cached = computed.get(tid)
+        if cached is not None:
+            return cached
+
+        ps = _parse(task.get("planned_start"))
+        pf = _parse(task.get("planned_finish"))
+        dur = int(round(float(task.get("duration_days") or 1.0)))
+        dur_minus_one = max(0, dur - 1)
+        own = max(0, int(round(own_impact.get(tid, 0.0))))
+
+        if depth > 300:
+            # Cycle guard -- treat as un-impacted (planned dates,
+            # zero shift). Memoize so other paths short-circuit.
+            result = (ps, pf, 0)
+            computed[tid] = result
+            return result
+
+        # ---- inherited shift: max float-aware overflow over preds --
+        inherited = 0
+        if ps is not None:
+            for pred_entry in (task.get("predecessors") or []):
+                p_code = pred_code(pred_entry)
+                pred_task = by_code.get(p_code) if p_code else None
+                if not pred_task:
+                    continue
+                rel_type, lag = pred_relationship(pred_entry)
+                p_ps = _parse(pred_task.get("planned_start"))
+                p_pf = _parse(pred_task.get("planned_finish"))
+                if p_ps is None or p_pf is None:
+                    # Predecessor has no planned dates -- can't derive
+                    # an implied start; skip it (mirrors pre-fix
+                    # behavior of silently skipping unresolved preds).
+                    continue
+                # Recurse: predecessor's IMPACTED dates (memoized).
+                p_imp_start, p_imp_finish, _p_shift = compute(
+                    pred_task, depth + 1,
+                )
+                if p_imp_start is None:
+                    p_imp_start = p_ps
+                if p_imp_finish is None:
+                    p_imp_finish = p_pf
+                # IP -- implied successor start from pred PLANNED dates.
+                ip = _derive_implied_start(
+                    p_ps, p_pf, rel_type, lag, dur_minus_one,
+                )
+                # II -- implied successor start from pred IMPACTED dates.
+                ii = _derive_implied_start(
+                    p_imp_start, p_imp_finish, rel_type, lag,
+                    dur_minus_one,
+                )
+                # shift_from_P >= 0: II is never earlier than IP since
+                # impacted dates >= planned dates and _derive_implied_
+                # start is monotonic. max(0, ...) is defensive.
+                shift_from_p = max(0, working_days_between(ip, ii))
+                if shift_from_p == 0:
+                    # Predecessor not delayed -> contributes nothing,
+                    # regardless of any calendar drift between II and
+                    # this task's planned_start. This is the key
+                    # robustness guard against the over-propagation bug.
+                    continue
+                # push_past: how far the IMPACTED implied start lands
+                # past this task's own planned start. Negative when II
+                # is still before planned_start (delay absorbed by the
+                # gap / float, or a different predecessor is binding).
+                push_past = working_days_between(ps, ii)
+                overflow = max(0, min(shift_from_p, push_past))
+                if overflow > inherited:
+                    inherited = overflow
+
+        total_shift = inherited + own
+        if ps is not None and pf is not None and total_shift > 0:
+            imp_start = add_working_days(ps, total_shift)
+            imp_finish = add_working_days(pf, total_shift)
+        else:
+            # total_shift == 0 -> task did not move. Carry planned
+            # dates forward in the cache so downstream preds derive
+            # II == IP for this task (shift_from_P == 0).
+            imp_start = ps
+            imp_finish = pf
+
+        result = (imp_start, imp_finish, total_shift)
+        computed[tid] = result
+        return result
 
     for t in tasks:
-        shift_for(t)
+        compute(t)
 
     changed: list[str] = []
     for t in tasks:
-        shift_days = shift_by_id.get(t["id"], 0.0)
-        pf = t.get("planned_finish")
-        ps = t.get("planned_start")
-        new_pfd = None
-        new_psd = None
-        # CPM Part F (2026-05-15) -- both projected dates are produced
-        # by the SAME shift_days. We round to int days to match the
-        # existing projected_finish behavior (sub-day shifts get
-        # rolled up to the nearest whole day). Failure modes are
-        # isolated per-date so a bad planned_finish doesn't poison
-        # planned_start's projection (or vice versa).
-        if shift_days > 0:
-            # CPM Part L (2026-05-16) -- shift is in WORKING days, not
-            # calendar. A 2-day delay on Fri lands the projected_
-            # finish on the next Tue (not Sat). Field crews see dates
-            # that match real calendar pages they post on the trailer.
-            from services.working_days import add_working_days
-            shift_int = int(round(shift_days))
-            if pf:
-                try:
-                    pf_d = date.fromisoformat(str(pf)[:10])
-                    new_pfd = add_working_days(pf_d, shift_int).isoformat()
-                except Exception:
-                    new_pfd = None
-            if ps:
-                try:
-                    ps_d = date.fromisoformat(str(ps)[:10])
-                    new_psd = add_working_days(ps_d, shift_int).isoformat()
-                except Exception:
-                    new_psd = None
-        # Idempotent: skip if BOTH derived dates are unchanged.
+        imp_start, imp_finish, total_shift = computed.get(
+            t["id"], (None, None, 0),
+        )
+        # Only a positive total_shift means the task actually moved.
+        # total_shift == 0 -> projected dates cleared to None so the
+        # Tasks page Impacted Start / Impacted Finish / Slip columns
+        # render em-dash. THIS is the bug fix: a task whose
+        # predecessors' delays were absorbed by float shows nothing.
+        if total_shift > 0 and imp_start is not None and imp_finish is not None:
+            new_psd = imp_start.isoformat()
+            new_pfd = imp_finish.isoformat()
+        else:
+            new_psd = None
+            new_pfd = None
         cur_pfd = t.get("projected_finish_date")
         cur_psd = t.get("projected_start_date")
         if cur_pfd != new_pfd or cur_psd != new_psd:
