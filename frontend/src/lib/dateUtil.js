@@ -64,6 +64,57 @@ export function formatDateDisplay(iso) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
+// CPM Part A frontend follow-up (2026-05-15) -- predecessor display
+// formatter. Migration 018 (Part A) converted tasks.predecessors from
+// a List[str] of bare activity codes ("1.5") to a List[Dict] with
+// the shape {code, type, lag_days} so PDM relationships (FS / SS /
+// FF / SF) and lag/lead can be stored. The frontend now receives
+// EITHER shape:
+//
+//     bare string         -- legacy task that has not been touched
+//                            since pre-018 OR a brand-new task whose
+//                            edit-form save flow split a comma-
+//                            separated input back into bare strings
+//     dict { code, type, lag_days }
+//                         -- post-018 canonical shape
+//
+// Without this helper, the Tasks page / ScheduleProposals diff
+// rendered dict entries as "[object Object]" via the bare
+// .join(", ") on a List[Dict]. This helper is DISPLAY-ONLY -- it
+// does not parse back to dict on save, so any edit-form input that
+// uses formatPredecessors to PRE-FILL the input would lose dict
+// info on round-trip. Display-only call sites (table columns, diff
+// renderers) are safe.
+//
+// Format contract (5 cases per Part-A frontend spec):
+//
+//     "1.5"                                   -> "1.5"
+//     {code:"1.5", type:"FS", lag_days:0}     -> "1.5"
+//     {code:"22",  type:"FS", lag_days:-3}    -> "22FS-3d"
+//     {code:"13",  type:"SS", lag_days:2}     -> "13SS+2d"
+//     {code:"5",   type:"FF", lag_days:7}     -> "5FF+7d"
+//
+// FS+0 entries collapse to bare code (matches the legacy display).
+// Non-FS or non-zero-lag entries render the full {code}{type}{sign}{lag}d
+// shorthand familiar from MS Project / Primavera P6.
+export function formatPredecessor(p) {
+  if (typeof p === "string") return p;        // legacy bare string
+  if (!p || typeof p !== "object") return ""; // null / undefined / weird
+  const code = p.code || "";
+  const type = p.type || "FS";
+  const lag = p.lag_days || 0;
+  if (type === "FS" && lag === 0) return code; // common case
+  const sign = lag >= 0 ? "+" : "";
+  return `${code}${type}${sign}${lag}d`;
+}
+
+export function formatPredecessors(preds) {
+  if (!Array.isArray(preds)) return "—";
+  if (preds.length === 0) return "—";
+  return preds.map(formatPredecessor).join(", ");
+}
+
+
 // CPM Part F (2026-05-15) -- slip between planned_finish and
 // projected_finish_date in whole calendar days. Returns 0 when
 // either input is missing OR when the projection equals planned
