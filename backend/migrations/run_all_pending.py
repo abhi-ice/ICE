@@ -170,6 +170,19 @@ MIGRATIONS = [
     # 022 sets working-day total_float_days; 023 derives the cascade-
     # aware remaining float from it.
     "migrations.023_rem_float_cascade_recompute",
+    # CPM Step 2 (2026-05-17, Issue 3.D) -- imported-date-anchor
+    # recompute. Step 2 made compute_cpm's forward pass anchor ES/EF
+    # on each task's IMPORTED planned_start/planned_finish instead of
+    # re-deriving a non-root's ES from its predecessors. Forces a
+    # one-time refresh of total_float_days + is_critical_path off the
+    # imported-date baseline AND surfaces negative float / duration
+    # mismatches (inconsistent contract schedules) in the audit
+    # payload + console. Per project: runs the full
+    # auto_recompute_after_event chain. CPM_IMPORTED_ANCHOR_RECOMPUTED
+    # audit per tenant; idempotent. Must run AFTER 023 -- 023 sets the
+    # cascade-aware remaining float; 024 re-anchors the structural
+    # float that remaining float reads.
+    "migrations.024_imported_anchor_recompute",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
