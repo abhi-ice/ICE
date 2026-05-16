@@ -4,7 +4,11 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 // CPM Part F (2026-05-15) -- shared display helpers for the
 // Impacted Start / Impacted Finish / Slip columns.
-import { formatDateDisplay, slipDays } from "../lib/dateUtil";
+// CPM Part A frontend follow-up (2026-05-15) -- formatPredecessors
+// renders dict-shape predecessors {code, type, lag_days} produced by
+// migration 018 (was: bare-string codes pre-018). Without this the
+// Predecessors column shows "[object Object]" via the bare .join.
+import { formatDateDisplay, slipDays, formatPredecessors } from "../lib/dateUtil";
 // Bug #50 (2026-05-13): added FileText (submittal) icon for the
 // extended blocker tooltip. Bug #53 (2026-05-13): dropped ClipboardCheck
 // (qc_issue) and ShieldAlert (safety_event) imports since those types
@@ -442,8 +446,14 @@ export default function Tasks() {
                     : <span className="text-slate-400">—</span>}
                 </td>
                 <td className="text-xs font-mono">
+                  {/* CPM Part A frontend follow-up (2026-05-15) --
+                      formatPredecessors handles BOTH legacy bare-string
+                      codes ("1.5") and post-018 dict shape ({code, type,
+                      lag_days}). FS+0 collapses to bare code; non-FS or
+                      non-zero-lag renders the MS-Project shorthand
+                      "22FS-3d" / "13SS+2d". Returns "—" for empty/null. */}
                   {t.predecessors && t.predecessors.length
-                    ? t.predecessors.join(", ")
+                    ? formatPredecessors(t.predecessors)
                     : <span className="text-slate-400">—</span>}
                 </td>
                 <td className="text-xs">{t.trade_code || "—"}</td>
