@@ -558,6 +558,57 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     if updates.get("status") == "resolved":
         if "resolved_by_user_id" not in updates:
             updates["resolved_by_user_id"] = ctx["user"]["id"]
+        # CPM Part L-3 (2026-05-16) -- capture actual_impact_days at
+        # resolution time. Computed as working_days_between(
+        # logged_date, resolved_date). Federal TIA defensibility: the
+        # variance between projected_impact_days (super's day-one
+        # estimate, captured immutably on per_task_impacts) and
+        # actual_impact_days (this field) is the schedule analyst's
+        # accuracy metric.
+        #
+        # Edge cases:
+        #   * logged_date missing (legacy delay without `date`): fall
+        #     back to delay.date or delay.reported_at.date(). If none
+        #     parseable, skip the computation -- leave field None.
+        #   * resolved_date missing: shouldn't reach here (frontend
+        #     supplies via date picker), but defensive: use the
+        #     before-row's resolved_date if present.
+        #   * resolved < logged: negative, but working_days_between
+        #     handles that via -recursion. Clamp to 0 since "negative
+        #     actual impact" is nonsense.
+        #   * D7 -- once stamped, actual_impact_days is FINAL. A
+        #     subsequent edit of resolved_date triggers re-computation
+        #     here (this branch fires whenever status=resolved is in
+        #     the PATCH); a transition OUT of resolved leaves the
+        #     stamp alone (audit trail).
+        try:
+            from services.working_days import working_days_between
+            from datetime import date as _date
+            res_date_raw = (
+                updates.get("resolved_date")
+                or before.get("resolved_date")
+            )
+            logged_raw = (
+                before.get("logged_date")
+                or before.get("date")
+            )
+            def _parse_d(v):
+                if isinstance(v, _date):
+                    return v
+                if isinstance(v, str):
+                    return _date.fromisoformat(v[:10])
+                return None
+            res_d = _parse_d(res_date_raw)
+            log_d = _parse_d(logged_raw)
+            if res_d and log_d:
+                actual = max(0, working_days_between(log_d, res_d))
+                updates["actual_impact_days"] = actual
+        except Exception as exc:
+            import logging
+            logging.getLogger("field_events_router").warning(
+                "Part L-3 actual_impact_days computation failed for "
+                "delay=%s: %s", delay_id, exc,
+            )
     # Any AI-report write also stamps generated_at
     if "ai_report" in updates:
         updates["ai_report_generated_at"] = utc_now().isoformat()
@@ -615,6 +666,60 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="UPDATE",
                       record_id=delay_id, before=before, after=after,
                       actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+
+    # CPM Part L-3 (2026-05-16) -- DELAY_RESOLVED audit op fires only
+    # on the open -> resolved transition. Captures the variance
+    # snapshot (projected impacts at log time + actual impact days
+    # at resolution) so TIA generator can query the audit_log
+    # directly for "all resolution variances" without parsing every
+    # UPDATE op's before/after delta. The standard UPDATE audit
+    # above continues to fire as well (chain integrity preserved).
+    if updates.get("status") == "resolved" and before.get("status") != "resolved":
+        try:
+            projected_at_log = [
+                {
+                    "task_id": imp.get("task_id"),
+                    "projected_impact_days": imp.get("projected_impact_days"),
+                }
+                for imp in (before.get("per_task_impacts") or [])
+                if isinstance(imp, dict) and imp.get("task_id")
+            ]
+            await write_audit(
+                tenant_id=ctx["tenant_id"], table_name="delays",
+                op="DELAY_RESOLVED",
+                record_id=delay_id,
+                before={
+                    "status": before.get("status"),
+                    "projected_impacts_at_log": projected_at_log,
+                    "logged_date": str(before.get("logged_date") or before.get("date") or ""),
+                },
+                after={
+                    "status": "resolved",
+                    "resolved_date": str(after.get("resolved_date") or ""),
+                    "actual_impact_days": after.get("actual_impact_days"),
+                    "resolved_by_user_id": after.get("resolved_by_user_id"),
+                    "resolved_note": after.get("resolved_note"),
+                    # Variance summary: per-task delta projected vs actual.
+                    # actual_impact_days lives on the parent delay row
+                    # (one value); projected_impact_days lives per task.
+                    # TIA generator pairs them up.
+                    "variance_summary": {
+                        "actual_total_days": after.get("actual_impact_days"),
+                        "projected_total_days": sum(
+                            (imp.get("projected_impact_days") or 0)
+                            for imp in projected_at_log
+                        ) if projected_at_log else None,
+                    },
+                },
+                actor_id=ctx["user"]["id"],
+                request_id=ctx["request_id"],
+            )
+        except Exception:
+            import logging
+            logging.getLogger("field_events_router").warning(
+                "Part L-3 DELAY_RESOLVED audit failed for delay=%s",
+                delay_id, exc_info=True,
+            )
 
     # Addition 4 -- if this was a locked-DR edit, stamp edit metadata +
     # write the EVENT_EDITED_POST_SUBMIT audit entry alongside the

@@ -142,6 +142,14 @@ MIGRATIONS = [
     # per tenant; idempotent via $exists filter + per-tenant audit
     # existence check.
     "migrations.020_submittal_per_task_impacts_backfill",
+    # CPM Part L-2 (2026-05-16) -- live remaining_float_days backfill.
+    # Stamps remaining_float_days = max(0, total_float_days -
+    # sum_open_blocker_impacts) on every existing task. After this
+    # runs, every auto_recompute_after_event keeps the field live.
+    # REMAINING_FLOAT_BACKFILLED audit per tenant; idempotent via
+    # per-tenant audit existence check + helper's per-task idempotent
+    # skip-when-unchanged.
+    "migrations.021_remaining_float_backfill",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

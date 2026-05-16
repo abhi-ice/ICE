@@ -15,6 +15,21 @@ stale-float gap: the second delay logged in a request cycle now
 sees fresh float instead of the values from before the first
 delay's cascade ran. See auto_recompute_after_event() below.
 
+CPM Part L (2026-05-16) -- WORKING-DAY MATH.
+All forward + backward arithmetic moved off calendar days to
+working days (Mon-Fri). Pre-Part-L:
+  FS+0: B.ES = A.EF + timedelta(days=1)     # calendar
+  EF:   ES + timedelta(days=dur-1)           # calendar
+Post-Part-L:
+  FS+0: B.ES = next_business_day(A.EF)       # skips weekends
+  EF:   add_working_days(ES, dur-1)          # skips weekends
+  lag:  treated as WORKING days (not calendar) -- matches MS
+        Project / Primavera default for Schedule-from-Working-Days.
+Module-level rationale + design decisions D1-D5 documented in
+services/working_days.py. The MSU FS+0 schedule produces dates
+that fall on business days already, so this is a refinement not
+a regression for already-correct cases.
+
 Per-predecessor implied-start derivation (forward pass) handles
 all 4 PDM relationships:
 
@@ -86,6 +101,10 @@ from typing import Iterable, Optional
 from collections import defaultdict, deque
 from database import get_db, tenant_filter
 from models import pred_code, pred_relationship
+from services.working_days import (
+    is_business_day, next_business_day, prev_business_day,
+    add_working_days,
+)
 
 
 def _derive_implied_start(
@@ -93,37 +112,51 @@ def _derive_implied_start(
     dur_minus_one: int,
 ) -> date:
     """Given a predecessor's early_start (p_es) + early_finish (p_ef)
-    + relationship type + lag (in calendar days), return the EARLIEST
+    + relationship type + lag (in WORKING days), return the EARLIEST
     start date the successor can have under this single predecessor's
     constraint.
 
+    CPM Part L (2026-05-16) -- working-day math throughout:
+      * FS +1 offset uses next_business_day(p_ef) instead of +timedelta(1)
+      * Lag is WORKING days (add_working_days, not timedelta)
+      * Duration accumulation for FF/SF uses add_working_days
+      * Weekend predecessor finishes (legacy data) get rolled back to
+        prev_business_day before applying +1 (D2 in working_days.py)
+
     For FF and SF, which constrain the successor's FINISH rather than
     its START, we derive the implied start by subtracting dur_minus_one
-    (caller passes successor.duration - 1, since dates are inclusive
-    in this CPM model: a 3-day task starting Mon finishes Wed, span
-    of 2 days).
-
-    See module docstring for the +1 day FS asymmetry rationale.
+    WORKING days (a 3-day task finishing Wed started Mon).
 
     For unknown rel_type, defaults to FS (matches Predecessor.type
     default + handles legacy bare-string entries that came through
     pred_relationship().)
     """
-    lag = timedelta(days=lag_days)
-    one_day = timedelta(days=1)
     if rel_type == "SS":
-        # Same-day start; no offset. SS+0 = same day, SS+2 = 2 days after start.
-        return p_es + lag
+        # Same-day start; no offset. Lag added in working days.
+        # SS+0: B.ES = A.ES; SS+2: B.ES = 2 working days after A.ES.
+        # add_working_days handles weekend anchoring on p_es defensively.
+        return add_working_days(p_es, lag_days)
     if rel_type == "FF":
         # Same-day finish; no offset. Derive start from finish.
-        b_finish = p_ef + lag
-        return b_finish - timedelta(days=dur_minus_one)
+        # B.EF = A.EF + lag working days; then B.ES = B.EF - (dur-1) working.
+        b_finish = add_working_days(p_ef, lag_days)
+        return add_working_days(b_finish, -dur_minus_one)
     if rel_type == "SF":
-        # B.finish constrained against A.start. No offset.
-        b_finish = p_es + lag
-        return b_finish - timedelta(days=dur_minus_one)
-    # FS (default) -- next-day start convention: +1 offset, then lag.
-    return p_ef + one_day + lag
+        # B.finish constrained against A.start; no offset.
+        b_finish = add_working_days(p_es, lag_days)
+        return add_working_days(b_finish, -dur_minus_one)
+    # FS (default) -- next-day start convention.
+    # Step 1: D2 -- anchor p_ef onto a business day. Legacy schedules
+    #   that imported with weekend planned_finish values get rolled
+    #   back to the prior Friday so the +1 offset doesn't land on
+    #   Sat+1=Sun.
+    # Step 2: next_business_day applies the +1 offset (Fri -> next Mon).
+    # Step 3: D1 -- add_working_days(..., lag) consumes the lag in
+    #   working days. FS+0 => 0 working days after the next-day jump
+    #   (so just the +1 offset). FS+7 => 7 working days after.
+    p_ef_anchored = p_ef if is_business_day(p_ef) else prev_business_day(p_ef)
+    next_day = next_business_day(p_ef_anchored)
+    return add_working_days(next_day, lag_days)
 
 
 def _derive_implied_late_finish(
@@ -133,45 +166,45 @@ def _derive_implied_late_finish(
     """Mirror of _derive_implied_start() for the backward pass.
 
     Given a successor's late_start (s_ls) + late_finish (s_lf)
-    + relationship type + lag (calendar days), return the LATEST
+    + relationship type + lag (WORKING days), return the LATEST
     finish date the predecessor can have under this single
     successor's constraint.
 
-    The +1 day FS asymmetry in the forward pass becomes -1 in
-    reverse. SS / SF have no offset in either direction. FF carries
-    no offset (same-finish semantics; direction flips but the +1 is
-    not involved).
+    CPM Part L (2026-05-16) -- working-day math throughout. The
+    +1 day FS asymmetry in the forward pass becomes -1 in reverse,
+    implemented via prev_business_day. SS / SF have no offset in
+    either direction. FF carries no offset.
 
     SS and SF constrain the predecessor's LATE START rather than
     LATE FINISH, so we convert via A.LF = A.LS + dur_minus_one
-    (dates inclusive: a 3-day task with LS=Mon has LF=Wed, span 2).
+    working days.
 
     For unknown rel_type, defaults to FS (matches Predecessor.type
     default + handles legacy bare-string entries via
     pred_relationship().)
     """
-    lag = timedelta(days=lag_days)
-    one_day = timedelta(days=1)
     if rel_type == "SS":
         # Mirror of forward SS: B.ES = A.ES + lag -> A.LS = B.LS - lag.
-        # No offset. Convert LS to LF via duration-minus-one.
-        a_ls = s_ls - lag
-        return a_ls + timedelta(days=dur_minus_one)
+        # No offset; lag in working days.
+        a_ls = add_working_days(s_ls, -lag_days)
+        return add_working_days(a_ls, dur_minus_one)
     if rel_type == "FF":
         # Mirror of forward FF: B.EF = A.EF + lag -> A.LF = B.LF - lag.
-        # No offset; same direction (predecessor constrains successor's
-        # finish forward, successor constrains predecessor's finish back).
-        return s_lf - lag
+        # No offset; lag in working days.
+        return add_working_days(s_lf, -lag_days)
     if rel_type == "SF":
         # Mirror of forward SF: B.EF = A.ES + lag -> A.LS = B.LF - lag.
-        # No offset. Convert LS to LF via duration-minus-one.
-        a_ls = s_lf - lag
-        return a_ls + timedelta(days=dur_minus_one)
-    # FS (default) -- mirror of forward FS: B.ES = A.EF + 1 + lag
-    # -> A.LF = B.LS - 1 - lag. The -1 mirrors the forward +1 day
-    # convention. FS+0 backward: A.LF = B.LS - 1 (byte-identical to
-    # the pre-Part-D `min(ls[s]) - 1` math for FS+0 schedules).
-    return s_ls - one_day - lag
+        # No offset.
+        a_ls = add_working_days(s_lf, -lag_days)
+        return add_working_days(a_ls, dur_minus_one)
+    # FS (default) -- mirror of forward FS: B.ES = next_biz(A.EF) + lag
+    # -> A.LF = prev_biz(B.LS) - lag. The prev_business_day mirrors the
+    # forward next_business_day. For FS+0 on a Monday successor LS,
+    # A.LF = prev_business_day(Mon) = prev Fri. Lag consumed in working
+    # days going backward.
+    s_ls_anchored = s_ls if is_business_day(s_ls) else next_business_day(s_ls)
+    prev_day = prev_business_day(s_ls_anchored)
+    return add_working_days(prev_day, -lag_days)
 
 
 async def compute_cpm(tenant_id: str, project_id: str) -> dict:
@@ -245,8 +278,17 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
             start_d = _to_date(ps) if ps else date.today()
         else:
             start_d = max(candidates)
+        # CPM Part L (2026-05-16) -- anchor onto a business day. If
+        # the root task's planned_start (or any computed start) lands
+        # on a weekend (legacy data), roll forward to next Mon.
+        if not is_business_day(start_d):
+            start_d = next_business_day(start_d - timedelta(days=1))
         es[code] = start_d
-        ef[code] = start_d + timedelta(days=dur_minus_one)
+        # CPM Part L -- duration accumulates in WORKING days. A 5-day
+        # task starting Mon finishes Fri (Mon=day1, Tue=2, Wed=3,
+        # Thu=4, Fri=5). dur_minus_one is 4; add_working_days(Mon, 4)
+        # = Fri. Identical to pre-Part-L for pure-weekday spans.
+        ef[code] = add_working_days(start_d, dur_minus_one)
         for s in successors[code]:
             indeg_copy[s] -= 1
             if indeg_copy[s] == 0:
@@ -303,16 +345,28 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
             # setup loop above, so every successor has at least one
             # (rel_type, lag) entry in edges.
             lf[code] = min(candidates)
-        ls[code] = lf[code] - timedelta(days=dur_minus_one)
+        # CPM Part L (2026-05-16) -- LS = LF - (dur-1) in working days.
+        # A 5-day task with LF on Friday has LS on Monday (Mon=1,
+        # Tue=2, Wed=3, Thu=4, Fri=5). add_working_days(Fri, -4) = Mon.
+        ls[code] = add_working_days(lf[code], -dur_minus_one)
 
-    # Update tasks. Float = LS - ES (calendar days, signed); a task is
-    # on the critical path when float_days <= 0. Preserve the existing
-    # threshold/comparison -- DO NOT change this without coordinating
-    # with the Tasks UI (Part F adds Impacted/Slip columns) and the
-    # auto-recompute trigger (Part E).
+    # Update tasks. Float = LS - ES in WORKING days (Part L: was
+    # calendar). A task is on the critical path when float_days <= 0.
+    # Working-day float makes the structural metric match field
+    # crews' intuition: "3 days of float" = 3 work-days the task
+    # could slip before pushing the project completion.
+    #
+    # Implementation note: we use working_days_between() instead of
+    # (LS - ES).days. For tasks on the critical path, LS == ES so
+    # the count is 0 regardless. For off-CP tasks, the working-day
+    # count is <= the calendar-day count (weekends removed). On a
+    # pure-weekday schedule with no weekend ES/LS dates, the two
+    # are identical; on weekend-spanning slack the working-day
+    # count is the more honest metric.
+    from services.working_days import working_days_between
     critical = 0
     for code, t in by_id.items():
-        float_days = (ls[code] - es[code]).days
+        float_days = working_days_between(es[code], ls[code])
         is_cp = float_days <= 0
         if is_cp:
             critical += 1
@@ -420,6 +474,25 @@ async def auto_recompute_after_event(
     except Exception as exc:
         log.warning(
             "Part E auto-recompute: compute_projected_finish_dates "
+            "failed (tenant=%s, project=%s): %s",
+            tenant_id, project_id, exc,
+        )
+
+    # CPM Part L (2026-05-16) -- Step 3: live remaining-float refresh.
+    # Walks all 3 open-blocker collections (delays + RFIs + over-SLA
+    # submittals) and stamps remaining_float_days = max(0,
+    # structural - sum_open_impacts) on every task. Independent
+    # try/except so a remaining-float bug doesn't break the existing
+    # CPM + projected-finish chain. Idempotent: a no-op when the
+    # value hasn't changed.
+    try:
+        from services.task_status import compute_remaining_float_for_tasks
+        await compute_remaining_float_for_tasks(
+            db, tenant_id, project_id,
+        )
+    except Exception as exc:
+        log.warning(
+            "Part L auto-recompute: compute_remaining_float_for_tasks "
             "failed (tenant=%s, project=%s): %s",
             tenant_id, project_id, exc,
         )

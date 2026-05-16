@@ -678,6 +678,48 @@ async def _get_delay(delay_id: str) -> dict:
     return d
 
 
+async def _simulate_resolve_delay(
+    delay_id: str, resolved_date: date,
+) -> dict:
+    """CPM Part L-3 (2026-05-16) -- replicate the resolve-delay flow
+    at data-layer level. Mirrors update_delay() in field_events_
+    router.py when status transitions to 'resolved':
+
+      1. Status -> "resolved", resolved_date set, resolved_by stamped.
+      2. actual_impact_days computed as working_days_between(
+         logged_date, resolved_date), clamped at 0.
+      3. auto_recompute_after_event fires (which now also runs
+         compute_remaining_float_for_tasks, refreshing the live
+         remaining_float_days on every task).
+
+    Returns the updated delay row.
+    """
+    from services.working_days import working_days_between
+    delay = await _get_delay(delay_id)
+    logged_d = (
+        date.fromisoformat(str(delay.get("logged_date"))[:10])
+        if delay.get("logged_date")
+        else date.fromisoformat(str(delay.get("date"))[:10])
+    )
+    actual = max(0, working_days_between(logged_d, resolved_date))
+    updates = {
+        "status": "resolved",
+        "resolved_date": resolved_date.isoformat(),
+        "resolved_by_user_id": "test-user",
+        "actual_impact_days": actual,
+    }
+    await _STUB.delays.update_one(
+        {"id": delay_id, "tenant_id": TENANT},
+        {"$set": updates},
+    )
+    # Trigger recompute (compute_cpm + compute_projected_finish +
+    # NEW Part L compute_remaining_float).
+    await auto_recompute_after_event(
+        TENANT, PROJECT, actor_id="test", request_id="req-resolve",
+    )
+    return await _get_delay(delay_id)
+
+
 # =============================================================================
 # THE 11 TESTS
 # =============================================================================
@@ -711,8 +753,13 @@ async def _test_parallel_tasks_isolation():
     t_a = await _get_task("task-A")
     t_b = await _get_task("task-B")
 
-    assert t_a["projected_finish_date"] == "2026-05-11", (
-        f"T_A.projected_finish_date expected 2026-05-11, got "
+    # CPM Part L (2026-05-16) -- working-day shift, was calendar.
+    # T_A.planned_finish = 5/6 Wed; +5 working days = 5/13 Wed
+    # (Thu, Fri, Mon, Tue, Wed -- skipping 5/9-5/10 weekend).
+    # Pre-Part-L expected 5/11 (calendar 5 days from 5/6).
+    assert t_a["projected_finish_date"] == "2026-05-13", (
+        f"T_A.projected_finish_date expected 2026-05-13 "
+        f"(Part L working-day shift), got "
         f"{t_a['projected_finish_date']!r}"
     )
     assert t_b["projected_finish_date"] is None, (
@@ -759,8 +806,12 @@ async def _test_max_at_convergence():
 
     result = await compute_cpm(TENANT, PROJECT)
 
-    assert result.get("project_finish") == "2026-05-12", (
-        f"project_finish expected 2026-05-12, got {result.get('project_finish')!r}"
+    # CPM Part L (2026-05-16) -- T_C's ES = next_business_day(T_B.EF=5/8 Fri)
+    # = 5/11 Mon (skipping 5/9-5/10 weekend). T_C dur=4, EF = 5/14 Thu.
+    # Pre-Part-L expected 5/12 (calendar B.EF+1 = 5/9 Sat).
+    assert result.get("project_finish") == "2026-05-14", (
+        f"project_finish expected 2026-05-14 "
+        f"(Part L working-day forward), got {result.get('project_finish')!r}"
     )
     t_a = await _get_task("task-A")
     t_b = await _get_task("task-B")
@@ -798,9 +849,15 @@ async def _test_fs_lag_concrete_cure():
 
     result = await compute_cpm(TENANT, PROJECT)
 
-    assert result.get("project_finish") == "2026-05-18", (
-        f"FS+7 cure: project_finish expected 2026-05-18, got "
-        f"{result.get('project_finish')!r}"
+    # CPM Part L (2026-05-16) -- FS+7 is now 7 WORKING days (was
+    # calendar). A finishes Fri 5/8; +1 day -> Mon 5/11; +7 working
+    # days -> 5/20 Wed; B dur=3 -> EF = 5/22 Fri.
+    # Pre-Part-L expected 5/18 (calendar: 5/8 +1 +7 = 5/16 Sat,
+    # B.EF = 5/16 + 2 = 5/18). Part L correctly skips both the
+    # immediate weekend AND the second weekend inside the 7-day lag.
+    assert result.get("project_finish") == "2026-05-22", (
+        f"FS+7 cure (Part L working-day lag): project_finish "
+        f"expected 2026-05-22, got {result.get('project_finish')!r}"
     )
     t_a = await _get_task("task-A")
     t_b = await _get_task("task-B")
@@ -834,9 +891,13 @@ async def _test_ss_relationship():
 
     result = await compute_cpm(TENANT, PROJECT)
 
-    assert result.get("project_finish") == "2026-05-09", (
-        f"SS+2: project_finish expected 2026-05-09, got "
-        f"{result.get('project_finish')!r}"
+    # CPM Part L (2026-05-16) -- B.ES = A.ES + 2 working days = 5/6
+    # Wed; B dur=4 -> EF = 5/11 Mon (skipping 5/9-5/10 weekend).
+    # project_finish = max(A.EF=5/8, B.EF=5/11) = 5/11.
+    # Pre-Part-L expected 5/9 (calendar: B.ES=5/6, +3 calendar = 5/9 Sat).
+    assert result.get("project_finish") == "2026-05-11", (
+        f"SS+2 (Part L working-day): project_finish expected "
+        f"2026-05-11, got {result.get('project_finish')!r}"
     )
     t_a = await _get_task("task-A")
     t_b = await _get_task("task-B")
@@ -906,9 +967,14 @@ async def _test_sf_relationship():
 
     result = await compute_cpm(TENANT, PROJECT)
 
-    assert result.get("project_finish") == "2026-05-12", (
-        f"SF+0: project_finish expected 2026-05-12, got "
-        f"{result.get('project_finish')!r}"
+    # CPM Part L (2026-05-16) -- A.ES=5/8 Fri, dur=5, EF = add_
+    # working_days(5/8, 4) = 5/14 Thu (skipping 5/9-5/10 weekend).
+    # B SF+0: B.EF = A.ES = 5/8 Fri; B.ES = add_working_days(5/8, -2)
+    # = 5/6 Wed; B.dur=3, B.EF stays 5/8. project_finish = max(A.EF,
+    # B.EF) = 5/14. Pre-Part-L expected 5/12.
+    assert result.get("project_finish") == "2026-05-14", (
+        f"SF+0 (Part L working-day): project_finish expected "
+        f"2026-05-14, got {result.get('project_finish')!r}"
     )
     t_a = await _get_task("task-A")
     t_b = await _get_task("task-B")
@@ -999,8 +1065,13 @@ async def _test_auto_recompute_on_delay_create():
         f"{t_b['total_float_days']!r}"
     )
     assert t_b["is_critical_path"] is True
-    assert t_b["projected_finish_date"] == "2026-05-16", (
-        f"projected_finish_date expected 5/16 (planned 5/11 + 5d delay), got "
+    # CPM Part L (2026-05-16) -- shift is 5 WORKING days. T_B planned
+    # finish = 5/11 Mon; add_working_days(5/11, 5) = 5/18 Mon
+    # (skipping 5/16-5/17 weekend). Pre-Part-L expected 5/16
+    # (calendar: 5/11 + 5 = 5/16 Sat).
+    assert t_b["projected_finish_date"] == "2026-05-18", (
+        f"projected_finish_date expected 5/18 (Part L working-day "
+        f"shift from 5/11 + 5 wd), got "
         f"{t_b['projected_finish_date']!r}"
     )
     # Upstream A has no own delay impact -> projection stays None.
@@ -1193,9 +1264,13 @@ async def _test_qc_rework_routes_through_synthetic_delay():
     )
     assert t_a["total_float_days"] == 0   # single-task project, A is the tail
     assert t_a["is_critical_path"] is True
-    assert t_a["projected_finish_date"] == "2026-05-10", (
-        f"Synthetic delay should push task-A finish by 2 days: planned 5/8 "
-        f"-> projected 5/10. Got {t_a['projected_finish_date']!r}"
+    # CPM Part L (2026-05-16) -- 2-day synthetic delay shift is in
+    # WORKING days. add_working_days(5/8 Fri, 2) = 5/12 Tue (skipping
+    # 5/9-5/10 weekend). Pre-Part-L expected 5/10 Sun (calendar).
+    assert t_a["projected_finish_date"] == "2026-05-12", (
+        f"Synthetic delay (Part L working-day shift) should push "
+        f"task-A finish 2 wd: planned 5/8 -> projected 5/12. "
+        f"Got {t_a['projected_finish_date']!r}"
     )
 
 
@@ -1482,22 +1557,33 @@ async def _test_rfi_impact_pushes_slip_and_impacted_finish():
 
     t_short = await _get_task("task-SHORT")
     t_long = await _get_task("task-LONG")
-    assert t_short["projected_finish_date"] == "2026-05-11", (
-        f"RFI 3d impact should push planned 5/8 -> 5/11; got "
-        f"{t_short['projected_finish_date']!r}"
+    # CPM Part L (2026-05-16) -- 3-day RFI shift in WORKING days.
+    # planned_finish 5/8 Fri + 3 wd = 5/13 Wed (skip 5/9-5/10).
+    # planned_start 5/4 Mon + 3 wd = 5/7 Thu (no weekend in span).
+    # Pre-Part-L expected 5/11 finish (calendar 5/8+3=5/11 Mon).
+    assert t_short["projected_finish_date"] == "2026-05-13", (
+        f"RFI 3d impact (Part L working-day) should push 5/8 -> "
+        f"5/13; got {t_short['projected_finish_date']!r}"
     )
     assert t_short["projected_start_date"] == "2026-05-07", (
-        f"RFI 3d impact should push planned 5/4 -> 5/7; got "
-        f"{t_short['projected_start_date']!r}"
+        f"RFI 3d impact should push 5/4 -> 5/7 (no weekend in span); "
+        f"got {t_short['projected_start_date']!r}"
     )
-    # Slip would be computed by the frontend slipDays helper as
-    # projected_finish - planned_finish = 3. We assert the components
-    # here since the math is what the column renders from.
+    # Slip in calendar days from planned_finish (5/8 Fri) to
+    # projected (5/13 Wed) = 5 calendar days (Sat, Sun, Mon, Tue,
+    # Wed). The Tasks UI's slipDays() helper renders calendar days
+    # because users read off a calendar — that's the displayed
+    # slip column. The underlying SHIFT was 3 working days; calendar
+    # slip reflects the 2 weekend days inside the span. Part L
+    # working-day fix doesn't change slipDays() (frontend), only
+    # the projected_finish_date (backend). Slip changes from 3
+    # calendar (pre-Part-L) to 5 calendar (Part L) because the
+    # weekend now contributes to the calendar slip count.
     slip = (
         date.fromisoformat(t_short["projected_finish_date"])
         - date.fromisoformat(t_short["planned_finish"])
     ).days
-    assert slip == 3, f"slip expected 3, got {slip}"
+    assert slip == 5, f"slip (calendar) expected 5, got {slip}"
     # T_LONG has no RFI / delay -> no shift.
     assert t_long.get("projected_finish_date") is None
     assert t_long.get("projected_start_date") is None
@@ -1891,8 +1977,12 @@ async def _test_submittal_auto_suggest_on_sla_breach():
     # Action 2: Path 1 picks up the new submittal impact via K-4 walk.
     await compute_projected_finish_dates(_STUB, TENANT, PROJECT)
     t_short = await _get_task("task-SHORT")
-    assert t_short["projected_finish_date"] == "2026-05-11", (
-        f"T_SHORT planned 5/8 + 3-day submittal impact -> 5/11; got "
+    # CPM Part L (2026-05-16) -- 3-day shift in WORKING days.
+    # planned_finish 5/8 Fri + 3 wd = 5/13 Wed (skipping 5/9-5/10).
+    # Pre-Part-L expected 5/11 (calendar 5/8+3).
+    assert t_short["projected_finish_date"] == "2026-05-13", (
+        f"T_SHORT planned 5/8 + 3-wd submittal impact (Part L "
+        f"working-day shift) -> 5/13; got "
         f"{t_short['projected_finish_date']!r}"
     )
 
@@ -2216,6 +2306,334 @@ async def _test_submittal_empty_impacts_no_propagation():
 
 
 # =============================================================================
+# CPM Part L (2026-05-16) -- Working-day math + live remaining-float column.
+# Seven regression tests:
+#   L-1: working-day FS+0 lag (skips weekend)
+#   L-2: working-day FS+3 lag (3 working days, not 3 calendar)
+#   L-3: working-day duration accumulation (skips weekend)
+#   L-4: remaining_float_days drops on delay create
+#   L-5: remaining_float_days restored on delay resolve
+#   L-6: remaining_float_days cumulative across multi-event scenario
+#   L-7: actual_impact_days computed in working days at resolution
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# L-7-1. test_working_day_fs_lag
+# -----------------------------------------------------------------------------
+async def _test_working_day_fs_lag():
+    """FS+0 across a weekend: Task A finishes Fri 5/15, Task B FS+0
+    must start Mon 5/18 -- NOT Sat 5/16. Verifies the next_business_
+    day offset in _derive_implied_start."""
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 11))   # Mon 5/11
+    _add_task("B", duration=3, planned_start=D(5, 18),   # placeholder
+              predecessors=[_pred("A", "FS", 0)])
+    result = await compute_cpm(TENANT, PROJECT)
+
+    # A.ES = 5/11 Mon (root). A.EF = add_working_days(5/11, 4) = 5/15 Fri.
+    # B.ES via FS+0 = next_business_day(5/15 Fri) = 5/18 Mon.
+    # B.EF = add_working_days(5/18, 2) = 5/20 Wed.
+    # project_finish = 5/20.
+    t_b = await _get_task("task-B")
+    assert result.get("project_finish") == "2026-05-20", (
+        f"FS+0 across weekend: project_finish expected 5/20, got "
+        f"{result.get('project_finish')!r}"
+    )
+    # B is on the CP -- both tasks consume the longest path with 0 float.
+    assert t_b["total_float_days"] == 0
+    assert t_b["is_critical_path"] is True
+    print("L-7-1 PASS: FS+0 from Fri lands successor on Mon (not Sat)")
+
+
+# -----------------------------------------------------------------------------
+# L-7-2. test_working_day_fs_lag_with_lag
+# -----------------------------------------------------------------------------
+async def _test_working_day_fs_lag_with_lag():
+    """FS+3 (3-working-day lag) from Fri 5/15: lag day 1 = Mon 5/18,
+    day 2 = Tue 5/19, day 3 = Wed 5/20. Pre-Part-L treated lag as
+    calendar (5/15+1+3=5/19 -- jumping over weekend by accident).
+    Part L: 3 working days after next_business_day(5/15)=Mon, so
+    Mon=1, Tue=2, Wed=3 -> Wed 5/20."""
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 11))   # Mon 5/11 -> Fri 5/15
+    _add_task("B", duration=1, planned_start=D(5, 20),   # placeholder
+              predecessors=[_pred("A", "FS", 3)])
+    result = await compute_cpm(TENANT, PROJECT)
+
+    # B.ES = add_working_days(next_business_day(5/15 Fri)=5/18 Mon, 3) =
+    # 5/21 Thu (Mon+1=Tue, Tue+2=Wed, Wed+3=Thu... actually
+    # add_working_days(5/18, 3) = Mon -> Tue (1) -> Wed (2) -> Thu (3) = 5/21).
+    # Hmm let me re-trace: add_working_days steps n WORKING days
+    # FORWARD from start; start IS day 0. So add_working_days(Mon, 3)
+    # = Mon -> Tue (day 1) -> Wed (day 2) -> Thu (day 3) = Thu 5/21.
+    # B dur=1, EF = ES = 5/21.
+    t_b = await _get_task("task-B")
+    expected_es = "2026-05-21"
+    actual = result.get("project_finish")
+    assert actual == expected_es, (
+        f"FS+3 from Fri 5/15: B should start {expected_es} "
+        f"(Fri->next Mon then +3 wd = Thu); got project_finish={actual!r}"
+    )
+    print("L-7-2 PASS: FS+3 lag treated as working days")
+
+
+# -----------------------------------------------------------------------------
+# L-7-3. test_working_day_duration_skips_weekend
+# -----------------------------------------------------------------------------
+async def _test_working_day_duration_skips_weekend():
+    """Task starting Fri 5/15 with 3-working-day duration must finish
+    Tue 5/19: Fri=day1, Mon=day2, Tue=day3 (skipping 5/16-5/17 weekend).
+    Verifies EF = add_working_days(ES, dur-1) in compute_cpm."""
+    _reset()
+    _add_task("A", duration=3, planned_start=D(5, 15))   # Fri 5/15
+    result = await compute_cpm(TENANT, PROJECT)
+
+    t_a = await _get_task("task-A")
+    # A.ES = 5/15 (already biz day; anchor unchanged).
+    # A.EF = add_working_days(5/15 Fri, 2) = Fri (day0) -> Mon (1) -> Tue (2).
+    # project_finish = 5/19.
+    assert result.get("project_finish") == "2026-05-19", (
+        f"3-wd duration from Fri 5/15: project_finish expected "
+        f"5/19 Tue (Fri+Mon+Tue), got {result.get('project_finish')!r}"
+    )
+    assert t_a["is_critical_path"] is True
+    assert t_a["total_float_days"] == 0
+    print("L-7-3 PASS: duration accumulation skips weekend")
+
+
+# -----------------------------------------------------------------------------
+# L-7-4. test_remaining_float_drops_on_delay_create
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_drops_on_delay_create():
+    """Live remaining float decreases when a delay is logged.
+
+    Setup:
+        T_SHORT structural float = 5 (vs T_LONG 10-d backbone)
+        No prior events on T_SHORT
+
+    Action 1: compute_cpm + initial remaining_float refresh
+    Assert 1: T_SHORT.remaining_float_days = 5 (full structural)
+
+    Action 2: log a delay with 3-day projected impact
+    Assert 2: T_SHORT.remaining_float_days = 2 (5 - 3)
+              T_SHORT.total_float_days STILL = 5 (structural unchanged)
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+
+    # Step 1: initial recompute populates remaining_float = structural.
+    await auto_recompute_after_event(TENANT, PROJECT)
+    t = await _get_task("task-SHORT")
+    assert t["total_float_days"] == 5, t["total_float_days"]
+    assert t["remaining_float_days"] == 5, (
+        f"Fresh (no events) remaining_float should equal structural; "
+        f"got remaining={t.get('remaining_float_days')!r}"
+    )
+
+    # Step 2: log a 3-day delay.
+    await _simulate_create_delay("task-SHORT", impact_days=3)
+    t = await _get_task("task-SHORT")
+    # Structural float should NOT change.
+    assert t["total_float_days"] == 5, (
+        f"structural float must stay 5 after delay create; got "
+        f"{t['total_float_days']!r}"
+    )
+    # Remaining float drops by 3.
+    assert t["remaining_float_days"] == 2, (
+        f"after 3-d delay, remaining should be 2 (5-3); got "
+        f"{t.get('remaining_float_days')!r}"
+    )
+    print("L-7-4 PASS: remaining_float drops 5 -> 2 on 3-d delay create")
+
+
+# -----------------------------------------------------------------------------
+# L-7-5. test_remaining_float_restored_on_delay_resolve
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_restored_on_delay_resolve():
+    """When a delay is resolved, its impact STOPS contributing to
+    the open-blocker sum, and remaining_float_days recovers on the
+    next auto_recompute_after_event fire. actual_impact_days stamps
+    on the delay row but does NOT affect remaining_float (resolved
+    rows are filtered out entirely).
+
+    Setup:
+        T_SHORT structural float = 5
+        Delay logged Mon 5/4 with 3-d projected impact -> remaining = 2
+
+    Action:
+        Resolve the delay on Tue 5/5 (1 working day later).
+
+    Assert:
+        delay.status == "resolved"
+        delay.actual_impact_days == 1 (Mon->Tue = 1 working day)
+        T_SHORT.remaining_float_days == 5 (fully restored;
+            resolved delay no longer in open sum)
+        T_SHORT.total_float_days == 5 (structural unchanged)
+    """
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    # Log delay (logged_date defaults to 5/14 in _simulate_create_delay,
+    # but _add_open_delay above accepted logged_date kwarg. Use the
+    # simulate helper for the full create flow + auto-recompute).
+    delay = await _simulate_create_delay(
+        "task-SHORT", impact_days=3, logged_date=D(5, 4),
+    )
+    t_pre = await _get_task("task-SHORT")
+    assert t_pre["remaining_float_days"] == 2, (
+        f"before resolve, remaining should be 2; got {t_pre!r}"
+    )
+
+    # Resolve on 5/5 (Tue, 1 working day after Mon 5/4).
+    resolved = await _simulate_resolve_delay(delay["id"], D(5, 5))
+    assert resolved["status"] == "resolved"
+    assert resolved["actual_impact_days"] == 1, (
+        f"working_days_between(5/4 Mon, 5/5 Tue) = 1; got "
+        f"actual_impact_days={resolved.get('actual_impact_days')!r}"
+    )
+
+    t_post = await _get_task("task-SHORT")
+    assert t_post["total_float_days"] == 5  # structural unchanged
+    assert t_post["remaining_float_days"] == 5, (
+        f"after resolve, remaining_float should RESTORE to 5 "
+        f"(resolved delay no longer in open sum); got "
+        f"{t_post.get('remaining_float_days')!r}"
+    )
+    print("L-7-5 PASS: remaining_float restored on resolve; "
+          "actual_impact_days = 1 working day")
+
+
+# -----------------------------------------------------------------------------
+# L-7-6. test_remaining_float_multi_event_cumulative
+# -----------------------------------------------------------------------------
+async def _test_remaining_float_multi_event_cumulative():
+    """Multi-event cumulative remaining_float walkthrough:
+      Step 0: structural 10
+      Step 1: log delay 3-d -> remaining = 7
+      Step 2: open RFI 2-d -> remaining = 5
+      Step 3: log delay 4-d -> remaining = 1
+      Step 4: resolve first delay (actual = 1 wd) -> remaining = 3
+              (10 - actual_of_resolved_no_longer_counted - 2 RFI - 4 delay = 3)
+
+    NOTE: after the first delay is resolved, the open-impact sum is
+    RFI 2 + second delay 4 = 6. remaining = 10 - 6 = 4. Hmm let me
+    re-trace -- actually 10 - 6 = 4 not 3. Let me check the math.
+
+    Pre-resolve total open = 3 + 2 + 4 = 9. remaining = 10 - 9 = 1.
+    Resolve first delay: now open = 0 (resolved) + 2 + 4 = 6.
+    remaining = 10 - 6 = 4. (NOT 3 as the spec said.)
+
+    The spec gave "remaining = 3 (10 - 1 - 2 - 4)" which counts
+    actual_impact (1) of the resolved delay. That's NOT what Part L
+    computes -- per L-2 spec, remaining_float = structural - sum
+    of OPEN blocker impacts. Resolved delays are EXCLUDED entirely
+    (their actual_impact lives on the delay row for audit, but does
+    NOT contribute to the open-sum). So the correct math is 10 - 6 = 4.
+
+    Documenting the spec deviation here -- the SPEC's intent is
+    captured by "resolved delays no longer contribute," which gives 4.
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    t = await _get_task("task-SHORT")
+    assert t["total_float_days"] == 10, (
+        f"setup sanity: SHORT float expected 10 (15-5); got "
+        f"{t['total_float_days']!r}"
+    )
+
+    # Step 1: 3-d delay
+    delay1 = await _simulate_create_delay(
+        "task-SHORT", impact_days=3, logged_date=D(5, 4),
+    )
+    t = await _get_task("task-SHORT")
+    assert t["remaining_float_days"] == 7, (
+        f"step 1 remaining expected 7; got {t.get('remaining_float_days')!r}"
+    )
+
+    # Step 2: 2-d RFI
+    _add_open_rfi("task-SHORT", 2)
+    await auto_recompute_after_event(TENANT, PROJECT)
+    t = await _get_task("task-SHORT")
+    assert t["remaining_float_days"] == 5, (
+        f"step 2 remaining expected 5; got {t.get('remaining_float_days')!r}"
+    )
+
+    # Step 3: 4-d delay
+    delay2 = await _simulate_create_delay(
+        "task-SHORT", impact_days=4, logged_date=D(5, 4),
+    )
+    t = await _get_task("task-SHORT")
+    assert t["remaining_float_days"] == 1, (
+        f"step 3 remaining expected 1 (10-3-2-4); got "
+        f"{t.get('remaining_float_days')!r}"
+    )
+
+    # Step 4: resolve first delay 1-d later (actual=1 wd).
+    await _simulate_resolve_delay(delay1["id"], D(5, 5))
+    t = await _get_task("task-SHORT")
+    # remaining = 10 - (2 RFI + 4 delay2) = 4. The resolved delay
+    # drops from the open sum entirely; actual_impact_days lives on
+    # the delay row for audit but doesn't reduce remaining_float.
+    assert t["remaining_float_days"] == 4, (
+        f"step 4 remaining expected 4 (10 - 0 resolved - 2 RFI "
+        f"- 4 delay2); got {t.get('remaining_float_days')!r}"
+    )
+    print("L-7-6 PASS: cumulative remaining_float 10 -> 7 -> 5 -> 1 -> 4")
+
+
+# -----------------------------------------------------------------------------
+# L-7-7. test_actual_impact_days_calculation
+# -----------------------------------------------------------------------------
+async def _test_actual_impact_days_calculation():
+    """actual_impact_days = working_days_between(logged_date,
+    resolved_date). Validates the working-day delta math, NOT
+    calendar.
+
+    Setup:
+        Delay logged Friday 5/15
+        Resolved next Wednesday 5/20
+
+    Assert:
+        actual_impact_days == 3 (working days: Mon, Tue, Wed in span)
+        NOT 5 (calendar Fri->Wed span)
+
+    Walking working_days_between(5/15, 5/20):
+        d=5/15 Fri: is_bd=True, count=1, d=5/16 Sat
+        d=5/16 Sat: is_bd=False, count=1, d=5/17 Sun
+        d=5/17 Sun: is_bd=False, count=1, d=5/18 Mon
+        d=5/18 Mon: is_bd=True, count=2, d=5/19 Tue
+        d=5/19 Tue: is_bd=True, count=3, d=5/20 Wed
+        d=5/20 Wed: STOP (d >= end)
+    Returns 3.
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+
+    delay = await _simulate_create_delay(
+        "task-SHORT", impact_days=5, logged_date=D(5, 15),
+    )
+    resolved = await _simulate_resolve_delay(delay["id"], D(5, 20))
+    assert resolved["actual_impact_days"] == 3, (
+        f"actual_impact_days = working_days_between(Fri 5/15, "
+        f"Wed 5/20) = 3 (Fri + Mon + Tue, exclusive of Wed); "
+        f"got {resolved.get('actual_impact_days')!r}"
+    )
+    # Sanity: projected_impact_days on the per_task_impacts snapshot
+    # is UNCHANGED at 5 (audit immutability). Only the delay row's
+    # actual_impact_days field captures the resolution-time variance.
+    assert resolved["per_task_impacts"][0]["projected_impact_days"] == 5
+    print("L-7-7 PASS: actual_impact_days=3 working days, "
+          "projected_impact_days=5 immutable on snapshot")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -2333,6 +2751,35 @@ def test_submittal_empty_impacts_no_propagation():
     asyncio.run(_test_submittal_empty_impacts_no_propagation())
 
 
+# CPM Part L (2026-05-16) -- Working-day math + live remaining-float tests.
+def test_working_day_fs_lag():
+    asyncio.run(_test_working_day_fs_lag())
+
+
+def test_working_day_fs_lag_with_lag():
+    asyncio.run(_test_working_day_fs_lag_with_lag())
+
+
+def test_working_day_duration_skips_weekend():
+    asyncio.run(_test_working_day_duration_skips_weekend())
+
+
+def test_remaining_float_drops_on_delay_create():
+    asyncio.run(_test_remaining_float_drops_on_delay_create())
+
+
+def test_remaining_float_restored_on_delay_resolve():
+    asyncio.run(_test_remaining_float_restored_on_delay_resolve())
+
+
+def test_remaining_float_multi_event_cumulative():
+    asyncio.run(_test_remaining_float_multi_event_cumulative())
+
+
+def test_actual_impact_days_calculation():
+    asyncio.run(_test_actual_impact_days_calculation())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -2390,12 +2837,26 @@ def _run_all():
          _test_mixed_all_four_event_types_cumulative),
         ("test_submittal_empty_impacts_no_propagation",
          _test_submittal_empty_impacts_no_propagation),
+        # CPM Part L (2026-05-16) -- Working-day math + live remaining float.
+        ("test_working_day_fs_lag", _test_working_day_fs_lag),
+        ("test_working_day_fs_lag_with_lag",
+         _test_working_day_fs_lag_with_lag),
+        ("test_working_day_duration_skips_weekend",
+         _test_working_day_duration_skips_weekend),
+        ("test_remaining_float_drops_on_delay_create",
+         _test_remaining_float_drops_on_delay_create),
+        ("test_remaining_float_restored_on_delay_resolve",
+         _test_remaining_float_restored_on_delay_resolve),
+        ("test_remaining_float_multi_event_cumulative",
+         _test_remaining_float_multi_event_cumulative),
+        ("test_actual_impact_days_calculation",
+         _test_actual_impact_days_calculation),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
-    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K "
-          "(11 + 5 + 6 + 6 tests)")
+    print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L "
+          "(11 + 5 + 6 + 6 + 7 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -2412,7 +2873,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 28 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 35 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
