@@ -115,23 +115,67 @@ export function formatPredecessors(preds) {
 }
 
 
-// CPM Part F (2026-05-15) -- slip between planned_finish and
-// projected_finish_date in whole calendar days. Returns 0 when
-// either input is missing OR when the projection equals planned
-// (no slip) OR when the projection is BEFORE planned (acceleration
-// -- not a slip; we keep the slip semantic to "days lost"). Callers
-// render "—" when this returns 0 and "+N" when > 0.
+// CPM Bug 3.B (2026-05-16) -- working-day helpers, JS mirror of
+// backend/services/working_days.py. Slip / float scalars must be
+// WORKING-DAY counts (Mon-Fri), consistent with the working-day
+// Impacted dates (Part L) and the working-day impact values supers
+// enter. A PM who logs a "5 day" delay must see Slip "+5", not the
+// calendar "+7" that a Fri->Fri span produced pre-Bug-3.B.
 //
-// Defensive: any parse error returns 0 rather than NaN/"?", so the
-// Slip column never renders garbage on malformed dates.
-export function slipDays(plannedIso, projectedIso) {
-  if (!plannedIso || !projectedIso) return 0;
+// JS Date.getDay(): Sun=0, Mon=1, ..., Fri=5, Sat=6.
+export function isBusinessDay(d) {
+  const wd = d.getDay();
+  return wd >= 1 && wd <= 5;
+}
+
+// Count of working days from `startIso` (inclusive) to `endIso`
+// (exclusive). Negative when end < start. Mirrors the Python
+// working_days_between() semantics exactly:
+//   between(Mon, Mon)      == 0
+//   between(Mon, Tue)      == 1   (Mon is the only WD in range)
+//   between(Fri, next Mon) == 1   (Fri only; Sat/Sun skipped)
+//   between(Mon, next Mon) == 5   (Mon..Fri)
+// Defensive: parse failure / missing input -> 0.
+export function workingDaysBetween(startIso, endIso) {
+  if (!startIso || !endIso) return 0;
   try {
-    const p = new Date(String(plannedIso).slice(0, 10) + "T00:00:00");
-    const pr = new Date(String(projectedIso).slice(0, 10) + "T00:00:00");
-    const diff = Math.round((pr - p) / 86400000);
-    return diff > 0 ? diff : 0;
+    const start = new Date(String(startIso).slice(0, 10) + "T00:00:00");
+    const end = new Date(String(endIso).slice(0, 10) + "T00:00:00");
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return 0;
+    }
+    if (start > end) {
+      return -workingDaysBetween(endIso, startIso);
+    }
+    let count = 0;
+    const cur = new Date(start);
+    while (cur < end) {
+      if (isBusinessDay(cur)) count += 1;
+      cur.setDate(cur.getDate() + 1);
+    }
+    return count;
   } catch {
     return 0;
   }
+}
+
+// CPM Part F (2026-05-15) -- slip between planned_finish and
+// projected_finish_date.
+//
+// CPM Bug 3.B (2026-05-16) -- slip is now a WORKING-DAY count, not
+// calendar. Pre-Bug-3.B this returned (projected - planned) in
+// whole calendar days, so a 5-working-day delay whose Impacted
+// Finish landed the following Friday showed Slip "+7" -- two
+// phantom weekend days the super never entered. Now slip ==
+// working_days_between(planned_finish, projected_finish), which
+// equals the working-day impact the super logged.
+//
+// Returns 0 when either input is missing OR when the projection
+// equals planned (no slip) OR when the projection is BEFORE planned
+// (acceleration -- not a slip). Callers render "—" when this
+// returns 0 and "+N" when > 0. Defensive: parse error -> 0.
+export function slipDays(plannedIso, projectedIso) {
+  if (!plannedIso || !projectedIso) return 0;
+  const diff = workingDaysBetween(plannedIso, projectedIso);
+  return diff > 0 ? diff : 0;
 }

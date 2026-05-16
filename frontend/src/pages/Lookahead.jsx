@@ -135,7 +135,7 @@ export default function Lookahead() {
                   format in one place. */}
               <th title="Projected start date when an open delay or RFI pushes the task forward via CPM walk-forward.">Impacted Start</th>
               <th title="Projected finish date — planned_finish + accumulated open-delay shift through CPM predecessors.">Impacted Finish</th>
-              <th title="Days of slip: projected_finish_date − planned_finish. Em-dash when zero. Light-red row tint when > 0.">Slip (d)</th>
+              <th title="Working days of slip: working_days_between(planned_finish, projected_finish_date). Em-dash when zero. Light-red row tint when > 0. (CPM Bug 3.B: working days, was calendar.)">Slip (wd)</th>
               {/* CPM Part L-2 (2026-05-16) -- live remaining float
                   on Lookahead page mirrors the Tasks page column.
                   PMs scanning the 14-day window see at a glance
@@ -209,7 +209,7 @@ export default function Lookahead() {
                       data-testid={`lookahead-slip-${t.activity_code}`}
                       className="tabular-nums text-xs"
                       title={slip > 0
-                        ? `Projected slip +${slip}d vs planned_finish`
+                        ? `Projected slip +${slip} working days vs planned_finish`
                         : "No projected slip"}
                     >
                       {slip > 0
@@ -236,7 +236,7 @@ export default function Lookahead() {
                     <td>
                       <span data-testid={`lookahead-status-${t.activity_code}`}
                         className={`pill ${csClass} inline-flex items-center gap-1`}
-                        title={atRisk ? `Projected slip +${slip}d` : undefined}>
+                        title={atRisk ? `Projected slip +${slip} working days` : undefined}>
                         {pillLabel}
                         {t.has_open_blocker && t.open_blocker_count
                           ? <span className="text-[10px] text-red-700/80">({t.open_blocker_count})</span>

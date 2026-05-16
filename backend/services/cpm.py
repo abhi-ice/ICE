@@ -92,9 +92,17 @@ FINISH; we convert via A.LF = A.LS + (dur - 1).
         backward: A.LS = B.LF - lag        (no offset)
                   A.LF = A.LS + (dur - 1)
 
-Float = LS - ES (calendar days). is_critical_path = (float_days <= 0).
-For MSU's pure FS+0 schedule, the new backward pass produces
+Float = working_days_between(ES, LS). is_critical_path = (float_days
+<= 0). For MSU's pure FS+0 schedule, the new backward pass produces
 byte-identical LS / LF / float / is_critical_path on every task.
+
+CPM Bug 3.B (2026-05-16) -- structural float is a WORKING-DAY count
+(was calendar days pre-Part-L). total_float_days now answers "how
+many WORK days can this task slip" -- units-consistent with the
+working-day Impacted Start/Finish dates (Part L) and with the
+working-day delay/RFI/submittal impact entered by supers. The
+"within float / pushes critical path" verdict (Part I/J/K) compares
+working-day impact against this working-day float -- units-clean.
 """
 from datetime import date, timedelta
 from typing import Iterable, Optional

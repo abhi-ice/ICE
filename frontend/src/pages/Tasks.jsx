@@ -409,7 +409,7 @@ export default function Tasks() {
                   choose) that fires auto_recompute_after_event. */}
               <th title="Projected start date when an open delay or RFI pushes the task forward via CPM walk-forward.">Impacted Start</th>
               <th title="Projected finish date — planned_finish + accumulated open-delay shift through CPM predecessors.">Impacted Finish</th>
-              <th title="Days of slip: projected_finish_date − planned_finish. Em-dash when zero. Light-red row tint when > 0.">Slip (d)</th>
+              <th title="Working days of slip: working_days_between(planned_finish, projected_finish_date). Em-dash when zero. Light-red row tint when > 0. (CPM Bug 3.B: working days, was calendar — a 5-working-day delay now shows +5, not +7.)">Slip (wd)</th>
               <th>Dur (d)</th>
               <th>%</th>
               <th title="Computed status: complete > blocked > behind > on_track. Updates on every EOD% edit, delay open/close, and read.">Status</th>
@@ -504,7 +504,7 @@ export default function Tasks() {
                   data-testid={`task-slip-${t.activity_code}`}
                   className="tabular-nums text-xs"
                   title={slip > 0
-                    ? `Projected slip +${slip}d vs planned_finish`
+                    ? `Projected slip +${slip} working days vs planned_finish`
                     : "No projected slip"}
                 >
                   {slip > 0
