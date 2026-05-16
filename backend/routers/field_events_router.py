@@ -273,6 +273,19 @@ async def _resolve_task_impacts(
         # (the delay being logged/edited); RFIs on the same task are
         # NOT excluded -- their impacts contribute to this delay's
         # prior-sum so a delay logged after an RFI sees its impact.
+        #
+        # CPM Bug 3.B (2026-05-16) -- UNITS-CONSISTENT working days.
+        # f_val (float_at_logging_days) reads t.total_float_days,
+        # which compute_cpm sets via working_days_between(ES, LS) --
+        # a WORKING-DAY count. prior (from _sum_prior_open_blocker_
+        # impacts_on_task) sums per_task_impacts.projected_impact_days
+        # which supers enter in working days. proj (this event's
+        # impact) is also working days. So the verdict below compares
+        # working-day impact against working-day remaining float --
+        # units-clean. Pre-Bug-3.B f_val was calendar days while
+        # proj/prior were working days; in weekend-spanning cases
+        # that mismatch flipped consumes_float_only / pushes_critical_
+        # path the wrong way -- a federal TIA-defensibility risk.
         if proj_id is not None and f_val is not None:
             prior = await _sum_prior_open_blocker_impacts_on_task(
                 db, tenant_id, proj_id, tid,
@@ -282,6 +295,7 @@ async def _resolve_task_impacts(
             # Clamp at 0 -- can't have negative float in the verdict
             # (a task already past its structural float has 0 remaining
             # to consume; any further impact pushes the critical path).
+            # All three operands are working-day counts (Bug 3.B).
             remaining = max(0.0, f_val - prior)
             consumes = proj <= remaining
             pushes_cp = proj > remaining

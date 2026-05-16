@@ -1507,6 +1507,10 @@ async def _resolve_submittal_task_impacts(
             continue
         t = by_id.get(tid) or {}
         impact = float(item.get("projected_impact_days") or 0)
+        # CPM Bug 3.B (2026-05-16) -- total_float_days is a WORKING-DAY
+        # count (compute_cpm: working_days_between(ES, LS)). impact is
+        # working days. Verdict below is units-consistent: working-day
+        # impact vs working-day remaining float.
         f = t.get("total_float_days")
         f_val = float(f) if f is not None else None
         is_cp = bool(t.get("is_critical_path"))
