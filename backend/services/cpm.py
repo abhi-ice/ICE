@@ -257,12 +257,39 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
                 rel_type, lag_days = pred_relationship(p)
                 edges[(code, t["activity_code"])].append((rel_type, lag_days))
 
-    # Forward pass (early start / early finish)
+    # Forward pass (early start / early finish).
+    #
+    # CPM Step 2 (2026-05-17, Issue 3.D) -- compute_cpm now ANCHORS
+    # ON THE IMPORTED MS PROJECT DATES. Pre-Step-2 the forward pass
+    # RE-DERIVED every non-root task's ES from its predecessors via
+    # _derive_implied_start (MAX-convergence), ignoring the task's
+    # own imported planned_start. That re-derivation produced a
+    # second, divergent date baseline -- the root cause of the
+    # Float-vs-Slip mismatch (Issue 3.D). For a federal tool the
+    # imported .mpp IS the contract artifact, so the engine must
+    # TRUST it, not re-derive it.
+    #
+    # NEW: EVERY task (root AND non-root) takes
+    #   ES = imported planned_start
+    #   EF = imported planned_finish   (D2 -- trusted directly, NOT
+    #        recomputed from duration; mismatches are detected +
+    #        reported, see duration_mismatches below)
+    # The topological sort is still built here -- the BACKWARD pass
+    # still needs it. The backward pass + _derive_implied_start /
+    # _derive_implied_late_finish are UNCHANGED (the latter two are
+    # still used by the backward pass and by the cascade in
+    # task_status.py). float = working_days_between(es, ls) below is
+    # the same formula -- but es is now the imported date, so float
+    # becomes schedule-faithful and reconciles with the cascade.
     es: dict[str, date] = {}
     ef: dict[str, date] = {}
     queue = deque(t["activity_code"] for t in tasks if indeg[t["activity_code"]] == 0)
     topo: list[str] = []
     indeg_copy = dict(indeg)
+    # D2 -- import-quality observations: tasks where the imported
+    # planned_finish disagrees with add_working_days(planned_start,
+    # dur-1). Not an error; surfaced in the return payload + logs.
+    duration_mismatches: list[dict] = []
     while queue:
         code = queue.popleft()
         topo.append(code)
@@ -270,42 +297,40 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
         dur = float(t.get("duration_days") or 1.0)
         dur_minus_one = max(0, int(round(dur)) - 1)
 
-        # CPM Part C (2026-05-15) -- per-predecessor implied-start
-        # derivation. For each predecessor, _derive_implied_start
-        # produces a candidate B.start that satisfies THAT
-        # predecessor's constraint (relationship type + lag). Take
-        # MAX across candidates -- the latest binding constraint
-        # wins (standard CPM convergence). Predecessors that don't
-        # resolve to a known activity_code are skipped silently.
-        candidates: list[date] = []
-        for p in (t.get("predecessors") or []):
-            pc = pred_code(p)
-            if not pc or pc not in by_id:
-                continue
-            rel_type, lag_days = pred_relationship(p)
-            candidate = _derive_implied_start(
-                es[pc], ef[pc], rel_type, lag_days, dur_minus_one,
-            )
-            candidates.append(candidate)
-
-        if not candidates:
-            # Root task -- anchor to planned_start, falling back to
-            # today's date for tasks with no planned_start set yet.
-            ps = t.get("planned_start")
-            start_d = _to_date(ps) if ps else date.today()
-        else:
-            start_d = max(candidates)
-        # CPM Part L (2026-05-16) -- anchor onto a business day. If
-        # the root task's planned_start (or any computed start) lands
-        # on a weekend (legacy data), roll forward to next Mon.
+        # CPM Step 2 -- ES read DIRECTLY from the imported
+        # planned_start (anchor onto a business day if a legacy
+        # import landed it on a weekend / holiday).
+        ps = t.get("planned_start")
+        start_d = _to_date(ps) if ps else date.today()
         if not is_business_day(start_d):
             start_d = next_business_day(start_d - timedelta(days=1))
         es[code] = start_d
-        # CPM Part L -- duration accumulates in WORKING days. A 5-day
-        # task starting Mon finishes Fri (Mon=day1, Tue=2, Wed=3,
-        # Thu=4, Fri=5). dur_minus_one is 4; add_working_days(Mon, 4)
-        # = Fri. Identical to pre-Part-L for pure-weekday spans.
-        ef[code] = add_working_days(start_d, dur_minus_one)
+
+        # CPM Step 2 / D2 -- EF read DIRECTLY from the imported
+        # planned_finish (the contract truth). A legacy weekend /
+        # holiday finish is rolled BACK to the prior business day
+        # (a task cannot finish on a non-working day). When
+        # planned_finish is missing, fall back to the duration-
+        # derived finish so the row still participates.
+        pf = t.get("planned_finish")
+        if pf:
+            finish_d = _to_date(pf)
+            if not is_business_day(finish_d):
+                finish_d = prev_business_day(finish_d + timedelta(days=1))
+            ef[code] = finish_d
+            # D2 -- detect (don't correct) a duration/finish mismatch.
+            expected_ef = add_working_days(start_d, dur_minus_one)
+            if finish_d != expected_ef:
+                duration_mismatches.append({
+                    "activity_code": code,
+                    "planned_start": start_d.isoformat(),
+                    "planned_finish": finish_d.isoformat(),
+                    "duration_days": int(round(dur)),
+                    "duration_derived_finish": expected_ef.isoformat(),
+                })
+        else:
+            ef[code] = add_working_days(start_d, dur_minus_one)
+
         for s in successors[code]:
             indeg_copy[s] -= 1
             if indeg_copy[s] == 0:
@@ -314,6 +339,15 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
     if len(topo) < len(tasks):
         # Cycle detected — leave is_critical_path unchanged
         return {"updated": 0, "critical_count": 0, "error": "cycle_detected"}
+
+    if duration_mismatches:
+        import logging
+        logging.getLogger(__name__).info(
+            "compute_cpm (tenant=%s project=%s): %d task(s) with "
+            "imported planned_finish != duration-derived finish: %s",
+            tenant_id, project_id, len(duration_mismatches),
+            duration_mismatches[:20],
+        )
 
     project_finish = max(ef.values())
 
@@ -380,19 +414,42 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
     # pure-weekday schedule with no weekend ES/LS dates, the two
     # are identical; on weekend-spanning slack the working-day
     # count is the more honest metric.
+    # CPM Step 2 (2026-05-17) -- with ES anchored on the imported
+    # dates, total_float_days may now be NEGATIVE: a task whose
+    # imported planned_start is earlier than its predecessors'
+    # imported planned_finish allows is internally inconsistent, and
+    # the backward pass produces ls < es -> negative float. We do
+    # NOT clamp -- a negative structural float surfaces a contract-
+    # schedule inconsistency, which a federal tool must EXPOSE, not
+    # hide (the pre-Step-2 re-derivation silently hid it). is_critical
+    # _path keeps the float <= 0 rule, so a negative-float task is
+    # correctly flagged critical. negative_float_count is returned so
+    # migration 024 / the recompute endpoint can report it -- on a
+    # clean imported schedule it should be 0.
     from services.working_days import working_days_between
     critical = 0
+    negative_float_count = 0
     for code, t in by_id.items():
         float_days = working_days_between(es[code], ls[code])
         is_cp = float_days <= 0
         if is_cp:
             critical += 1
+        if float_days < 0:
+            negative_float_count += 1
         await db.tasks.update_one(
             tenant_filter(tenant_id, {"id": t["id"]}),
             {"$set": {"is_critical_path": is_cp, "total_float_days": float_days}},
         )
 
-    return {"updated": len(by_id), "critical_count": critical, "project_finish": project_finish.isoformat()}
+    return {
+        "updated": len(by_id),
+        "critical_count": critical,
+        "project_finish": project_finish.isoformat(),
+        # CPM Step 2 -- import-anchor diagnostics.
+        "negative_float_count": negative_float_count,
+        "duration_mismatch_count": len(duration_mismatches),
+        "duration_mismatches": duration_mismatches[:50],
+    }
 
 
 def _to_date(v):
