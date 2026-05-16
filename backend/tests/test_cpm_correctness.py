@@ -329,7 +329,10 @@ from services.submittal_sla import (  # noqa: E402
 )
 # CPM Slip-cascade fix (2026-05-16) -- working-day delta helper used
 # by the SC-* cascade tests to assert exact overflow magnitudes.
-from services.working_days import working_days_between  # noqa: E402
+from services.working_days import (  # noqa: E402
+    working_days_between, add_working_days, next_business_day,
+    is_business_day, FEDERAL_HOLIDAYS,
+)
 
 
 # =============================================================================
@@ -2724,7 +2727,24 @@ async def _test_delay_exceeding_gap_cascades_only_overflow():
     Assert:
         A.projected_finish_date = 5/20 (5/8 + 8 working days)
         C moves by EXACTLY 3 working days (8 delay - 5 gap), NOT 8.
-        C.projected_finish_date = 5/25 (5/20 + 3 working days)
+        C.projected_finish_date = 5/26 (5/20 + 3 working days,
+        holiday-aware -- see CPM Step 1 note below).
+
+    CPM Step 1 (2026-05-17) -- EXPECTED VALUE UPDATED:
+      C.projected_finish_date changed 2026-05-25 -> 2026-05-26.
+      RESPONSIBLE HOLIDAY: Memorial Day, Monday 2026-05-25.
+      ARITHMETIC PROOF: C moves the 3-working-day overflow from its
+      planned_finish 5/20 Wed. add_working_days(5/20, 3) walks:
+        5/21 Thu (1), 5/22 Fri (2), [5/23-24 weekend], [5/25 Mon =
+        Memorial Day -- SKIPPED], 5/26 Tue (3).
+      Pre-Step-1 (weekend-only) this landed the Impacted Finish ON
+      Memorial Day (5/25) -- a date no crew works. Step 1's
+      holiday-aware add_working_days correctly rolls it to 5/26.
+      The OVERFLOW MAGNITUDE is unchanged: c_move below still == 3
+      (working_days_between also skips 5/25), proving the cascade
+      math is sound -- only the calendar date it lands on shifted
+      off the holiday. A.projected_finish (5/20) is unchanged: no
+      holiday falls in the 5/11-5/20 span.
     """
     _reset()
     _add_task("A", duration=5, planned_start=D(5, 4),
@@ -2739,14 +2759,17 @@ async def _test_delay_exceeding_gap_cascades_only_overflow():
     t_a = await _get_task("task-A")
     t_c = await _get_task("task-C")
     assert t_a["projected_finish_date"] == "2026-05-20", (
-        f"A + 8 working days from 5/8 -> 5/20; got "
-        f"{t_a['projected_finish_date']!r}"
+        f"A + 8 working days from 5/8 -> 5/20 (no holiday in span); "
+        f"got {t_a['projected_finish_date']!r}"
     )
-    assert t_c["projected_finish_date"] == "2026-05-25", (
-        f"C should move only the 3-day overflow (8 delay - 5 gap) "
-        f"-> 5/20 + 3 wd = 5/25; got {t_c['projected_finish_date']!r}"
+    assert t_c["projected_finish_date"] == "2026-05-26", (
+        f"C moves the 3-day overflow from 5/20; holiday-aware "
+        f"add_working_days skips Memorial Day 5/25 -> 5/26; got "
+        f"{t_c['projected_finish_date']!r}"
     )
-    # Verify the overflow magnitude precisely.
+    # Verify the overflow magnitude precisely -- still 3 working days
+    # (working_days_between skips 5/25 too, so the count is unchanged
+    # even though the landing date moved off the holiday).
     c_move = working_days_between(
         date.fromisoformat("2026-05-20"),   # C planned_finish
         date.fromisoformat(t_c["projected_finish_date"]),
@@ -2755,7 +2778,8 @@ async def _test_delay_exceeding_gap_cascades_only_overflow():
         f"C should move exactly 3 working days (overflow), not 8; "
         f"got {c_move}"
     )
-    print("SC-2 PASS: delay exceeding gap cascades only the overflow")
+    print("SC-2 PASS: delay exceeding gap cascades only the overflow "
+          "(holiday-aware -- lands 5/26, not 5/25 Memorial Day)")
 
 
 # -----------------------------------------------------------------------------
@@ -3481,6 +3505,161 @@ async def _test_slip_days_persisted():
 
 
 # =============================================================================
+# CPM Step 1 (2026-05-17) -- federal-holiday-aware working-day math.
+# Issue 3.D root cause: working_days.py skipped only weekends, so the
+# CPM core counted federal holidays as ordinary working days and the
+# cascade could land an Impacted date ON July 4. 5 regression tests.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# H-1. test_add_working_days_skips_federal_holiday
+# -----------------------------------------------------------------------------
+async def _test_add_working_days_skips_federal_holiday():
+    """add_working_days skips Memorial Day (Mon 2026-05-25).
+
+    From Fri 5/22, +1 working day: weekend-only math lands on Mon
+    5/25; holiday-aware math skips Memorial Day and lands Tue 5/26.
+    """
+    # Federal-aware default -- Memorial Day skipped.
+    got = add_working_days(D(5, 22), 1)
+    assert got == D(5, 26), (
+        f"add_working_days(Fri 5/22, 1) must skip Memorial Day "
+        f"5/25 -> 5/26 Tue; got {got}"
+    )
+    # Opt-out (empty holiday set) -- weekend-only, lands on the holiday.
+    got_weekend_only = add_working_days(D(5, 22), 1, frozenset())
+    assert got_weekend_only == D(5, 25), (
+        f"weekend-only add_working_days lands on Memorial Day 5/25; "
+        f"got {got_weekend_only}"
+    )
+    print("H-1 PASS: add_working_days skips Memorial Day (5/22+1 -> 5/26)")
+
+
+# -----------------------------------------------------------------------------
+# H-2. test_working_days_between_skips_holiday
+# -----------------------------------------------------------------------------
+async def _test_working_days_between_skips_holiday():
+    """working_days_between does not count July 3 2026 (observed
+    Independence Day -- July 4 falls Saturday).
+
+    Span 7/2 Thu -> 7/9 Thu, days in [7/2, 7/9):
+      7/2 Thu, 7/3 Fri (HOLIDAY), 7/4-5 weekend, 7/6 Mon, 7/7 Tue,
+      7/8 Wed.
+    Holiday-aware count = 4 (7/2, 7/6, 7/7, 7/8).
+    Weekend-only count  = 5 (also counts 7/3).
+    """
+    federal = working_days_between(D(7, 2), D(7, 9))
+    weekend_only = working_days_between(D(7, 2), D(7, 9), frozenset())
+    assert federal == 4, (
+        f"7/2->7/9 holiday-aware should be 4 (7/3 observed "
+        f"Independence Day skipped); got {federal}"
+    )
+    assert weekend_only == 5, (
+        f"7/2->7/9 weekend-only should be 5 (counts 7/3); got "
+        f"{weekend_only}"
+    )
+    print("H-2 PASS: working_days_between skips 7/3 observed July 4")
+
+
+# -----------------------------------------------------------------------------
+# H-3. test_next_business_day_skips_holiday
+# -----------------------------------------------------------------------------
+async def _test_next_business_day_skips_holiday():
+    """next_business_day from the Friday before Memorial Day returns
+    Tuesday 5/26, NOT Monday 5/25."""
+    got = next_business_day(D(5, 22))
+    assert got == D(5, 26), (
+        f"next_business_day(Fri 5/22) must skip the weekend AND "
+        f"Memorial Day Mon 5/25 -> Tue 5/26; got {got}"
+    )
+    # Memorial Day itself is not a business day.
+    assert is_business_day(D(5, 25)) is False
+    # Opt-out: weekend-only sees Monday 5/25 as a business day.
+    assert next_business_day(D(5, 22), frozenset()) == D(5, 25)
+    print("H-3 PASS: next_business_day(Fri 5/22) -> Tue 5/26 (skips 5/25)")
+
+
+# -----------------------------------------------------------------------------
+# H-4. test_projected_date_does_not_land_on_holiday
+# -----------------------------------------------------------------------------
+async def _test_projected_date_does_not_land_on_holiday():
+    """A delay whose naive (weekend-only) projected finish would land
+    ON Memorial Day must roll past it to the next business day.
+
+    Setup: single task T, planned 5/18 Mon - 5/22 Fri (dur 5).
+    Action: log a 1-working-day delay.
+    Weekend-only: add_working_days(5/22, 1) = Mon 5/25 -- ON Memorial
+    Day, a date no crew works. Holiday-aware: rolls to Tue 5/26.
+    """
+    _reset()
+    _add_task("T", duration=5, planned_start=D(5, 18),
+              planned_finish=D(5, 22))
+    await compute_cpm(TENANT, PROJECT)
+
+    await _simulate_create_delay("task-T", impact_days=1)
+    t = await _get_task("task-T")
+    assert t["projected_finish_date"] == "2026-05-26", (
+        f"1-day delay on a task finishing Fri 5/22: holiday-aware "
+        f"projected finish must skip Memorial Day 5/25 -> 5/26; got "
+        f"{t['projected_finish_date']!r}"
+    )
+    assert t["projected_finish_date"] != "2026-05-25", (
+        "projected finish must NOT land on Memorial Day"
+    )
+    print("H-4 PASS: projected finish rolls off Memorial Day -> 5/26")
+
+
+# -----------------------------------------------------------------------------
+# H-5. test_cpm_float_holiday_aware
+# -----------------------------------------------------------------------------
+async def _test_cpm_float_holiday_aware():
+    """compute_cpm's total_float_days is holiday-aware: a task whose
+    slack window [ES, LS] straddles a federal holiday gets a float
+    one working day SMALLER than the weekend-only count.
+
+    The schedule is built so the holiday's effect is ASYMMETRIC --
+    it falls inside T_SHORT's slack window but NOT inside the path
+    that sets project_finish (otherwise the holiday would shift both
+    ES and LS equally and the float would not change):
+
+        T_SHORT  dur 1,  root, planned_start 5/18 Mon  -> ES/EF 5/18
+        T_LONG   dur 12, root, planned_start 5/26 Tue
+                 (deliberately AFTER Memorial Day 5/25)
+
+    T_LONG runs entirely after the holiday, so its EF =
+    add_working_days(5/26, 11) = 6/10 is identical with or without
+    the holiday filter -> project_finish = 6/10 in BOTH models.
+
+    T_SHORT (no successors) -> LF = LS = project_finish = 6/10.
+    Its slack window [ES 5/18, LS 6/10] CONTAINS Memorial Day 5/25.
+
+    Holiday-aware float = working_days_between(5/18, 6/10) = 16.
+    Weekend-only would be 17 (it would count 5/25 as a slack day).
+    """
+    _reset()
+    _add_task("SHORT", duration=1, planned_start=D(5, 18))
+    _add_task("LONG", duration=12, planned_start=D(5, 26))
+    await compute_cpm(TENANT, PROJECT)
+
+    t_short = await _get_task("task-SHORT")
+    # Independent confirmation of the holiday-aware vs weekend-only gap.
+    federal = working_days_between(D(5, 18), D(6, 10))
+    weekend_only = working_days_between(D(5, 18), D(6, 10), frozenset())
+    assert federal == 16 and weekend_only == 17, (
+        f"sanity: 5/18->6/10 federal={federal} (expect 16), "
+        f"weekend_only={weekend_only} (expect 17)"
+    )
+    assert t_short["total_float_days"] == 16, (
+        f"compute_cpm float must be holiday-aware: T_SHORT slack "
+        f"window 5/18->6/10 contains Memorial Day 5/25, so float is "
+        f"16 (working days), NOT the weekend-only 17; got "
+        f"{t_short['total_float_days']!r}"
+    )
+    print("H-5 PASS: compute_cpm float holiday-aware "
+          "(16 working days, not 17 -- Memorial Day excluded)")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -3694,6 +3873,27 @@ def test_slip_days_persisted():
     asyncio.run(_test_slip_days_persisted())
 
 
+# CPM Step 1 (2026-05-17) -- federal-holiday-aware working-day math.
+def test_add_working_days_skips_federal_holiday():
+    asyncio.run(_test_add_working_days_skips_federal_holiday())
+
+
+def test_working_days_between_skips_holiday():
+    asyncio.run(_test_working_days_between_skips_holiday())
+
+
+def test_next_business_day_skips_holiday():
+    asyncio.run(_test_next_business_day_skips_holiday())
+
+
+def test_projected_date_does_not_land_on_holiday():
+    asyncio.run(_test_projected_date_does_not_land_on_holiday())
+
+
+def test_cpm_float_holiday_aware():
+    asyncio.run(_test_cpm_float_holiday_aware())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -3800,13 +4000,24 @@ def _run_all():
          _test_is_currently_critical_flag),
         ("test_slip_days_persisted",
          _test_slip_days_persisted),
+        # CPM Step 1 (2026-05-17) -- federal-holiday-aware math.
+        ("test_add_working_days_skips_federal_holiday",
+         _test_add_working_days_skips_federal_holiday),
+        ("test_working_days_between_skips_holiday",
+         _test_working_days_between_skips_holiday),
+        ("test_next_business_day_skips_holiday",
+         _test_next_business_day_skips_holiday),
+        ("test_projected_date_does_not_land_on_holiday",
+         _test_projected_date_does_not_land_on_holiday),
+        ("test_cpm_float_holiday_aware",
+         _test_cpm_float_holiday_aware),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
     print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L + "
-          "Slip-cascade + Bug 3.B + Rem-float fixes "
-          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 tests)")
+          "Slip-cascade + Bug 3.B + Rem-float + Step 1 holidays "
+          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -3823,7 +4034,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 51 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 56 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
