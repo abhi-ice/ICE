@@ -216,19 +216,26 @@ export default function Lookahead() {
                         ? <span className="text-rose-700 font-semibold">+{slip}</span>
                         : <span className="text-slate-300">—</span>}
                     </td>
-                    {/* CPM Part L-2 (2026-05-16) -- remaining float cell.
-                        Same coloring as Tasks page: red when 0, amber
-                        when partial, neutral when full / null. */}
+                    {/* CPM Bug 3.E (2026-05-16) -- remaining float cell,
+                        SIGNED. Negative => task past its slack. RED
+                        text when <= 0 (at/over the cliff), normal
+                        when > 0, em-dash when null. Matches Tasks
+                        page styling. */}
                     <td
                       data-testid={`lookahead-remaining-float-${t.activity_code}`}
                       className="tabular-nums text-xs"
+                      title={(() => {
+                        const r = t.remaining_float_days;
+                        if (r == null) return "Remaining float not yet computed";
+                        if (r > 0) return `${r} working days of float remaining`;
+                        if (r === 0) return "Zero float remaining — at the edge";
+                        return `All float consumed — ${Math.abs(r)} working days past slack, driving the project finish`;
+                      })()}
                     >
                       {(() => {
                         const r = t.remaining_float_days;
-                        const s = t.total_float_days;
                         if (r == null) return <span className="text-slate-300">—</span>;
-                        if (r === 0 && s != null && s > 0) return <span className="text-rose-700 font-semibold">0</span>;
-                        if (s != null && r < s) return <span className="text-amber-700">{r}</span>;
+                        if (r <= 0) return <span className="text-rose-700 font-semibold">{r}</span>;
                         return <span className="text-slate-700">{r}</span>;
                       })()}
                     </td>

@@ -11,7 +11,7 @@ from database import get_db, tenant_filter
 from models import Task, TaskCreate, TaskUpdate, gen_id, utc_now, StrictModel
 from auth import require_tenant
 from audit import write_audit
-from services.cpm import compute_cpm
+from services.cpm import compute_cpm, auto_recompute_after_event
 
 router = APIRouter(tags=["tasks"])
 
@@ -313,7 +313,32 @@ async def delete_task(task_id: str, bg: BackgroundTasks = None, ctx: dict = Depe
 
 @router.post("/projects/{project_id}/critical-path/recompute")
 async def recompute_cpm(project_id: str, ctx: dict = Depends(require_tenant)):
-    return await compute_cpm(ctx["tenant_id"], project_id)
+    # CPM Bug 2.E (2026-05-16) -- the "Recompute CPM" button was a
+    # PARTIAL refresh: it ran bare compute_cpm, which updates Float +
+    # is_critical_path but NOT the projected dates (Slip / Impacted
+    # Start / Impacted Finish), slip_days, or Rem Float. Those only
+    # refreshed when auto_recompute_after_event fired on a delay /
+    # RFI / submittal event -- so after a code deploy or a duration
+    # edit the projected columns went stale until an event re-
+    # triggered them ("re-save the delay" workaround).
+    #
+    # Routing through auto_recompute_after_event runs the full chain
+    # (compute_cpm -> compute_projected_finish_dates ->
+    # compute_remaining_float_for_tasks) so one click fully refreshes
+    # every CPM-derived column. auto_recompute_after_event returns
+    # the compute_cpm result dict ({updated, critical_count,
+    # project_finish} or {error: ...}); the frontend recompute()
+    # reads .critical_count / .project_finish / .error from it.
+    result = await auto_recompute_after_event(
+        ctx["tenant_id"], project_id,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    # auto_recompute_after_event returns None only if compute_cpm
+    # itself raised (already logged inside the hook). Give the
+    # endpoint a well-formed fallback so the frontend doesn't render
+    # "Finish: undefined".
+    return result or {"updated": 0, "critical_count": 0,
+                      "error": "recompute_failed"}
 
 
 @router.get("/projects/{project_id}/lookahead", response_model=list[Task])

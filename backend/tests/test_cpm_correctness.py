@@ -3144,6 +3144,343 @@ async def _test_verdict_uses_working_day_float():
 
 
 # =============================================================================
+# CPM Rem-float cascade fixes (2026-05-16) -- Bug 3.E / 2.E / 3.F / 3.G.
+# remaining_float_days now derives from the cascade's projected dates
+# (counts inherited slip, SIGNED, not clamped); is_currently_critical
+# flags float-exhausted tasks; recompute_cpm routes through the full
+# auto_recompute chain; slip_days is persisted. 7 regression tests.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# RF-1. test_rem_float_reflects_inherited_cascade
+# -----------------------------------------------------------------------------
+async def _test_rem_float_reflects_inherited_cascade():
+    """Bug 3.E: a task impacted purely by an UPSTREAM delay (inherited
+    cascade, no direct blocker) has its Rem Float reduced -- and goes
+    negative when the cascade exceeds its float.
+
+    Setup:
+        A  dur 2, root, 5/4 Mon - 5/5 Tue
+        B  dur 10, root, 5/4 Mon - 5/15 Fri   (backbone)
+        C  dur 3, preds=[A FS+0], 5/6 Wed - 5/8 Fri
+           -> structural float 5 (ES 5/6 -> LS 5/13)
+
+    Action: log a 10-working-day delay on A. The cascade pushes C
+    by 10 working days (A's impacted finish forces C's start out 10
+    wd past its planned start). C has NO direct blocker.
+
+    Assert:
+        C.total_float_days       == 5   (structural, unchanged)
+        C.remaining_float_days   == -5  (5 - 10 cascade slip; was 5
+                                          under the old direct-only
+                                          formula -- falsely "safe")
+        C.is_currently_critical  == True
+    """
+    _reset()
+    _add_task("A", duration=2, planned_start=D(5, 4), planned_finish=D(5, 5))
+    _add_task("B", duration=10, planned_start=D(5, 4), planned_finish=D(5, 15))
+    _add_task("C", duration=3, planned_start=D(5, 6), planned_finish=D(5, 8),
+              predecessors=[_pred("A", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+    t_c = await _get_task("task-C")
+    assert t_c["total_float_days"] == 5, (
+        f"setup sanity: C structural float should be 5; got "
+        f"{t_c['total_float_days']!r}"
+    )
+
+    await _simulate_create_delay("task-A", impact_days=10)
+
+    t_c = await _get_task("task-C")
+    # Structural float never moves on a delay.
+    assert t_c["total_float_days"] == 5
+    # Rem Float now reflects the inherited 10-wd cascade slip.
+    assert t_c["remaining_float_days"] == -5, (
+        f"C has no DIRECT blocker but inherited a 10-wd cascade; "
+        f"Rem Float must be 5 - 10 = -5 (Bug 3.E counts inherited "
+        f"slip + allows negative); got "
+        f"{t_c.get('remaining_float_days')!r}"
+    )
+    assert t_c["is_currently_critical"] is True, (
+        f"C consumed all float -> is_currently_critical True; got "
+        f"{t_c.get('is_currently_critical')!r}"
+    )
+    print("RF-1 PASS: inherited cascade -> Rem Float -5, "
+          "is_currently_critical True")
+
+
+# -----------------------------------------------------------------------------
+# RF-2. test_rem_float_negative_not_clamped
+# -----------------------------------------------------------------------------
+async def _test_rem_float_negative_not_clamped():
+    """Bug 3.E (D-3E): remaining_float_days is NOT clamped at 0.
+    A task with structural float 3 pushed 8 working days shows -5.
+
+    Setup:
+        T_LONG dur 8, root  (backbone -> T structural float 3)
+        T      dur 5, root, 5/4 Mon - 5/8 Fri
+
+    Action: log an 8-working-day delay directly on T.
+
+    Assert: T.remaining_float_days == -5  (3 - 8, NOT clamped to 0).
+    """
+    _reset()
+    _add_task("LONG", duration=8, planned_start=D(5, 4))
+    _add_task("T", duration=5, planned_start=D(5, 4), planned_finish=D(5, 8))
+    await compute_cpm(TENANT, PROJECT)
+    t = await _get_task("task-T")
+    assert t["total_float_days"] == 3, (
+        f"setup sanity: T structural float should be 3; got "
+        f"{t['total_float_days']!r}"
+    )
+
+    await _simulate_create_delay("task-T", impact_days=8)
+    t = await _get_task("task-T")
+    assert t["remaining_float_days"] == -5, (
+        f"float 3 - 8-day delay = -5; must NOT clamp to 0; got "
+        f"{t.get('remaining_float_days')!r}"
+    )
+    print("RF-2 PASS: remaining float -5, not clamped to 0")
+
+
+# -----------------------------------------------------------------------------
+# RF-3. test_rem_float_directly_delayed
+# -----------------------------------------------------------------------------
+async def _test_rem_float_directly_delayed():
+    """Bug 3.E guardrail #4: for a directly-delayed task the new
+    cascade-slip formula returns the SAME MAGNITUDE as the old
+    direct-sum formula -- positive when within float, negative
+    (not clamped) when over.
+
+    Setup: T_LONG dur 15 + T_SHORT dur 5 -> T_SHORT structural
+    float 10.
+
+    Case A: 6-working-day delay -> remaining 4 (10 - 6, positive).
+    Case B: 14-working-day delay -> remaining -4 (10 - 14, negative).
+    """
+    # Case A -- within float.
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    assert (await _get_task("task-SHORT"))["total_float_days"] == 10
+    await _simulate_create_delay("task-SHORT", impact_days=6)
+    t = await _get_task("task-SHORT")
+    assert t["remaining_float_days"] == 4, (
+        f"Case A: float 10 - 6-day delay = 4; got "
+        f"{t.get('remaining_float_days')!r}"
+    )
+    assert t["is_currently_critical"] is False  # 4 > 0
+
+    # Case B -- past float.
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    await _simulate_create_delay("task-SHORT", impact_days=14)
+    t = await _get_task("task-SHORT")
+    assert t["remaining_float_days"] == -4, (
+        f"Case B: float 10 - 14-day delay = -4 (not clamped); got "
+        f"{t.get('remaining_float_days')!r}"
+    )
+    assert t["is_currently_critical"] is True  # -4 <= 0
+    print("RF-3 PASS: directly-delayed task -> +4 then -4 (no clamp)")
+
+
+# -----------------------------------------------------------------------------
+# RF-4. test_rem_float_mixed_direct_and_inherited_no_double_count
+# -----------------------------------------------------------------------------
+async def _test_rem_float_mixed_direct_and_inherited_no_double_count():
+    """Bug 3.E: a task with BOTH a direct delay AND inherited cascade
+    must not double-count. The cascade's total_shift = inherited +
+    own, and projected_finish_date bakes in BOTH. Rem Float =
+    structural - total_shift, NOT structural - direct - inherited.
+
+    Setup:
+        A  dur 2, root, 5/4 Mon - 5/5 Tue
+        B  dur 20, root  (backbone -> C has comfortable float)
+        C  dur 3, preds=[A FS+0], 5/6 Wed - 5/8 Fri
+
+    Action:
+        delay A by 5  -> C inherits 5 working days of cascade
+        delay C by 3  -> C own_impact 3
+        cascade total_shift = inherited 5 + own 3 = 8
+
+    Assert:
+        C.remaining_float_days == structural - 8   (correct)
+        C.remaining_float_days != structural - 11  (the double-count
+                                                     5 + 3 + 3 trap)
+    """
+    _reset()
+    _add_task("A", duration=2, planned_start=D(5, 4), planned_finish=D(5, 5))
+    _add_task("B", duration=20, planned_start=D(5, 4))
+    _add_task("C", duration=3, planned_start=D(5, 6), planned_finish=D(5, 8),
+              predecessors=[_pred("A", "FS", 0)])
+    await compute_cpm(TENANT, PROJECT)
+    structural = (await _get_task("task-C"))["total_float_days"]
+    assert structural is not None and structural >= 9, (
+        f"setup sanity: C needs float >= 9 for a clean positive "
+        f"result; got {structural!r}"
+    )
+
+    # Delay A by 5 -> C inherits a 5-wd cascade.
+    await _simulate_create_delay("task-A", impact_days=5)
+    # Delay C directly by 3 -> own_impact 3.
+    await _simulate_create_delay("task-C", impact_days=3)
+
+    t_c = await _get_task("task-C")
+    # total_shift = inherited 5 + own 3 = 8; projected slip = 8.
+    assert t_c["remaining_float_days"] == structural - 8, (
+        f"Rem Float must be structural({structural}) - 8 = "
+        f"{structural - 8} (cascade total_shift, no double-count); "
+        f"got {t_c.get('remaining_float_days')!r}"
+    )
+    assert t_c["remaining_float_days"] != structural - 11, (
+        f"Rem Float must NOT be structural - 3 - 8 = {structural - 11} "
+        f"(that would double-count the direct delay)"
+    )
+    print("RF-4 PASS: mixed direct+inherited -> structural-8, no double-count")
+
+
+# -----------------------------------------------------------------------------
+# RF-5. test_recompute_cpm_refreshes_projected_and_rem_float
+# -----------------------------------------------------------------------------
+async def _test_recompute_cpm_refreshes_projected_and_rem_float():
+    """Bug 2.E: auto_recompute_after_event (the body of the
+    "Recompute CPM" button) refreshes projected_finish_date AND
+    remaining_float_days -- not just structural float.
+
+    Setup: T_LONG + T_SHORT, log a delay on T_SHORT.
+    Then CORRUPT T_SHORT's projected_finish_date + remaining_float_
+    days (simulating stale state after a deploy).
+    Call auto_recompute_after_event.
+
+    Assert: both fields are refreshed to correct values, not stale.
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    await _simulate_create_delay("task-SHORT", impact_days=6)
+
+    # Sanity: after the delay, T_SHORT has a projected finish + rem float.
+    t = await _get_task("task-SHORT")
+    assert t["projected_finish_date"] is not None
+    assert t["remaining_float_days"] == 4   # 10 - 6
+
+    # Corrupt the derived columns -- simulate stale post-deploy state.
+    await _STUB.tasks.update_one(
+        {"id": "task-SHORT", "tenant_id": TENANT},
+        {"$set": {"projected_finish_date": None,
+                   "remaining_float_days": 999}},
+    )
+    t_stale = await _get_task("task-SHORT")
+    assert t_stale["projected_finish_date"] is None
+    assert t_stale["remaining_float_days"] == 999
+
+    # The "Recompute CPM" button body.
+    await auto_recompute_after_event(TENANT, PROJECT)
+
+    t_fresh = await _get_task("task-SHORT")
+    assert t_fresh["projected_finish_date"] is not None, (
+        "recompute must refresh projected_finish_date (Bug 2.E -- "
+        "the button was a partial refresh before)"
+    )
+    assert t_fresh["remaining_float_days"] == 4, (
+        f"recompute must refresh remaining_float_days back to 4; "
+        f"got {t_fresh.get('remaining_float_days')!r}"
+    )
+    print("RF-5 PASS: recompute refreshes projected_finish + Rem Float")
+
+
+# -----------------------------------------------------------------------------
+# RF-6. test_is_currently_critical_flag
+# -----------------------------------------------------------------------------
+async def _test_is_currently_critical_flag():
+    """Bug 3.F: is_currently_critical = (remaining_float_days <= 0).
+    Four cases."""
+    # --- Case 1 + 4: structural CP task True; untouched non-CP False.
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await auto_recompute_after_event(TENANT, PROJECT)
+    t_long = await _get_task("task-LONG")
+    t_short = await _get_task("task-SHORT")
+    # Case 1: structural-CP task -- is_critical_path True, and
+    # trivially is_currently_critical True (remaining 0 <= 0).
+    assert t_long["is_critical_path"] is True
+    assert t_long["is_currently_critical"] is True, (
+        f"structural-CP task must also be is_currently_critical; "
+        f"got {t_long.get('is_currently_critical')!r}"
+    )
+    # Case 4: untouched non-CP task -- both False.
+    assert t_short["is_critical_path"] is False
+    assert t_short["is_currently_critical"] is False, (
+        f"untouched non-CP task: is_currently_critical False; got "
+        f"{t_short.get('is_currently_critical')!r}"
+    )
+
+    # --- Case 2: non-CP task pushed PAST its float by cascade.
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))   # float 5
+    await compute_cpm(TENANT, PROJECT)
+    await _simulate_create_delay("task-SHORT", impact_days=10)
+    t = await _get_task("task-SHORT")
+    assert t["is_critical_path"] is False          # structural float 5 > 0
+    assert t["remaining_float_days"] == -5
+    assert t["is_currently_critical"] is True, (
+        f"task pushed past float -> is_currently_critical True; got "
+        f"{t.get('is_currently_critical')!r}"
+    )
+
+    # --- Case 3: non-CP task pushed to EXACTLY zero remaining.
+    _reset()
+    _add_task("LONG", duration=10, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))   # float 5
+    await compute_cpm(TENANT, PROJECT)
+    await _simulate_create_delay("task-SHORT", impact_days=5)
+    t = await _get_task("task-SHORT")
+    assert t["remaining_float_days"] == 0
+    assert t["is_currently_critical"] is True, (
+        f"task at exactly 0 remaining -> is_currently_critical True "
+        f"(0 <= 0); got {t.get('is_currently_critical')!r}"
+    )
+    print("RF-6 PASS: is_currently_critical -- CP True, untouched "
+          "False, past-float True, exactly-zero True")
+
+
+# -----------------------------------------------------------------------------
+# RF-7. test_slip_days_persisted
+# -----------------------------------------------------------------------------
+async def _test_slip_days_persisted():
+    """Cruft 3.G: slip_days is a persisted working-day field, written
+    by compute_projected_finish_dates alongside projected_finish_date.
+    None for tasks that did not move.
+
+    Setup: T_LONG + T_SHORT, 5-working-day delay on T_SHORT.
+    Assert: T_SHORT.slip_days == 5  (persisted, not None).
+            T_LONG.slip_days is None  (unmoved).
+    """
+    _reset()
+    _add_task("LONG", duration=15, planned_start=D(5, 4))
+    _add_task("SHORT", duration=5, planned_start=D(5, 4))
+    await compute_cpm(TENANT, PROJECT)
+    await _simulate_create_delay("task-SHORT", impact_days=5)
+
+    t_short = await _get_task("task-SHORT")
+    t_long = await _get_task("task-LONG")
+    assert t_short["slip_days"] == 5, (
+        f"slip_days must be persisted as the working-day slip (5); "
+        f"got {t_short.get('slip_days')!r}"
+    )
+    assert t_long.get("slip_days") is None, (
+        f"unmoved task -> slip_days None; got "
+        f"{t_long.get('slip_days')!r}"
+    )
+    print("RF-7 PASS: slip_days persisted (5 for moved, None for unmoved)")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -3328,6 +3665,35 @@ def test_verdict_uses_working_day_float():
     asyncio.run(_test_verdict_uses_working_day_float())
 
 
+# CPM Rem-float cascade fixes (2026-05-16) -- Bug 3.E / 2.E / 3.F / 3.G.
+def test_rem_float_reflects_inherited_cascade():
+    asyncio.run(_test_rem_float_reflects_inherited_cascade())
+
+
+def test_rem_float_negative_not_clamped():
+    asyncio.run(_test_rem_float_negative_not_clamped())
+
+
+def test_rem_float_directly_delayed():
+    asyncio.run(_test_rem_float_directly_delayed())
+
+
+def test_rem_float_mixed_direct_and_inherited_no_double_count():
+    asyncio.run(_test_rem_float_mixed_direct_and_inherited_no_double_count())
+
+
+def test_recompute_cpm_refreshes_projected_and_rem_float():
+    asyncio.run(_test_recompute_cpm_refreshes_projected_and_rem_float())
+
+
+def test_is_currently_critical_flag():
+    asyncio.run(_test_is_currently_critical_flag())
+
+
+def test_slip_days_persisted():
+    asyncio.run(_test_slip_days_persisted())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -3419,12 +3785,28 @@ def _run_all():
          _test_remaining_float_units_consistent),
         ("test_verdict_uses_working_day_float",
          _test_verdict_uses_working_day_float),
+        # CPM Rem-float cascade fixes (2026-05-16) -- Bug 3.E/2.E/3.F/3.G.
+        ("test_rem_float_reflects_inherited_cascade",
+         _test_rem_float_reflects_inherited_cascade),
+        ("test_rem_float_negative_not_clamped",
+         _test_rem_float_negative_not_clamped),
+        ("test_rem_float_directly_delayed",
+         _test_rem_float_directly_delayed),
+        ("test_rem_float_mixed_direct_and_inherited_no_double_count",
+         _test_rem_float_mixed_direct_and_inherited_no_double_count),
+        ("test_recompute_cpm_refreshes_projected_and_rem_float",
+         _test_recompute_cpm_refreshes_projected_and_rem_float),
+        ("test_is_currently_critical_flag",
+         _test_is_currently_critical_flag),
+        ("test_slip_days_persisted",
+         _test_slip_days_persisted),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
     print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L + "
-          "Slip-cascade + Bug 3.B (11 + 5 + 6 + 6 + 7 + 5 + 4 tests)")
+          "Slip-cascade + Bug 3.B + Rem-float fixes "
+          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -3441,7 +3823,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 44 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 51 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
