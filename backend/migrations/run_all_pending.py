@@ -183,6 +183,22 @@ MIGRATIONS = [
     # cascade-aware remaining float; 024 re-anchors the structural
     # float that remaining float reads.
     "migrations.024_imported_anchor_recompute",
+    # CPM Step 2.1 (2026-05-17, Diagnostic #5 fix) -- forward-reconcile
+    # recompute. Step 2.1 made compute_cpm's forward pass RECONCILE
+    # each task's imported planned_start against predecessors (ES =
+    # max(imported, predecessor-implied)) and size each task by its
+    # imported span, not duration_days. Fixes Step 2's two-networks
+    # artifact float (the forward pass set ES in isolation while the
+    # backward pass walked the network -> fake negatives, including
+    # on root tasks). Forces a one-time refresh of total_float_days +
+    # is_critical_path off the reconciled forward pass AND reports,
+    # per project, schedule_reshape_count -- the genuine import-quality
+    # signal. Per project: runs the full auto_recompute_after_event
+    # chain. CPM_FORWARD_RECONCILE_RECOMPUTED audit per tenant;
+    # idempotent. Must run AFTER 024 -- 024 anchored the float on the
+    # Step-2 import anchor; 025 reconciles that anchor with
+    # predecessors.
+    "migrations.025_forward_reconcile_recompute",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
