@@ -199,6 +199,20 @@ MIGRATIONS = [
     # Step-2 import anchor; 025 reconciles that anchor with
     # predecessors.
     "migrations.025_forward_reconcile_recompute",
+    # CPM Step 3A (2026-05-17) -- reshape-count corrected recompute.
+    # Step 2.1's schedule_reshape_count was decided against the
+    # predecessors' RECONCILED dates, so one genuine reshape near a
+    # root cascade-inflated the count down the whole chain (migration
+    # 025 reported 44 on GSA / 23 on MSU). Step 3A counts a task only
+    # when its own imported planned_start is genuinely earlier than
+    # its IMPORTED predecessors allow. This migration recomputes every
+    # project so the audit captures the corrected per-project count.
+    # Float / is_critical_path / projected dates / the cascade are
+    # byte-for-byte unchanged -- Step 3A touched only the counting
+    # logic. Per project: runs the full auto_recompute_after_event
+    # chain. RESHAPE_COUNT_CORRECTED audit per tenant; idempotent.
+    # Must run AFTER 025.
+    "migrations.026_reshape_count_corrected",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally
