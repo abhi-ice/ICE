@@ -4196,6 +4196,83 @@ async def _test_backward_pass_uses_span_not_duration():
 
 
 # =============================================================================
+# CPM Step 3A (2026-05-17) -- schedule_reshape_count over-report fix.
+#
+# Step 2.1 decided "reshaped" against the predecessors' RECONCILED
+# dates, so one genuine reshape near a root cascade-inflated the
+# count down the whole chain (migration 025 reported 44 reshapes on
+# GSA / 23 on MSU when live verification found essentially nothing
+# wrong). Step 3A decides the count against the predecessors'
+# IMPORTED dates: a task counts only when its OWN imported start is
+# genuinely too early. The ES reconcile (max()) still cascades --
+# correct CPM, unchanged -- so float / is_critical_path / the
+# cascade are all byte-for-byte the Step-2.1 result.
+# =============================================================================
+async def _test_reshape_count_only_counts_moved_tasks():
+    """S3A-1 -- schedule_reshape_count counts ONLY tasks whose own
+    imported planned_start is genuinely earlier than their IMPORTED
+    predecessors allow. A task dragged forward purely by an upstream
+    reshape (its imported start is fine relative to its predecessors'
+    IMPORTED dates) is NOT counted.
+
+    PHASE 1 -- a fully consistent FS+0 chain (every imported start
+    equals its predecessor-implied start): schedule_reshape_count 0.
+        T_A 5/4..5/8 (5d) -> T_B 5/11..5/13 (3d) -> T_C 5/14..5/18 (3d)
+
+    PHASE 2 -- exactly ONE genuinely-too-early task, with a CLEAN
+    successor downstream:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported 5/4 -- IMPOSSIBLE (B imported to
+             start the day A starts; A's imported finish is 5/8, so
+             B should start 5/11). 3d -> imported finish 5/6.
+        T_C  FS+0 from B, imported 5/7 -- CONSISTENT with B's
+             IMPORTED dates (the next business day after B's
+             imported finish 5/6). 2d.
+    B is the single genuine reshape. C's reconciled ES is dragged
+    forward by B's reshape (correct cascade), but C's imported start
+    5/7 is fine vs B's IMPORTED finish 5/6 -> C is NOT a reshape.
+    schedule_reshape_count == 1, and only B is in schedule_reshapes.
+    (The pre-Step-3A code cascade-counted C as well -> 2.)
+    """
+    # ---- PHASE 1: clean chain -> 0 reshapes -------------------------
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=3, planned_start=D(5, 14),
+              predecessors=[_pred("B", "FS", 0)])
+    clean = await compute_cpm(TENANT, PROJECT)
+    assert clean.get("schedule_reshape_count") == 0, (
+        f"a consistent chain must report 0 reshapes, got "
+        f"{clean.get('schedule_reshape_count')!r}"
+    )
+
+    # ---- PHASE 2: one genuine reshape + a clean successor -----------
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 4),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=2, planned_start=D(5, 7),
+              predecessors=[_pred("B", "FS", 0)])
+    result = await compute_cpm(TENANT, PROJECT)
+
+    assert result.get("schedule_reshape_count") == 1, (
+        f"only T_B is genuinely too early; T_C is merely dragged "
+        f"forward by B's reshape and must NOT be counted. Expected "
+        f"1, got {result.get('schedule_reshape_count')!r} "
+        f"(pre-Step-3A this cascade-counted 2)"
+    )
+    reshaped_codes = {
+        r["activity_code"] for r in (result.get("schedule_reshapes") or [])
+    }
+    assert reshaped_codes == {"B"}, (
+        f"schedule_reshapes must list ONLY the genuine reshape T_B, "
+        f"got {sorted(reshaped_codes)}"
+    )
+    print("S3A-1 PASS: reshape count excludes cascade-dragged tasks")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -4468,6 +4545,11 @@ def test_backward_pass_uses_span_not_duration():
     asyncio.run(_test_backward_pass_uses_span_not_duration())
 
 
+# CPM Step 3A (2026-05-17) -- schedule_reshape_count over-report fix.
+def test_reshape_count_only_counts_moved_tasks():
+    asyncio.run(_test_reshape_count_only_counts_moved_tasks())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -4605,14 +4687,17 @@ def _run_all():
          _test_clean_schedule_zero_reshape),
         ("test_backward_pass_uses_span_not_duration",
          _test_backward_pass_uses_span_not_duration),
+        # CPM Step 3A (2026-05-17) -- schedule_reshape_count fix.
+        ("test_reshape_count_only_counts_moved_tasks",
+         _test_reshape_count_only_counts_moved_tasks),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
     print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L + "
           "Slip-cascade + Bug 3.B + Rem-float + Step 1 holidays + "
-          "Step 2 anchor + Step 2.1 reconcile "
-          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 4 + 5 tests)")
+          "Step 2 anchor + Step 2.1 reconcile + Step 3A reshape-count "
+          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 4 + 5 + 1 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -4629,7 +4714,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 65 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 66 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
