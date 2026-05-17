@@ -1205,11 +1205,12 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
             add_reason=add_reason, event_type="qc",
         )
     # Bucket D Phase 5 -- if severity=rework_required, super-entered
-    # rework_duration_hours is required. Stamp the estimate metadata.
+    # rework_duration_days is required. Stamp the estimate metadata.
+    # QC rework days (2026-05-17) -- the field is WORKING DAYS now.
     if doc.get("severity") == "rework_required":
-        if not doc.get("rework_duration_hours") or float(doc.get("rework_duration_hours") or 0) <= 0:
+        if not doc.get("rework_duration_days") or float(doc.get("rework_duration_days") or 0) <= 0:
             raise HTTPException(
-                422, "rework_duration_hours required when severity='rework_required'",
+                422, "rework_duration_days required when severity='rework_required'",
             )
         if not (doc.get("rework_duration_basis") or "").strip():
             raise HTTPException(
@@ -1302,7 +1303,7 @@ async def record_qc_rework_outcome(
     from services.qc_rework_cascade import record_rework_outcome
     return await record_rework_outcome(
         tenant_id=ctx["tenant_id"], qc_issue=qc,
-        actual_hours=payload.rework_actual_hours,
+        actual_days=payload.rework_actual_days,
         notes=payload.rework_outcome_notes,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )

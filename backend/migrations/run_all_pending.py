@@ -170,6 +170,17 @@ MIGRATIONS = [
     # 022 sets working-day total_float_days; 023 derives the cascade-
     # aware remaining float from it.
     "migrations.023_rem_float_cascade_recompute",
+    # QC rework days (2026-05-17) -- convert QC rework duration from
+    # HOURS to WORKING DAYS. The QC rework input was changed from
+    # hours to days (consistent with delay / RFI impact units); this
+    # migration converts existing qc_issues rows (rework_duration_
+    # hours/rework_actual_hours/ai_benchmark_hours -> *_days via
+    # ceil(hours/8*2)/2) so each issue keeps its effective duration.
+    # QC_REWORK_HOURS_TO_DAYS_MIGRATED audit per tenant; idempotent.
+    # NOTE: migration numbers 024-026 are reserved by the in-flight
+    # CPM Step 2 / 2.1 / 3A branches (not yet merged to main); this QC
+    # migration takes 027 to avoid a number collision.
+    "migrations.027_qc_rework_hours_to_days",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

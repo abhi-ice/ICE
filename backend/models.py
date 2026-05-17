@@ -1904,7 +1904,9 @@ class QcIssueCreate(StrictModel):
     # severity=rework_required. Required by router-side validation in
     # that case. Basis is free text explaining the estimate; persisted
     # for calibration RAG (Phase C2 pattern).
-    rework_duration_hours: Optional[float] = None
+    # QC rework days (2026-05-17) -- entered in WORKING DAYS (0.5-day
+    # increments), consistent with delay / RFI impact units (was hours).
+    rework_duration_days: Optional[float] = None
     rework_duration_basis: Optional[str] = None
 
 
@@ -1927,12 +1929,12 @@ class QcIssueUpdate(StrictModel):
     resolved_at: Optional[datetime] = None
     linked_task_ids: Optional[List[str]] = None
     # Phase 5 -- rework estimate fields (editable post-create until
-    # outcome is recorded).
-    rework_duration_hours: Optional[float] = None
+    # outcome is recorded). QC rework days (2026-05-17) -- working days.
+    rework_duration_days: Optional[float] = None
     rework_duration_basis: Optional[str] = None
     # Phase 5 -- outcome fields (separate endpoint preferred, but
-    # PATCH is allowed too for admin corrections).
-    rework_actual_hours: Optional[float] = None
+    # PATCH is allowed too for admin corrections). Working days.
+    rework_actual_days: Optional[float] = None
     rework_outcome_notes: Optional[str] = None
     # Addition 4 -- required when the parent DR is locked.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
@@ -1940,9 +1942,12 @@ class QcIssueUpdate(StrictModel):
 
 class QcReworkOutcome(StrictModel):
     """Bucket D Phase 5 -- outcome capture when rework finishes. Mirrors
-    the C2 mitigation outcome pattern; the synthetic delay's actual_days
-    is updated to match and the cascade is re-run."""
-    rework_actual_hours: float = Field(..., ge=0)
+    the C2 mitigation outcome pattern; the synthetic delay's delay_days
+    is updated to match and the cascade is re-run.
+
+    QC rework days (2026-05-17) -- the actual rework is captured in
+    WORKING DAYS, consistent with the days-based estimate."""
+    rework_actual_days: float = Field(..., ge=0)
     rework_outcome_notes: Optional[str] = None
 
 
@@ -1973,13 +1978,15 @@ class QcIssue(ReadModel):
     # in /context bundle and /photos list (extend other lists if needed).
     parent_daily_report_date: Optional[str] = None
     # Bucket D Phase 5 -- rework cascade fields.
-    rework_duration_hours: Optional[float] = None
+    # QC rework days (2026-05-17) -- duration / actual / benchmark are
+    # all WORKING DAYS now (were hours; consistent with delay/RFI units).
+    rework_duration_days: Optional[float] = None
     rework_duration_basis: Optional[str] = None
     rework_estimated_at: Optional[datetime] = None
     rework_estimated_by: Optional[str] = None
-    ai_benchmark_hours: Optional[float] = None
+    ai_benchmark_days: Optional[float] = None
     ai_benchmark_basis: Optional[str] = None
-    rework_actual_hours: Optional[float] = None
+    rework_actual_days: Optional[float] = None
     rework_outcome_notes: Optional[str] = None
     rework_completed_at: Optional[datetime] = None
     rework_outcome_recorded_by: Optional[str] = None
