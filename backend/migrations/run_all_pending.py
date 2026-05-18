@@ -170,6 +170,49 @@ MIGRATIONS = [
     # 022 sets working-day total_float_days; 023 derives the cascade-
     # aware remaining float from it.
     "migrations.023_rem_float_cascade_recompute",
+    # CPM Step 2 (2026-05-17, Issue 3.D) -- imported-date-anchor
+    # recompute. Step 2 made compute_cpm's forward pass anchor ES/EF
+    # on each task's IMPORTED planned_start/planned_finish instead of
+    # re-deriving a non-root's ES from its predecessors. Forces a
+    # one-time refresh of total_float_days + is_critical_path off the
+    # imported-date baseline AND surfaces negative float / duration
+    # mismatches (inconsistent contract schedules) in the audit
+    # payload + console. Per project: runs the full
+    # auto_recompute_after_event chain. CPM_IMPORTED_ANCHOR_RECOMPUTED
+    # audit per tenant; idempotent. Must run AFTER 023 -- 023 sets the
+    # cascade-aware remaining float; 024 re-anchors the structural
+    # float that remaining float reads.
+    "migrations.024_imported_anchor_recompute",
+    # CPM Step 2.1 (2026-05-17, Diagnostic #5 fix) -- forward-reconcile
+    # recompute. Step 2.1 made compute_cpm's forward pass RECONCILE
+    # each task's imported planned_start against predecessors (ES =
+    # max(imported, predecessor-implied)) and size each task by its
+    # imported span, not duration_days. Fixes Step 2's two-networks
+    # artifact float (the forward pass set ES in isolation while the
+    # backward pass walked the network -> fake negatives, including
+    # on root tasks). Forces a one-time refresh of total_float_days +
+    # is_critical_path off the reconciled forward pass AND reports,
+    # per project, schedule_reshape_count -- the genuine import-quality
+    # signal. Per project: runs the full auto_recompute_after_event
+    # chain. CPM_FORWARD_RECONCILE_RECOMPUTED audit per tenant;
+    # idempotent. Must run AFTER 024 -- 024 anchored the float on the
+    # Step-2 import anchor; 025 reconciles that anchor with
+    # predecessors.
+    "migrations.025_forward_reconcile_recompute",
+    # CPM Step 3A (2026-05-17) -- reshape-count corrected recompute.
+    # Step 2.1's schedule_reshape_count was decided against the
+    # predecessors' RECONCILED dates, so one genuine reshape near a
+    # root cascade-inflated the count down the whole chain (migration
+    # 025 reported 44 on GSA / 23 on MSU). Step 3A counts a task only
+    # when its own imported planned_start is genuinely earlier than
+    # its IMPORTED predecessors allow. This migration recomputes every
+    # project so the audit captures the corrected per-project count.
+    # Float / is_critical_path / projected dates / the cascade are
+    # byte-for-byte unchanged -- Step 3A touched only the counting
+    # logic. Per project: runs the full auto_recompute_after_event
+    # chain. RESHAPE_COUNT_CORRECTED audit per tenant; idempotent.
+    # Must run AFTER 025.
+    "migrations.026_reshape_count_corrected",
     # QC rework days (2026-05-17) -- convert QC rework duration from
     # HOURS to WORKING DAYS. The QC rework input was changed from
     # hours to days (consistent with delay / RFI impact units); this
@@ -177,9 +220,8 @@ MIGRATIONS = [
     # hours/rework_actual_hours/ai_benchmark_hours -> *_days via
     # ceil(hours/8*2)/2) so each issue keeps its effective duration.
     # QC_REWORK_HOURS_TO_DAYS_MIGRATED audit per tenant; idempotent.
-    # NOTE: migration numbers 024-026 are reserved by the in-flight
-    # CPM Step 2 / 2.1 / 3A branches (not yet merged to main); this QC
-    # migration takes 027 to avoid a number collision.
+    # Migration numbers 024-026 belong to the CPM Step 2 / 2.1 / 3A
+    # work; this QC migration is 027.
     "migrations.027_qc_rework_hours_to_days",
 ]
 

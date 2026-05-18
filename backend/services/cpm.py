@@ -120,7 +120,7 @@ from models import pred_code, pred_relationship
 # non-roots) -- that anchor question is Step 2.
 from services.working_days import (
     is_business_day, next_business_day, prev_business_day,
-    add_working_days,
+    add_working_days, working_days_between,
 )
 
 
@@ -257,12 +257,79 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
                 rel_type, lag_days = pred_relationship(p)
                 edges[(code, t["activity_code"])].append((rel_type, lag_days))
 
-    # Forward pass (early start / early finish)
+    # Forward pass (early start / early finish).
+    #
+    # CPM Step 2 (2026-05-17, Issue 3.D) -- compute_cpm ANCHORS ON THE
+    # IMPORTED MS PROJECT DATES: the imported .mpp is the federal
+    # contract artifact, so the engine trusts planned_start /
+    # planned_finish instead of re-deriving them from scratch.
+    #
+    # CPM Step 2.1 (2026-05-17) -- Step 2's forward pass set ES =
+    # imported planned_start in ISOLATION, never consulting
+    # predecessors, while the backward pass walked the full
+    # predecessor/successor network. The two passes used DIFFERENT
+    # networks, so float = working_days_between(ES, LS) manufactured
+    # fake negatives -- including on root tasks, which have no
+    # predecessors at all. PART A below RECONCILES the imported start
+    # against predecessors:
+    #
+    #   predecessor_implied_start = MAX over every resolvable
+    #       predecessor of _derive_implied_start (the SAME
+    #       per-relationship FS/SS/FF/SF + working-day-lag logic the
+    #       pre-Step-2 forward pass used).
+    #   ES = max(imported_planned_start, predecessor_implied_start)
+    #   EF = imported_planned_finish, BUT when ES is rolled forward
+    #        the imported finish rolls forward by the SAME number of
+    #        working days, so the task keeps its imported SPAN.
+    #
+    # The imported date stays the SOURCE OF TRUTH whenever it is
+    # feasible (imported_start >= predecessor_implied_start -> ES is
+    # the imported date, unchanged). It is overridden ONLY when the
+    # import is genuinely impossible -- a task imported to start
+    # before its predecessors finish. Root tasks have no predecessors
+    # so ES = imported_planned_start, always (this alone fixes the
+    # spurious -7 the Diagnostic found on Task 1).
+    #
+    # CPM Step 3A (2026-05-17) -- schedule_reshape_count must count
+    # ONLY tasks whose own imported start is genuinely earlier than
+    # their predecessors allow. Step 2.1 decided this against the
+    # predecessors' RECONCILED dates, so one genuine reshape near a
+    # root cascade-inflated the count down the whole chain (GSA
+    # reported 44 reshapes when essentially nothing was wrong). The
+    # reconcile of ES (the max() above) still uses the reconciled
+    # predecessor dates and still cascades -- that is correct CPM and
+    # is UNCHANGED. But the COUNT is now decided against the
+    # predecessors' IMPORTED dates, so a task merely dragged forward
+    # by an upstream reshape is not counted. Genuine reshapes are
+    # recorded in schedule_reshapes -- the import-quality signal that
+    # REPLACES Step 2's fake negative float.
+    #
+    # The topological sort built here is consumed by the backward
+    # pass. Kahn's BFS guarantees every predecessor is processed
+    # (es/ef populated) before any successor, so the per-predecessor
+    # _derive_implied_start calls below always read resolved dates.
     es: dict[str, date] = {}
     ef: dict[str, date] = {}
+    # CPM Step 3A (2026-05-17) -- the IMPORTED (business-day-anchored)
+    # start/finish per task, captured BEFORE the PART A reconcile.
+    # schedule_reshape_count is decided against THESE dates (not the
+    # reconciled es/ef) so an upstream reshape does not cascade-
+    # inflate the count.
+    imported_es: dict[str, date] = {}
+    imported_ef: dict[str, date] = {}
     queue = deque(t["activity_code"] for t in tasks if indeg[t["activity_code"]] == 0)
     topo: list[str] = []
     indeg_copy = dict(indeg)
+    # D2 -- import-quality observations: tasks where the imported
+    # planned_finish disagrees with add_working_days(planned_start,
+    # dur-1). Not an error; surfaced in the return payload + logs.
+    duration_mismatches: list[dict] = []
+    # CPM Step 2.1 / 3A -- tasks whose imported planned_start is
+    # GENUINELY earlier than their predecessors' IMPORTED dates allow
+    # (an internally inconsistent import). Decided against imported
+    # predecessor dates -- a task dragged forward only by an upstream
+    # reshape is NOT recorded here (the Step-2.1 cascade over-count).
+    schedule_reshapes: list[dict] = []
     while queue:
         code = queue.popleft()
         topo.append(code)
@@ -270,42 +337,125 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
         dur = float(t.get("duration_days") or 1.0)
         dur_minus_one = max(0, int(round(dur)) - 1)
 
-        # CPM Part C (2026-05-15) -- per-predecessor implied-start
-        # derivation. For each predecessor, _derive_implied_start
-        # produces a candidate B.start that satisfies THAT
-        # predecessor's constraint (relationship type + lag). Take
-        # MAX across candidates -- the latest binding constraint
-        # wins (standard CPM convergence). Predecessors that don't
-        # resolve to a known activity_code are skipped silently.
-        candidates: list[date] = []
+        # CPM Step 2 -- imported planned_start, anchored onto a
+        # business day (a legacy import may have landed it on a
+        # weekend / holiday).
+        ps = t.get("planned_start")
+        imported_start = _to_date(ps) if ps else date.today()
+        if not is_business_day(imported_start):
+            imported_start = next_business_day(
+                imported_start - timedelta(days=1)
+            )
+        imported_es[code] = imported_start
+
+        # CPM Step 2.1 PART A -- reconcile the imported start against
+        # predecessors. _derive_implied_start is the SAME FS/SS/FF/SF
+        # + working-day-lag helper the pre-Step-2 forward pass used.
+        # Two predecessor-implied starts are derived per task; both
+        # read predecessors that are already resolved (topo order):
+        #   reconciled -- from es[pc]/ef[pc]. Drives the ES reconcile
+        #       (start_d). CASCADES: a rolled-forward predecessor
+        #       pushes this task's reconciled start forward too --
+        #       correct CPM, UNCHANGED by Step 3A.
+        #   imported   -- from imported_es[pc]/imported_ef[pc]. CPM
+        #       Step 3A: schedule_reshape_count is decided against
+        #       THIS, so a task counts ONLY when its own imported
+        #       start is genuinely earlier than its IMPORTED
+        #       predecessors allow -- a task dragged forward purely
+        #       by an upstream reshape is NOT counted.
+        pred_candidates_reconciled: list[date] = []
+        pred_candidates_imported: list[date] = []
         for p in (t.get("predecessors") or []):
             pc = pred_code(p)
             if not pc or pc not in by_id:
                 continue
             rel_type, lag_days = pred_relationship(p)
-            candidate = _derive_implied_start(
-                es[pc], ef[pc], rel_type, lag_days, dur_minus_one,
+            pred_candidates_reconciled.append(
+                _derive_implied_start(
+                    es[pc], ef[pc], rel_type, lag_days, dur_minus_one,
+                )
             )
-            candidates.append(candidate)
-
-        if not candidates:
-            # Root task -- anchor to planned_start, falling back to
-            # today's date for tasks with no planned_start set yet.
-            ps = t.get("planned_start")
-            start_d = _to_date(ps) if ps else date.today()
-        else:
-            start_d = max(candidates)
-        # CPM Part L (2026-05-16) -- anchor onto a business day. If
-        # the root task's planned_start (or any computed start) lands
-        # on a weekend (legacy data), roll forward to next Mon.
-        if not is_business_day(start_d):
-            start_d = next_business_day(start_d - timedelta(days=1))
+            pred_candidates_imported.append(
+                _derive_implied_start(
+                    imported_es[pc], imported_ef[pc], rel_type,
+                    lag_days, dur_minus_one,
+                )
+            )
+        # ES reconcile (UNCHANGED): ES = max(imported_start,
+        # predecessor-implied-from-reconciled-dates). Imported date
+        # wins whenever feasible; overridden only when the
+        # predecessors' reconciled dates push past it.
+        start_d = imported_start
+        if pred_candidates_reconciled:
+            pred_implied = max(pred_candidates_reconciled)
+            if pred_implied > imported_start:
+                start_d = pred_implied
         es[code] = start_d
-        # CPM Part L -- duration accumulates in WORKING days. A 5-day
-        # task starting Mon finishes Fri (Mon=day1, Tue=2, Wed=3,
-        # Thu=4, Fri=5). dur_minus_one is 4; add_working_days(Mon, 4)
-        # = Fri. Identical to pre-Part-L for pure-weekday spans.
-        ef[code] = add_working_days(start_d, dur_minus_one)
+        # es_moved -- the reconcile rolled this task's ES forward, by
+        # a genuine inconsistency OR an inherited upstream cascade.
+        # Keys the EF span-shift below: every moved task keeps its
+        # span, so float is byte-for-byte the Step-2.1 result.
+        es_moved = start_d != imported_start
+        # CPM Step 3A -- reshaped == GENUINE inconsistency: this
+        # task's imported start is earlier than its IMPORTED
+        # predecessors allow. A cascade-only move (es_moved True but
+        # the imported start is fine vs imported predecessor dates)
+        # is NOT a reshape -- that was the Step-2.1 over-count.
+        reshaped = bool(pred_candidates_imported) and (
+            max(pred_candidates_imported) > imported_start
+        )
+
+        # CPM Step 2 / D2 -- EF anchored on the imported planned_finish
+        # (the contract truth). A legacy weekend / holiday finish is
+        # rolled BACK to the prior business day.
+        # CPM Step 2.1 PART A -- when the ES was rolled forward (for
+        # ANY reason -- genuine reshape OR inherited cascade), the
+        # imported finish rolls forward by the SAME number of working
+        # days so the task keeps its imported span. When planned_
+        # finish is missing, fall back to the duration-derived finish.
+        pf = t.get("planned_finish")
+        if pf:
+            imported_finish = _to_date(pf)
+            if not is_business_day(imported_finish):
+                imported_finish = prev_business_day(
+                    imported_finish + timedelta(days=1)
+                )
+            imported_ef[code] = imported_finish
+            if es_moved:
+                shift = working_days_between(imported_start, start_d)
+                finish_d = add_working_days(imported_finish, shift)
+            else:
+                finish_d = imported_finish
+            ef[code] = finish_d
+            # D2 -- detect (don't correct) a duration/finish mismatch.
+            expected_ef = add_working_days(start_d, dur_minus_one)
+            if finish_d != expected_ef:
+                duration_mismatches.append({
+                    "activity_code": code,
+                    "planned_start": start_d.isoformat(),
+                    "planned_finish": finish_d.isoformat(),
+                    "duration_days": int(round(dur)),
+                    "duration_derived_finish": expected_ef.isoformat(),
+                })
+        else:
+            imported_ef[code] = add_working_days(
+                imported_start, dur_minus_one,
+            )
+            ef[code] = add_working_days(start_d, dur_minus_one)
+
+        # CPM Step 2.1 / 3A -- record the GENUINE reshape (imported
+        # start earlier than the IMPORTED predecessors allow) for the
+        # schedule_reshape_count diagnostic returned below. A genuine
+        # reshape always has es_moved (pred-implied-reconciled >=
+        # pred-implied-imported), so reconciled_start is the moved ES.
+        if reshaped:
+            schedule_reshapes.append({
+                "activity_code": code,
+                "imported_start": imported_start.isoformat(),
+                "reconciled_start": start_d.isoformat(),
+                "reconciled_finish": ef[code].isoformat(),
+            })
+
         for s in successors[code]:
             indeg_copy[s] -= 1
             if indeg_copy[s] == 0:
@@ -314,6 +464,25 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
     if len(topo) < len(tasks):
         # Cycle detected — leave is_critical_path unchanged
         return {"updated": 0, "critical_count": 0, "error": "cycle_detected"}
+
+    if duration_mismatches:
+        import logging
+        logging.getLogger(__name__).info(
+            "compute_cpm (tenant=%s project=%s): %d task(s) with "
+            "imported planned_finish != duration-derived finish: %s",
+            tenant_id, project_id, len(duration_mismatches),
+            duration_mismatches[:20],
+        )
+
+    if schedule_reshapes:
+        import logging
+        logging.getLogger(__name__).info(
+            "compute_cpm (tenant=%s project=%s): %d task(s) whose "
+            "imported planned_start is genuinely earlier than their "
+            "IMPORTED predecessors allow (Step 3A genuine reshape): %s",
+            tenant_id, project_id, len(schedule_reshapes),
+            schedule_reshapes[:20],
+        )
 
     project_finish = max(ef.values())
 
@@ -362,10 +531,19 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
             # setup loop above, so every successor has at least one
             # (rel_type, lag) entry in edges.
             lf[code] = min(candidates)
-        # CPM Part L (2026-05-16) -- LS = LF - (dur-1) in working days.
-        # A 5-day task with LF on Friday has LS on Monday (Mon=1,
-        # Tue=2, Wed=3, Thu=4, Fri=5). add_working_days(Fri, -4) = Mon.
-        ls[code] = add_working_days(lf[code], -dur_minus_one)
+        # CPM Part L (2026-05-16) -- LS = LF - span in working days.
+        # CPM Step 2.1 PART B -- size the task by its IMPORTED SPAN,
+        # working_days_between(ES, EF), NOT the duration_days field.
+        # The Step-2 forward pass trusts the imported planned_finish
+        # as EF; deriving LS from duration_days disagreed with that
+        # EF on any duration-mismatched task and manufactured artifact
+        # float. working_days_between(es, ef) == dur-1 for a clean
+        # task (so this is a no-op there) and the schedule-faithful
+        # span for a mismatch task -- the forward and backward passes
+        # now agree on every task's footprint.
+        ls[code] = add_working_days(
+            lf[code], -working_days_between(es[code], ef[code]),
+        )
 
     # Update tasks. Float = LS - ES in WORKING days (Part L: was
     # calendar). A task is on the critical path when float_days <= 0.
@@ -380,19 +558,49 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
     # pure-weekday schedule with no weekend ES/LS dates, the two
     # are identical; on weekend-spanning slack the working-day
     # count is the more honest metric.
-    from services.working_days import working_days_between
+    # CPM Step 2.1 (2026-05-17) -- the forward pass now RECONCILES
+    # each ES against predecessors (PART A) and the backward pass
+    # sizes each task by its imported span (PART B), so the forward
+    # and backward passes walk the SAME network. Structural float is
+    # therefore normally >= 0; an internally inconsistent import is
+    # rolled forward and counted in schedule_reshape_count rather
+    # than left to manufacture a fake negative. negative_float_count
+    # + the no-clamp policy are KEPT as a backstop -- a genuinely
+    # pathological schedule must still EXPOSE a negative, never hide
+    # it. is_critical_path keeps the float <= 0 rule, so a
+    # negative-float task is still correctly flagged critical.
     critical = 0
+    negative_float_count = 0
     for code, t in by_id.items():
         float_days = working_days_between(es[code], ls[code])
         is_cp = float_days <= 0
         if is_cp:
             critical += 1
+        if float_days < 0:
+            negative_float_count += 1
         await db.tasks.update_one(
             tenant_filter(tenant_id, {"id": t["id"]}),
             {"$set": {"is_critical_path": is_cp, "total_float_days": float_days}},
         )
 
-    return {"updated": len(by_id), "critical_count": critical, "project_finish": project_finish.isoformat()}
+    return {
+        "updated": len(by_id),
+        "critical_count": critical,
+        "project_finish": project_finish.isoformat(),
+        # CPM Step 2 -- import-anchor diagnostics.
+        "negative_float_count": negative_float_count,
+        "duration_mismatch_count": len(duration_mismatches),
+        "duration_mismatches": duration_mismatches[:50],
+        # CPM Step 2.1 / 3A -- forward-pass reconcile diagnostic. A
+        # task is counted here ONLY when its imported planned_start is
+        # genuinely earlier than its IMPORTED predecessors allow (an
+        # internally inconsistent import). Step 3A: a task dragged
+        # forward purely by an upstream reshape is NOT counted, so the
+        # count reflects genuine import problems, not cascade depth.
+        # 0 on a fully consistent imported schedule.
+        "schedule_reshape_count": len(schedule_reshapes),
+        "schedule_reshapes": schedule_reshapes[:50],
+    }
 
 
 def _to_date(v):

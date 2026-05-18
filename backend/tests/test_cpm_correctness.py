@@ -366,9 +366,24 @@ def _add_task(
     predecessors: list | None = None,
     **extras,
 ) -> dict:
-    """Insert a task row into the stub. Returns the dict."""
+    """Insert a task row into the stub. Returns the dict.
+
+    CPM Step 2 (2026-05-17) -- when planned_finish is not given
+    explicitly, derive it in WORKING days: add_working_days(
+    planned_start, duration - 1). Pre-Step-2 this used calendar days
+    (planned_start + timedelta(days=duration-1)). The change is
+    REQUIRED because Step 2's compute_cpm reads the imported
+    planned_finish DIRECTLY as EF (it no longer re-derives EF from
+    duration). A calendar-derived planned_finish disagrees with the
+    working-day duration whenever the span crosses a weekend/holiday,
+    which would make every auto-finish task look like a duration
+    mismatch (D2) and skew float. A working-day-derived planned_finish
+    is the consistent, schedule-faithful value -- it equals what the
+    pre-Step-2 forward pass computed as EF, so tests that relied on
+    that EF keep their original expected values.
+    """
     if planned_finish is None and planned_start is not None and duration > 0:
-        planned_finish = planned_start + timedelta(days=duration - 1)
+        planned_finish = add_working_days(planned_start, duration - 1)
     pf_iso = planned_finish.isoformat() if planned_finish else None
     ps_iso = planned_start.isoformat() if planned_start else None
     doc = {
@@ -781,43 +796,58 @@ async def _test_parallel_tasks_isolation():
 # 2. test_max_at_convergence
 # -----------------------------------------------------------------------------
 async def _test_max_at_convergence():
-    """Two predecessors converge at one successor; MAX wins.
+    """Two predecessors converge at one successor.
+
+    CPM Step 2 (2026-05-17) -- compute_cpm's forward pass now ANCHORS
+    ES/EF on each task's IMPORTED planned dates; it no longer
+    re-derives a non-root's ES via MAX-convergence over predecessors.
+    So T_C's ES is read straight from its imported planned_start. For
+    that imported date to be schedule-faithful it must equal what the
+    pre-Step-2 MAX-convergence produced:
+        OLD: T_C planned_start = 5/4 (compute_cpm re-derived ES = 5/11
+             via MAX over the FS+0 predecessors and ignored 5/4).
+        NEW: T_C planned_start = 5/11 -- the imported date IS that
+             convergence result: next_business_day(B.EF 5/8 Fri) =
+             5/11 Mon; auto-finish add_working_days(5/11,3) = 5/14.
+    Expected results are UNCHANGED -- the imported date encodes the
+    same convergence the engine used to compute.
 
     Setup:
         T_A  root, planned 5/4..5/6 (3d)      -- shorter path
         T_B  root, planned 5/4..5/8 (5d)      -- longer path
-        T_C  preds [A FS+0, B FS+0], dur 4
+        T_C  preds [A FS+0, B FS+0], planned 5/11..5/14 (4d)
 
-    Forward pass:
-        A.EF = 5/6 -> C.ES candidate = 5/7
-        B.EF = 5/8 -> C.ES candidate = 5/9
-        MAX(5/7, 5/9) = 5/9, C.EF = 5/12
+    Forward pass (Step 2 -- imported-date anchor):
+        A.ES/EF = imported 5/4 / 5/6
+        B.ES/EF = imported 5/4 / 5/8
+        C.ES/EF = imported 5/11 / 5/14
+        project_finish = MAX(EF) = 5/14
 
-    Backward pass:
-        C.LF = 5/12 (tail), C.LS = 5/9
+    Backward pass (UNCHANGED -- per-successor MIN-convergence):
+        C.LF = 5/14 (tail), C.LS = 5/11
         From C: A.LF = 5/8, B.LF = 5/8
-        A.LS = 5/6 (LF - dur+1), Float A = LS - ES = 5/6 - 5/4 = 2d
+        A.LS = 5/6 (LF - dur+1), Float A = wd_between(5/4,5/6) = 2d
         B.LS = 5/4, Float B = 0
 
     Expect:
-        project_finish == 5/12
+        project_finish == 5/14
         T_B + T_C critical (float 0)
         T_A NOT critical, float = 2
     """
     _reset()
     _add_task("A", duration=3, planned_start=D(5, 4))
     _add_task("B", duration=5, planned_start=D(5, 4))
-    _add_task("C", duration=4, planned_start=D(5, 4),
+    _add_task("C", duration=4, planned_start=D(5, 11),
               predecessors=[_pred("A"), _pred("B")])
 
     result = await compute_cpm(TENANT, PROJECT)
 
-    # CPM Part L (2026-05-16) -- T_C's ES = next_business_day(T_B.EF=5/8 Fri)
-    # = 5/11 Mon (skipping 5/9-5/10 weekend). T_C dur=4, EF = 5/14 Thu.
-    # Pre-Part-L expected 5/12 (calendar B.EF+1 = 5/9 Sat).
+    # CPM Step 2 (2026-05-17) -- C.ES/EF = imported 5/11 / 5/14. The
+    # imported planned dates ARE the convergence result; the engine
+    # no longer re-derives them. project_finish = MAX(EF) = 5/14.
     assert result.get("project_finish") == "2026-05-14", (
         f"project_finish expected 2026-05-14 "
-        f"(Part L working-day forward), got {result.get('project_finish')!r}"
+        f"(Step 2 imported-date anchor), got {result.get('project_finish')!r}"
     )
     t_a = await _get_task("task-A")
     t_b = await _get_task("task-B")
@@ -837,32 +867,45 @@ async def _test_max_at_convergence():
 # 3. test_fs_lag_concrete_cure
 # -----------------------------------------------------------------------------
 async def _test_fs_lag_concrete_cure():
-    """FS+7d ("concrete cure") -- successor starts pred.EF + 1 + 7 days.
+    """FS+7d ("concrete cure") -- successor starts pred.EF + 1 + 7
+    working days.
+
+    CPM Step 2 (2026-05-17) -- the forward pass anchors on imported
+    planned dates; T_B's ES is its imported planned_start, NOT a
+    re-derivation of A.EF + the FS+7 lag. The imported date must
+    encode that lag to stay schedule-faithful:
+        OLD: T_B planned_start = 5/16 (compute_cpm re-derived ES =
+             5/20 via next_business_day(A.EF 5/8) + 7 working days).
+        NEW: T_B planned_start = 5/20 -- the imported date IS that
+             FS+7 result; auto-finish add_working_days(5/20,2) = 5/22.
+    project_finish stays 5/22 -- the imported date encodes the same
+    FS+7 lag the pre-Step-2 forward pass computed.
 
     Setup:
         T_A "Pour slab"  root, 5/4..5/8 (5d)
-        T_B "Cure 7d"    FS+7 from A, dur 3
+        T_B "Cure 7d"    FS+7 from A, planned 5/20..5/22 (3d)
 
-    Forward:
-        A.EF = 5/8 -> B.ES = 5/8 + 1 + 7 = 5/16, B.EF = 5/18
+    Forward (Step 2 -- imported-date anchor):
+        A.ES/EF = imported 5/4 / 5/8
+        B.ES/EF = imported 5/20 / 5/22
+        project_finish = 5/22
 
-    Expect: project_finish == 5/18; both critical (single path).
+    Expect: project_finish == 5/22; both critical (single path).
     """
     _reset()
     _add_task("A", duration=5, planned_start=D(5, 4))
-    _add_task("B", duration=3, planned_start=D(5, 16),
+    _add_task("B", duration=3, planned_start=D(5, 20),
               predecessors=[_pred("A", "FS", 7)])
 
     result = await compute_cpm(TENANT, PROJECT)
 
-    # CPM Part L (2026-05-16) -- FS+7 is now 7 WORKING days (was
-    # calendar). A finishes Fri 5/8; +1 day -> Mon 5/11; +7 working
-    # days -> 5/20 Wed; B dur=3 -> EF = 5/22 Fri.
-    # Pre-Part-L expected 5/18 (calendar: 5/8 +1 +7 = 5/16 Sat,
-    # B.EF = 5/16 + 2 = 5/18). Part L correctly skips both the
-    # immediate weekend AND the second weekend inside the 7-day lag.
+    # CPM Step 2 (2026-05-17) -- B.ES/EF = imported 5/20 / 5/22; the
+    # FS+7 working-day lag is encoded in the imported planned_start
+    # (the engine no longer re-derives it). project_finish =
+    # MAX(A.EF 5/8, B.EF 5/22) = 5/22. The FS+7 lag still drives the
+    # UNCHANGED backward pass, keeping A on the critical path.
     assert result.get("project_finish") == "2026-05-22", (
-        f"FS+7 cure (Part L working-day lag): project_finish "
+        f"FS+7 cure (Step 2 imported-date anchor): project_finish "
         f"expected 2026-05-22, got {result.get('project_finish')!r}"
     )
     t_a = await _get_task("task-A")
@@ -1039,9 +1082,21 @@ async def _test_auto_recompute_on_delay_create():
        b) projected_finish_date populated by
           compute_projected_finish_dates (delay impact propagated)
 
+    CPM Step 2 (2026-05-17) -- the forward pass anchors on imported
+    planned dates. T_B is FS+0 after T_A (5/4..5/8), so its imported
+    planned_start must be the next business day, 5/11 -- NOT 5/9,
+    which is a Saturday and only "worked" pre-Step-2 because the old
+    re-derivation discarded the imported value. dur 3 -> auto-finish
+    add_working_days(5/11,2) = 5/13.
+        OLD: T_B planned_start = 5/9 (Sat); the pre-Step-2 fixture's
+             calendar planned_finish was 5/11; cascade pushed
+             5/11 + 5 wd = 5/18.
+        NEW: T_B planned_start = 5/11; working-day planned_finish =
+             5/13; cascade pushes 5/13 + 5 wd = 5/20.
+
     Setup:
         T_A  root, 5/4..5/8 (5d)
-        T_B  FS+0 from A, dur 3   (5/9..5/11) -- tail; critical path
+        T_B  FS+0 from A, planned 5/11..5/13 (3d) -- tail; critical path
 
     Action:
         Run _simulate_create_delay(task-B, impact=5).
@@ -1049,12 +1104,12 @@ async def _test_auto_recompute_on_delay_create():
     Expect:
         task-B.total_float_days == 0          (auto-recompute populated it)
         task-B.is_critical_path == True
-        task-B.projected_finish_date == 2026-05-16   (5/11 + 5 days)
+        task-B.projected_finish_date == 2026-05-20   (5/13 + 5 wd)
         task-A.projected_finish_date is None         (no own impact)
     """
     _reset()
     _add_task("A", duration=5, planned_start=D(5, 4))
-    _add_task("B", duration=3, planned_start=D(5, 9),
+    _add_task("B", duration=3, planned_start=D(5, 11),
               predecessors=[_pred("A")])
 
     # Before: floats are at the default None.
@@ -1071,14 +1126,15 @@ async def _test_auto_recompute_on_delay_create():
         f"{t_b['total_float_days']!r}"
     )
     assert t_b["is_critical_path"] is True
-    # CPM Part L (2026-05-16) -- shift is 5 WORKING days. T_B planned
-    # finish = 5/11 Mon; add_working_days(5/11, 5) = 5/18 Mon
-    # (skipping 5/16-5/17 weekend). Pre-Part-L expected 5/16
-    # (calendar: 5/11 + 5 = 5/16 Sat).
-    assert t_b["projected_finish_date"] == "2026-05-18", (
-        f"projected_finish_date expected 5/18 (Part L working-day "
-        f"shift from 5/11 + 5 wd), got "
-        f"{t_b['projected_finish_date']!r}"
+    # CPM Step 2 (2026-05-17) -- the cascade shifts 5 WORKING days off
+    # the imported planned_finish 5/13: add_working_days(5/13, 5) =
+    # 5/20 (5/14 Thu, 5/15 Fri, 5/18 Mon, 5/19 Tue, 5/20 Wed).
+    # Pre-Step-2 the fixture's calendar planned_finish was 5/11, so
+    # the cascade landed 5/18; the working-day planned_finish 5/13 is
+    # the schedule-faithful base, giving 5/20.
+    assert t_b["projected_finish_date"] == "2026-05-20", (
+        f"projected_finish_date expected 5/20 (Step 2: 5/13 + 5 wd), "
+        f"got {t_b['projected_finish_date']!r}"
     )
     # Upstream A has no own delay impact -> projection stays None.
     assert t_a["projected_finish_date"] is None
@@ -2356,32 +2412,36 @@ async def _test_working_day_fs_lag():
 # L-7-2. test_working_day_fs_lag_with_lag
 # -----------------------------------------------------------------------------
 async def _test_working_day_fs_lag_with_lag():
-    """FS+3 (3-working-day lag) from Fri 5/15: lag day 1 = Mon 5/18,
-    day 2 = Tue 5/19, day 3 = Wed 5/20. Pre-Part-L treated lag as
-    calendar (5/15+1+3=5/19 -- jumping over weekend by accident).
-    Part L: 3 working days after next_business_day(5/15)=Mon, so
-    Mon=1, Tue=2, Wed=3 -> Wed 5/20."""
+    """FS+3 (3-working-day lag) from Fri 5/15.
+
+    CPM Step 2 (2026-05-17) -- the forward pass anchors ES on the
+    imported planned_start; T_B's ES is read straight from it, NOT
+    re-derived from A's finish + the FS+3 lag. For the imported date
+    to be schedule-faithful it must equal that FS+3 result:
+        A finishes Fri 5/15 -> next_business_day = Mon 5/18 ->
+        +3 working days (Tue 5/19, Wed 5/20, Thu 5/21) = Thu 5/21.
+        OLD: T_B planned_start = 5/20 (a placeholder; the pre-Step-2
+             forward pass re-derived ES = 5/21 and ignored 5/20).
+        NEW: T_B planned_start = 5/21 -- the imported date IS the
+             FS+3 result; dur 1 -> auto-finish 5/21.
+    project_finish stays 5/21."""
     _reset()
     _add_task("A", duration=5, planned_start=D(5, 11))   # Mon 5/11 -> Fri 5/15
-    _add_task("B", duration=1, planned_start=D(5, 20),   # placeholder
+    _add_task("B", duration=1, planned_start=D(5, 21),
               predecessors=[_pred("A", "FS", 3)])
     result = await compute_cpm(TENANT, PROJECT)
 
-    # B.ES = add_working_days(next_business_day(5/15 Fri)=5/18 Mon, 3) =
-    # 5/21 Thu (Mon+1=Tue, Tue+2=Wed, Wed+3=Thu... actually
-    # add_working_days(5/18, 3) = Mon -> Tue (1) -> Wed (2) -> Thu (3) = 5/21).
-    # Hmm let me re-trace: add_working_days steps n WORKING days
-    # FORWARD from start; start IS day 0. So add_working_days(Mon, 3)
-    # = Mon -> Tue (day 1) -> Wed (day 2) -> Thu (day 3) = Thu 5/21.
-    # B dur=1, EF = ES = 5/21.
-    t_b = await _get_task("task-B")
+    # CPM Step 2 -- B.ES/EF = imported 5/21 / 5/21 (dur 1). The FS+3
+    # working-day lag is encoded in the imported planned_start; the
+    # engine no longer re-derives it. project_finish = MAX(A.EF 5/15,
+    # B.EF 5/21) = 5/21. (The FS+3 lag still drives the backward pass.)
     expected_es = "2026-05-21"
     actual = result.get("project_finish")
     assert actual == expected_es, (
-        f"FS+3 from Fri 5/15: B should start {expected_es} "
+        f"FS+3 from Fri 5/15: B imported planned_start 5/21 "
         f"(Fri->next Mon then +3 wd = Thu); got project_finish={actual!r}"
     )
-    print("L-7-2 PASS: FS+3 lag treated as working days")
+    print("L-7-2 PASS: FS+3 lag encoded in imported planned_start")
 
 
 # -----------------------------------------------------------------------------
@@ -3816,6 +3876,559 @@ async def _test_migration_027_converts_hours_to_days():
 
 
 # =============================================================================
+# CPM Step 2 (2026-05-17) -- imported-date-anchor regression tests.
+#
+# Step 2 made compute_cpm's forward pass ANCHOR ES/EF on each task's
+# IMPORTED planned_start/planned_finish (the contract .mpp truth),
+# instead of re-deriving a non-root's ES from its predecessors. These
+# four tests are the regression floor for that contract:
+#   S2-1  the forward pass reads ES/EF from the imported dates -- a
+#         gap the old re-derivation collapsed is now preserved.
+#   S2-2  total_float_days is computed from the imported ES.
+#   S2-3  an inconsistent imported schedule yields NEGATIVE float,
+#         surfaced (negative_float_count) and NOT clamped.
+#   S2-4  a clean imported schedule yields no negative float and no
+#         duration mismatch -- the anchor is a no-op for good data.
+# =============================================================================
+async def _test_cpm_anchors_on_imported_start():
+    """S2-1 -- compute_cpm's forward pass anchors ES/EF on the
+    IMPORTED planned_start/planned_finish for EVERY task, not just
+    roots. It no longer re-derives a non-root's ES from predecessors.
+
+    Setup -- a deliberate GAP the engine must preserve:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported planned_start 5/18 -- a full week
+             AFTER A finishes (the FS+0 relationship alone would
+             imply 5/11). dur 3 -> auto planned_finish 5/20.
+
+    Pre-Step-2 the forward pass re-derived B.ES = next_business_day(
+    A.EF 5/8) = 5/11, B.EF = 5/13, project_finish = 5/13 -- silently
+    discarding the imported 5/18 and collapsing the gap.
+
+    Step 2: B.ES/EF = imported 5/18 / 5/20, project_finish = 5/20.
+    The 5/20 result is the proof -- only an imported-date anchor
+    yields it (a re-derivation yields 5/13). The gap surfaces as
+    float on A.
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 18),
+              predecessors=[_pred("A", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    assert result.get("project_finish") == "2026-05-20", (
+        f"Step 2 anchor: project_finish must be 2026-05-20 (B.EF = "
+        f"imported planned_finish). A pre-Step-2 re-derivation would "
+        f"give 2026-05-13. Got {result.get('project_finish')!r}"
+    )
+    # The imported gap surfaces as float on A: A may finish as late
+    # as prev_business_day(B.ES 5/18) = 5/15 -> A.LS 5/11 -> float =
+    # wd_between(5/4, 5/11) = 5. Pre-Step-2 A was critical (float 0).
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    assert t_a["total_float_days"] == 5, (
+        f"A float expected 5 (the imported gap A->B), got "
+        f"{t_a['total_float_days']!r}"
+    )
+    assert t_a["is_critical_path"] is False
+    assert t_b["total_float_days"] == 0
+    assert t_b["is_critical_path"] is True
+    assert result.get("negative_float_count") == 0
+    print("S2-1 PASS: forward pass anchors ES/EF on imported dates")
+
+
+async def _test_cpm_float_uses_imported_dates():
+    """S2-2 -- total_float_days is computed from the IMPORTED ES
+    (working_days_between(imported_ES, LS)), so the float scalar
+    tracks the imported planned_start. This is the metric that
+    reconciles with the date-based cascade (Issue 3.D): pre-Step-2,
+    float came off a re-derived ES baseline that diverged from the
+    imported dates the cascade and the displayed columns used.
+
+    Setup:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported planned_start 5/14 -- 3 working
+             days LATER than the FS+0-implied 5/11. dur 3.
+
+    The 3-working-day gap (5/11 -> 5/14) becomes float on A: with the
+    imported anchor A may finish as late as prev_business_day(B.ES
+    5/14) = 5/13, so A.LS = 5/7 and float = wd_between(5/4,5/7) = 3.
+    Pre-Step-2 (re-derived ES) A would be critical, float 0.
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 14),
+              predecessors=[_pred("A", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    assert t_a["total_float_days"] == 3, (
+        f"A float must equal the 3-working-day imported gap A->B, "
+        f"got {t_a['total_float_days']!r}"
+    )
+    assert t_a["is_critical_path"] is False, (
+        "A must NOT be critical -- the imported gap gives it slack"
+    )
+    assert t_b["total_float_days"] == 0
+    assert t_b["is_critical_path"] is True
+    assert result.get("project_finish") == "2026-05-18"
+    print("S2-2 PASS: total_float_days derived from imported ES")
+
+
+async def _test_inconsistent_import_reconciled_by_forward_pass():
+    """S2.1-RECONCILE -- an internally inconsistent imported schedule
+    (a successor's imported planned_start earlier than an FS
+    predecessor's finish allows) is RECONCILED by the Step 2.1
+    forward pass: the successor's ES is rolled forward to the
+    predecessor-implied start and counted in schedule_reshape_count.
+    No fake negative float is produced.
+
+    CPM Step 2.1 (2026-05-17) -- this test was
+    `test_negative_float_surfaced_on_inconsistent_schedule` under
+    Step 2, which asserted A.total_float_days == -3 and
+    negative_float_count == 1.
+        OLD: A float -3, negative_float_count 1.
+        NEW: B's imported start 5/6 < predecessor-implied 5/11, so B
+             is reshaped to 5/11 (schedule_reshape_count 1); the
+             forward and backward passes now walk the SAME network
+             and A float = 0, negative_float_count 0.
+    Reason: the -3 was an ARTIFACT (Diagnostic #5). Step 2's forward
+    pass set ES = imported planned_start in isolation while the
+    backward pass walked the predecessor network -- the two passes
+    used different networks. Step 2.1 PART A reconciles them, so the
+    -3 never represented real network slack. The genuine
+    import-quality signal is schedule_reshape_count.
+
+    Setup -- B imported to start BEFORE its FS+0 predecessor finishes:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported planned_start 5/6 (A still running;
+             A finishes 5/8). dur 3.
+
+    Forward (Step 2.1 reconcile):
+        A.ES/EF = imported 5/4 / 5/8 (root -- imported wins).
+        B: predecessor-implied start = next_business_day(A.EF 5/8)
+           = 5/11 > imported 5/6 -> RESHAPED. B.ES = 5/11; the
+           imported finish rolls forward by the same 3 working days
+           -> B.EF = 5/13 (span preserved).
+        project_finish = 5/13.
+    Backward: all float >= 0 -- the schedule is now self-consistent.
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 6),
+              predecessors=[_pred("A", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    assert result.get("schedule_reshape_count") == 1, (
+        f"B's imported start 5/6 precedes the predecessor-implied "
+        f"5/11 -> exactly 1 reshape expected, got "
+        f"{result.get('schedule_reshape_count')!r}"
+    )
+    assert result.get("negative_float_count") == 0, (
+        f"Step 2.1 reconciles the inconsistency -- NO fake negative "
+        f"float. Got negative_float_count="
+        f"{result.get('negative_float_count')!r}"
+    )
+    assert t_a["total_float_days"] == 0, (
+        f"A float must be 0 (reconciled), not the Step-2 artifact "
+        f"-3. Got {t_a['total_float_days']!r}"
+    )
+    assert t_b["total_float_days"] >= 0, (
+        f"B float must be >= 0, got {t_b['total_float_days']!r}"
+    )
+    print("S2.1-RECONCILE PASS: inconsistent import reshaped, no fake negative")
+
+
+async def _test_clean_schedule_no_negative_float():
+    """S2-4 -- a CONSISTENT imported schedule (every successor's
+    imported planned_start respects its predecessors' imported
+    finishes) produces NO negative float and NO duration mismatches.
+    This is the regression floor: Step 2's import-anchor must be a
+    no-op for a well-formed .mpp -- it only surfaces problems, never
+    invents them.
+
+    Setup -- a clean FS+0 chain, every date schedule-faithful:
+        T_A  root, 5/4..5/8  (5d)
+        T_B  FS+0 from A, 5/11..5/13 (3d)  -- starts next biz day
+        T_C  FS+0 from B, 5/14..5/18 (3d)  -- starts next biz day
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=3, planned_start=D(5, 14),
+              predecessors=[_pred("B", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    assert result.get("project_finish") == "2026-05-18"
+    assert result.get("negative_float_count") == 0, (
+        f"a clean imported schedule must have 0 negative-float "
+        f"tasks, got {result.get('negative_float_count')!r}"
+    )
+    assert result.get("duration_mismatch_count") == 0, (
+        f"a clean imported schedule must have 0 duration mismatches, "
+        f"got {result.get('duration_mismatch_count')!r}"
+    )
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    t_c = await _get_task("task-C")
+    for t in (t_a, t_b, t_c):
+        assert t["total_float_days"] == 0, (
+            f"{t['activity_code']} float expected 0 (single clean "
+            f"path), got {t['total_float_days']!r}"
+        )
+        assert t["is_critical_path"] is True
+    print("S2-4 PASS: clean imported schedule -> no negative float")
+
+
+# =============================================================================
+# CPM Step 2.1 (2026-05-17) -- forward-pass reconcile regression tests.
+#
+# Step 2.1 fixed the Diagnostic #5 negative-float bug. Step 2's
+# forward pass set ES = imported planned_start in ISOLATION; the
+# backward pass walked the predecessor/successor network. The two
+# passes used different networks and float = LS - ES manufactured
+# fake negatives (including on root tasks). Step 2.1:
+#   PART A -- the forward pass reconciles each ES against
+#             predecessors: ES = max(imported_start,
+#             predecessor_implied_start). A reshaped task is counted
+#             in schedule_reshape_count.
+#   PART B -- the backward pass sizes each task by its imported SPAN
+#             (working_days_between(ES, EF)), not the duration_days
+#             field, so a duration-mismatch task no longer
+#             manufactures artifact float.
+# After the reconcile the forward + backward passes walk the SAME
+# network, so structural float is >= 0 -- the genuine import-quality
+# signal is schedule_reshape_count, not a fake negative.
+# =============================================================================
+async def _test_root_task_never_negative_float():
+    """S2.1-1 -- a root task (no predecessors) must never carry
+    negative structural float. Diagnostic #5 found -7 on the GSA
+    root (Task 1): Step 2's isolated forward pass let a downstream
+    task's too-early imported start drag the root's backward-pass LF
+    earlier than its EF. Step 2.1 PART A reconciles the network so
+    the root's float is >= 0.
+
+    Setup -- a root with one CLEAN successor and one IMPOSSIBLE one:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported 5/11 (consistent), 3d
+        T_C  FS+0 from A, imported 5/4 (impossible -- C imported to
+             start the same day A starts), 8d
+    C is reshaped forward; A (the root) stays at its imported start
+    and -- with the network now consistent -- carries float 0, NOT
+    a negative.
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=8, planned_start=D(5, 4),
+              predecessors=[_pred("A", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    t_c = await _get_task("task-C")
+    assert t_a["total_float_days"] >= 0, (
+        f"ROOT task float must never be negative, got "
+        f"{t_a['total_float_days']!r}"
+    )
+    assert t_a["total_float_days"] == 0, (
+        f"A is the longest-path root -> float 0, got "
+        f"{t_a['total_float_days']!r}"
+    )
+    for t in (t_a, t_b, t_c):
+        assert t["total_float_days"] >= 0, (
+            f"{t['activity_code']} float must be >= 0 after "
+            f"reconcile, got {t['total_float_days']!r}"
+        )
+    assert result.get("negative_float_count") == 0
+    assert result.get("schedule_reshape_count") == 1, (
+        f"only C's import is impossible -> 1 reshape, got "
+        f"{result.get('schedule_reshape_count')!r}"
+    )
+    print("S2.1-1 PASS: root task never carries negative float")
+
+
+async def _test_imported_slack_does_not_make_negative_float():
+    """S2.1-2 -- deliberate GAPS between successive tasks (imported
+    starts LATER than the FS-implied start) are slack, not
+    inconsistency. The imported date wins (no reshape), the gap
+    becomes POSITIVE float on the earlier tasks, and no float goes
+    negative.
+
+    Setup -- an FS+0 chain with a gap before B and before C:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported 5/13 (FS implies 5/11 -> 2-day
+             gap), 2d -> 5/14
+        T_C  FS+0 from B, imported 5/19 (FS implies 5/15 -> 2-day
+             gap), 2d -> 5/20
+    Expected float: A 4, B 2, C 0 -- all >= 0; schedule_reshape_count
+    0 (the imported dates are feasible, just generous).
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=2, planned_start=D(5, 13),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=2, planned_start=D(5, 19),
+              predecessors=[_pred("B", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    t_c = await _get_task("task-C")
+    for t in (t_a, t_b, t_c):
+        assert t["total_float_days"] >= 0, (
+            f"{t['activity_code']} float must be >= 0 (gaps are "
+            f"slack), got {t['total_float_days']!r}"
+        )
+    assert result.get("negative_float_count") == 0
+    assert result.get("schedule_reshape_count") == 0, (
+        f"feasible imported dates -> NO reshape, got "
+        f"{result.get('schedule_reshape_count')!r}"
+    )
+    assert t_a["total_float_days"] == 4 and t_b["total_float_days"] == 2, (
+        f"the imported gaps should surface as positive float "
+        f"(A 4, B 2), got A={t_a['total_float_days']!r} "
+        f"B={t_b['total_float_days']!r}"
+    )
+    print("S2.1-2 PASS: imported slack -> positive float, never negative")
+
+
+async def _test_genuinely_impossible_schedule_surfaced_via_reshape_count():
+    """S2.1-3 -- a genuinely impossible imported schedule (tasks
+    imported to start before their predecessors finish) is SURFACED
+    via schedule_reshape_count, the Step 2.1 import-quality signal.
+
+    NOTE ON THE SPEC: the Step 2.1 prompt named this test
+    `test_genuinely_impossible_schedule_still_surfaces_negative` and
+    expected NEGATIVE float. After PART A reconciles the forward
+    pass against predecessors, the forward and backward passes walk
+    the SAME network -- and a deadline-free CPM with a consistent
+    forward pass has float >= 0 for EVERY task (standard CPM
+    property: with project_finish = max(EF) and no external
+    deadline, no task is negative). So Step 2.1 CANNOT produce a
+    negative structural float from an "impossible" import -- it
+    RECONCILES the import and surfaces the impossibility through
+    schedule_reshape_count instead. That is the intended, correct
+    outcome: the negative float WAS the Diagnostic #5 bug being
+    fixed. The negative_float_count backstop remains for any
+    genuinely pathological case, but a "starts before predecessor
+    finishes" import is reconciled, not left negative. This test is
+    therefore asserted on schedule_reshape_count (see the report's
+    divergence note).
+
+    Setup -- a 3-task chain, every task imported to start 5/4 (the
+    project's first day -- B and C are impossible):
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported 5/4 (impossible), 3d
+        T_C  FS+0 from B, imported 5/4 (impossible), 2d
+    B and C are both reshaped forward -> schedule_reshape_count 2,
+    negative_float_count 0, all float >= 0.
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 4),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=2, planned_start=D(5, 4),
+              predecessors=[_pred("B", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    assert result.get("schedule_reshape_count") == 2, (
+        f"B and C are both imported impossibly early -> 2 reshapes "
+        f"expected, got {result.get('schedule_reshape_count')!r}"
+    )
+    assert result.get("negative_float_count") == 0, (
+        f"Step 2.1 RECONCILES the impossible import -- it is "
+        f"surfaced via schedule_reshape_count, NOT via fake negative "
+        f"float. Got negative_float_count="
+        f"{result.get('negative_float_count')!r}"
+    )
+    for code in ("task-A", "task-B", "task-C"):
+        t = await _get_task(code)
+        assert t["total_float_days"] >= 0, (
+            f"{code} float must be >= 0 after reconcile, got "
+            f"{t['total_float_days']!r}"
+        )
+    print("S2.1-3 PASS: impossible import surfaced via schedule_reshape_count")
+
+
+async def _test_clean_schedule_zero_reshape():
+    """S2.1-4 -- a fully consistent imported schedule (every
+    successor's imported start equals its FS-implied start) triggers
+    NO reshape and NO negative float. Step 2.1's reconcile must be a
+    pure no-op on a well-formed .mpp -- the imported dates stay the
+    source of truth.
+
+    Setup -- a clean FS+0 chain, every date schedule-faithful:
+        T_A  root, 5/4..5/8  (5d)
+        T_B  FS+0 from A, 5/11..5/13 (3d)  -- starts the next biz day
+        T_C  FS+0 from B, 5/14..5/18 (3d)  -- starts the next biz day
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=3, planned_start=D(5, 14),
+              predecessors=[_pred("B", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    assert result.get("schedule_reshape_count") == 0, (
+        f"a consistent imported schedule must trigger 0 reshapes, "
+        f"got {result.get('schedule_reshape_count')!r}"
+    )
+    assert result.get("negative_float_count") == 0
+    assert result.get("project_finish") == "2026-05-18"
+    t_a = await _get_task("task-A")
+    t_b = await _get_task("task-B")
+    t_c = await _get_task("task-C")
+    for t in (t_a, t_b, t_c):
+        assert t["total_float_days"] == 0, (
+            f"{t['activity_code']} float expected 0 (clean single "
+            f"path), got {t['total_float_days']!r}"
+        )
+    print("S2.1-4 PASS: clean schedule -> zero reshape, zero negative")
+
+
+async def _test_backward_pass_uses_span_not_duration():
+    """S2.1-5 -- PART B: the backward pass sizes a task by its
+    IMPORTED SPAN (working_days_between(ES, EF)), not the
+    duration_days field. On a duration-mismatch task the two
+    disagree; sizing by duration manufactured artifact float.
+
+    Setup -- A is a duration-MISMATCH task:
+        T_A  root, planned_start 5/4, EXPLICIT planned_finish 5/8
+             (imported span = 4 working days) but duration_days 10
+             (dur-1 = 9). The import says A occupies the [5/4, 5/8]
+             window; the duration field claims 10 days.
+        T_B  FS+0 from A, 5/11..5/13 (3d, clean)
+
+    Backward pass for A: LF_A = 5/8.
+      Step 2.1 PART B:  LS_A = add_working_days(5/8, -span 4) = 5/4
+                        -> float A = 0  (CORRECT -- A occupies
+                        exactly its imported [5/4, 5/8] window).
+      Pre-PART-B:       LS_A = add_working_days(5/8, -dur_minus_one 9)
+                        = 4/27 -> float A = -5  (ARTIFACT -- the
+                        duration field disagreed with the imported
+                        finish the forward pass trusts).
+    A is also reported in duration_mismatch_count.
+    """
+    _reset()
+    _add_task("A", duration=10, planned_start=D(5, 4),
+              planned_finish=D(5, 8))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A", "FS", 0)])
+
+    result = await compute_cpm(TENANT, PROJECT)
+
+    t_a = await _get_task("task-A")
+    assert t_a["total_float_days"] == 0, (
+        f"A float must be 0 -- computed from the imported span (4 "
+        f"working days), NOT the duration_days field (10). The "
+        f"pre-PART-B duration-based backward pass gave -5. Got "
+        f"{t_a['total_float_days']!r}"
+    )
+    assert result.get("negative_float_count") == 0, (
+        f"the duration mismatch must NOT manufacture a negative, got "
+        f"negative_float_count={result.get('negative_float_count')!r}"
+    )
+    assert result.get("duration_mismatch_count") >= 1, (
+        f"A's imported finish disagrees with duration_days -> it "
+        f"must be flagged a duration mismatch, got "
+        f"{result.get('duration_mismatch_count')!r}"
+    )
+    print("S2.1-5 PASS: backward pass sizes by imported span, not duration")
+
+
+# =============================================================================
+# CPM Step 3A (2026-05-17) -- schedule_reshape_count over-report fix.
+#
+# Step 2.1 decided "reshaped" against the predecessors' RECONCILED
+# dates, so one genuine reshape near a root cascade-inflated the
+# count down the whole chain (migration 025 reported 44 reshapes on
+# GSA / 23 on MSU when live verification found essentially nothing
+# wrong). Step 3A decides the count against the predecessors'
+# IMPORTED dates: a task counts only when its OWN imported start is
+# genuinely too early. The ES reconcile (max()) still cascades --
+# correct CPM, unchanged -- so float / is_critical_path / the
+# cascade are all byte-for-byte the Step-2.1 result.
+# =============================================================================
+async def _test_reshape_count_only_counts_moved_tasks():
+    """S3A-1 -- schedule_reshape_count counts ONLY tasks whose own
+    imported planned_start is genuinely earlier than their IMPORTED
+    predecessors allow. A task dragged forward purely by an upstream
+    reshape (its imported start is fine relative to its predecessors'
+    IMPORTED dates) is NOT counted.
+
+    PHASE 1 -- a fully consistent FS+0 chain (every imported start
+    equals its predecessor-implied start): schedule_reshape_count 0.
+        T_A 5/4..5/8 (5d) -> T_B 5/11..5/13 (3d) -> T_C 5/14..5/18 (3d)
+
+    PHASE 2 -- exactly ONE genuinely-too-early task, with a CLEAN
+    successor downstream:
+        T_A  root, 5/4..5/8 (5d)
+        T_B  FS+0 from A, imported 5/4 -- IMPOSSIBLE (B imported to
+             start the day A starts; A's imported finish is 5/8, so
+             B should start 5/11). 3d -> imported finish 5/6.
+        T_C  FS+0 from B, imported 5/7 -- CONSISTENT with B's
+             IMPORTED dates (the next business day after B's
+             imported finish 5/6). 2d.
+    B is the single genuine reshape. C's reconciled ES is dragged
+    forward by B's reshape (correct cascade), but C's imported start
+    5/7 is fine vs B's IMPORTED finish 5/6 -> C is NOT a reshape.
+    schedule_reshape_count == 1, and only B is in schedule_reshapes.
+    (The pre-Step-3A code cascade-counted C as well -> 2.)
+    """
+    # ---- PHASE 1: clean chain -> 0 reshapes -------------------------
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=3, planned_start=D(5, 14),
+              predecessors=[_pred("B", "FS", 0)])
+    clean = await compute_cpm(TENANT, PROJECT)
+    assert clean.get("schedule_reshape_count") == 0, (
+        f"a consistent chain must report 0 reshapes, got "
+        f"{clean.get('schedule_reshape_count')!r}"
+    )
+
+    # ---- PHASE 2: one genuine reshape + a clean successor -----------
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 4),
+              predecessors=[_pred("A", "FS", 0)])
+    _add_task("C", duration=2, planned_start=D(5, 7),
+              predecessors=[_pred("B", "FS", 0)])
+    result = await compute_cpm(TENANT, PROJECT)
+
+    assert result.get("schedule_reshape_count") == 1, (
+        f"only T_B is genuinely too early; T_C is merely dragged "
+        f"forward by B's reshape and must NOT be counted. Expected "
+        f"1, got {result.get('schedule_reshape_count')!r} "
+        f"(pre-Step-3A this cascade-counted 2)"
+    )
+    reshaped_codes = {
+        r["activity_code"] for r in (result.get("schedule_reshapes") or [])
+    }
+    assert reshaped_codes == {"B"}, (
+        f"schedule_reshapes must list ONLY the genuine reshape T_B, "
+        f"got {sorted(reshaped_codes)}"
+    )
+    print("S3A-1 PASS: reshape count excludes cascade-dragged tasks")
+
+
+# =============================================================================
 # Pytest sync wrappers
 # =============================================================================
 def test_parallel_tasks_isolation():
@@ -4063,6 +4676,49 @@ def test_migration_027_converts_hours_to_days():
     asyncio.run(_test_migration_027_converts_hours_to_days())
 
 
+# CPM Step 2 (2026-05-17) -- imported-date-anchor regression tests.
+def test_cpm_anchors_on_imported_start():
+    asyncio.run(_test_cpm_anchors_on_imported_start())
+
+
+def test_cpm_float_uses_imported_dates():
+    asyncio.run(_test_cpm_float_uses_imported_dates())
+
+
+def test_inconsistent_import_reconciled_by_forward_pass():
+    asyncio.run(_test_inconsistent_import_reconciled_by_forward_pass())
+
+
+def test_clean_schedule_no_negative_float():
+    asyncio.run(_test_clean_schedule_no_negative_float())
+
+
+# CPM Step 2.1 (2026-05-17) -- forward-pass reconcile regression tests.
+def test_root_task_never_negative_float():
+    asyncio.run(_test_root_task_never_negative_float())
+
+
+def test_imported_slack_does_not_make_negative_float():
+    asyncio.run(_test_imported_slack_does_not_make_negative_float())
+
+
+def test_genuinely_impossible_schedule_surfaced_via_reshape_count():
+    asyncio.run(_test_genuinely_impossible_schedule_surfaced_via_reshape_count())
+
+
+def test_clean_schedule_zero_reshape():
+    asyncio.run(_test_clean_schedule_zero_reshape())
+
+
+def test_backward_pass_uses_span_not_duration():
+    asyncio.run(_test_backward_pass_uses_span_not_duration())
+
+
+# CPM Step 3A (2026-05-17) -- schedule_reshape_count over-report fix.
+def test_reshape_count_only_counts_moved_tasks():
+    asyncio.run(_test_reshape_count_only_counts_moved_tasks())
+
+
 # =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
@@ -4187,14 +4843,38 @@ def _run_all():
          _test_qc_rework_half_day_stored_cascades_zero),
         ("test_migration_027_converts_hours_to_days",
          _test_migration_027_converts_hours_to_days),
+        # CPM Step 2 (2026-05-17) -- imported-date-anchor regression.
+        ("test_cpm_anchors_on_imported_start",
+         _test_cpm_anchors_on_imported_start),
+        ("test_cpm_float_uses_imported_dates",
+         _test_cpm_float_uses_imported_dates),
+        ("test_inconsistent_import_reconciled_by_forward_pass",
+         _test_inconsistent_import_reconciled_by_forward_pass),
+        ("test_clean_schedule_no_negative_float",
+         _test_clean_schedule_no_negative_float),
+        # CPM Step 2.1 (2026-05-17) -- forward-pass reconcile regression.
+        ("test_root_task_never_negative_float",
+         _test_root_task_never_negative_float),
+        ("test_imported_slack_does_not_make_negative_float",
+         _test_imported_slack_does_not_make_negative_float),
+        ("test_genuinely_impossible_schedule_surfaced_via_reshape_count",
+         _test_genuinely_impossible_schedule_surfaced_via_reshape_count),
+        ("test_clean_schedule_zero_reshape",
+         _test_clean_schedule_zero_reshape),
+        ("test_backward_pass_uses_span_not_duration",
+         _test_backward_pass_uses_span_not_duration),
+        # CPM Step 3A (2026-05-17) -- schedule_reshape_count fix.
+        ("test_reshape_count_only_counts_moved_tasks",
+         _test_reshape_count_only_counts_moved_tasks),
     ]
     passes = 0
     fails: list[tuple[str, str]] = []
     print("=" * 78)
     print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L + "
           "Slip-cascade + Bug 3.B + Rem-float + Step 1 holidays + "
+          "Step 2 anchor + Step 2.1 reconcile + Step 3A reshape-count + "
           "QC rework days "
-          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 3 tests)")
+          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 4 + 5 + 1 + 3 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -4211,7 +4891,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 59 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 69 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
