@@ -107,7 +107,10 @@ export default function Sidebar() {
                 <span className="text-xs font-semibold uppercase tracking-[0.13em]">{section.title}</span>
               </button>
               {!isCollapsed && (
-                <div className="space-y-0.5">
+                /* N3 (2026-05-18): indent the feature links so they sit
+                   visibly nested beneath their section heading. The
+                   heading keeps its px-4 indent; only the links shift. */
+                <div className="space-y-0.5 pl-6">
                   {section.items.map((item) => {
                     const Icon = item.icon;
                     const badge = item.badgeKey ? badges[item.badgeKey] : 0;
