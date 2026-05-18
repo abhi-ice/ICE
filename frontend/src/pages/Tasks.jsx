@@ -19,6 +19,36 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
 
+// N1 (2026-05-18) -- the AI-assigned work_category (Feature F1) shown
+// as a small muted badge on the activity-code sub-line of the Tasks
+// page name cell. DISPLAY ONLY -- F1 still computes / stores the field.
+const WORK_CATEGORY_LABELS = {
+  preconstruction_paperwork: "Preconstruction paperwork",
+  construction_paperwork: "Construction paperwork",
+  field_work: "Field work",
+  closeout_paperwork: "Closeout paperwork",
+};
+const WORK_CATEGORY_TINT = {
+  preconstruction_paperwork: "bg-violet-50 text-violet-700 border-violet-200",
+  construction_paperwork: "bg-sky-50 text-sky-700 border-sky-200",
+  field_work: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  closeout_paperwork: "bg-amber-50 text-amber-800 border-amber-200",
+};
+
+function WorkCategoryBadge({ category }) {
+  const label = WORK_CATEGORY_LABELS[category];
+  if (!label) return null;  // null / legacy / unknown work_category -> no badge
+  return (
+    <span
+      data-testid={`task-work-category-${category}`}
+      title={`Work category: ${label}`}
+      className={`inline-flex items-center px-1.5 py-0 rounded border text-xs font-medium whitespace-nowrap ${WORK_CATEGORY_TINT[category] || "bg-slate-100 text-slate-600 border-slate-200"}`}
+    >
+      {label}
+    </span>
+  );
+}
+
 const EMPTY = {
   activity_code: "", description: "", wbs: "", trade_code: "",
   planned_start: "", planned_finish: "", duration_days: "",
@@ -451,7 +481,13 @@ export default function Tasks() {
                 <td className="tabular-nums text-xs text-slate-500">{idx + 1}</td>
                 <td className="truncate max-w-[280px]">
                   <div className="font-medium text-sm">{t.description}</div>
-                  <div className="text-xs text-slate-400 font-mono">{t.activity_code}{t.is_milestone ? " · milestone" : ""}</div>
+                  {/* N1: activity-code sub-line + work_category badge */}
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-0.5 whitespace-normal">
+                    <span className="text-xs text-slate-400 font-mono whitespace-nowrap">
+                      {t.activity_code}{t.is_milestone ? " · milestone" : ""}
+                    </span>
+                    <WorkCategoryBadge category={t.work_category} />
+                  </div>
                 </td>
                 <td className="text-xs">
                   {t.resource_names && t.resource_names.length

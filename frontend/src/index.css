@@ -6,11 +6,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Typography standard (2026-05-18): Inter is SELF-HOSTED. The woff2
+   files live in src/fonts/inter/ and webpack bundles them into the
+   app's own static output, so Inter always renders -- this replaces
+   the Google Fonts CDN <link> that could be blocked by CSP /
+   preview-env network and silently fall back to the OS font. Weights
+   400/500/600/700, Latin subset; font-display: swap avoids the
+   invisible-text flash. */
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('./fonts/inter/inter-400.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('./fonts/inter/inter-500.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('./fonts/inter/inter-600.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('./fonts/inter/inter-700.woff2') format('woff2');
+}
+
 body {
     margin: 0;
     /* Typography standard (2026-05-18, scale bump): Inter-first modern
        sans-serif, 18px base body size, 1.5 line-height. Raised from
-       16px -- dense data screens still read small at the prior size. */
+       16px -- dense data still read small at the prior size. Inter is
+       self-hosted via the @font-face block above. */
     font-family: 'Inter', -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
     font-size: 18px;
     line-height: 1.5;

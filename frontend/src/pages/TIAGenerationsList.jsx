@@ -28,7 +28,7 @@ export default function TIAGenerationsList() {
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project.</div>;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto" data-testid="tia-history">
+    <div className="p-6" data-testid="tia-history">
       <Link to="/tia" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
         <ChevronLeft className="h-3 w-3" /> Back to generator
       </Link>

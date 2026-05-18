@@ -7,14 +7,12 @@
         <meta name="description" content="A product of emergent.sh" />
         <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
         <!-- manifest.json provides PWA install metadata. -->
-        <!-- Typography standard (2026-05-18): Inter web font, loaded via
-             the Google Fonts CDN — the same external-CDN method the app
-             already uses for static assets. display=swap avoids the
-             invisible-text flash; weights 400/500/600/700 cover the
-             normal / medium / semibold / bold the UI uses. -->
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+        <!-- Typography (2026-05-18): Inter is SELF-HOSTED — the woff2
+             files live in src/fonts/inter/ and are @font-face'd in
+             src/index.css (webpack bundles them into the app). The
+             Google Fonts CDN <link> was removed: it could be blocked
+             by CSP / preview-env network and silently fall back to the
+             OS font. No web-font CDN dependency. -->
         <!--
         Notice the use of %PUBLIC_URL% in the tags above.
         It will be replaced with the URL of the `public` folder during the build.
