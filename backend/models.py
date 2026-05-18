@@ -362,6 +362,28 @@ LookaheadStatus = Literal["not_in_window", "in_window", "proposed_new", "modifie
 
 RelationshipType = Literal["FS", "SS", "FF", "SF"]
 
+# Feature F1 (2026-05-17) -- schedule-import work-category tag. Every
+# imported task is AI-classified onto this single axis (exactly one
+# tag, no overlap). PURELY METADATA: the CPM engine (cpm.py,
+# task_status.py, working_days.py), float, cascade, critical-path,
+# and the Tasks page do NOT read it. Nullable until tagged; existing
+# pre-F1 tasks read as None.
+#   preconstruction_paperwork -- paperwork BEFORE mobilization/site
+#       setup (early submittals, procurement, approvals, long-lead).
+#   construction_paperwork    -- paperwork DURING construction (a
+#       submittal/procurement/approval that must clear before a
+#       field-work task).
+#   field_work                -- physical construction by field crews
+#       (demo, framing, rough-in, finishes, etc.).
+#   closeout_paperwork        -- paperwork AFTER substantial completion
+#       (testing/commissioning docs, punch list, as-builts, O&M).
+WorkCategory = Literal[
+    "preconstruction_paperwork",
+    "construction_paperwork",
+    "field_work",
+    "closeout_paperwork",
+]
+
 
 class Predecessor(StrictModel):
     """One dependency edge from a task back to a predecessor activity.
@@ -660,6 +682,12 @@ class TaskCreate(StrictModel):
     required_trade: Optional[str] = None
     required_headcount: Optional[int] = None
     required_hours: Optional[float] = None
+    # Feature F1 (2026-05-17) -- AI-assigned work-category tag set by
+    # the schedule-import tagging step (or a reviewer override).
+    # Nullable: a row imported before F1, or one that could not be
+    # classified and was not reviewed, may be None. METADATA ONLY --
+    # never read by CPM / float / cascade / the Tasks page.
+    work_category: Optional[WorkCategory] = None
 
     # CPM Part A (2026-05-15) -- accept the legacy bare-string form
     # alongside the new dict form for backward compat with schedule
@@ -832,6 +860,11 @@ class Task(ReadModel):
     required_trade: Optional[str] = None
     required_headcount: Optional[int] = None
     required_hours: Optional[float] = None
+    # Feature F1 (2026-05-17) -- AI-assigned work-category tag (one of
+    # the 4 WorkCategory values), persisted from the schedule-import
+    # tagging step / reviewer override. None on pre-F1 tasks. METADATA
+    # ONLY -- the CPM engine and Tasks page never read it.
+    work_category: Optional[WorkCategory] = None
 
     # CPM Part A (2026-05-15) -- normalize legacy bare-string
     # predecessors during the migration window. Once migration 018

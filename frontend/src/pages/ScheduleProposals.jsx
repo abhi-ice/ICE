@@ -31,6 +31,16 @@ const STATUS_PILL = {
   rejected: "pill-red",
 };
 
+// Feature F1 (2026-05-17) -- the 4 work-category tags + their display
+// labels. Order matches the lifecycle (pre-con -> construction ->
+// field -> closeout). Used by the per-task override dropdown.
+const WORK_CATEGORY_OPTS = [
+  ["preconstruction_paperwork", "Pre-con paperwork"],
+  ["construction_paperwork", "Construction paperwork"],
+  ["field_work", "Field work"],
+  ["closeout_paperwork", "Closeout paperwork"],
+];
+
 export default function ScheduleProposals() {
   const { activeId, projects } = useProjects();
   const [searchParams] = useSearchParams();
@@ -393,12 +403,19 @@ function DiffSection({ icon: Icon, tone, title, rows, cols, testid, render = {} 
 
 
 // ------------------------------------------------------------
-// Parsed-rows panel — checkbox per row to mark/unmark heading.
+// Parsed-rows panel — checkbox per row to mark/unmark heading, plus
+// the F1 AI work-category tag column (per-task override dropdown +
+// "Ask AI to re-review" affordance).
 // ------------------------------------------------------------
 function ParsedRowsPanel({ doc, reload }) {
   const rows = doc.parsed_rows || [];
   const excludedCount = rows.filter((r) => r.excluded_as_summary).length;
   const [busyCode, setBusyCode] = useState(null);
+  // Feature F1 -- AI tagging status + re-review controls.
+  const tagging = doc.work_category_tagging || {};
+  const [ctxNote, setCtxNote] = useState("");
+  const [redoAll, setRedoAll] = useState(false);
+  const [retagBusy, setRetagBusy] = useState(false);
 
   const toggle = async (code, excluded) => {
     setBusyCode(code);
@@ -413,6 +430,38 @@ function ParsedRowsPanel({ doc, reload }) {
     } finally { setBusyCode(null); }
   };
 
+  // Feature F1 -- reviewer override of one task's work_category.
+  const setCategory = async (code, work_category) => {
+    setBusyCode(code);
+    try {
+      await api.post(`/schedule-proposals/${doc.id}/set-work-category`, {
+        activity_code: code, work_category,
+      });
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Set category failed");
+    } finally { setBusyCode(null); }
+  };
+
+  // Feature F1 -- re-run the AI tagging step with optional context.
+  const retag = async () => {
+    setRetagBusy(true);
+    try {
+      const { data } = await api.post(
+        `/schedule-proposals/${doc.id}/retag-work-categories`,
+        { context_note: ctxNote.trim(), redo_all: redoAll },
+      );
+      const t = data.work_category_tagging || {};
+      toast.success(t.ai_error
+        ? `AI re-review unavailable — ${t.needs_review_count || 0} task(s) defaulted to field work.`
+        : `AI re-reviewed — ${t.tagged_count || 0} tagged, ${t.needs_review_count || 0} need review.`);
+      setCtxNote("");
+      await reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Re-review failed");
+    } finally { setRetagBusy(false); }
+  };
+
   return (
     <details data-testid="parsed-rows-panel" className="surface p-0 overflow-hidden" open>
       <summary className="cursor-pointer p-3 flex items-center gap-2 hover:bg-slate-50">
@@ -422,8 +471,44 @@ function ParsedRowsPanel({ doc, reload }) {
           ({rows.length - excludedCount} task(s) · {excludedCount} hidden as heading)
         </span>
       </summary>
-      <div className="px-2 pb-3 text-xs text-slate-500">
+      <div className="px-2 pb-2 text-xs text-slate-500">
         Uncheck rows that are summary headings — they will be removed from the diff above and won&apos;t be applied. The auto-detected headings are already unchecked. You can also use the chat below to ask Claude to fix mistakes.
+      </div>
+      {/* Feature F1 -- AI work-category tagging status + re-review */}
+      <div className="px-2 pb-3" data-testid="work-category-tagging">
+        {tagging.ai_error ? (
+          <div data-testid="work-category-ai-error"
+            className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            AI work-category tagging was unavailable — every task defaulted to
+            &quot;Field work&quot; and is flagged for review. Set each tag below
+            or click &quot;Ask AI to re-review&quot;. ({tagging.ai_error})
+          </div>
+        ) : (
+          <div className="text-[11px] text-slate-500">
+            AI tagged {tagging.tagged_count ?? 0} task(s) by work category
+            {tagging.needs_review_count
+              ? ` · ${tagging.needs_review_count} flagged for review`
+              : ""}.
+            {tagging.model && tagging.model !== "fallback"
+              ? ` (${tagging.model})` : ""}
+          </div>
+        )}
+        <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+          <input data-testid="retag-context-note" value={ctxNote}
+            onChange={(e) => setCtxNote(e.target.value)}
+            placeholder="Optional context for the AI re-review (e.g. 'task 12 is a long-lead order')…"
+            className="flex-1 min-w-[220px] h-7 px-2 rounded border border-slate-200 text-xs" />
+          <label className="text-[10px] text-slate-500 flex items-center gap-1">
+            <input data-testid="retag-redo-all" type="checkbox" checked={redoAll}
+              onChange={(e) => setRedoAll(e.target.checked)} />
+            redo all (discard my overrides)
+          </label>
+          <button data-testid="retag-btn" onClick={retag} disabled={retagBusy}
+            className="h-7 px-2 rounded border border-violet-200 bg-violet-50 text-xs text-violet-700 hover:bg-violet-100 flex items-center gap-1 disabled:opacity-50">
+            <Sparkles className={`h-3 w-3 ${retagBusy ? "animate-pulse" : ""}`} />
+            Ask AI to re-review tags
+          </button>
+        </div>
       </div>
       <div className="overflow-x-auto max-h-96 overflow-y-auto border-t border-slate-100">
         <table className="dense-table w-full">
@@ -435,6 +520,7 @@ function ParsedRowsPanel({ doc, reload }) {
               <th>Start</th>
               <th>Finish</th>
               <th>Days</th>
+              <th>Work category</th>
               <th>Reason if hidden</th>
             </tr>
           </thead>
@@ -455,6 +541,34 @@ function ParsedRowsPanel({ doc, reload }) {
                 <td className="text-xs font-mono">{formatDateDisplay(r.planned_start)}</td>
                 <td className="text-xs font-mono">{formatDateDisplay(r.planned_finish)}</td>
                 <td className="tabular-nums text-xs">{r.duration_days ?? "—"}</td>
+                {/* Feature F1 -- work-category tag: shown as a dropdown
+                    (the current value IS the assigned tag; changing it
+                    overrides). Summary/heading rows are not tasks, so
+                    they show no tag. */}
+                <td>
+                  {r.excluded_as_summary ? (
+                    <span className="text-xs text-slate-400">—</span>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <select data-testid={`work-category-${r.activity_code}`}
+                        value={r.work_category || "field_work"}
+                        disabled={busyCode === r.activity_code}
+                        onChange={(e) => setCategory(r.activity_code, e.target.value)}
+                        className="text-xs h-7 border border-slate-200 rounded px-1 max-w-[160px]">
+                        {WORK_CATEGORY_OPTS.map(([v, label]) => (
+                          <option key={v} value={v}>{label}</option>
+                        ))}
+                      </select>
+                      {r.work_category_needs_review && (
+                        <span data-testid={`work-category-review-${r.activity_code}`}
+                          title="The AI could not confidently classify this task — please confirm the tag."
+                          className="text-[9px] text-amber-800 bg-amber-100 border border-amber-300 rounded px-1">
+                          review
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </td>
                 <td className="text-xs text-amber-700 italic">{r.summary_reason || ""}</td>
               </tr>
             ))}
