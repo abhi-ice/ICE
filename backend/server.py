@@ -24,6 +24,30 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
+# === Anthropic direct-SDK shim (2026-05-18) =========================
+# Customer uses their own ANTHROPIC_API_KEY (set in .env) rather than
+# routing Claude through Emergent's gateway. We register a compat
+# module BEFORE any router imports emergentintegrations.llm.chat, so
+# all existing `from emergentintegrations.llm.chat import ...` lines
+# resolve to our shim and call api.anthropic.com directly.
+# Whisper STT (.llm.openai) and Stripe (.payments.stripe) keep using
+# EMERGENT_LLM_KEY -- they are NOT intercepted here.
+import sys  # noqa: E402
+if os.environ.get("ANTHROPIC_API_KEY"):
+    try:
+        from services import anthropic_compat as _anthropic_compat  # noqa: E402
+        sys.modules["emergentintegrations.llm.chat"] = _anthropic_compat
+        logging.getLogger("ice_schedule_ops").info(
+            "Anthropic direct-SDK shim active: emergentintegrations.llm.chat "
+            "-> services.anthropic_compat (ANTHROPIC_API_KEY)."
+        )
+    except Exception as _exc:  # pragma: no cover -- non-fatal boot
+        logging.getLogger("ice_schedule_ops").warning(
+            "Anthropic direct-SDK shim FAILED to load (%s); falling back "
+            "to Emergent gateway for Claude calls.", _exc,
+        )
+# ====================================================================
+
 from database import get_db, close_db  # noqa: E402
 from auth import require_tenant  # noqa: E402
 from routers.auth_router import router as auth_router, team_router  # noqa: E402
