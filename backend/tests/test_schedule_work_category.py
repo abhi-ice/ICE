@@ -193,3 +193,124 @@ def test_work_category_absent_from_cpm_engine():
             f"services/{name} references work_category -- the CPM engine "
             f"must never read this metadata field"
         )
+
+
+# --- 5. F1 fix (2026-05-18): field vs non-field classifier prompt ----------
+#
+# The classifier was mis-tagging commissioning / TAB / owner-training /
+# final-inspection / certificate-of-occupancy tasks as field_work. Those
+# are non-field tasks the site superintendent does not perform. The
+# system prompt was rewritten so the PRIMARY axis is "physical field
+# work the superintendent performs" vs "non-field work someone else
+# owns", decided by task NATURE -- not by the schedule's phase / section
+# ordering.
+#
+# The live LLM cannot run in the test environment, so the fix is
+# verified by asserting on the rewritten prompt's content (the prompt
+# carries the field/non-field rule and the commissioning guidance) plus
+# a pipeline check that the intended categories flow through cleanly.
+
+
+def test_system_prompt_leads_with_field_vs_non_field_rule():
+    """The governing rule is field work vs non-field work, stated up
+    front and decided by task nature -- not by the project phase."""
+    s = swc.SYSTEM
+    low = s.lower()
+    assert "field work" in low and "non-field work" in low
+    # Nature over phase -- ordering / headers are only a weak hint.
+    assert "not by its phase" in low
+    assert "nature" in low
+    assert "weak" in low and "hint" in low
+    # The superintendent owns field work; other roles own non-field.
+    assert "superintendent" in low
+    assert "commissioning agent" in low
+
+
+def test_system_prompt_calls_out_the_commissioning_failure_mode():
+    """The prompt must explicitly name the tasks that were mis-tagged
+    and rule them OUT of field_work."""
+    s = swc.SYSTEM
+    for phrase in (
+        "Commissioning", "Test, Adjust & Balance", "TAB",
+        "Functional Testing", "Final Inspection",
+        "Certificate of Occupancy", "Owner Training",
+    ):
+        assert phrase in s, f"prompt no longer names failure-mode task {phrase!r}"
+    # They route to paperwork, never field_work.
+    assert "NEVER field_work" in s
+    assert "construction_paperwork" in s and "closeout_paperwork" in s
+
+
+def test_system_prompt_keeps_the_four_categories_and_json_contract():
+    """Prompt-only change -- the 4-category enum and the strict-JSON
+    output contract the parser depends on are unchanged."""
+    s = swc.SYSTEM
+    for cat in swc.WORK_CATEGORIES:
+        assert cat in s, f"prompt dropped category {cat!r}"
+    assert '"tags"' in s
+    assert '"activity_code"' in s and '"work_category"' in s
+    assert "JSON only" in s
+
+
+def _failure_mode_rows() -> list[dict]:
+    """A schedule whose non-field tasks are exactly the ones that were
+    mis-tagged as field_work: real field work, then commissioning /
+    inspection / training during construction, then closeout paperwork."""
+    return [
+        {"activity_code": "10", "description": "Selective Demolition",
+         "duration_days": 4, "predecessors": []},
+        {"activity_code": "20", "description": "HVAC Rough-in",
+         "duration_days": 6, "predecessors": [{"code": "10"}]},
+        {"activity_code": "30", "description": "Commissioning",
+         "duration_days": 3, "predecessors": [{"code": "20"}]},
+        {"activity_code": "31", "description": "Test, Adjust & Balance (TAB)",
+         "duration_days": 2, "predecessors": [{"code": "20"}]},
+        {"activity_code": "32", "description": "Owner Training",
+         "duration_days": 1, "predecessors": [{"code": "30"}]},
+        {"activity_code": "33", "description": "Final Inspection / GSA Walk",
+         "duration_days": 1, "predecessors": [{"code": "30"}]},
+        {"activity_code": "40", "description": "Certificate of Occupancy",
+         "duration_days": 1, "predecessors": [{"code": "33"}]},
+        {"activity_code": "50", "description": "Punch List Completion",
+         "duration_days": 5, "predecessors": [{"code": "40"}]},
+        {"activity_code": "51", "description": "As-Built Drawings",
+         "duration_days": 3, "predecessors": [{"code": "50"}]},
+    ]
+
+
+def test_commissioning_tasks_classify_as_paperwork_not_field_work():
+    """End-to-end through the pure pipeline: when the model classifies
+    the failure-mode schedule the way the rewritten prompt instructs,
+    commissioning / TAB / training / inspection / C-of-O land in
+    construction_paperwork, the closeout tasks in closeout_paperwork,
+    and NONE of them in field_work -- while genuine field work stays
+    field_work. (The LLM itself cannot run here; this pins the
+    categories + pipeline, and the prompt-content tests above pin the
+    instructions that elicit this output.)"""
+    rows = _failure_mode_rows()
+    # The classification the rewritten prompt is written to produce.
+    model_json = (
+        '{"tags": ['
+        '{"activity_code": "10", "work_category": "field_work"},'
+        '{"activity_code": "20", "work_category": "field_work"},'
+        '{"activity_code": "30", "work_category": "construction_paperwork"},'
+        '{"activity_code": "31", "work_category": "construction_paperwork"},'
+        '{"activity_code": "32", "work_category": "construction_paperwork"},'
+        '{"activity_code": "33", "work_category": "construction_paperwork"},'
+        '{"activity_code": "40", "work_category": "construction_paperwork"},'
+        '{"activity_code": "50", "work_category": "closeout_paperwork"},'
+        '{"activity_code": "51", "work_category": "closeout_paperwork"}]}'
+    )
+    tag_map = swc.parse_model_tags(model_json)
+    swc._apply_classification(rows, tag_map)
+    by_code = {r["activity_code"]: r for r in rows}
+
+    # The known failure-mode tasks must be paperwork, NOT field_work.
+    for code in ("30", "31", "32", "33", "40"):
+        assert by_code[code]["work_category"] == "construction_paperwork"
+        assert by_code[code]["work_category"] != "field_work"
+    for code in ("50", "51"):
+        assert by_code[code]["work_category"] == "closeout_paperwork"
+    # Genuine field work is still field_work.
+    assert by_code["10"]["work_category"] == "field_work"
+    assert by_code["20"]["work_category"] == "field_work"
