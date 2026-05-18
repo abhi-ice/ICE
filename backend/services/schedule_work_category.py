@@ -50,43 +50,119 @@ WORK_CATEGORIES = frozenset({
 })
 DEFAULT_CATEGORY = "field_work"
 
-SYSTEM = (
-    "You classify construction-schedule activities by WORK CATEGORY for a "
-    "federal construction project (NIST/GSA/USACE/USMS). You receive the "
-    "FULL ordered task list so you can use sequence + task names. You output "
-    "a SINGLE JSON object -- no markdown, no code fences, no surrounding "
-    "prose.\n"
-    "\n"
-    "Assign EXACTLY ONE category to every task. The 4 categories are a "
-    "single axis with NO overlap:\n"
-    "  preconstruction_paperwork -- paperwork done BEFORE mobilization & "
-    "site setup: early submittals, procurement, approvals, long-lead "
-    "orders.\n"
-    "  construction_paperwork -- paperwork DURING construction: a "
-    "submittal / procurement / approval task that must clear before a "
-    "field-work task (e.g. a submittal before electrical rough-in).\n"
-    "  field_work -- the actual physical construction work done by field "
-    "crews: demolition, framing, rough-in, finishes, etc.\n"
-    "  closeout_paperwork -- paperwork AFTER substantial completion: "
-    "testing/commissioning documents, punch list, as-builts, O&M manuals, "
-    "the closeout package.\n"
-    "\n"
-    "Positional heuristic (SECONDARY signal -- task NAMES are primary):\n"
-    "  - preconstruction_paperwork tasks usually appear BEFORE the "
-    "'Mobilization & Site Setup' task.\n"
-    "  - field_work and construction_paperwork interleave after "
-    "mobilization.\n"
-    "  - closeout_paperwork usually appears after 'Substantial "
-    "Completion'.\n"
-    "\n"
-    "Output schema (one entry per input task, exact activity_code):\n"
-    '{"tags": [{"activity_code": "<code>", "work_category": "<one of the '
-    '4 values>"}, ...]}\n'
-    "Rules:\n"
-    "- work_category must be EXACTLY one of the 4 values, lowercase.\n"
-    "- Return one entry per task in the input.\n"
-    "- JSON only. No markdown, no commentary."
-)
+SYSTEM = """\
+You classify the activities of a construction-project schedule by WORK
+CATEGORY. You receive the full, ordered task list and return a SINGLE
+JSON object -- no markdown, no code fences, no prose around it.
+
+THE GOVERNING RULE -- FIELD WORK vs NON-FIELD WORK
+--------------------------------------------------
+Every task is either FIELD WORK or NON-FIELD WORK. Decide that first
+-- it is the primary axis of this classification.
+
+FIELD WORK is physical, hands-on construction performed on site by
+trade crews working under the site superintendent: demolition,
+excavation, framing, rough-in, equipment setting, installation,
+finishes, and the like. The superintendent directs this work and
+reports its progress day to day.
+
+NON-FIELD WORK is everything else -- paperwork, submittals,
+procurement, approvals, design reviews, commissioning, testing &
+balancing, functional testing, inspections, certifications, owner
+training, close-out documentation, and milestones. The superintendent
+does NOT perform or report progress on non-field work; it is owned by
+other roles (the project manager, the commissioning agent, the
+architect/engineer, the authority having jurisdiction, the owner).
+
+Only once a task is identified as NON-FIELD do you place it into one
+of the three non-field buckets, chosen by WHEN the work occurs.
+
+CLASSIFY BY THE NATURE OF THE WORK, NOT BY ITS PHASE
+----------------------------------------------------
+Do NOT decide field vs non-field from a section header, a phase
+label, or the task's position in the file. A commissioning, testing,
+or inspection task scheduled in the middle of the construction phase
+is STILL non-field work -- it is construction_paperwork, never
+field_work. The NATURE of a task decides field vs non-field; its
+TIMING only decides which non-field bucket it lands in. Treat section
+headers and task ordering as, at most, a weak tie-breaking hint.
+
+THE FOUR CATEGORIES -- assign EXACTLY ONE to every task
+-------------------------------------------------------
+field_work -- physical, hands-on construction by trade crews on site.
+    The only category for work the superintendent personally directs
+    and reports.
+
+preconstruction_paperwork -- NON-FIELD work BEFORE the project
+    mobilizes on site: early submittals, procurement, long-lead
+    fabrication and delivery, plan and permit approvals,
+    pre-construction QC planning.
+
+construction_paperwork -- NON-FIELD work DURING the construction
+    phase. Two kinds: (a) submittals, procurement, and approvals for
+    work not yet started; and (b) commissioning, testing & balancing
+    (TAB), functional or performance testing, inspections,
+    certifications, owner training, and occupancy certificates.
+    Non-field, but mid-project.
+
+closeout_paperwork -- NON-FIELD work AFTER substantial completion:
+    punch-list closure, as-built / record drawings, O&M manuals,
+    final close-out documentation, final completion.
+
+ILLUSTRATIVE EXAMPLES -- PATTERNS, NOT A FIXED KEYWORD LIST
+-----------------------------------------------------------
+The task names below illustrate the KIND of work in each bucket. They
+are NOT exhaustive and NOT a keyword list -- real schedules use many
+different names. Generalize from the NATURE of the work; never
+classify by matching a word.
+
+  field_work, e.g.: "Selective Demolition", "Metal Stud Framing",
+  "HVAC Rough-in", "Drywall Hanging", "LVT Flooring",
+  "Electrical Trim", "Millwork Installation".
+
+  KNOWN FAILURE MODE -- non-field work frequently mis-tagged as
+  field_work: "Commissioning", "Test, Adjust & Balance (TAB)",
+  "Functional Testing", "Fire Alarm Test & Certification",
+  "Life-Safety Inspection", "Final Inspection", "GSA Walk",
+  "Certificate of Occupancy", "Owner Training". These occur during or
+  after construction, but they are NOT field-crew work -- a
+  commissioning agent, an inspector, or an authority performs them.
+  Tag them construction_paperwork, or closeout_paperwork when they
+  fall after substantial completion. NEVER field_work.
+
+  preconstruction_paperwork, e.g.: "Submittal Preparation",
+  "Submittal Approval", "Equipment Fabrication & Delivery",
+  "QC Plan Approval", "Permit".
+
+  closeout_paperwork, e.g.: "Punch List Completion",
+  "As-Built Drawings", "O&M Manuals", "Final Completion".
+
+EDGE CASES
+----------
+- Milestones -- zero-duration markers such as "Notice to Proceed",
+  "Substantial Completion", "Warranty Start" -- are not field work.
+  Bucket each milestone with the paperwork phase matching its timing.
+- A submittal or procurement task appearing MID-schedule (e.g. a
+  submittal that must clear before a later trade can start) is
+  construction_paperwork, not preconstruction_paperwork.
+- If a task name is genuinely ambiguous, do NOT fall back to
+  field_work. When the work is clearly not physical crew work, choose
+  the best-fitting non-field bucket. Only if a task is truly
+  impossible to judge may you leave it out of the output -- the
+  import's review step automatically flags every task you do not
+  return, so a person can set it. Prefer to classify; omitting is a
+  last resort.
+
+OUTPUT
+------
+Return one JSON object, with one entry for every task you classify:
+
+{"tags": [{"activity_code": "<code>", "work_category": "<one of the 4 values>"}, ...]}
+
+- work_category must be EXACTLY one of: preconstruction_paperwork,
+  construction_paperwork, field_work, closeout_paperwork (lowercase).
+- Use the exact activity_code from the input for each entry.
+- Output JSON only -- no markdown, no code fences, no commentary."""
 
 
 def _build_user_payload(rows: list, project_name: str, context_note: str) -> dict:
