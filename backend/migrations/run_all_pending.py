@@ -213,6 +213,16 @@ MIGRATIONS = [
     # chain. RESHAPE_COUNT_CORRECTED audit per tenant; idempotent.
     # Must run AFTER 025.
     "migrations.026_reshape_count_corrected",
+    # QC rework days (2026-05-17) -- convert QC rework duration from
+    # HOURS to WORKING DAYS. The QC rework input was changed from
+    # hours to days (consistent with delay / RFI impact units); this
+    # migration converts existing qc_issues rows (rework_duration_
+    # hours/rework_actual_hours/ai_benchmark_hours -> *_days via
+    # ceil(hours/8*2)/2) so each issue keeps its effective duration.
+    # QC_REWORK_HOURS_TO_DAYS_MIGRATED audit per tenant; idempotent.
+    # Migration numbers 024-026 belong to the CPM Step 2 / 2.1 / 3A
+    # work; this QC migration is 027.
+    "migrations.027_qc_rework_hours_to_days",
 ]
 
 # Files matching the [0-9][0-9][0-9]_*.py pattern that are intentionally

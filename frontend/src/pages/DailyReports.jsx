@@ -2150,15 +2150,17 @@ function SafetyRowInline({ row, locked, dailyReportId, reload }) {
 
 function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
   // Bucket D Phase 5 -- QC severity gets the rework_required tier.
-  // When picked, super enters rework_duration_hours + basis;
+  // When picked, super enters rework_duration_days + basis;
   // calibration RAG suggests a benchmark from prior outcomes (advisory).
   // Submit -> backend creates synthetic delay + runs CPM cascade.
+  // QC rework days (2026-05-17) -- rework duration is entered in
+  // WORKING DAYS (0.5-day increments), consistent with delays / RFIs.
   // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
   // scope) replaces the old per-DR linked_dr_activity_ids picker. The
   // synthetic delay and CPM cascade walk these task ids directly.
   const [draft, setDraft] = useState({
     description: "", severity: "minor",
-    rework_duration_hours: "", rework_duration_basis: "",
+    rework_duration_days: "", rework_duration_basis: "",
     linked_task_ids: [],
   });
   const [benchmark, setBenchmark] = useState(null);
@@ -2186,8 +2188,8 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
     if (!draft.description) return toast.error("Description required");
     if (!draft.linked_task_ids.length) return toast.error("Pick at least one linked task");
     if (isRework) {
-      if (!draft.rework_duration_hours || Number(draft.rework_duration_hours) <= 0) {
-        return toast.error("Rework hours required when severity=rework_required");
+      if (!draft.rework_duration_days || Number(draft.rework_duration_days) <= 0) {
+        return toast.error("Rework duration (days) required when severity=rework_required");
       }
       if (!draft.rework_duration_basis.trim()) {
         return toast.error("Rework basis (short note) required");
@@ -2208,12 +2210,12 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         ...(locked ? { add_reason: addReason.trim() } : {}),
       };
       if (isRework) {
-        payload.rework_duration_hours = Number(draft.rework_duration_hours);
+        payload.rework_duration_days = Number(draft.rework_duration_days);
         payload.rework_duration_basis = draft.rework_duration_basis.trim();
       }
       await api.post(`/qc-issues`, payload);
       setDraft({ description: "", severity: "minor",
-                  rework_duration_hours: "", rework_duration_basis: "",
+                  rework_duration_days: "", rework_duration_basis: "",
                   linked_task_ids: [] });
       setAddReason("");
       reload();
@@ -2259,21 +2261,23 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
             </select>
           </div>
 
-          {/* Bucket D Phase 5 -- rework block. */}
+          {/* Bucket D Phase 5 -- rework block.
+              QC rework days (2026-05-17) -- duration entered in
+              working days, not hours. */}
           {isRework && (
             <div className="bg-rose-50 border border-rose-200 rounded p-2 space-y-2" data-testid="qc-rework-block">
               <div className="text-[11px] font-semibold text-rose-900">Rework duration estimate (super)</div>
-              {benchmark?.benchmark_hours != null && (
+              {benchmark?.benchmark_days != null && (
                 <div className="text-[10px] text-slate-600 italic" data-testid="qc-rework-benchmark">
                   {benchmark.basis}
                 </div>
               )}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="text-[10px] text-slate-500 uppercase">Hours *</label>
-                  <input data-testid="qc-rework-hours" type="number" step="0.5" min="0"
-                    value={draft.rework_duration_hours}
-                    onChange={(e) => setDraft({ ...draft, rework_duration_hours: e.target.value })}
+                  <label className="text-[10px] text-slate-500 uppercase">Rework duration (days) *</label>
+                  <input data-testid="qc-rework-days" type="number" step="0.5" min="0"
+                    value={draft.rework_duration_days}
+                    onChange={(e) => setDraft({ ...draft, rework_duration_days: e.target.value })}
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
                 </div>
                 <div className="col-span-2">
@@ -2281,13 +2285,28 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
                   <input data-testid="qc-rework-basis" type="text"
                     value={draft.rework_duration_basis}
                     onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
-                    placeholder="e.g. 2 plumbers re-rough 11A south wall, 4hrs each"
+                    placeholder="e.g. re-rough 11A south wall, 2 plumbers ~1 day"
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
                 </div>
               </div>
+              {/* QC rework days (2026-05-17) -- silent-zero guard. The
+                  CPM cascade applies WHOLE-day impacts, so a sub-1-day
+                  rework rounds to 0 working days of schedule shift.
+                  Warn the super (NON-BLOCKING -- save still proceeds)
+                  so a half-day entry is not a silent no-op. */}
+              {Number(draft.rework_duration_days) > 0
+                && Number(draft.rework_duration_days) <= 0.5 && (
+                <div data-testid="qc-rework-subday-warning"
+                  className="text-[10px] text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
+                  A {draft.rework_duration_days}-day rework will be recorded on the
+                  QC issue but will not shift the schedule — the cascade currently
+                  applies whole-day impacts (a sub-1-day rework rounds to 0).
+                </div>
+              )}
               <div className="text-[10px] text-rose-800">
-                On save, a synthetic delay (cause=quality_rework) will be created and the
-                CPM cascade run for the affected activities.
+                Duration is in working days (0.5-day increments). On save, a
+                synthetic delay (cause=quality_rework) of that many days is
+                created and the CPM cascade run for the affected activities.
               </div>
             </div>
           )}
@@ -2321,13 +2340,13 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
       <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
       {row.linked_synthetic_delay_id && (
         <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
-          rework {row.rework_duration_hours}h
-          {row.rework_actual_hours != null && ` (actual ${row.rework_actual_hours}h)`}
+          rework {row.rework_duration_days}d
+          {row.rework_actual_days != null && ` (actual ${row.rework_actual_days}d)`}
         </span>
       )}
       {/* Task 3 fix D -- outcome capture button. Visible when QC has
-          a synthetic delay AND no actual hours yet recorded. */}
-      {row.linked_synthetic_delay_id && row.rework_actual_hours == null && (
+          a synthetic delay AND no actual rework yet recorded. */}
+      {row.linked_synthetic_delay_id && row.rework_actual_days == null && (
         <ReworkOutcomeButton qcIssue={row} reload={reload} />
       )}
       <SupplementBadge row={row} />
@@ -2996,23 +3015,25 @@ function DeliveryRowInline({ row, locked, dailyReportId, reload }) {
 
 
 // Bucket D Task 3 fix D -- outcome capture button on QC rows that
-// triggered a rework cascade. Modal collects actual hours + notes,
-// POSTs /qc-issues/{id}/record-rework-outcome which updates the QC,
-// flips the synthetic delay to resolved, re-runs cascade + RAG.
+// triggered a rework cascade. Modal collects actual rework days +
+// notes, POSTs /qc-issues/{id}/record-rework-outcome which updates
+// the QC, flips the synthetic delay to resolved, re-runs cascade+RAG.
+// QC rework days (2026-05-17) -- actual rework captured in WORKING
+// DAYS (was hours), consistent with the days-based estimate.
 // ------------------------------------------------------------
 function ReworkOutcomeButton({ qcIssue, reload }) {
   const [open, setOpen] = useState(false);
-  const [hours, setHours] = useState("");
+  const [days, setDays] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async () => {
-    if (!hours || Number(hours) < 0) {
-      toast.error("Actual hours required (>=0)"); return;
+    if (days === "" || Number(days) < 0) {
+      toast.error("Actual rework (days) required (>=0)"); return;
     }
     setBusy(true);
     try {
       await api.post(`/qc-issues/${qcIssue.id}/record-rework-outcome`, {
-        rework_actual_hours: Number(hours),
+        rework_actual_days: Number(days),
         rework_outcome_notes: notes || null,
       });
       toast.success("Rework outcome recorded -- cascade re-running");
@@ -3035,13 +3056,13 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
             <div className="text-xs text-slate-500">
               QC: "{(qcIssue.description || "").slice(0, 80)}…"
               <br />
-              Estimated: {qcIssue.rework_duration_hours}h.
+              Estimated: {qcIssue.rework_duration_days}d.
               Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
             </div>
             <div>
-              <label className="text-[11px] text-slate-500 uppercase">Actual hours *</label>
-              <input data-testid="qc-rework-actual-hours" type="number" step="0.5" min="0"
-                value={hours} onChange={(e) => setHours(e.target.value)}
+              <label className="text-[11px] text-slate-500 uppercase">Actual rework (days) *</label>
+              <input data-testid="qc-rework-actual-days" type="number" step="0.5" min="0"
+                value={days} onChange={(e) => setDays(e.target.value)}
                 className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
             </div>
             <div>

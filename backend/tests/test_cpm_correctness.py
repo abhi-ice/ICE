@@ -1268,8 +1268,8 @@ async def _test_qc_rework_routes_through_synthetic_delay():
 
     Setup:
         T_A  root, 5/4..5/8 (5d)
-        QC issue with severity=rework_required, rework_duration_hours=16
-        (= 2 calendar days), linked_task_ids = [task-A].
+        QC issue with severity=rework_required, rework_duration_days=2
+        (entered directly in working days), linked_task_ids = [task-A].
 
     Action:
         Call create_synthetic_delay_for_qc directly.
@@ -1278,7 +1278,7 @@ async def _test_qc_rework_routes_through_synthetic_delay():
         A synthetic delay row inserted in db.delays
         qc_issue.linked_synthetic_delay_id set to the synthetic delay's id
         Synthetic delay.cause_class == 'quality_rework'
-        Synthetic delay.delay_days == 2.0   (16h / 8h/d = 2d)
+        Synthetic delay.delay_days == 2.0   (entered days, no conversion)
         Synthetic delay.linked_task_ids == ['task-A']
         Synthetic delay's auto-recompute fires:
             task-A.total_float_days set (was None before; compute_cpm ran)
@@ -1293,7 +1293,7 @@ async def _test_qc_rework_routes_through_synthetic_delay():
         "project_id": PROJECT,
         "linked_task_ids": ["task-A"],
         "severity": "rework_required",
-        "rework_duration_hours": 16.0,    # 2d at 8h/day
+        "rework_duration_days": 2.0,    # entered directly in working days
         "rework_duration_basis": "field super estimate",
         "description": "Slab cracked; cut + repour",
         "status": "open",
@@ -1815,7 +1815,7 @@ async def _test_mixed_rfi_delay_synthetic_qc_cumulative():
         Open RFI    on T_SHORT, 3d impact
         Open delay  on T_SHORT, 2d impact
         QC issue    on T_SHORT, severity=rework_required,
-                    rework_duration_hours=16 -> synthetic delay 2d
+                    rework_duration_days=2 -> synthetic delay 2d
 
     Action:
         Simulate a new delay create on T_SHORT with 4-day impact.
@@ -1847,14 +1847,14 @@ async def _test_mixed_rfi_delay_synthetic_qc_cumulative():
     _add_open_delay("task-SHORT", impact_days=2.0)
 
     # QC synthetic delay via create_synthetic_delay_for_qc:
-    # rework_duration_hours = 16 -> 2.0d via _hours_to_days.
+    # rework_duration_days = 2 -> synthetic delay 2.0d (direct, no conversion).
     qc_issue = {
         "id": "qc-rework-mixed",
         "tenant_id": TENANT,
         "project_id": PROJECT,
         "linked_task_ids": ["task-SHORT"],
         "severity": "rework_required",
-        "rework_duration_hours": 16.0,
+        "rework_duration_days": 2.0,
         "rework_duration_basis": "field super estimate",
         "description": "Slab cracked",
         "status": "open",
@@ -2226,7 +2226,7 @@ async def _test_mixed_all_four_event_types_cumulative():
         Open RFI    on T_SHORT, 3d impact (status=draft)
         Open delay  on T_SHORT, 2d impact (status=open)
         QC issue    on T_SHORT, severity=rework_required,
-                    rework_duration_hours=16 -> synthetic delay 2d
+                    rework_duration_days=2 -> synthetic delay 2d
         Over-SLA submittal on T_SHORT, 4d impact
 
     Action:
@@ -2260,7 +2260,7 @@ async def _test_mixed_all_four_event_types_cumulative():
         "linked_task_ids": ["task-SHORT"],
         "status": "open",
         "severity": "rework_required",
-        "rework_duration_hours": 16,   # 16h / 8h/day = 2 day synthetic
+        "rework_duration_days": 2,   # entered directly in working days
         "description": "test qc rework",
     }
     _STUB.qc_issues.rows.append(qc_doc)
@@ -3720,6 +3720,162 @@ async def _test_cpm_float_holiday_aware():
 
 
 # =============================================================================
+# QC rework days (2026-05-17) -- the QC rework duration input was
+# changed from HOURS to WORKING DAYS (consistent with delay / RFI
+# impact units; the h/8 _hours_to_days conversion was removed). These
+# tests verify the synthetic quality_rework delay is built directly in
+# days and is unit-identical to a manual delay, that a 0.5-day rework
+# is stored faithfully while the whole-day cascade applies 0, and that
+# migration 027's hours->days conversion is correct.
+# =============================================================================
+async def _test_qc_rework_days_cascades_like_manual_delay():
+    """QC-DAYS-1 -- a QC rework of N WORKING DAYS produces a synthetic
+    quality_rework delay of N days that cascades IDENTICALLY to a
+    manually-logged N-day delay. The entered value flows straight into
+    delay_days / per_task_impacts (no h/8 conversion), so the synthetic
+    delay is structurally a normal delay and the cascade applies no
+    special-casing.
+
+    Scenario A -- 3-day QC rework on task-A (A 5/4..5/8 -> B FS+0):
+        create_synthetic_delay_for_qc(rework_duration_days=3.0)
+    Scenario B -- a manual 3-day delay on task-A, identical schedule.
+    Both must yield the same projected_finish_date on A and B.
+    """
+    # ---- Scenario A: QC rework, entered in days ----
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A")])
+    qc = {
+        "id": "qc-days-1", "tenant_id": TENANT, "project_id": PROJECT,
+        "linked_task_ids": ["task-A"], "severity": "rework_required",
+        "rework_duration_days": 3.0,
+        "rework_duration_basis": "field super estimate",
+        "description": "Slab rework", "status": "open",
+        "date": D(5, 14).isoformat(),
+    }
+    _STUB.qc_issues.rows.append(qc)
+    syn = await create_synthetic_delay_for_qc(
+        tenant_id=TENANT, qc_issue=qc, actor_id="t", request_id="r",
+    )
+    assert syn is not None, "create_synthetic_delay_for_qc returned None"
+    assert syn["delay_days"] == 3.0, (
+        f"synthetic delay must carry the entered 3 days directly (no "
+        f"h/8 conversion), got {syn['delay_days']!r}"
+    )
+    assert syn["cause_class"] == "quality_rework"
+    assert syn["status"] == "open"
+    assert syn["per_task_impacts"] == [
+        {"task_id": "task-A", "projected_impact_days": 3.0}
+    ], (
+        f"per_task_impacts must be the SAME shape a manual delay "
+        f"carries, with 3 days, got {syn['per_task_impacts']!r}"
+    )
+    qc_a = await _get_task("task-A")
+    qc_b = await _get_task("task-B")
+    assert qc_a["projected_finish_date"] == "2026-05-13", (
+        f"3-day rework: A planned_finish 5/8 + 3 wd = 5/13, got "
+        f"{qc_a['projected_finish_date']!r}"
+    )
+
+    # ---- Scenario B: a manual 3-day delay, identical schedule ----
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    _add_task("B", duration=3, planned_start=D(5, 11),
+              predecessors=[_pred("A")])
+    _add_open_delay("task-A", impact_days=3.0)
+    await auto_recompute_after_event(TENANT, PROJECT)
+    man_a = await _get_task("task-A")
+    man_b = await _get_task("task-B")
+
+    assert qc_a["projected_finish_date"] == man_a["projected_finish_date"], (
+        f"QC rework must cascade IDENTICALLY to a manual delay -- "
+        f"task-A QC={qc_a['projected_finish_date']!r} vs "
+        f"manual={man_a['projected_finish_date']!r}"
+    )
+    assert qc_b["projected_finish_date"] == man_b["projected_finish_date"], (
+        f"downstream task-B QC={qc_b['projected_finish_date']!r} vs "
+        f"manual={man_b['projected_finish_date']!r}"
+    )
+    print("QC-DAYS-1 PASS: N-day QC rework cascades identically to a manual delay")
+
+
+async def _test_qc_rework_half_day_stored_cascades_zero():
+    """QC-DAYS-2 -- a 0.5-day QC rework: the QC issue + synthetic delay
+    ARE created and the 0.5-day value is stored faithfully, but the
+    cascade applies 0 working days of schedule shift. compute_projected
+    _finish_dates does int(round(...)) on the per-task impact and
+    int(round(0.5)) == 0 -- the documented, ACCEPTED whole-day cascade
+    behavior (the cascade engine is NOT changed by this work). The QC
+    form shows a non-blocking warning so the super is not misled.
+
+    Setup: T_A root, 5/4..5/8 (5d). QC rework 0.5 days on task-A.
+    """
+    _reset()
+    _add_task("A", duration=5, planned_start=D(5, 4))
+    qc = {
+        "id": "qc-halfday", "tenant_id": TENANT, "project_id": PROJECT,
+        "linked_task_ids": ["task-A"], "severity": "rework_required",
+        "rework_duration_days": 0.5,
+        "rework_duration_basis": "minor touch-up",
+        "description": "Half-day rework", "status": "open",
+        "date": D(5, 14).isoformat(),
+    }
+    _STUB.qc_issues.rows.append(qc)
+    syn = await create_synthetic_delay_for_qc(
+        tenant_id=TENANT, qc_issue=qc, actor_id="t", request_id="r",
+    )
+    # The synthetic delay IS created and stores the 0.5-day value.
+    assert syn is not None, "a 0.5-day rework must still create the delay"
+    assert syn["delay_days"] == 0.5, (
+        f"the 0.5-day value must be stored faithfully on the synthetic "
+        f"delay, got {syn['delay_days']!r}"
+    )
+    assert syn["per_task_impacts"] == [
+        {"task_id": "task-A", "projected_impact_days": 0.5}
+    ], f"per_task_impacts must carry 0.5, got {syn['per_task_impacts']!r}"
+    assert syn["cause_class"] == "quality_rework"
+    # The QC issue carries the back-pointer to the synthetic delay.
+    qc_row = await _STUB.qc_issues.find_one(
+        {"id": "qc-halfday", "tenant_id": TENANT})
+    assert qc_row.get("linked_synthetic_delay_id") == syn["id"]
+    # The whole-day cascade rounds 0.5 -> 0: task-A does NOT shift.
+    t_a = await _get_task("task-A")
+    assert t_a["projected_finish_date"] is None, (
+        f"the whole-day cascade rounds 0.5 -> 0, so task-A must NOT "
+        f"shift (projected_finish_date stays None); got "
+        f"{t_a['projected_finish_date']!r}"
+    )
+    assert t_a.get("slip_days") in (None, 0), (
+        f"a 0.5-day rework yields 0 working days of slip, got "
+        f"{t_a.get('slip_days')!r}"
+    )
+    print("QC-DAYS-2 PASS: 0.5-day rework stored faithfully; cascade applies 0")
+
+
+async def _test_migration_027_converts_hours_to_days():
+    """QC-DAYS-3 -- migration 027 converts an existing hours-based
+    rework value to working days with the exact pre-change rule
+    (ceil(hours/8 * 2) / 2 -- round up to the nearest 0.5). An old
+    8-hours row becomes 1.0 day.
+
+    Exercises the migration's pure hours_to_days() converter directly
+    (no DB needed)."""
+    import importlib
+    mig = importlib.import_module("migrations.027_qc_rework_hours_to_days")
+    h2d = mig.hours_to_days
+    assert h2d(8) == 1.0, f"8 hours must convert to 1.0 day, got {h2d(8)!r}"
+    assert h2d(16) == 2.0, f"16 hours -> 2.0 days, got {h2d(16)!r}"
+    assert h2d(4) == 0.5, f"4 hours -> 0.5 day, got {h2d(4)!r}"
+    assert h2d(12) == 1.5, f"12 hours -> 1.5 days, got {h2d(12)!r}"
+    assert h2d(2) == 0.5, f"2 hours -> 0.5 day (rounds up), got {h2d(2)!r}"
+    assert h2d(0) == 0.0 and h2d(None) == 0.0 and h2d(-5) == 0.0, (
+        "0 / None / negative hours -> 0.0 days"
+    )
+    print("QC-DAYS-3 PASS: migration 027 hours->days (8h -> 1.0d)")
+
+
+# =============================================================================
 # CPM Step 2 (2026-05-17) -- imported-date-anchor regression tests.
 #
 # Step 2 made compute_cpm's forward pass ANCHOR ES/EF on each task's
@@ -4507,6 +4663,19 @@ def test_cpm_float_holiday_aware():
     asyncio.run(_test_cpm_float_holiday_aware())
 
 
+# QC rework days (2026-05-17) -- QC rework duration hours -> days.
+def test_qc_rework_days_cascades_like_manual_delay():
+    asyncio.run(_test_qc_rework_days_cascades_like_manual_delay())
+
+
+def test_qc_rework_half_day_stored_cascades_zero():
+    asyncio.run(_test_qc_rework_half_day_stored_cascades_zero())
+
+
+def test_migration_027_converts_hours_to_days():
+    asyncio.run(_test_migration_027_converts_hours_to_days())
+
+
 # CPM Step 2 (2026-05-17) -- imported-date-anchor regression tests.
 def test_cpm_anchors_on_imported_start():
     asyncio.run(_test_cpm_anchors_on_imported_start())
@@ -4667,6 +4836,13 @@ def _run_all():
          _test_projected_date_does_not_land_on_holiday),
         ("test_cpm_float_holiday_aware",
          _test_cpm_float_holiday_aware),
+        # QC rework days (2026-05-17) -- QC rework duration hours -> days.
+        ("test_qc_rework_days_cascades_like_manual_delay",
+         _test_qc_rework_days_cascades_like_manual_delay),
+        ("test_qc_rework_half_day_stored_cascades_zero",
+         _test_qc_rework_half_day_stored_cascades_zero),
+        ("test_migration_027_converts_hours_to_days",
+         _test_migration_027_converts_hours_to_days),
         # CPM Step 2 (2026-05-17) -- imported-date-anchor regression.
         ("test_cpm_anchors_on_imported_start",
          _test_cpm_anchors_on_imported_start),
@@ -4696,8 +4872,9 @@ def _run_all():
     print("=" * 78)
     print("CPM CORRECTNESS REGRESSION SUITE -- Parts H+I+J+K+L + "
           "Slip-cascade + Bug 3.B + Rem-float + Step 1 holidays + "
-          "Step 2 anchor + Step 2.1 reconcile + Step 3A reshape-count "
-          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 4 + 5 + 1 tests)")
+          "Step 2 anchor + Step 2.1 reconcile + Step 3A reshape-count + "
+          "QC rework days "
+          "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 4 + 5 + 1 + 3 tests)")
     print("=" * 78)
     for name, fn in tests:
         try:
@@ -4714,7 +4891,7 @@ def _run_all():
             fails.append((name, f"{type(e).__name__}: {e}"))
     print()
     print("=" * 78)
-    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 66 spec tests)")
+    print(f"OVERALL: {passes} PASS / {len(fails)} FAIL  (of 69 spec tests)")
     print("=" * 78)
     if fails:
         for n, e in fails:
