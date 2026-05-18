@@ -419,8 +419,8 @@ export default function Tasks() {
         </div>
       )}
 
-      <div className="surface overflow-hidden">
-        <table className="dense-table">
+      <div className="surface overflow-x-auto scrollbar-soft" data-testid="tasks-table-scroll">
+        <table className="dense-table min-w-max">
           <thead>
             <tr>
               <th className="w-10">#</th>
