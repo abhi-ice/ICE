@@ -246,7 +246,7 @@ export default function Lookahead() {
                         title={atRisk ? `Projected slip +${slip} working days` : undefined}>
                         {pillLabel}
                         {t.has_open_blocker && t.open_blocker_count
-                          ? <span className="text-[10px] text-red-700/80">({t.open_blocker_count})</span>
+                          ? <span className="text-xs text-red-700/80">({t.open_blocker_count})</span>
                           : null}
                       </span>
                     </td>
@@ -357,7 +357,7 @@ function GanttView({ rows, days, onRefresh }) {
           <div className="flex border-b border-slate-200 sticky top-0 bg-slate-50">
             <div style={{ width: 240, minWidth: 240 }} className="h-8 px-3 flex items-center text-xs font-semibold text-slate-500 border-r border-slate-200">Activity</div>
             {dayHeaders.map((d, i) => (
-              <div key={i} style={{ width: DAY_PX, minWidth: DAY_PX }} className={`h-8 grid place-items-center text-[10px] font-mono ${d.getTime() === today.getTime() ? "bg-blue-50 text-blue-700 font-semibold" : "text-slate-500"}`}>
+              <div key={i} style={{ width: DAY_PX, minWidth: DAY_PX }} className={`h-8 grid place-items-center text-xs font-mono ${d.getTime() === today.getTime() ? "bg-blue-50 text-blue-700 font-semibold" : "text-slate-500"}`}>
                 {d.getDate()}
               </div>
             ))}
@@ -392,7 +392,7 @@ function GanttView({ rows, days, onRefresh }) {
                   data-testid={`gantt-bar-${t.activity_code}`}
                   onMouseDown={(e) => onMouseDown(e, t)}
                   style={{ position: "absolute", left, top: 4, width, height: ROW_H - 8 }}
-                  className={`rounded text-white text-[10px] flex items-center px-2 cursor-grab select-none transition-transform ${barClass}`}
+                  className={`rounded text-white text-xs flex items-center px-2 cursor-grab select-none transition-transform ${barClass}`}
                   title={cs === "blocked" ? "Blocked — open delay/RFI/work-item linked"
                     : cs === "behind" ? "Behind planned %"
                     : isCP ? "Critical path" : ""}
@@ -403,7 +403,7 @@ function GanttView({ rows, days, onRefresh }) {
                   <div
                     title={`Projected slip +${projShiftDays}d → ${t.projected_finish_date}`}
                     style={{ position: "absolute", left: left + width, top: 4, width: projWidth, height: ROW_H - 8 }}
-                    className="rounded-r border border-amber-400 bg-amber-100/70 text-amber-700 text-[10px] flex items-center justify-end px-1 select-none"
+                    className="rounded-r border border-amber-400 bg-amber-100/70 text-amber-700 text-xs flex items-center justify-end px-1 select-none"
                   >
                     <span>+{projShiftDays}d</span>
                   </div>
@@ -414,7 +414,7 @@ function GanttView({ rows, days, onRefresh }) {
           {!rows.length && <div className="text-sm text-slate-500 text-center py-8">No activities in window.</div>}
         </div>
       </div>
-      <div className="px-3 py-2 text-[10px] text-slate-500 border-t border-slate-200">
+      <div className="px-3 py-2 text-xs text-slate-500 border-t border-slate-200">
         Click + drag a Gantt bar horizontally to reschedule. Red = critical path.
       </div>
     </div>

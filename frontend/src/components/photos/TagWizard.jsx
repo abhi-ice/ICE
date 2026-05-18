@@ -336,7 +336,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                 <span>Pick the event type.</span>
                 {aiSuggestion?.ai_suggested_event_type && (
                   <span data-testid="tag-wizard-ai-event-badge"
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200 text-[10px]">
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200 text-xs">
                     <Sparkles className="h-3 w-3" />
                     AI suggested: {(aiSuggestion.ai_suggested_event_type || "").replace(/_/g, " ")}
                   </span>
@@ -398,7 +398,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                   </span>
                   <button data-testid="tag-wizard-show-all-trades"
                     onClick={() => setShowAllTrades((v) => !v)}
-                    className="text-[10px] text-blue-700 hover:underline">
+                    className="text-xs text-blue-700 hover:underline">
                     {showAllTrades ? "Re-apply trade filter" : "Show all trades"}
                   </button>
                 </div>
@@ -407,7 +407,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                   Activity (WBS row) event type, default OFF. Completed
                   activity rows are hidden from the picker by default. */}
               {isActivityType && eventOptions.length > 0 && (
-                <label className="flex items-center gap-1.5 text-[11px] text-slate-500 cursor-pointer">
+                <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer">
                   <input type="checkbox" data-testid="tag-wizard-show-completed"
                     checked={showCompletedActivities}
                     onChange={(e) => setShowCompletedActivities(e.target.checked)} />
@@ -431,10 +431,10 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                 </select>
               )}
               <div>
-                <label className="text-[11px] text-slate-500 uppercase inline-flex items-center gap-1">
+                <label className="text-xs text-slate-500 uppercase inline-flex items-center gap-1">
                   Photo class
                   {aiSuggestion?.ai_suggested_class && photoClass === aiSuggestion.ai_suggested_class && (
-                    <span className="text-[9px] text-blue-700 inline-flex items-center gap-0.5">
+                    <span className="text-xs text-blue-700 inline-flex items-center gap-0.5">
                       <Sparkles className="h-2.5 w-2.5" /> AI
                     </span>
                   )}
@@ -445,10 +445,10 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                 </select>
               </div>
               <div>
-                <label className="text-[11px] text-slate-500 uppercase inline-flex items-center gap-1">
+                <label className="text-xs text-slate-500 uppercase inline-flex items-center gap-1">
                   Caption (optional)
                   {aiSuggestion?.ai_suggested_caption && caption === aiSuggestion.ai_suggested_caption && (
-                    <span className="text-[9px] text-blue-700 inline-flex items-center gap-0.5">
+                    <span className="text-xs text-blue-700 inline-flex items-center gap-0.5">
                       <Sparkles className="h-2.5 w-2.5" /> AI
                     </span>
                   )}

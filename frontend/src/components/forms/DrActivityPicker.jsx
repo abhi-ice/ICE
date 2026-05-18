@@ -59,10 +59,10 @@ export default function DrActivityPicker({
   return (
     <div data-testid={testidPrefix} className="space-y-1">
       <div className="flex items-center justify-between">
-        <label className="text-[10px] uppercase tracking-wide text-slate-500">
+        <label className="text-xs uppercase tracking-wide text-slate-500">
           {label || "Affected activities"} {required && <span className="text-rose-600">*</span>}
         </label>
-        <span className="text-[10px] text-slate-400">{valArr.length} picked</span>
+        <span className="text-xs text-slate-400">{valArr.length} picked</span>
       </div>
 
       {valArr.length > 0 && (
@@ -71,7 +71,7 @@ export default function DrActivityPicker({
             const r = byId[id];
             return (
               <span key={id} data-testid={`${testidPrefix}-chip-${id}`}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 text-[10px]">
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 text-xs">
                 <span className="font-mono">{r?.activity_code || id.slice(0, 6)}</span>
                 <button type="button" onClick={() => remove(id)}
                   className="text-blue-500 hover:text-blue-700"
@@ -89,21 +89,21 @@ export default function DrActivityPicker({
         <input data-testid={`${testidPrefix}-filter`} type="text" value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter by code or description"
-          className="w-full h-7 pl-7 pr-2 rounded border border-slate-200 text-[11px]" />
+          className="w-full h-7 pl-7 pr-2 rounded border border-slate-200 text-xs" />
       </div>
 
       <div className={`${heightClass} overflow-auto border border-slate-200 rounded`}>
         {!allRows.length ? (
-          <div className="p-2 text-[11px] text-slate-400 italic">
+          <div className="p-2 text-xs text-slate-400 italic">
             No activities on this DR yet.
           </div>
         ) : !filtered.length ? (
-          <div className="p-2 text-[11px] text-slate-400 italic">
+          <div className="p-2 text-xs text-slate-400 italic">
             No matches for "{filter}".
           </div>
         ) : filtered.map((a) => (
           <label key={a.id}
-            className="flex items-center gap-2 px-2 py-1 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-[11px]">
+            className="flex items-center gap-2 px-2 py-1 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-xs">
             <input type="checkbox" data-testid={`${testidPrefix}-opt-${a.activity_code || a.id}`}
               checked={valArr.includes(a.id)} onChange={() => toggle(a.id)} />
             <span className="font-mono text-blue-700">{a.activity_code}</span>

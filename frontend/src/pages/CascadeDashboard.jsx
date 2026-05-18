@@ -160,7 +160,7 @@ export default function CascadeDashboard() {
               Open Resource Leveling →
             </Link>
           </div>
-          <div className="text-[11px] text-amber-900 mb-2">
+          <div className="text-xs text-amber-900 mb-2">
             {projectedGaps.summary?.shortage_cells || 0} shortage cell{(projectedGaps.summary?.shortage_cells || 0) === 1 ? "" : "s"}
             {projectedGaps.summary?.cp_shortage_cells > 0 && (
               <span className="ml-1 text-rose-700 font-semibold">
@@ -182,10 +182,10 @@ export default function CascadeDashboard() {
                   data-testid={`cascade-gap-${cell.id}`}
                   className={`block p-2 rounded border text-xs ${tone}`}>
                   <div className="font-medium">{cell.trade}</div>
-                  <div className="text-[10px] font-mono">
+                  <div className="text-xs font-mono">
                     {cell.date} · supply {cell.supply} / demand {cell.demand} · gap +{cell.gap}
                   </div>
-                  <div className="text-[10px] capitalize">
+                  <div className="text-xs capitalize">
                     {cell.severity}{cell.is_critical_path ? " · CP" : ""}
                   </div>
                 </Link>
@@ -233,7 +233,7 @@ export default function CascadeDashboard() {
                   <td className="p-2 border border-slate-200 text-right">{(r.transitively_gated_activity_ids || []).length}</td>
                   <td className="p-2 border border-slate-200 text-right">{r.open_age_working_days ?? "—"}</td>
                   <td className="p-2 border border-slate-200">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${SLA_TONE[r.sla_status] || "bg-slate-100"}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-xs ${SLA_TONE[r.sla_status] || "bg-slate-100"}`}>
                       {r.sla_status || "—"}
                     </span>
                   </td>
@@ -242,7 +242,7 @@ export default function CascadeDashboard() {
                   <td className="p-2 border border-slate-200 text-right">{fmtDays(r.projected_slip_at_n20_days)}</td>
                   <td className="p-2 border border-slate-200 text-right font-medium">{fmtDays(r.projected_cp_impact_at_n10_days)}</td>
                   <td className="p-2 border border-slate-200">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase ${SEVERITY_PILL[r.severity_band] || "bg-slate-100"}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-xs uppercase ${SEVERITY_PILL[r.severity_band] || "bg-slate-100"}`}>
                       {r.severity_band || "?"}
                     </span>
                   </td>

@@ -201,7 +201,7 @@ function ProposalDetail({ id, onBack }) {
               recommendation: <strong>{ai.recommendation.replace(/_/g, " ")}</strong>
             </span>
           )}
-          {ai.model && <span className="text-[10px] text-slate-400 ml-auto">{ai.model}</span>}
+          {ai.model && <span className="text-xs text-slate-400 ml-auto">{ai.model}</span>}
         </div>
         <div className="text-sm text-slate-700">{ai.summary || "No AI review available yet."}</div>
         {!!(ai.flags && ai.flags.length) && (
@@ -358,9 +358,9 @@ function Stat({ label, value, sub, tone = "slate" }) {
     : "text-slate-700";
   return (
     <div className="bg-slate-50 border border-slate-200 rounded p-2" data-testid={`kpi-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
-      <div className="text-[10px] uppercase text-slate-500 tracking-wide">{label}</div>
+      <div className="text-xs uppercase text-slate-500 tracking-wide">{label}</div>
       <div className={`font-semibold tabular-nums ${klass}`}>{value}</div>
-      {sub && <div className="text-[10px] text-slate-400">{sub}</div>}
+      {sub && <div className="text-xs text-slate-400">{sub}</div>}
     </div>
   );
 }
@@ -478,13 +478,13 @@ function ParsedRowsPanel({ doc, reload }) {
       <div className="px-2 pb-3" data-testid="work-category-tagging">
         {tagging.ai_error ? (
           <div data-testid="work-category-ai-error"
-            className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
             AI work-category tagging was unavailable — every task defaulted to
             &quot;Field work&quot; and is flagged for review. Set each tag below
             or click &quot;Ask AI to re-review&quot;. ({tagging.ai_error})
           </div>
         ) : (
-          <div className="text-[11px] text-slate-500">
+          <div className="text-xs text-slate-500">
             AI tagged {tagging.tagged_count ?? 0} task(s) by work category
             {tagging.needs_review_count
               ? ` · ${tagging.needs_review_count} flagged for review`
@@ -498,7 +498,7 @@ function ParsedRowsPanel({ doc, reload }) {
             onChange={(e) => setCtxNote(e.target.value)}
             placeholder="Optional context for the AI re-review (e.g. 'task 12 is a long-lead order')…"
             className="flex-1 min-w-[220px] h-7 px-2 rounded border border-slate-200 text-xs" />
-          <label className="text-[10px] text-slate-500 flex items-center gap-1">
+          <label className="text-xs text-slate-500 flex items-center gap-1">
             <input data-testid="retag-redo-all" type="checkbox" checked={redoAll}
               onChange={(e) => setRedoAll(e.target.checked)} />
             redo all (discard my overrides)
@@ -562,7 +562,7 @@ function ParsedRowsPanel({ doc, reload }) {
                       {r.work_category_needs_review && (
                         <span data-testid={`work-category-review-${r.activity_code}`}
                           title="The AI could not confidently classify this task — please confirm the tag."
-                          className="text-[9px] text-amber-800 bg-amber-100 border border-amber-300 rounded px-1">
+                          className="text-xs text-amber-800 bg-amber-100 border border-amber-300 rounded px-1">
                           review
                         </span>
                       )}
@@ -612,14 +612,14 @@ function ChatPanel({ proposalId, onMutated }) {
       <div className="flex items-center gap-2 mb-3">
         <MessageCircle className="h-4 w-4 text-blue-600" />
         <div className="font-medium text-sm">Chat with Claude about this proposal</div>
-        <span className="text-[10px] text-slate-400 ml-auto">1 message = 1 LLM call</span>
+        <span className="text-xs text-slate-400 ml-auto">1 message = 1 LLM call</span>
       </div>
       <div className="space-y-2 max-h-72 overflow-y-auto pr-1 mb-3">
         {thread.map((m, i) => (
           <div key={i} data-testid={`chat-msg-${i}`}
             className={`text-sm ${m.role === "user" ? "ml-12 bg-blue-50 border-blue-100" : "mr-12 bg-slate-50 border-slate-100"} border rounded-lg px-3 py-2`}>
             <div>{m.text}</div>
-            {m.tool && <div className="mt-1 text-[10px] text-emerald-700 font-mono">{m.tool}</div>}
+            {m.tool && <div className="mt-1 text-xs text-emerald-700 font-mono">{m.tool}</div>}
           </div>
         ))}
         {busy && <div className="text-xs text-slate-400 ml-2 animate-pulse">Claude is thinking…</div>}

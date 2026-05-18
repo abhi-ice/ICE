@@ -319,7 +319,7 @@ export default function LockedEventEditModal({
                   : `Optional: explain the resolve/close. Will be appended to the audit row alongside the note field.`
                 }
                 className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
-              <div className="text-[10px] text-slate-500 text-right">
+              <div className="text-xs text-slate-500 text-right">
                 {(reason || "").trim().length} / {REASON_MIN} min
                 {reasonRequired
                   ? " — required for field changes"
@@ -361,7 +361,7 @@ export default function LockedEventEditModal({
                 value={requestReason} onChange={(e) => setRequestReason(e.target.value)}
                 placeholder={`Describe what you need to fix (min ${REASON_MIN} characters).`}
                 className="w-full p-2 rounded border border-slate-200 text-sm h-24" />
-              <div className="text-[10px] text-slate-500 text-right">
+              <div className="text-xs text-slate-500 text-right">
                 {(requestReason || "").trim().length} / {REASON_MIN} min
               </div>
             </div>

@@ -136,21 +136,21 @@ export default function DelayDetail() {
                   <span className="ml-2">{t.description}</span>
                 </div>
                 <div>
-                  <div className="text-slate-400 uppercase tracking-wide text-[10px]">Now</div>
+                  <div className="text-slate-400 uppercase tracking-wide text-xs">Now</div>
                   <div>pct {t.pct_complete ?? 0}% · float {t.total_float_days ?? "—"}d{t.is_critical_path ? " · CP" : ""}</div>
                   {t.projected_finish_date && t.projected_finish_date > (t.planned_finish || "") && (
                     <div className="text-amber-700 mt-0.5">proj. finish {t.projected_finish_date}</div>
                   )}
                 </div>
                 <div>
-                  <div className="text-slate-400 uppercase tracking-wide text-[10px]">At logging</div>
+                  <div className="text-slate-400 uppercase tracking-wide text-xs">At logging</div>
                   <div>impact {impact.projected_impact_days ?? 0}d · float {impact.float_at_logging_days ?? "—"}d</div>
                   <span className={`pill ${flagColor} mt-1 inline-block`}>
                     {impact.pushes_critical_path ? "pushes CP" : impact.consumes_float_only ? "within float" : "exceeds non-CP float"}
                   </span>
                 </div>
                 <div>
-                  <div className="text-slate-400 uppercase tracking-wide text-[10px]">At resolution</div>
+                  <div className="text-slate-400 uppercase tracking-wide text-xs">At resolution</div>
                   {outcome ? (
                     <div>
                       <div>actual {outcome.actual_days_open}d · absorbed {outcome.absorbed_days}d</div>
@@ -175,7 +175,7 @@ export default function DelayDetail() {
           <Sparkles className="h-4 w-4 text-blue-600" />
           <div className="font-medium text-sm">AI delay report</div>
           {delay.ai_report_generated_at && (
-            <span className="text-[10px] text-slate-400 ml-2">last generated {new Date(delay.ai_report_generated_at).toLocaleString()}</span>
+            <span className="text-xs text-slate-400 ml-2">last generated {new Date(delay.ai_report_generated_at).toLocaleString()}</span>
           )}
           <div className="ml-auto flex items-center gap-2">
             <Button data-testid="delay-ai-generate" onClick={generateAIReport} disabled={generating} className="gap-1 bg-blue-600 hover:bg-blue-700">
@@ -239,7 +239,7 @@ export default function DelayDetail() {
         userRole={(getUser()?.role || "").toLowerCase()}
         fieldLabel="chosen_mitigation_id"
         renderSuggestedValue={(v) => (
-          <code className="text-[10px]">scenario {String(v || "").slice(0, 8)}</code>
+          <code className="text-xs">scenario {String(v || "").slice(0, 8)}</code>
         )}
         onConfirm={async (v) => {
           try {
@@ -414,7 +414,7 @@ function ScenariosSection({ delayId, delayStatus }) {
         <Lightbulb className="h-4 w-4 text-amber-600" />
         <div className="font-medium text-sm">AI mitigation scenarios</div>
         {lastGen && (
-          <span className="text-[10px] text-slate-400 ml-2">last generated {new Date(lastGen).toLocaleString()}</span>
+          <span className="text-xs text-slate-400 ml-2">last generated {new Date(lastGen).toLocaleString()}</span>
         )}
         <div className="ml-auto flex items-center gap-2">
           {/* Block regenerate while a scenario is chosen — would orphan
@@ -447,7 +447,7 @@ function ScenariosSection({ delayId, delayStatus }) {
             <span className="font-mono text-emerald-700 mr-2">EXECUTING: Scenario {chosen.scenario_label}</span>
             <span className="text-emerald-900">{chosen.strategy_name}</span>
             {chosen.decision_rationale && (
-              <div className="text-[11px] text-emerald-800/80 mt-0.5">Rationale: {chosen.decision_rationale}</div>
+              <div className="text-xs text-emerald-800/80 mt-0.5">Rationale: {chosen.decision_rationale}</div>
             )}
           </div>
           <button data-testid="scenarios-change-choice" onClick={() => unchoose(chosen)} disabled={busy}
@@ -479,11 +479,11 @@ function ScenariosSection({ delayId, delayStatus }) {
             <div className="mt-2 space-y-1 text-xs">
               {data.history.map((h) => (
                 <div key={h.id} className="flex items-center gap-2 text-slate-600 border-b border-slate-100 py-1">
-                  <span className="text-[10px] font-mono text-slate-400">{h.generation_at?.slice(0, 16)?.replace("T", " ")}</span>
-                  <span className="font-mono text-[10px] uppercase">{h.scenario_label}</span>
+                  <span className="text-xs font-mono text-slate-400">{h.generation_at?.slice(0, 16)?.replace("T", " ")}</span>
+                  <span className="font-mono text-xs uppercase">{h.scenario_label}</span>
                   <span className="flex-1 truncate">{h.strategy_name}</span>
                   <span className="text-slate-400">{h.estimated_schedule_impact_days}d · ${h.estimated_cost_impact_usd}</span>
-                  <span className="text-[10px] text-slate-400">{h.decision_status}</span>
+                  <span className="text-xs text-slate-400">{h.decision_status}</span>
                 </div>
               ))}
             </div>
@@ -614,16 +614,16 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
       </div>
       <div className="p-3 text-xs space-y-2 flex-1">
         <div>
-          <div className="text-slate-400 uppercase tracking-wide text-[10px]">Assumption</div>
+          <div className="text-slate-400 uppercase tracking-wide text-xs">Assumption</div>
           <div className="text-slate-700">{s.assumption}</div>
         </div>
         <div>
-          <div className="text-slate-400 uppercase tracking-wide text-[10px]">Action</div>
+          <div className="text-slate-400 uppercase tracking-wide text-xs">Action</div>
           <div className="text-slate-700">{s.proposed_action_description}</div>
         </div>
         {s.prerequisites && s.prerequisites.length > 0 && (
           <div>
-            <div className="text-slate-400 uppercase tracking-wide text-[10px]">Prerequisites</div>
+            <div className="text-slate-400 uppercase tracking-wide text-xs">Prerequisites</div>
             <ul className="list-disc list-inside text-slate-600">
               {s.prerequisites.map((p, i) => <li key={i}>{p}</li>)}
             </ul>
@@ -633,28 +633,28 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
           <Metric label="Schedule" value={`${scheduleSign}${s.estimated_schedule_impact_days}d`} />
           <Metric label="Cost" value={`$${(s.estimated_cost_impact_usd || 0).toLocaleString()}`} />
           <div>
-            <div className="text-[10px] text-slate-500 uppercase tracking-wide">Risk</div>
+            <div className="text-xs text-slate-500 uppercase tracking-wide">Risk</div>
             <span className={`pill ${riskColor} mt-1 inline-block capitalize`}>{s.estimated_risk_level}</span>
           </div>
           <div>
-            <div className="text-[10px] text-slate-500 uppercase tracking-wide">Confidence</div>
+            <div className="text-xs text-slate-500 uppercase tracking-wide">Confidence</div>
             <div className="text-sm tabular-nums">{confPct}%</div>
           </div>
         </div>
         <button onClick={() => setShowReasoning((v) => !v)}
-          className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700 pt-2">
+          className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 pt-2">
           {showReasoning ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           {showReasoning ? "Hide reasoning" : "Show reasoning"}
         </button>
         {showReasoning && (
-          <div className="text-[11px] text-slate-600 bg-slate-50 rounded p-2 border border-slate-100 whitespace-pre-wrap">
+          <div className="text-xs text-slate-600 bg-slate-50 rounded p-2 border border-slate-100 whitespace-pre-wrap">
             {s.ai_reasoning || "(no reasoning provided)"}
           </div>
         )}
       </div>
       <div className="px-3 py-2 border-t border-slate-100 space-y-1">
         {isChosen && hasOutcome && (
-          <div className="text-[11px] text-emerald-700 space-y-1">
+          <div className="text-xs text-emerald-700 space-y-1">
             <div className="inline-flex items-center gap-1">
               <CheckCircle2 className="h-3 w-3" /> Outcome recorded
             </div>
@@ -676,12 +676,12 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
           </button>
         )}
         {isChosen && !hasOutcome && !isExecuted && (
-          <div className="text-[11px] text-emerald-700 inline-flex items-center gap-1">
+          <div className="text-xs text-emerald-700 inline-flex items-center gap-1">
             <CheckCircle2 className="h-3 w-3" /> Chosen — see banner above to change.
           </div>
         )}
         {!isChosen && isOtherChosen && (
-          <div className="text-[11px] text-slate-400">Not chosen</div>
+          <div className="text-xs text-slate-400">Not chosen</div>
         )}
         {!isChosen && !isOtherChosen && (
           <button data-testid={`scenario-choose-${s.scenario_label}`} onClick={onChoose}
@@ -697,7 +697,7 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
 function Metric({ label, value }) {
   return (
     <div className="bg-slate-50 rounded px-2 py-1.5 border border-slate-100">
-      <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
       <div className="text-sm tabular-nums">{value}</div>
     </div>
   );

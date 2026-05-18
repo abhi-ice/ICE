@@ -56,7 +56,7 @@ export default function GlobalSearch() {
               onClick={() => go(r)}
               className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2 border-b border-slate-50 last:border-b-0"
             >
-              <span className="pill pill-slate text-[10px] capitalize">{r.type.replace("_", " ")}</span>
+              <span className="pill pill-slate text-xs capitalize">{r.type.replace("_", " ")}</span>
               <span className="truncate">{r.label}</span>
             </button>
           ))}

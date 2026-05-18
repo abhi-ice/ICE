@@ -92,7 +92,7 @@ function LockedAddReasonBlock({ value, onChange, eventLabel = "this event", test
         className={`w-full p-2 rounded text-sm bg-white h-16 ${
           ok ? "border border-amber-300" : "border-2 border-rose-400 ring-1 ring-rose-200"
         }`} />
-      <div className={`flex items-center justify-between text-[10px] ${
+      <div className={`flex items-center justify-between text-xs ${
         ok ? "text-emerald-700" : "text-rose-700 font-semibold"
       }`}>
         <span>{ok ? "✓ ready" : "⚠ required field"}</span>
@@ -779,7 +779,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </div>
           {report.is_no_work_day && (
             <div data-testid="dr-no-work-pill"
-              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] uppercase tracking-wide"
+              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-xs uppercase tracking-wide"
               title={report.no_work_note || "No-work day"}>
               No-work day · {(report.no_work_reason || "").replace(/_/g, " ")}
             </div>
@@ -787,7 +787,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
         </div>
         <div className="hidden md:block min-w-[180px]">
           <div className="text-xs text-slate-500 uppercase tracking-wide">Trail</div>
-          <div className="text-[11px] text-slate-600 leading-snug">
+          <div className="text-xs text-slate-600 leading-snug">
             <div>Prepared: {userLabels[report.prepared_by] || "—"}</div>
             <div>Submitted: {userLabels[report.submitted_by] || "—"}</div>
             <div>Approved: {userLabels[report.approved_by] || "—"}</div>
@@ -848,7 +848,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
 function KPI({ label, value, testid }) {
   return (
     <div className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded text-center min-w-[80px]" data-testid={testid}>
-      <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
       <div className="font-semibold tabular-nums">{value}</div>
     </div>
   );
@@ -888,7 +888,7 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
     <PanelShell icon={Cloud} title="Weather" testid="dr-weather-panel"
-      badge={fetchedAt && <span className="text-[10px] text-slate-400 ml-auto">fetched {fetchedAt}</span>}>
+      badge={fetchedAt && <span className="text-xs text-slate-400 ml-auto">fetched {fetchedAt}</span>}>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
@@ -990,9 +990,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
       badge={
         <div className="ml-2 flex items-center gap-3">
-          <span className="text-[10px] text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
+          <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
           <button data-testid="presence-toggle-detailed" onClick={toggleDetailed}
-            className="text-[10px] text-blue-600 hover:underline">
+            className="text-xs text-blue-600 hover:underline">
             {showDetailed ? "Hide detailed roster" : "Show detailed roster"}
           </button>
         </div>
@@ -1034,7 +1034,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   : `${Math.abs(delta)} short`;
                 return (
                   <tr key={trade} data-testid={`dr-presence-trade-${trade}`} className="border-t border-slate-100">
-                    <td className="py-0.5">{trade}{info.on_cp && <span className="ml-1 text-rose-600 text-[10px]">CP</span>}</td>
+                    <td className="py-0.5">{trade}{info.on_cp && <span className="ml-1 text-rose-600 text-xs">CP</span>}</td>
                     <td className="text-right tabular-nums">{info.demanded}</td>
                     <td className="text-right tabular-nums">{actual}</td>
                     <td className={`text-right tabular-nums ${tone}`}>{delta >= 0 ? `+${delta}` : delta}</td>
@@ -1192,7 +1192,7 @@ function CrewSelector({ row, presence, locked, updateRow }) {
         value={row.linked_crew_id || ""}
         onChange={onPickTrade}
         disabled={locked}
-        className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+        className="h-7 text-xs px-1 border border-slate-200 rounded bg-white"
       >
         <option value="">— no crew assigned —</option>
         {presence.map((p) => (
@@ -1256,7 +1256,7 @@ function GridStatusPill({ status, testid }) {
   const s = status || "not_started";
   return (
     <span data-testid={testid}
-      className={`inline-block px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide ${STATUS_PILL_CLASS[s] || STATUS_PILL_CLASS.not_started}`}>
+      className={`inline-block px-1.5 py-0.5 rounded border text-xs uppercase tracking-wide ${STATUS_PILL_CLASS[s] || STATUS_PILL_CLASS.not_started}`}>
       {s.replace(/_/g, " ")}
     </span>
   );
@@ -1271,7 +1271,7 @@ function BlockerBadge({ count, testid }) {
   return (
     <span data-testid={testid}
       title={`${n} open blocker${n === 1 ? "" : "s"} on the linked task (open RFIs, delays, over-SLA submittals)`}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-semibold tabular-nums">
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold tabular-nums">
       <AlertTriangle className="h-3 w-3" /> {n}
     </span>
   );
@@ -1300,7 +1300,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
     <tr data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
       <td className="font-mono text-xs">
         {r.activity_code}
-        {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[9px] uppercase">field</span>}
+        {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-xs uppercase">field</span>}
         {isProvisional && !isStale && (
           <span title="Provisional sync — confirmed on submit"
             className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
@@ -1309,13 +1309,13 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
           <button data-testid={`dr-row-refresh-${r.activity_code}`}
             onClick={refreshStaleRow}
             title="Schedule was updated externally — click to refresh row"
-            className="ml-1 inline-flex items-center gap-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
+            className="ml-1 inline-flex items-center gap-1 text-xs px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
             <RefreshCw className="h-2.5 w-2.5" /> refresh
           </button>
         )}
         {hasErr && (
           <div data-testid={`dr-row-err-${r.activity_code}`}
-            className="mt-1 text-[10px] text-red-700 normal-case font-sans">
+            className="mt-1 text-xs text-red-700 normal-case font-sans">
             {rowErrs.map((e, i) => <div key={i}>⚠ {e.message}</div>)}
           </div>
         )}
@@ -1491,10 +1491,10 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
     <PanelShell icon={ClipboardList} title="Activity grid" testid="dr-activity-grid" count={grid.length}
       badge={
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] text-slate-500">date: {reportDate}</span>
+          <span className="text-xs text-slate-500">date: {reportDate}</span>
           {!locked && (
             <button data-testid="dr-refresh-grid" onClick={refreshFromSchedule} disabled={refreshing}
-              className="h-7 px-2 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
+              className="h-7 px-2 rounded border border-slate-200 bg-white text-xs hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
               <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} /> Refresh from schedule
             </button>
           )}
@@ -1520,14 +1520,14 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
                 <tr className="bg-slate-100/80 border-y border-slate-200">
                   <td colSpan="13" className="px-2 py-1.5">
-                    <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                       {sec.title}
                     </span>
-                    <span className="ml-2 text-[10px] text-slate-400 tabular-nums">
+                    <span className="ml-2 text-xs text-slate-400 tabular-nums">
                       {secRows.length} {secRows.length === 1 ? "row" : "rows"}
                     </span>
                     {!sec.editable && (
-                      <span className="ml-2 text-[10px] uppercase tracking-wide text-slate-400">· read-only</span>
+                      <span className="ml-2 text-xs uppercase tracking-wide text-slate-400">· read-only</span>
                     )}
                   </td>
                 </tr>
@@ -1755,7 +1755,7 @@ function DelayRowInline({ delay, reload, locked, dailyReportId }) {
           </button>
         )}
         {delay.post_submit_edited && (
-          <span className="text-[10px] text-amber-700"
+          <span className="text-xs text-amber-700"
             title={`Last edit: ${(delay.last_edit_reason || "").slice(0, 80)}`}>
             (edited {delay.edit_count || 0}× post-submit)
           </span>
@@ -1814,7 +1814,7 @@ function ReminderBanner({ reminders, reload }) {
         <AlertTriangle className="h-4 w-4 text-amber-600" />
         <div className="font-medium text-sm text-amber-900">Open delay reminders</div>
         <span className="text-xs text-amber-700">({reminders.length})</span>
-        <span className="text-[11px] text-slate-500 ml-auto">delays from earlier days that touch tasks scheduled today</span>
+        <span className="text-xs text-slate-500 ml-auto">delays from earlier days that touch tasks scheduled today</span>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {reminders.map((r) => (
@@ -1859,7 +1859,7 @@ function ReminderCard({ delay, reload }) {
       </div>
       <div className="text-slate-800 truncate">{firstLine}</div>
       {linked.length > 0 && (
-        <div className="text-[10px] text-slate-500">tasks: {linked.length} linked</div>
+        <div className="text-xs text-slate-500">tasks: {linked.length} linked</div>
       )}
       {resolving && (
         <div className="mt-1 p-2 bg-amber-50 rounded grid grid-cols-2 gap-2">
@@ -1975,7 +1975,7 @@ function SafetyRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2119,22 +2119,22 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               working days, not hours. */}
           {isRework && (
             <div className="bg-rose-50 border border-rose-200 rounded p-2 space-y-2" data-testid="qc-rework-block">
-              <div className="text-[11px] font-semibold text-rose-900">Rework duration estimate (super)</div>
+              <div className="text-xs font-semibold text-rose-900">Rework duration estimate (super)</div>
               {benchmark?.benchmark_days != null && (
-                <div className="text-[10px] text-slate-600 italic" data-testid="qc-rework-benchmark">
+                <div className="text-xs text-slate-600 italic" data-testid="qc-rework-benchmark">
                   {benchmark.basis}
                 </div>
               )}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="text-[10px] text-slate-500 uppercase">Rework duration (days) *</label>
+                  <label className="text-xs text-slate-500 uppercase">Rework duration (days) *</label>
                   <input data-testid="qc-rework-days" type="number" step="0.5" min="0"
                     value={draft.rework_duration_days}
                     onChange={(e) => setDraft({ ...draft, rework_duration_days: e.target.value })}
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-[10px] text-slate-500 uppercase">Basis * (short note)</label>
+                  <label className="text-xs text-slate-500 uppercase">Basis * (short note)</label>
                   <input data-testid="qc-rework-basis" type="text"
                     value={draft.rework_duration_basis}
                     onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
@@ -2150,13 +2150,13 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               {Number(draft.rework_duration_days) > 0
                 && Number(draft.rework_duration_days) <= 0.5 && (
                 <div data-testid="qc-rework-subday-warning"
-                  className="text-[10px] text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
+                  className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
                   A {draft.rework_duration_days}-day rework will be recorded on the
                   QC issue but will not shift the schedule — the cascade currently
                   applies whole-day impacts (a sub-1-day rework rounds to 0).
                 </div>
               )}
-              <div className="text-[10px] text-rose-800">
+              <div className="text-xs text-rose-800">
                 Duration is in working days (0.5-day increments). On save, a
                 synthetic delay (cause=quality_rework) of that many days is
                 created and the CPM cascade run for the affected activities.
@@ -2192,7 +2192,7 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
       }`}>{row.severity}</span>
       <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
       {row.linked_synthetic_delay_id && (
-        <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
+        <span className="ml-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
           rework {row.rework_duration_days}d
           {row.rework_actual_days != null && ` (actual ${row.rework_actual_days}d)`}
         </span>
@@ -2208,7 +2208,7 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2362,7 +2362,7 @@ function RfiRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2639,7 +2639,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a photo" testid="photo-add-reason" />}
-        <div className="text-[11px] text-slate-500">
+        <div className="text-xs text-slate-500">
           Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
           After upload, we'll open the tag wizard with AI suggestions ready.
         </div>
@@ -2704,7 +2704,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">
-        <span data-testid={`photo-class-${photo.id}`} className={`text-[9px] leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
+        <span data-testid={`photo-class-${photo.id}`} className={`text-xs leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
           {cls.label}
         </span>
         {photo.evidentiary_flag && (
@@ -2722,7 +2722,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
         {photo.is_supplement && (
           <span data-testid={`photo-supplement-${photo.id}`}
             title={`Supplement to DR ${photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || ""}`}
-            className="bg-amber-200 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            className="bg-amber-200 text-amber-900 rounded px-1 text-xs font-mono uppercase">
             SUPP
           </span>
         )}
@@ -2732,7 +2732,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
         {photo.post_submit_edited && (
           <span data-testid={`photo-edited-${photo.id}`}
             title={`Edited ${photo.edit_count || 0}x post-submit. ${photo.last_edit_reason ? `Last reason: ${photo.last_edit_reason}` : ""}`}
-            className="bg-amber-300 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            className="bg-amber-300 text-amber-900 rounded px-1 text-xs font-mono uppercase">
             EDITED {photo.edit_count || 0}x
           </span>
         )}
@@ -2747,7 +2747,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
                 ? `Tagged from AI suggestion at ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
                 : "Tagged from AI suggestion"
             }
-            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-[8px] font-mono uppercase inline-flex items-center gap-0.5">
+            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-xs font-mono uppercase inline-flex items-center gap-0.5">
             <Sparkles className="h-2 w-2" /> AI
           </span>
         )}
@@ -2760,7 +2760,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
           <Pencil className="h-2.5 w-2.5" />
         </button>
       )}
-      {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">{photo.caption}</div>}
+      {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs px-1 py-0.5 truncate">{photo.caption}</div>}
       {locked && (
         <LockedEventEditModal
           open={editOpen} onOpenChange={setEditOpen}
@@ -2808,7 +2808,7 @@ function AuditPanel({ rows, userLabels }) {
     <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={rows.length}>
       <div className="space-y-1 max-h-60 overflow-y-auto">
         {rows.slice(0, 30).map((a) => (
-          <div key={a.id} data-testid={`audit-${a.id}`} className="text-[11px] text-slate-600 flex gap-2 border-b border-slate-100 py-1">
+          <div key={a.id} data-testid={`audit-${a.id}`} className="text-xs text-slate-600 flex gap-2 border-b border-slate-100 py-1">
             <span className="font-mono text-slate-400 w-32 shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
             <span className="pill pill-slate">{a.op}</span>
             <span className="font-mono">{a.table_name}</span>
@@ -2837,7 +2837,7 @@ function DeliveryRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2899,7 +2899,7 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
   return (
     <>
       <button data-testid={`qc-rework-outcome-${qcIssue.id}`} onClick={() => setOpen(true)}
-        className="ml-2 text-[10px] px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
+        className="ml-2 text-xs px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
         Record outcome
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -2913,13 +2913,13 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
               Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
             </div>
             <div>
-              <label className="text-[11px] text-slate-500 uppercase">Actual rework (days) *</label>
+              <label className="text-xs text-slate-500 uppercase">Actual rework (days) *</label>
               <input data-testid="qc-rework-actual-days" type="number" step="0.5" min="0"
                 value={days} onChange={(e) => setDays(e.target.value)}
                 className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
             </div>
             <div>
-              <label className="text-[11px] text-slate-500 uppercase">Notes</label>
+              <label className="text-xs text-slate-500 uppercase">Notes</label>
               <textarea data-testid="qc-rework-outcome-notes" rows={3}
                 value={notes} onChange={(e) => setNotes(e.target.value)}
                 placeholder="What went better or worse than expected?"
@@ -2953,7 +2953,7 @@ function SupplementBadge({ row }) {
   return (
     <span data-testid={`supplement-badge-${row.id}`}
       title="Filed after the parent daily report was submitted"
-      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-[9px] font-mono uppercase tracking-wide">
+      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-xs font-mono uppercase tracking-wide">
       SUPP→{parentDate || "?"}
     </span>
   );

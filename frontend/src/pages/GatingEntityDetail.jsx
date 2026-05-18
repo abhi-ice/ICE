@@ -159,7 +159,7 @@ export default function GatingEntityDetail() {
                     <td className="text-xs">
                       {(r.constraint_type || "—").replace(/_/g, " ")}
                       {r.constraint_auto_filled && (
-                        <span className="ml-1 text-[10px] text-blue-700/80">(auto)</span>
+                        <span className="ml-1 text-xs text-blue-700/80">(auto)</span>
                       )}
                     </td>
                     <td className="text-xs tabular-nums">{r.production_impact_hours ?? "—"}</td>
@@ -185,7 +185,7 @@ export default function GatingEntityDetail() {
 function Metric({ label, value }) {
   return (
     <div className="bg-slate-50 rounded px-2 py-1.5 border border-slate-100">
-      <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
       <div className="text-sm tabular-nums">{value ?? "—"}</div>
     </div>
   );

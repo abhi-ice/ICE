@@ -161,7 +161,7 @@ export default function CoordinationEvents() {
                   <td><Dir className="h-3.5 w-3.5 text-slate-500" /></td>
                   <td className="text-xs">
                     <div>{r.other_party_name}</div>
-                    {r.other_party_org && <div className="text-[10px] text-slate-400">{r.other_party_org}</div>}
+                    {r.other_party_org && <div className="text-xs text-slate-400">{r.other_party_org}</div>}
                   </td>
                   <td className="text-xs">{TOPIC_LABELS[r.topic] || r.topic}</td>
                   {/* Bug #32 fix -- optional trade tag, "—" when unset. */}
@@ -171,10 +171,10 @@ export default function CoordinationEvents() {
                       {r.summary}
                     </Link>
                     {r.voice_extracted && (
-                      <span className="ml-2 text-[10px] px-1 rounded bg-amber-100 text-amber-700">voice draft</span>
+                      <span className="ml-2 text-xs px-1 rounded bg-amber-100 text-amber-700">voice draft</span>
                     )}
                   </td>
-                  <td><span className={`pill ${outClass} capitalize text-[10px]`}>{r.outcome.replace(/_/g, " ")}</span></td>
+                  <td><span className={`pill ${outClass} capitalize text-xs`}>{r.outcome.replace(/_/g, " ")}</span></td>
                 </tr>
               );
             })}

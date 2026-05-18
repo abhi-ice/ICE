@@ -94,7 +94,7 @@ export default function TaskPicker({
                 {t?.description || "(task not in current project list)"}
               </span>
               {t?.is_critical_path && (
-                <span className="text-[10px] px-1 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200 font-mono uppercase">
+                <span className="text-xs px-1 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200 font-mono uppercase">
                   CP
                 </span>
               )}
@@ -107,7 +107,7 @@ export default function TaskPicker({
           </div>
         )}
         {/* Feature F5 -- "Show completed tasks" toggle, default OFF. */}
-        <label className="flex items-center gap-1.5 pt-1 text-[11px] text-slate-500 cursor-pointer">
+        <label className="flex items-center gap-1.5 pt-1 text-xs text-slate-500 cursor-pointer">
           <input type="checkbox" data-testid={`${testidPrefix}-show-completed`}
             checked={showCompleted}
             onChange={(e) => setShowCompleted(e.target.checked)} />

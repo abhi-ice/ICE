@@ -242,7 +242,7 @@ export default function EntityFromVoiceDialog({ open, onClose, voiceAnnotation }
         <Button data-testid="vef-submit" onClick={submit} disabled={busy} className="bg-blue-600 hover:bg-blue-700">
           {busy ? "Saving…" : `Create ${kind?.replace(/_/g, " ")}`}
         </Button>
-        <div className="text-[11px] text-slate-400 mt-1">
+        <div className="text-xs text-slate-400 mt-1">
           Pre-filled from <code>structured_fields</code> extracted by Claude. Adjust before saving.
         </div>
       </DialogContent>

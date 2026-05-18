@@ -57,7 +57,7 @@ export default function NotificationsBell() {
         <button data-testid="topbar-notifications" className="relative h-8 w-8 grid place-items-center rounded hover:bg-muted">
           <Bell className="h-4 w-4" />
           {count > 0 && (
-            <span data-testid="notif-badge" className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center text-[9px] h-4 min-w-[16px] px-1 rounded-full bg-amber-500 text-slate-900 font-semibold">
+            <span data-testid="notif-badge" className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center text-xs h-4 min-w-[16px] px-1 rounded-full bg-amber-500 text-slate-900 font-semibold">
               {count > 9 ? "9+" : count}
             </span>
           )}
@@ -77,9 +77,9 @@ export default function NotificationsBell() {
           {items.map((n) => (
             <div key={n.id} data-testid={`notif-${n.id}`} className={`px-3 py-2 border-b border-slate-100 text-sm flex items-start gap-2 ${n.read_at ? "opacity-60" : ""}`}>
               <div className="flex-1">
-                <div className="font-medium text-[13px]">{n.title}</div>
+                <div className="font-medium text-xs">{n.title}</div>
                 {n.body && <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">{n.body}</div>}
-                <div className="text-[10px] text-slate-400 mt-1">{new Date(n.created_at).toLocaleString()}</div>
+                <div className="text-xs text-slate-400 mt-1">{new Date(n.created_at).toLocaleString()}</div>
               </div>
               {!n.read_at && (
                 <button data-testid={`notif-read-${n.id}`} onClick={() => markRead(n.id)} title="Mark read" className="h-6 w-6 grid place-items-center rounded hover:bg-slate-100">
