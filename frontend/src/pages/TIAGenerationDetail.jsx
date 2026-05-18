@@ -128,7 +128,7 @@ export default function TIAGenerationDetail() {
               You can reflag later, but past downloads can't be reversed.
             </p>
             <div>
-              <label className="text-[11px] text-slate-500 uppercase">Reason (required)</label>
+              <label className="text-xs text-slate-500 uppercase">Reason (required)</label>
               <textarea data-testid="tia-unflag-reason" rows={3} value={unflagReason} onChange={(e) => setUnflagReason(e.target.value)}
                 placeholder="e.g. shared with sub for change-order negotiation per counsel approval 2026-05-06"
                 className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
@@ -204,7 +204,7 @@ export default function TIAGenerationDetail() {
                 <tr key={i} data-testid={`download-log-${i}`}>
                   <td className="p-1">{new Date(d.downloaded_at).toLocaleString()}</td>
                   <td className="p-1 uppercase">{d.format}</td>
-                  <td className="p-1 font-mono text-[10px]">{(d.downloaded_by_user_id || "").slice(0, 8)}</td>
+                  <td className="p-1 font-mono text-xs">{(d.downloaded_by_user_id || "").slice(0, 8)}</td>
                   <td className="p-1">{d.privilege_state_at_download ? "privileged" : "open"}</td>
                 </tr>
               ))}
@@ -220,7 +220,7 @@ function Stat({ n, label }) {
   return (
     <div className="bg-white border border-slate-200 rounded p-3">
       <div className="text-2xl font-semibold text-slate-800">{n ?? 0}</div>
-      <div className="text-[11px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
     </div>
   );
 }

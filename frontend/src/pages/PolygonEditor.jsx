@@ -226,7 +226,7 @@ export default function PolygonEditor() {
         )}
       </div>
 
-      <div className="text-[11px] text-slate-500">
+      <div className="text-xs text-slate-500">
         Tip: vertex coords are stored in raw PDF pixel space. The 2.5D viewer uses the same coordinates to extrude rooms — so changes here flow through to <a href="/spatial-3d" className="text-blue-600 hover:underline">Spatial 3D</a>.
       </div>
     </div>

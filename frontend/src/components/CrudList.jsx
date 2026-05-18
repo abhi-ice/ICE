@@ -314,7 +314,7 @@ export default function CrudList({
                   onChange={(e) => setEditReason(e.target.value)}
                   placeholder={`Why this edit is needed (min ${reasonMin} chars)`}
                   className="mt-1 w-full p-2 rounded border border-slate-200 text-sm" />
-                <div className="text-[10px] text-slate-500 text-right">
+                <div className="text-xs text-slate-500 text-right">
                   {(editReason || "").trim().length} / {reasonMin} min
                   {isFieldEditCrud ? " — required for field changes" : " — optional for status-only"}
                 </div>

@@ -111,7 +111,7 @@ export default function DelayList() {
       {/* Bucket D Phase 3 -- gallery filter. */}
       <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900 flex items-center gap-2">
         <span><strong>Gallery view.</strong> Click a date or chip to jump to the parent DR.</span>
-        <label className="uppercase tracking-wide text-[10px]">Filter by activity id</label>
+        <label className="uppercase tracking-wide text-xs">Filter by activity id</label>
         <input data-testid="delays-affected-activity-filter"
           value={affectedActivityId}
           onChange={(e) => setAffectedActivityId(e.target.value)}

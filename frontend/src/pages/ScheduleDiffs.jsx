@@ -80,7 +80,7 @@ export default function ScheduleDiffs() {
                 <StatPill icon={Pencil} n={d.activities_modified_count || 0} label="modified" tone="amber" />
                 <StatPill icon={AlertTriangle} n={d.cp_changes_count || 0} label="CP changes" tone="sky" />
               </div>
-              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+              <div className="text-xs text-slate-400 mt-1 font-mono">
                 {(d.earlier_schedule_version_id || "").slice(0, 8)} → {(d.later_schedule_version_id || "").slice(0, 8)}
               </div>
             </Link>

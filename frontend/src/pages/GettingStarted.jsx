@@ -106,7 +106,7 @@ export default function GettingStarted() {
             <div className="flex-1">
               <div className="flex items-center gap-2">
                 <b className="text-sm">{s.title}</b>
-                {s.complete && <span className="pill pill-green text-[10px]">done</span>}
+                {s.complete && <span className="pill pill-green text-xs">done</span>}
               </div>
               <p className="text-xs text-slate-600 mt-1">{s.body}</p>
               <div className="flex items-center gap-2 mt-2">

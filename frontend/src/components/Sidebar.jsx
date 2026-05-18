@@ -88,8 +88,8 @@ export default function Sidebar() {
           <Brand className="h-4 w-4 text-white" strokeWidth={1.6} />
         </div>
         <div>
-          <div className="font-semibold text-[13px] tracking-tight text-white leading-tight">{APP_BRAND.name}</div>
-          <div className="text-[10px] text-slate-500 leading-tight">Federal construction OS</div>
+          <div className="font-semibold text-xs tracking-tight text-white leading-tight">{APP_BRAND.name}</div>
+          <div className="text-xs text-slate-500 leading-tight">Federal construction OS</div>
         </div>
       </div>
 
@@ -104,7 +104,7 @@ export default function Sidebar() {
                 className="w-full flex items-center gap-1 px-4 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
               >
                 {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                <span className="text-[10px] font-semibold uppercase tracking-[0.13em]">{section.title}</span>
+                <span className="text-xs font-semibold uppercase tracking-[0.13em]">{section.title}</span>
               </button>
               {!isCollapsed && (
                 <div className="space-y-0.5">
@@ -130,7 +130,7 @@ export default function Sidebar() {
                         {badge > 0 && (
                           <span
                             data-testid={`sidebar-${item.badgeKey}-badge`}
-                            className="ml-auto inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[18px]"
+                            className="ml-auto inline-flex items-center justify-center text-xs font-semibold px-1.5 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[18px]"
                             title={badgeMore
                               ? `${badge}+ pending (more available beyond first page)`
                               : `${badge} pending`}
@@ -148,7 +148,7 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="px-4 py-3 mt-auto border-t border-slate-800 text-[10px] text-slate-500">
+      <div className="px-4 py-3 mt-auto border-t border-slate-800 text-xs text-slate-500">
         v0.3 · Iter 3 · {new Date().getFullYear()}
       </div>
     </aside>

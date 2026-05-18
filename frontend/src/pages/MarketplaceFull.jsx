@@ -200,8 +200,8 @@ export default function MarketplaceFull() {
           <div key={p.id} data-testid={`mp-card-${p.id}`} className="surface p-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="pill pill-blue capitalize">{p.posting_type.replace(/_/g, " ")}</span>
-              <span className="pill pill-slate text-[10px]">{p.visibility}</span>
-              <span className="ml-auto text-[10px] text-slate-400">{formatDateDisplay(p.created_at)}</span>
+              <span className="pill pill-slate text-xs">{p.visibility}</span>
+              <span className="ml-auto text-xs text-slate-400">{formatDateDisplay(p.created_at)}</span>
             </div>
             <div className="font-medium">{p.title}</div>
             <div className="text-xs text-slate-600 mt-1 line-clamp-3">{p.description}</div>
@@ -251,7 +251,7 @@ export default function MarketplaceFull() {
               <div key={r.id} data-testid={`mp-resp-${r.id}`} className="border border-slate-200 rounded p-3 text-sm">
                 <div className="text-xs text-slate-500 mb-1 flex items-center gap-2">
                   {new Date(r.created_at).toLocaleString()}
-                  {r.escrow_status && <span className={`pill text-[10px] ${r.escrow_status === "released" ? "pill-green" : "pill-blue"}`}>escrow {r.escrow_status}</span>}
+                  {r.escrow_status && <span className={`pill text-xs ${r.escrow_status === "released" ? "pill-green" : "pill-blue"}`}>escrow {r.escrow_status}</span>}
                 </div>
                 <div>{r.message}</div>
                 {r.bid_amount_usd && <div className="font-mono text-sm mt-1">Bid: ${r.bid_amount_usd.toLocaleString()}</div>}
@@ -312,7 +312,7 @@ export default function MarketplaceFull() {
                 <div>
                   <label className="field-label">Auto-release at milestone %</label>
                   <input data-testid="mp-accept-milestone" type="number" min={10} max={100} value={acceptCfg.milestone_pct} onChange={(e) => setAcceptCfg({ ...acceptCfg, milestone_pct: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" />
-                  <div className="text-[11px] text-slate-500 mt-1">When the bound activity's pct_complete reaches this value, the funded escrow is automatically released to the sub.</div>
+                  <div className="text-xs text-slate-500 mt-1">When the bound activity's pct_complete reaches this value, the funded escrow is automatically released to the sub.</div>
                 </div>
                 <Button data-testid="mp-accept-confirm" onClick={acceptBid} className="bg-emerald-600 hover:bg-emerald-700 gap-1">
                   <CheckCircle2 className="h-4 w-4" /> Confirm — fund ${acceptOpen.response.bid_amount_usd?.toLocaleString()} via Stripe

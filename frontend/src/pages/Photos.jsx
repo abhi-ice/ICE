@@ -169,7 +169,7 @@ export default function Photos() {
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <Filter className="h-4 w-4 text-slate-500 mb-2" />
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">Photo class</label>
+          <label className="text-xs text-slate-500 uppercase">Photo class</label>
           <select data-testid="photos-filter-class"
             value={filters.photo_class} onChange={(e) => setFilters({ ...filters, photo_class: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
@@ -178,7 +178,7 @@ export default function Photos() {
           </select>
         </div>
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">Tagged to</label>
+          <label className="text-xs text-slate-500 uppercase">Tagged to</label>
           <select data-testid="photos-filter-tagged-to"
             value={filters.tagged_to} onChange={(e) => setFilters({ ...filters, tagged_to: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
@@ -186,7 +186,7 @@ export default function Photos() {
           </select>
         </div>
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">Affected activity id</label>
+          <label className="text-xs text-slate-500 uppercase">Affected activity id</label>
           <input data-testid="photos-filter-activity"
             value={filters.affected_activity_id}
             onChange={(e) => setFilters({ ...filters, affected_activity_id: e.target.value })}
@@ -228,7 +228,7 @@ function PhotoCard({ photo, projectId }) {
       className="block bg-white border border-slate-200 rounded overflow-hidden hover:border-blue-400 hover:shadow-sm transition">
       <div className="relative aspect-square bg-slate-100">
         <PhotoImage photoId={photo.id} />
-        <span className={`absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded border ${tone}`}>
+        <span className={`absolute top-1 left-1 text-xs px-1.5 py-0.5 rounded border ${tone}`}>
           {photo.photo_class}
         </span>
         {photo.evidentiary_flag && (
@@ -258,7 +258,7 @@ function PhotoCard({ photo, projectId }) {
                   ? ` · ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
                   : "")
             }
-            className="absolute top-1 right-6 bg-blue-600 text-white rounded px-1 py-0.5 text-[8px] inline-flex items-center gap-0.5">
+            className="absolute top-1 right-6 bg-blue-600 text-white rounded px-1 py-0.5 text-xs inline-flex items-center gap-0.5">
             <Sparkles className="h-2.5 w-2.5" /> AI
             {photo.user_overridden_at_tag_time && (
               <Edit3 className="h-2.5 w-2.5" />
@@ -269,7 +269,7 @@ function PhotoCard({ photo, projectId }) {
       <div className="p-2 space-y-1 text-xs">
         <div className="flex items-center justify-between">
           <span className="text-slate-500">{photo.daily_report_id ? (photo.daily_report_id.slice(0, 8)) : "no DR"}</span>
-          <span className="text-[10px] text-slate-400 uppercase">{eventType}</span>
+          <span className="text-xs text-slate-400 uppercase">{eventType}</span>
         </div>
         {photo.tag_caption && <div className="text-slate-700 truncate" title={photo.tag_caption}>"{photo.tag_caption}"</div>}
         {photo.daily_report_activity_id && (
@@ -277,7 +277,7 @@ function PhotoCard({ photo, projectId }) {
         )}
         {photo.is_supplement && (
           <div data-testid={`photo-gallery-supp-${photo.id}`}
-            className="text-[9px] inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-mono uppercase">
+            className="text-xs inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-mono uppercase">
             SUPP→{photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || "?"}
           </div>
         )}
@@ -341,7 +341,7 @@ function AiStatsCard({ stats, loading }) {
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="h-4 w-4 text-blue-700" />
         <div className="font-medium text-sm">AI usage · last 30 days</div>
-        <div className="ml-auto text-[10px] text-slate-500">
+        <div className="ml-auto text-xs text-slate-500">
           Window: {stats.window_days}d · {stats.uploaded_in_window} uploaded
         </div>
       </div>
@@ -360,13 +360,13 @@ function AiStatsCard({ stats, loading }) {
       </div>
       {Array.isArray(stats.top_safety_concerns) && stats.top_safety_concerns.length > 0 && (
         <div className="mt-2 pt-2 border-t border-slate-100">
-          <div className="text-[10px] uppercase text-slate-500 mb-1">
+          <div className="text-xs uppercase text-slate-500 mb-1">
             Top safety concerns
           </div>
           <div className="flex flex-wrap gap-1">
             {stats.top_safety_concerns.map((c, i) => (
               <span key={i} data-testid={`ai-stats-safety-${i}`}
-                className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-200">
+                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-200">
                 <AlertTriangle className="h-2.5 w-2.5" />
                 {c.concern} <span className="text-rose-700">({c.count})</span>
               </span>
@@ -376,13 +376,13 @@ function AiStatsCard({ stats, loading }) {
       )}
       {Object.keys(stats.failure_reasons || {}).length > 0 && (
         <div className="mt-2 pt-2 border-t border-slate-100">
-          <div className="text-[10px] uppercase text-slate-500 mb-1">
+          <div className="text-xs uppercase text-slate-500 mb-1">
             Failed analyses by reason
           </div>
           <div className="flex flex-wrap gap-1">
             {Object.entries(stats.failure_reasons).map(([reason, count]) => (
               <span key={reason}
-                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
                 {reason} <span className="text-slate-500">({count})</span>
               </span>
             ))}
@@ -396,7 +396,7 @@ function AiStatsCard({ stats, loading }) {
 function StatTile({ label, value }) {
   return (
     <div className="p-2 rounded border border-slate-200 bg-slate-50">
-      <div className="text-[10px] uppercase text-slate-500">{label}</div>
+      <div className="text-xs uppercase text-slate-500">{label}</div>
       <div className="text-sm font-semibold text-slate-900 tabular-nums">{value}</div>
     </div>
   );

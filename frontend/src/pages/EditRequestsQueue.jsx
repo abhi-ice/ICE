@@ -147,7 +147,7 @@ export default function EditRequestsQueue() {
                       className="text-blue-700 hover:underline">
                       {EVENT_LABEL[r.event_type] || r.event_type}
                     </Link>
-                    <div className="text-[10px] text-slate-400 font-mono">
+                    <div className="text-xs text-slate-400 font-mono">
                       DR {r.daily_report_id?.slice(0, 8)} · ev {r.event_id?.slice(0, 8)}
                     </div>
                   </td>
@@ -163,28 +163,28 @@ export default function EditRequestsQueue() {
                           value={noteByRow[r.id] || ""}
                           onChange={(e) => setNoteByRow({ ...noteByRow, [r.id]: e.target.value })}
                           placeholder="Optional note (encouraged on deny)"
-                          className="w-full p-1 rounded border border-slate-200 text-[11px] h-12" />
+                          className="w-full p-1 rounded border border-slate-200 text-xs h-12" />
                         <div className="flex gap-1">
                           <Button data-testid={`edit-request-approve-${r.id}`}
                             onClick={() => review(r, "approve")}
                             disabled={busyById.has(r.id)}
-                            className="h-7 px-2 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] gap-1">
+                            className="h-7 px-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs gap-1">
                             <Check className="h-3 w-3" /> Approve
                           </Button>
                           <Button data-testid={`edit-request-deny-${r.id}`}
                             onClick={() => review(r, "deny")}
                             disabled={busyById.has(r.id)}
-                            className="h-7 px-2 bg-rose-600 hover:bg-rose-700 text-white text-[11px] gap-1">
+                            className="h-7 px-2 bg-rose-600 hover:bg-rose-700 text-white text-xs gap-1">
                             <X className="h-3 w-3" /> Deny
                           </Button>
                         </div>
                       </div>
                     ) : (
-                      <div className="text-[10px] text-slate-500 space-y-0.5">
+                      <div className="text-xs text-slate-500 space-y-0.5">
                         <div>By {r.reviewed_by?.slice(0, 8) || "—"} · {_ageLabel(r.reviewed_at)}</div>
                         {r.review_note && <div className="italic">"{r.review_note}"</div>}
                         {r.status === "approved" && (
-                          <div className="font-mono text-[10px]">
+                          <div className="font-mono text-xs">
                             <Clock className="inline h-3 w-3 mr-0.5" />
                             window {expired ? "expired" : "expires"} {_ageLabel(r.edit_window_expires_at)}
                           </div>

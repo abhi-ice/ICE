@@ -57,7 +57,7 @@ export default function MobileForeman() {
         <ListChecks className="h-5 w-5 text-amber-400" />
         <div>
           <div className="text-sm font-semibold">Foreman</div>
-          <div className="text-[11px] text-slate-400">{user?.full_name}</div>
+          <div className="text-xs text-slate-400">{user?.full_name}</div>
         </div>
         <button data-testid="m-logout" onClick={logout} className="ml-auto h-8 w-8 grid place-items-center rounded hover:bg-slate-800">
           <LogOut className="h-4 w-4" />
@@ -68,7 +68,7 @@ export default function MobileForeman() {
         <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs flex items-center gap-2">
           <Cloud className="h-4 w-4 text-amber-600" />
           Daily report for <b className="ml-1">{today}</b>
-          {report && <span className="ml-auto pill pill-green text-[10px]">{report.status || "draft"}</span>}
+          {report && <span className="ml-auto pill pill-green text-xs">{report.status || "draft"}</span>}
         </div>
 
         {/* Voice quick-capture */}
@@ -76,7 +76,7 @@ export default function MobileForeman() {
           <Mic className="h-5 w-5 text-rose-500" />
           <div className="flex-1">
             <div className="text-sm font-medium">Voice note</div>
-            <div className="text-[11px] text-slate-500">Tap to record · transcribed by Whisper · Claude extracts structured fields.</div>
+            <div className="text-xs text-slate-500">Tap to record · transcribed by Whisper · Claude extracts structured fields.</div>
           </div>
           <VoiceCaptureButton />
         </div>
@@ -96,7 +96,7 @@ export default function MobileForeman() {
             disabled={photoBusy}
             className="block w-full text-sm"
           />
-          <div className="text-[11px] text-slate-500 mt-1">Tap to take with phone camera. EXIF + GPS auto-extracted.</div>
+          <div className="text-xs text-slate-500 mt-1">Tap to take with phone camera. EXIF + GPS auto-extracted.</div>
         </div>
 
         {/* Quick activity %-update */}

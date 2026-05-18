@@ -92,7 +92,7 @@ function PendingInputChrome({ children, tone, onToggle, expanded, mobile }) {
         data-testid="jigsaw-pending-expand"
         title={expanded ? "Hide AI suggestion" : "Show AI suggestion"}
         className={
-          "absolute top-1 right-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium border " +
+          "absolute top-1 right-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-xs font-medium border " +
           tone.pill +
           " hover:opacity-90"
         }
@@ -294,7 +294,7 @@ export default function JigsawField({
                 {fieldLabel ? ` ${fieldLabel}` : ""}:
               </span>
               {suggestion.confidence_score != null && (
-                <span className="text-[10px] opacity-70">
+                <span className="text-xs opacity-70">
                   {Math.round(suggestion.confidence_score * 100)}% · {tone.label}
                 </span>
               )}
@@ -310,7 +310,7 @@ export default function JigsawField({
                 )}
             </div>
             {editedFromAi && (
-              <div className="text-[10px] text-slate-600 italic mb-1">
+              <div className="text-xs text-slate-600 italic mb-1">
                 Edited from AI suggestion — input value differs from above.
               </div>
             )}
@@ -369,14 +369,14 @@ export default function JigsawField({
                 Edit
               </button>
               {!roleAllowed && (
-                <span className="text-[10px] text-slate-600 inline-flex items-center gap-1 ml-1">
+                <span className="text-xs text-slate-600 inline-flex items-center gap-1 ml-1">
                   <Lock className="h-2.5 w-2.5" />
                   Restricted to {allowedRoles.join(", ")}
                 </span>
               )}
             </div>
             {suggestion.source_context && (
-              <div className="text-[10px] text-slate-600 mt-1 italic truncate"
+              <div className="text-xs text-slate-600 mt-1 italic truncate"
                 title={suggestion.source_context}>
                 Source: {suggestion.source_context}
               </div>
@@ -388,7 +388,7 @@ export default function JigsawField({
             className="rounded p-2 text-xs border border-rose-300 bg-rose-50 space-y-1"
             data-testid={`jigsaw-reject-dialog-${fieldPath}`}
           >
-            <label className="block text-[10px] uppercase text-rose-800">
+            <label className="block text-xs uppercase text-rose-800">
               Rejection reason (required, min 10 chars)
             </label>
             <textarea
@@ -404,7 +404,7 @@ export default function JigsawField({
                 user sees the gate up-front instead of finding out via
                 toast error after click. Also defends against future
                 bypass attempts if the toast-error path is ever skipped. */}
-            <div className="text-[10px] text-rose-800/70 text-right">
+            <div className="text-xs text-rose-800/70 text-right">
               {(rejectReason || "").trim().length} / 10 min
               {(rejectReason || "").trim().length < 10
                 ? " — required for TIA defensibility"
@@ -474,7 +474,7 @@ export default function JigsawField({
         {children}
         <span
           data-testid={`jigsaw-terminal-badge-${fieldPath}`}
-          className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${badgeTone}`}
+          className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded border ${badgeTone}`}
           title={
             isConfirmed
               ? `Confirmed by ${terminal.confirmed_by || "system"} at ${terminal.confirmed_at || ""}`

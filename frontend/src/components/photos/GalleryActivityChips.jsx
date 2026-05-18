@@ -24,7 +24,7 @@ export default function GalleryActivityChips({ projectId, activityIds, max = 4 }
         if (!c) {
           // Still loading or chip missing -- render placeholder.
           return (
-            <span key={id} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 font-mono">
+            <span key={id} className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-400 font-mono">
               {id.slice(0, 6)}
             </span>
           );
@@ -32,7 +32,7 @@ export default function GalleryActivityChips({ projectId, activityIds, max = 4 }
         return (
           <Link key={id} to={`/tasks/${id}`}
             title={chipTooltip(c)}
-            className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 hover:bg-blue-100 inline-flex items-center gap-1">
+            className="text-xs px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 hover:bg-blue-100 inline-flex items-center gap-1">
             <span className="font-mono">{chipLabel(c)}</span>
             {c.is_critical_path && (
               <span className="text-rose-600">CP</span>
@@ -41,7 +41,7 @@ export default function GalleryActivityChips({ projectId, activityIds, max = 4 }
         );
       })}
       {overflow > 0 && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
           +{overflow}
         </span>
       )}

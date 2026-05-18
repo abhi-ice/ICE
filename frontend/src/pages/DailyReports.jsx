@@ -92,7 +92,7 @@ function LockedAddReasonBlock({ value, onChange, eventLabel = "this event", test
         className={`w-full p-2 rounded text-sm bg-white h-16 ${
           ok ? "border border-amber-300" : "border-2 border-rose-400 ring-1 ring-rose-200"
         }`} />
-      <div className={`flex items-center justify-between text-[10px] ${
+      <div className={`flex items-center justify-between text-xs ${
         ok ? "text-emerald-700" : "text-rose-700 font-semibold"
       }`}>
         <span>{ok ? "✓ ready" : "⚠ required field"}</span>
@@ -378,6 +378,27 @@ function DailyReportDetail({ id, onBack }) {
     window.history.replaceState({}, "", url.toString());
     return () => clearTimeout(t);
   }, [bundle]);
+
+  // Feature F4 (2026-05-18) -- real-time grid refresh. Poll the grid
+  // endpoint every 15s so the F3 blocker badge + F4 auto-status reflect
+  // blockers opening / resolving on linked tasks without a manual
+  // reload. Lightweight: hits only /grid (not the full /context bundle)
+  // and merges the result into bundle.grid. Uncontrolled inputs keep
+  // any in-progress edit across the merge (defaultValue is not
+  // reapplied to a mounted input). The poll is a no-op until the
+  // initial /context load populates bundle.
+  useEffect(() => {
+    const t = setInterval(() => {
+      api.get(`/daily-reports/${id}/grid`)
+        .then(({ data }) => {
+          if (Array.isArray(data)) {
+            setBundle((b) => (b ? { ...b, grid: data } : b));
+          }
+        })
+        .catch(() => { /* poll failure is non-fatal */ });
+    }, 15000);
+    return () => clearInterval(t);
+  }, [id]);
 
   if (!bundle) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
@@ -676,8 +697,7 @@ function DailyReportDetail({ id, onBack }) {
       {/* ACTIVITY GRID */}
       <ActivityGridPanel grid={grid} available={available} reload={reload}
         dailyReportId={id} locked={locked} reportDate={report.report_date}
-        presence={presence} projectId={project.id}
-        submitRowErrors={submitRowErrors} />
+        presence={presence} submitRowErrors={submitRowErrors} />
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
@@ -759,7 +779,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </div>
           {report.is_no_work_day && (
             <div data-testid="dr-no-work-pill"
-              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] uppercase tracking-wide"
+              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-xs uppercase tracking-wide"
               title={report.no_work_note || "No-work day"}>
               No-work day · {(report.no_work_reason || "").replace(/_/g, " ")}
             </div>
@@ -767,7 +787,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
         </div>
         <div className="hidden md:block min-w-[180px]">
           <div className="text-xs text-slate-500 uppercase tracking-wide">Trail</div>
-          <div className="text-[11px] text-slate-600 leading-snug">
+          <div className="text-xs text-slate-600 leading-snug">
             <div>Prepared: {userLabels[report.prepared_by] || "—"}</div>
             <div>Submitted: {userLabels[report.submitted_by] || "—"}</div>
             <div>Approved: {userLabels[report.approved_by] || "—"}</div>
@@ -828,7 +848,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
 function KPI({ label, value, testid }) {
   return (
     <div className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded text-center min-w-[80px]" data-testid={testid}>
-      <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
       <div className="font-semibold tabular-nums">{value}</div>
     </div>
   );
@@ -868,7 +888,7 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
     <PanelShell icon={Cloud} title="Weather" testid="dr-weather-panel"
-      badge={fetchedAt && <span className="text-[10px] text-slate-400 ml-auto">fetched {fetchedAt}</span>}>
+      badge={fetchedAt && <span className="text-xs text-slate-400 ml-auto">fetched {fetchedAt}</span>}>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
@@ -970,9 +990,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
       badge={
         <div className="ml-2 flex items-center gap-3">
-          <span className="text-[10px] text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
+          <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
           <button data-testid="presence-toggle-detailed" onClick={toggleDetailed}
-            className="text-[10px] text-blue-600 hover:underline">
+            className="text-xs text-blue-600 hover:underline">
             {showDetailed ? "Hide detailed roster" : "Show detailed roster"}
           </button>
         </div>
@@ -1014,7 +1034,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   : `${Math.abs(delta)} short`;
                 return (
                   <tr key={trade} data-testid={`dr-presence-trade-${trade}`} className="border-t border-slate-100">
-                    <td className="py-0.5">{trade}{info.on_cp && <span className="ml-1 text-rose-600 text-[10px]">CP</span>}</td>
+                    <td className="py-0.5">{trade}{info.on_cp && <span className="ml-1 text-rose-600 text-xs">CP</span>}</td>
                     <td className="text-right tabular-nums">{info.demanded}</td>
                     <td className="text-right tabular-nums">{actual}</td>
                     <td className={`text-right tabular-nums ${tone}`}>{delta >= 0 ? `+${delta}` : delta}</td>
@@ -1172,7 +1192,7 @@ function CrewSelector({ row, presence, locked, updateRow }) {
         value={row.linked_crew_id || ""}
         onChange={onPickTrade}
         disabled={locked}
-        className="h-7 text-[11px] px-1 border border-slate-200 rounded bg-white"
+        className="h-7 text-xs px-1 border border-slate-200 rounded bg-white"
       >
         <option value="">— no crew assigned —</option>
         {presence.map((p) => (
@@ -1197,269 +1217,165 @@ function CrewSelector({ row, presence, locked, updateRow }) {
 
 // Bucket C3a Phase 2 — controlled constraint vocabulary; mirrors the
 // backend ConstraintType Literal in models.py.
-const CONSTRAINT_TYPES = [
-  { value: "not_constrained", label: "(none — not constrained)" },
-  { value: "awaiting_rfi_response", label: "Awaiting RFI response" },
-  { value: "awaiting_submittal_return", label: "Awaiting submittal return" },
-  { value: "awaiting_bulletin_proposal", label: "Awaiting bulletin proposal" },
-  { value: "awaiting_bulletin_approval", label: "Awaiting bulletin approval" },
-  { value: "awaiting_ae_direction", label: "Awaiting A/E direction" },
-  { value: "awaiting_shutdown_window", label: "Awaiting shutdown window" },
-  { value: "awaiting_tenant_access", label: "Awaiting tenant access" },
-  { value: "awaiting_clearance", label: "Awaiting clearance" },
-  { value: "awaiting_predecessor_completion", label: "Awaiting predecessor completion" },
-  { value: "concealed_condition_under_investigation", label: "Concealed condition under investigation" },
-  { value: "weather_impact", label: "Weather impact" },
-  { value: "labor_unavailability", label: "Labor unavailability" },
-  { value: "material_not_on_site", label: "Material not on site" },
-  { value: "other", label: "Other (free text)" },
+// Features F2/F3/F4 (2026-05-18) -- DR Activity Grid view layer.
+//
+// F2 -- the grid is split into 3 sections by the linked task's
+// work_category (the F1 tag). Two paperwork tags collapse into
+// Section 1; a null / unknown tag falls into Field Work so no row
+// ever disappears. Only Field Work (Section 2) is editable -- the
+// super logs progress there; Sections 1 & 3 are visible but
+// read-only. Mirrors backend services/dr_activity_grid.section_for.
+const GRID_SECTIONS = [
+  { n: 1, title: "Preconstruction & Construction Paperwork",
+    editable: false, empty: "No paperwork scheduled on this date." },
+  { n: 2, title: "Field Work",
+    editable: true, empty: "No field work scheduled on this date." },
+  { n: 3, title: "Closeout Paperwork",
+    editable: false, empty: "No closeout paperwork scheduled on this date." },
 ];
 
-// Followup-fix 1 (2026-05-07): full set per backend ConstraintType validator.
-// The backend requires constraint_reference_entity_id for ANY type that's
-// not 'not_constrained' and not 'other'. The earlier subset of 6 types
-// dead-ended 7 types in the UI (user could pick the type, no Reference
-// dropdown rendered, save 422'd permanently with no recovery path).
-const CONSTRAINT_TYPES_NEEDING_REF = new Set([
-  "awaiting_rfi_response", "awaiting_submittal_return",
-  "awaiting_bulletin_proposal", "awaiting_bulletin_approval",
-  "awaiting_ae_direction", "awaiting_shutdown_window",
-  "awaiting_tenant_access", "awaiting_clearance",
-  "awaiting_predecessor_completion",
-  "concealed_condition_under_investigation",
-  "weather_impact", "labor_unavailability", "material_not_on_site",
-]);
+function gridSectionOf(workCategory) {
+  if (workCategory === "preconstruction_paperwork"
+      || workCategory === "construction_paperwork") return 1;
+  if (workCategory === "closeout_paperwork") return 3;
+  return 2; // field_work + null / unknown -> Field Work
+}
 
-// Bucket C3a Phase 2 — Constraint cell on the activity grid. Stacks
-// type dropdown + (reference dropdown OR other-text) + impact-hours
-// vertically inside a single cell.
-//
-// Followup-fix 1 (2026-05-07): defer the save when the user changes
-// constraint_type to one that needs a follow-up (reference for the
-// awaiting_*/concealed_*/weather/labor/material types, description
-// for 'other') AND the row doesn't yet carry a valid follow-up. The
-// pending type lives in local state until the follow-up is provided;
-// then both fields are sent in one PATCH so backend cross-field
-// validation passes. Without this, the type-change PATCH 422'd before
-// the user could fill in the follow-up.
-//
-// Reference options eager-load on first render of a needs-ref state
-// so the dropdown is immediately usable instead of requiring focus.
-function ConstraintCell({ row, projectId, locked, updateRow }) {
-  const taskId = row.schedule_activity_id;
-  const persistedType = row.constraint_type || "not_constrained";
+// F4 -- status is AUTO-computed (blocked > complete > in_progress >
+// not_started) and shown read-only; it is no longer a manual dropdown
+// (auto overrides manual). The value comes from the enriched read
+// (row.auto_status); status_at_end_of_day is the stored fallback.
+const STATUS_PILL_CLASS = {
+  not_started: "bg-slate-100 text-slate-600 border-slate-200",
+  in_progress: "bg-blue-50 text-blue-700 border-blue-200",
+  blocked: "bg-rose-50 text-rose-700 border-rose-200",
+  complete: "bg-emerald-50 text-emerald-700 border-emerald-200",
+};
 
-  const [pendingType, setPendingType] = useState(null);
-  const [pendingDesc, setPendingDesc] = useState(null);
-
-  // Reset pending state when the underlying row identity / persisted
-  // value changes (e.g., another tab edited, or we just reloaded after
-  // a successful save).
-  useEffect(() => {
-    setPendingType(null);
-    setPendingDesc(null);
-  }, [row.id, persistedType, row.constraint_reference_entity_id, row.constraint_other_description]);
-
-  const ct = pendingType || persistedType;
-  const needsRef = CONSTRAINT_TYPES_NEEDING_REF.has(ct);
-  const isOther = ct === "other";
-  const hasValidRef = !!row.constraint_reference_entity_id;
-  const hasValidDesc = !!(row.constraint_other_description && String(row.constraint_other_description).trim());
-  const pending = !!pendingType || pendingDesc !== null;
-
-  const [refOptions, setRefOptions] = useState([]);
-  const [refLoaded, setRefLoaded] = useState(false);
-  const [refLoading, setRefLoading] = useState(false);
-
-  const ensureRefs = async () => {
-    if (refLoaded || refLoading || !projectId || !taskId) return;
-    setRefLoading(true);
-    try {
-      const { data } = await api.get(`/projects/${projectId}/gating-entities`, {
-        params: { task_id: taskId, open_only: true },
-      });
-      setRefOptions(Array.isArray(data) ? data : []);
-    } catch (e) {
-      setRefOptions([]);
-    } finally { setRefLoaded(true); setRefLoading(false); }
-  };
-
-  // Eager-load gating options the moment the user picks a needs-ref
-  // type so the dropdown is ready without requiring a second focus.
-  useEffect(() => { if (needsRef) ensureRefs(); /* eslint-disable-next-line */ }, [needsRef, taskId, projectId]);
-
-  const setType = (newType) => {
-    // Path A — clearing the constraint. Always saves immediately;
-    // backend nulls the dependents.
-    if (newType === "not_constrained") {
-      setPendingType(null);
-      setPendingDesc(null);
-      updateRow(row.id, {
-        constraint_type: "not_constrained",
-        constraint_reference_entity_id: null,
-        constraint_other_description: null,
-      });
-      return;
-    }
-    // Path B — switching to 'other'. Save now if the row already has
-    // a non-empty description (e.g., user is just re-confirming the
-    // type); else hold pending until the description blur.
-    if (newType === "other") {
-      if (hasValidDesc) {
-        setPendingType(null);
-        updateRow(row.id, {
-          constraint_type: "other",
-          constraint_reference_entity_id: null,
-        });
-      } else {
-        setPendingType("other");
-      }
-      return;
-    }
-    // Path C — switching to a needs-ref type. Save now if the row
-    // already has a reference (re-confirm); else hold pending until
-    // the user picks a reference.
-    if (CONSTRAINT_TYPES_NEEDING_REF.has(newType)) {
-      if (hasValidRef) {
-        setPendingType(null);
-        updateRow(row.id, {
-          constraint_type: newType,
-          constraint_other_description: null,
-        });
-      } else {
-        setPendingType(newType);
-      }
-      return;
-    }
-    // Fallthrough (shouldn't happen given the enum) — save raw.
-    setPendingType(null);
-    updateRow(row.id, { constraint_type: newType });
-  };
-
-  const setRef = (refId) => {
-    if (!refId) return;
-    const typeToSend = pendingType || persistedType;
-    setPendingType(null);
-    updateRow(row.id, {
-      constraint_type: typeToSend,
-      constraint_reference_entity_id: refId,
-      constraint_other_description: null,
-    });
-  };
-
-  const commitDesc = (raw) => {
-    const desc = (raw || "").trim();
-    setPendingDesc(null);
-    if (!desc && pendingType !== "other") {
-      // Description cleared on an already-persisted 'other' row; fall
-      // back to backend validation path by sending null + current type
-      // -- backend will 422 if type stays 'other'. That's the right
-      // signal since the row would be invalid.
-      updateRow(row.id, { constraint_other_description: null });
-      return;
-    }
-    if (!desc) {
-      // 'other' with empty desc -- don't fire a save, surface inline
-      // hint instead. Restore pending so the input renders.
-      setPendingType("other");
-      return;
-    }
-    setPendingType(null);
-    updateRow(row.id, {
-      constraint_type: "other",
-      constraint_other_description: desc,
-      constraint_reference_entity_id: null,
-    });
-  };
-
+function GridStatusPill({ status, testid }) {
+  const s = status || "not_started";
   return (
-    <div className="flex flex-col gap-1 min-w-[200px]" data-testid={`dr-constraint-${row.activity_code}`}>
-      <select
-        data-testid={`dr-constraint-type-${row.activity_code}`}
-        value={ct}
-        onChange={(e) => setType(e.target.value)}
-        onFocus={ensureRefs}
-        disabled={locked}
-        className={`h-7 text-[11px] px-1 border rounded ${row.constraint_auto_filled ? "border-blue-300 bg-blue-50" : pending ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}
-        title={row.constraint_auto_filled
-          ? "Auto-filled from open gating entity. Override to take ownership."
-          : pending ? "Pending — pick reference or fill description to save."
-          : undefined}
-      >
-        {CONSTRAINT_TYPES.map((c) => (
-          <option key={c.value} value={c.value}>{c.label}</option>
-        ))}
-      </select>
-
-      {needsRef && (
-        <select
-          data-testid={`dr-constraint-ref-${row.activity_code}`}
-          value={row.constraint_reference_entity_id || ""}
-          onChange={(e) => setRef(e.target.value)}
-          onFocus={ensureRefs}
-          disabled={locked}
-          className={`h-7 text-[11px] px-1 border rounded bg-white ${pending && !hasValidRef ? "border-amber-400" : "border-slate-200"}`}
-        >
-          <option value="" disabled={refLoaded && refOptions.length === 0}>
-            {refLoading ? "— loading… —"
-              : refLoaded
-                ? (refOptions.length === 0
-                    ? "No open gating entities for this task"
-                    : `— pick (${refOptions.length} open) —`)
-                : "— loading… —"}
-          </option>
-          {refOptions.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.entity_number ? `${o.entity_number}: ` : ""}{(o.display_label || "").slice(0, 60)}
-              {typeof o.current_age_working_days === "number" ? ` · ${o.current_age_working_days}wd` : ""}
-              {o.is_over_sla ? " · OVER SLA" : ""}
-            </option>
-          ))}
-        </select>
-      )}
-
-      {isOther && (
-        <input
-          data-testid={`dr-constraint-other-${row.activity_code}`}
-          type="text"
-          defaultValue={row.constraint_other_description || ""}
-          onChange={(e) => setPendingDesc(e.target.value)}
-          onBlur={(e) => commitDesc(e.target.value)}
-          disabled={locked}
-          placeholder="Describe the constraint"
-          className={`h-7 text-[11px] px-1 border rounded ${pending && !hasValidDesc ? "border-amber-400 bg-amber-50" : "border-slate-200"}`}
-        />
-      )}
-
-      {pending && (
-        <div className="text-[10px] text-amber-700" data-testid={`dr-constraint-pending-${row.activity_code}`}>
-          {needsRef && !hasValidRef ? "Pick reference to save"
-            : isOther && !hasValidDesc ? "Type description to save"
-            : "Pending…"}
-        </div>
-      )}
-
-      {ct !== "not_constrained" && (
-        <input
-          data-testid={`dr-constraint-hours-${row.activity_code}`}
-          type="number"
-          min="0"
-          step="0.5"
-          defaultValue={row.production_impact_hours ?? ""}
-          onBlur={(e) => updateRow(row.id, { production_impact_hours: e.target.value === "" ? null : Number(e.target.value) })}
-          disabled={locked}
-          placeholder="impact hrs"
-          title="Crew-hours lost on this activity due to the constraint"
-          className="h-6 text-[11px] px-1 border border-slate-200 rounded tabular-nums"
-        />
-      )}
-    </div>
+    <span data-testid={testid}
+      className={`inline-block px-1.5 py-0.5 rounded border text-xs uppercase tracking-wide ${STATUS_PILL_CLASS[s] || STATUS_PILL_CLASS.not_started}`}>
+      {s.replace(/_/g, " ")}
+    </span>
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], projectId, submitRowErrors = {} }) {
-  // Phase 2 — alias so the ConstraintCell call site reads cleanly.
-  const dailyReportProjectId = projectId;
+// F3 -- blocker badge. Shows the count of OPEN blockers on the linked
+// task (open RFIs, delays, over-SLA submittals) -- the same persisted
+// open_blocker_count the Tasks page reads. 0 -> no badge.
+function BlockerBadge({ count, testid }) {
+  const n = Number(count || 0);
+  if (n <= 0) return <span data-testid={testid} className="text-slate-300 text-xs">—</span>;
+  return (
+    <span data-testid={testid}
+      title={`${n} open blocker${n === 1 ? "" : "s"} on the linked task (open RFIs, delays, over-SLA submittals)`}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold tabular-nums">
+      <AlertTriangle className="h-3 w-3" /> {n}
+    </span>
+  );
+}
+
+// F2/F3/F4 -- one Activity Grid row. `editable` (true only for the
+// Field Work section) decides whether the progress cells render as
+// inputs or as read-only text. Status is always a read-only pill
+// (F4 auto-status); the blocker badge (F3) is always shown.
+function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
+                   submitRowErrors, presence, updateRow, removeRow,
+                   dailyReportId, reload }) {
+  const delta = (r.pct_complete_end_of_day || 0) - (r.pct_complete_start_of_day || 0);
+  const variance = delta < 0 ? "neg" : delta === 0 ? "zero" : "pos";
+  const isUnplanned = (r.activity_code || "").startsWith("AF");
+  const isStale = staleRows.has(r.id);
+  const isProvisional = r.sync_state === "provisional";
+  const rowErrs = submitRowErrors[r.id] || [];
+  const hasErr = rowErrs.length > 0;
+  const rowClass = isStale ? "bg-amber-50/40"
+    : hasErr ? "bg-red-50/40" : undefined;
+  // F4 -- auto_status from the enriched read; status_at_end_of_day is
+  // the stored fallback for an un-enriched row.
+  const status = r.auto_status || r.status_at_end_of_day || "not_started";
+  return (
+    <tr data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
+      <td className="font-mono text-xs">
+        {r.activity_code}
+        {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-xs uppercase">field</span>}
+        {isProvisional && !isStale && (
+          <span title="Provisional sync — confirmed on submit"
+            className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
+        )}
+        {isStale && (
+          <button data-testid={`dr-row-refresh-${r.activity_code}`}
+            onClick={refreshStaleRow}
+            title="Schedule was updated externally — click to refresh row"
+            className="ml-1 inline-flex items-center gap-1 text-xs px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
+            <RefreshCw className="h-2.5 w-2.5" /> refresh
+          </button>
+        )}
+        {hasErr && (
+          <div data-testid={`dr-row-err-${r.activity_code}`}
+            className="mt-1 text-xs text-red-700 normal-case font-sans">
+            {rowErrs.map((e, i) => <div key={i}>⚠ {e.message}</div>)}
+          </div>
+        )}
+      </td>
+      <td className="truncate max-w-[260px]">{r.activity_description}</td>
+      <td className="text-xs">{r.location_name || "—"}</td>
+      <td className="text-xs">{r.trade_code || "—"}</td>
+      <td>
+        {editable
+          ? <CrewSelector row={r} presence={presence} locked={locked} updateRow={updateRow} />
+          : <span className="text-xs text-slate-400">—</span>}
+      </td>
+      <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
+      <td>
+        {editable ? (
+          <input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100"
+            defaultValue={r.pct_complete_end_of_day}
+            onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })}
+            disabled={locked} className="w-14 tabular-nums" />
+        ) : (
+          <span className="text-xs tabular-nums text-slate-500">{r.pct_complete_end_of_day || 0}</span>
+        )}
+      </td>
+      <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
+        {delta > 0 ? "+" : ""}{delta}
+      </td>
+      <td>
+        {editable ? (
+          <input type="number" defaultValue={r.hours_worked}
+            onBlur={(e) => updateRow(r.id, { hours_worked: Number(e.target.value) })}
+            disabled={locked} className="w-14" />
+        ) : (
+          <span className="text-xs tabular-nums text-slate-500">{r.hours_worked || 0}</span>
+        )}
+      </td>
+      <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
+      <td><BlockerBadge count={r.open_blocker_count} testid={`dr-blocker-${r.activity_code}`} /></td>
+      <td>
+        {editable ? (
+          <input type="text" defaultValue={r.notes || ""}
+            onBlur={(e) => updateRow(r.id, { notes: e.target.value })}
+            disabled={locked} placeholder="Notes…" className="w-44" />
+        ) : (
+          <span className="text-xs text-slate-500">{r.notes || "—"}</span>
+        )}
+      </td>
+      <td>
+        {editable && !locked && (
+          <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)}
+            className="text-red-600 hover:bg-red-50 p-1 rounded text-xs">remove</button>
+        )}
+        {editable && locked && (
+          <ActivityRowLockedEditButton row={r} dailyReportId={dailyReportId} reload={reload} />
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
   const [picking, setPicking] = useState("");
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
@@ -1571,15 +1487,14 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
     finally { setCreatingUnplanned(false); }
   };
 
-  const STATUS_OPTS = ["not_started", "in_progress", "blocked", "complete"];
   return (
     <PanelShell icon={ClipboardList} title="Activity grid" testid="dr-activity-grid" count={grid.length}
       badge={
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] text-slate-500">date: {reportDate}</span>
+          <span className="text-xs text-slate-500">date: {reportDate}</span>
           {!locked && (
             <button data-testid="dr-refresh-grid" onClick={refreshFromSchedule} disabled={refreshing}
-              className="h-7 px-2 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
+              className="h-7 px-2 rounded border border-slate-200 bg-white text-xs hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
               <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} /> Refresh from schedule
             </button>
           )}
@@ -1592,83 +1507,47 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
               <th>Code</th><th>Description</th><th>Loc</th><th>Trade</th>
               <th>Crew</th><th>SOD %</th><th>EOD %</th><th>Δ</th>
               <th>Hours</th><th>Status</th>
-              <th title="Bucket C3a — what's blocking this row, if anything. Required on submit when EOD% = SOD%.">Constraint</th>
+              <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
               <th>Notes</th><th></th>
             </tr>
           </thead>
-          <tbody>
-            {grid.map((r) => {
-              const delta = (r.pct_complete_end_of_day || 0) - (r.pct_complete_start_of_day || 0);
-              const variance = delta < 0 ? "neg" : delta === 0 ? "zero" : "pos";
-              const isUnplanned = (r.activity_code || "").startsWith("AF");
-              const isStale = staleRows.has(r.id);
-              const isProvisional = r.sync_state === "provisional";
-              const rowErrs = submitRowErrors[r.id] || [];
-              const hasErr = rowErrs.length > 0;
-              const rowClass = isStale ? "bg-amber-50/40"
-                : hasErr ? "bg-red-50/40" : undefined;
-              return (
-                <tr key={r.id} data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
-                  <td className="font-mono text-xs">
-                    {r.activity_code}
-                    {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-[9px] uppercase">field</span>}
-                    {isProvisional && !isStale && (
-                      <span title="Provisional sync — confirmed on submit"
-                        className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
+          {/* F2 -- the grid is split into 3 sections by work_category.
+              Only the Field Work section is editable; Sections 1 & 3
+              are visible but read-only (no editable inputs). */}
+          {GRID_SECTIONS.map((sec) => {
+            const secRows = grid.filter((r) => gridSectionOf(r.work_category) === sec.n);
+            return (
+              <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
+                <tr className="bg-slate-100/80 border-y border-slate-200">
+                  <td colSpan="13" className="px-2 py-1.5">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      {sec.title}
+                    </span>
+                    <span className="ml-2 text-xs text-slate-400 tabular-nums">
+                      {secRows.length} {secRows.length === 1 ? "row" : "rows"}
+                    </span>
+                    {!sec.editable && (
+                      <span className="ml-2 text-xs uppercase tracking-wide text-slate-400">· read-only</span>
                     )}
-                    {isStale && (
-                      <button data-testid={`dr-row-refresh-${r.activity_code}`}
-                        onClick={refreshStaleRow}
-                        title="Schedule was updated externally — click to refresh row"
-                        className="ml-1 inline-flex items-center gap-1 text-[10px] px-1 rounded bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200">
-                        <RefreshCw className="h-2.5 w-2.5" /> refresh
-                      </button>
-                    )}
-                    {hasErr && (
-                      <div data-testid={`dr-row-err-${r.activity_code}`}
-                        className="mt-1 text-[10px] text-red-700 normal-case font-sans">
-                        {rowErrs.map((e, i) => <div key={i}>⚠ {e.message}</div>)}
-                      </div>
-                    )}
-                  </td>
-                  <td className="truncate max-w-[260px]">{r.activity_description}</td>
-                  <td className="text-xs">{r.location_name || "—"}</td>
-                  <td className="text-xs">{r.trade_code || "—"}</td>
-                  <td>
-                    <CrewSelector row={r} presence={presence} locked={locked} updateRow={updateRow} />
-                  </td>
-                  <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
-                  <td><input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100" defaultValue={r.pct_complete_end_of_day} onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })} disabled={locked} className="w-14 tabular-nums" /></td>
-                  <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
-                    {delta > 0 ? "+" : ""}{delta}
-                  </td>
-                  <td><input type="number" defaultValue={r.hours_worked} onBlur={(e) => updateRow(r.id, { hours_worked: Number(e.target.value) })} disabled={locked} className="w-14" /></td>
-                  <td>
-                    <select data-testid={`dr-status-${r.activity_code}`} defaultValue={r.status_at_end_of_day || "not_started"} onChange={(e) => updateRow(r.id, { status_at_end_of_day: e.target.value })} disabled={locked} className="text-xs h-7 border border-slate-200 rounded px-1">
-                      {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <ConstraintCell row={r} projectId={dailyReportProjectId} locked={locked} updateRow={updateRow} />
-                  </td>
-                  <td><input type="text" defaultValue={r.notes || ""} onBlur={(e) => updateRow(r.id, { notes: e.target.value })} disabled={locked} placeholder="Notes…" className="w-44" /></td>
-                  <td>
-                    {!locked && <button data-testid={`dr-remove-${r.activity_code}`} onClick={() => removeRow(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded text-xs">remove</button>}
-                    {/* Bucket D Addition 5 (2026-05-12) -- per-row Edit
-                        button on locked DRs. Opens LockedEventEditModal
-                        targeting the row's PATCH endpoint with the
-                        editable activity-grid fields. The PATCH path
-                        on the backend fires
-                        ACTIVITY_GRID_EDITED_POST_SUBMIT (distinct from
-                        EVENT_EDITED_POST_SUBMIT) when the parent DR
-                        is locked. */}
-                    {locked && <ActivityRowLockedEditButton row={r} dailyReportId={dailyReportId} reload={reload} />}
                   </td>
                 </tr>
-              );
-            })}
-            {!grid.length && <tr><td colSpan="13" className="text-center py-4 text-sm text-slate-500">No activities. Use the picker below.</td></tr>}
-          </tbody>
+                {secRows.length === 0 ? (
+                  <tr>
+                    <td colSpan="13" data-testid={`dr-grid-section-${sec.n}-empty`}
+                      className="text-center py-3 text-xs text-slate-400 italic">
+                      {sec.empty}
+                    </td>
+                  </tr>
+                ) : secRows.map((r) => (
+                  <GridRow key={r.id} r={r} editable={sec.editable}
+                    locked={locked} staleRows={staleRows} refreshStaleRow={refreshStaleRow}
+                    submitRowErrors={submitRowErrors} presence={presence}
+                    updateRow={updateRow} removeRow={removeRow}
+                    dailyReportId={dailyReportId} reload={reload} />
+                ))}
+              </tbody>
+            );
+          })}
         </table>
       </div>
 
@@ -1755,30 +1634,15 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
         className="text-amber-700 hover:bg-amber-50 p-1 rounded text-xs">
         edit
       </button>
-      {/* Bug #51 (2026-05-13) -- post-submit modal field set was
-          previously {EOD%, hours, status, notes}, missing SOD% and
-          Constraint that are editable pre-submit. Adding both so the
-          post-submit edit path is field-symmetric with pre-submit.
-          Δ is intentionally NOT added: it's derived (EOD% - SOD%),
-          not stored or patchable, and the LockedEventEditModal's
-          FieldEditor has no display-only field type.
-
-          Bug #52 (2026-05-13) -- Constraint editing post-submit is
-          covered by the constraint_type dropdown below. The pre-submit
-          ConstraintCell's reference / description dependents are NOT
-          replicated here (the modal's flat field renderer can't host
-          the conditional follow-on inputs). Behavior:
-            - Switching to 'not_constrained' works: backend auto-clears
-              constraint_reference_entity_id + _other_description.
-            - Switching to 'other' works IFF the row already has a
-              non-empty constraint_other_description (set pre-submit
-              or via a prior edit). Otherwise backend 422s with a clear
-              message; user must first set a description via the
-              pre-submit grid or via direct API.
-            - Switching to a needs-ref type (awaiting_*, weather_impact,
-              etc.) works IFF the row already has a ref. Same fallback.
-          Constraint changes route through the same backend handler as
-          pre-submit edits, so the cascade hooks fire identically. */}
+      {/* Post-submit grid-row edit modal. Features F3/F4 (2026-05-18):
+          the Constraint field was removed (the Constraints column is
+          gone -- redundant with the F3 blocker badge) and the Status
+          field was removed (status is now F4 auto-computed from
+          blockers + EOD%, so a manual pick would just be overridden).
+          The editable post-submit field set is SOD% / EOD% / hours /
+          notes; editing EOD% re-derives the row's auto-status on the
+          backend PATCH. Δ stays excluded -- it's derived (EOD% - SOD%),
+          not patchable. */}
       <LockedEventEditModal
         open={open} onOpenChange={setOpen}
         eventType="activity" eventId={row.id} dailyReportId={dailyReportId}
@@ -1788,23 +1652,12 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
           { key: "pct_complete_start_of_day", label: "SOD %", type: "number" },
           { key: "pct_complete_end_of_day", label: "EOD %", type: "number" },
           { key: "hours_worked", label: "Hours worked", type: "number" },
-          { key: "status_at_end_of_day", label: "Status", type: "select",
-            options: [
-              { value: "not_started", label: "not started" },
-              { value: "in_progress", label: "in progress" },
-              { value: "blocked", label: "blocked" },
-              { value: "complete", label: "complete" },
-            ] },
-          { key: "constraint_type", label: "Constraint", type: "select",
-            options: CONSTRAINT_TYPES },
           { key: "notes", label: "Notes", type: "textarea" },
         ]}
         currentValues={{
           pct_complete_start_of_day: row.pct_complete_start_of_day,
           pct_complete_end_of_day: row.pct_complete_end_of_day,
           hours_worked: row.hours_worked,
-          status_at_end_of_day: row.status_at_end_of_day,
-          constraint_type: row.constraint_type || "not_constrained",
           notes: row.notes,
         }}
         onSaved={reload}
@@ -1902,7 +1755,7 @@ function DelayRowInline({ delay, reload, locked, dailyReportId }) {
           </button>
         )}
         {delay.post_submit_edited && (
-          <span className="text-[10px] text-amber-700"
+          <span className="text-xs text-amber-700"
             title={`Last edit: ${(delay.last_edit_reason || "").slice(0, 80)}`}>
             (edited {delay.edit_count || 0}× post-submit)
           </span>
@@ -1961,7 +1814,7 @@ function ReminderBanner({ reminders, reload }) {
         <AlertTriangle className="h-4 w-4 text-amber-600" />
         <div className="font-medium text-sm text-amber-900">Open delay reminders</div>
         <span className="text-xs text-amber-700">({reminders.length})</span>
-        <span className="text-[11px] text-slate-500 ml-auto">delays from earlier days that touch tasks scheduled today</span>
+        <span className="text-xs text-slate-500 ml-auto">delays from earlier days that touch tasks scheduled today</span>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {reminders.map((r) => (
@@ -2006,7 +1859,7 @@ function ReminderCard({ delay, reload }) {
       </div>
       <div className="text-slate-800 truncate">{firstLine}</div>
       {linked.length > 0 && (
-        <div className="text-[10px] text-slate-500">tasks: {linked.length} linked</div>
+        <div className="text-xs text-slate-500">tasks: {linked.length} linked</div>
       )}
       {resolving && (
         <div className="mt-1 p-2 bg-amber-50 rounded grid grid-cols-2 gap-2">
@@ -2122,7 +1975,7 @@ function SafetyRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2266,22 +2119,22 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               working days, not hours. */}
           {isRework && (
             <div className="bg-rose-50 border border-rose-200 rounded p-2 space-y-2" data-testid="qc-rework-block">
-              <div className="text-[11px] font-semibold text-rose-900">Rework duration estimate (super)</div>
+              <div className="text-xs font-semibold text-rose-900">Rework duration estimate (super)</div>
               {benchmark?.benchmark_days != null && (
-                <div className="text-[10px] text-slate-600 italic" data-testid="qc-rework-benchmark">
+                <div className="text-xs text-slate-600 italic" data-testid="qc-rework-benchmark">
                   {benchmark.basis}
                 </div>
               )}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="text-[10px] text-slate-500 uppercase">Rework duration (days) *</label>
+                  <label className="text-xs text-slate-500 uppercase">Rework duration (days) *</label>
                   <input data-testid="qc-rework-days" type="number" step="0.5" min="0"
                     value={draft.rework_duration_days}
                     onChange={(e) => setDraft({ ...draft, rework_duration_days: e.target.value })}
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-[10px] text-slate-500 uppercase">Basis * (short note)</label>
+                  <label className="text-xs text-slate-500 uppercase">Basis * (short note)</label>
                   <input data-testid="qc-rework-basis" type="text"
                     value={draft.rework_duration_basis}
                     onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
@@ -2297,13 +2150,13 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               {Number(draft.rework_duration_days) > 0
                 && Number(draft.rework_duration_days) <= 0.5 && (
                 <div data-testid="qc-rework-subday-warning"
-                  className="text-[10px] text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
+                  className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded px-2 py-1">
                   A {draft.rework_duration_days}-day rework will be recorded on the
                   QC issue but will not shift the schedule — the cascade currently
                   applies whole-day impacts (a sub-1-day rework rounds to 0).
                 </div>
               )}
-              <div className="text-[10px] text-rose-800">
+              <div className="text-xs text-rose-800">
                 Duration is in working days (0.5-day increments). On save, a
                 synthetic delay (cause=quality_rework) of that many days is
                 created and the CPM cascade run for the affected activities.
@@ -2339,7 +2192,7 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
       }`}>{row.severity}</span>
       <span className="text-slate-700 whitespace-pre-wrap">{row.description}</span>
       {row.linked_synthetic_delay_id && (
-        <span className="ml-2 text-[10px] text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
+        <span className="ml-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 px-1 py-0.5 rounded">
           rework {row.rework_duration_days}d
           {row.rework_actual_days != null && ` (actual ${row.rework_actual_days}d)`}
         </span>
@@ -2355,7 +2208,7 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2509,7 +2362,7 @@ function RfiRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -2786,7 +2639,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a photo" testid="photo-add-reason" />}
-        <div className="text-[11px] text-slate-500">
+        <div className="text-xs text-slate-500">
           Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
           After upload, we'll open the tag wizard with AI suggestions ready.
         </div>
@@ -2851,7 +2704,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
       {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">
-        <span data-testid={`photo-class-${photo.id}`} className={`text-[9px] leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
+        <span data-testid={`photo-class-${photo.id}`} className={`text-xs leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
           {cls.label}
         </span>
         {photo.evidentiary_flag && (
@@ -2869,7 +2722,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
         {photo.is_supplement && (
           <span data-testid={`photo-supplement-${photo.id}`}
             title={`Supplement to DR ${photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || ""}`}
-            className="bg-amber-200 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            className="bg-amber-200 text-amber-900 rounded px-1 text-xs font-mono uppercase">
             SUPP
           </span>
         )}
@@ -2879,7 +2732,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
         {photo.post_submit_edited && (
           <span data-testid={`photo-edited-${photo.id}`}
             title={`Edited ${photo.edit_count || 0}x post-submit. ${photo.last_edit_reason ? `Last reason: ${photo.last_edit_reason}` : ""}`}
-            className="bg-amber-300 text-amber-900 rounded px-1 text-[8px] font-mono uppercase">
+            className="bg-amber-300 text-amber-900 rounded px-1 text-xs font-mono uppercase">
             EDITED {photo.edit_count || 0}x
           </span>
         )}
@@ -2894,7 +2747,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
                 ? `Tagged from AI suggestion at ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
                 : "Tagged from AI suggestion"
             }
-            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-[8px] font-mono uppercase inline-flex items-center gap-0.5">
+            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-xs font-mono uppercase inline-flex items-center gap-0.5">
             <Sparkles className="h-2 w-2" /> AI
           </span>
         )}
@@ -2907,7 +2760,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
           <Pencil className="h-2.5 w-2.5" />
         </button>
       )}
-      {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] px-1 py-0.5 truncate">{photo.caption}</div>}
+      {photo.caption && <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-xs px-1 py-0.5 truncate">{photo.caption}</div>}
       {locked && (
         <LockedEventEditModal
           open={editOpen} onOpenChange={setEditOpen}
@@ -2955,7 +2808,7 @@ function AuditPanel({ rows, userLabels }) {
     <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={rows.length}>
       <div className="space-y-1 max-h-60 overflow-y-auto">
         {rows.slice(0, 30).map((a) => (
-          <div key={a.id} data-testid={`audit-${a.id}`} className="text-[11px] text-slate-600 flex gap-2 border-b border-slate-100 py-1">
+          <div key={a.id} data-testid={`audit-${a.id}`} className="text-xs text-slate-600 flex gap-2 border-b border-slate-100 py-1">
             <span className="font-mono text-slate-400 w-32 shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
             <span className="pill pill-slate">{a.op}</span>
             <span className="font-mono">{a.table_name}</span>
@@ -2984,7 +2837,7 @@ function DeliveryRowInline({ row, locked, dailyReportId, reload }) {
           className="ml-2 text-amber-700 hover:underline">edit</button>
       )}
       {row.post_submit_edited && (
-        <span className="ml-2 text-[10px] text-amber-700">
+        <span className="ml-2 text-xs text-amber-700">
           (edited {row.edit_count || 0}× post-submit)
         </span>
       )}
@@ -3046,7 +2899,7 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
   return (
     <>
       <button data-testid={`qc-rework-outcome-${qcIssue.id}`} onClick={() => setOpen(true)}
-        className="ml-2 text-[10px] px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
+        className="ml-2 text-xs px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-700">
         Record outcome
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -3060,13 +2913,13 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
               Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
             </div>
             <div>
-              <label className="text-[11px] text-slate-500 uppercase">Actual rework (days) *</label>
+              <label className="text-xs text-slate-500 uppercase">Actual rework (days) *</label>
               <input data-testid="qc-rework-actual-days" type="number" step="0.5" min="0"
                 value={days} onChange={(e) => setDays(e.target.value)}
                 className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
             </div>
             <div>
-              <label className="text-[11px] text-slate-500 uppercase">Notes</label>
+              <label className="text-xs text-slate-500 uppercase">Notes</label>
               <textarea data-testid="qc-rework-outcome-notes" rows={3}
                 value={notes} onChange={(e) => setNotes(e.target.value)}
                 placeholder="What went better or worse than expected?"
@@ -3100,7 +2953,7 @@ function SupplementBadge({ row }) {
   return (
     <span data-testid={`supplement-badge-${row.id}`}
       title="Filed after the parent daily report was submitted"
-      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-[9px] font-mono uppercase tracking-wide">
+      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-xs font-mono uppercase tracking-wide">
       SUPP→{parentDate || "?"}
     </span>
   );

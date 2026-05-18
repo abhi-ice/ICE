@@ -162,7 +162,7 @@ export default function PhotoTray() {
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <Filter className="h-4 w-4 text-slate-500 mb-2" />
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">Status</label>
+          <label className="text-xs text-slate-500 uppercase">Status</label>
           <select data-testid="tray-filter-status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value, untagged_only: false })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white" disabled={filters.untagged_only}>
             <option value="">(any)</option>
@@ -173,7 +173,7 @@ export default function PhotoTray() {
           </select>
         </div>
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">Source</label>
+          <label className="text-xs text-slate-500 uppercase">Source</label>
           <select data-testid="tray-filter-source" value={filters.capture_source} onChange={(e) => setFilters({ ...filters, capture_source: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
             <option value="">(any)</option>
@@ -183,12 +183,12 @@ export default function PhotoTray() {
           </select>
         </div>
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">From</label>
+          <label className="text-xs text-slate-500 uppercase">From</label>
           <input data-testid="tray-filter-from" type="date" value={filters.date_from} onChange={(e) => setFilters({ ...filters, date_from: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm" />
         </div>
         <div>
-          <label className="text-[10px] text-slate-500 uppercase">To</label>
+          <label className="text-xs text-slate-500 uppercase">To</label>
           <input data-testid="tray-filter-to" type="date" value={filters.date_to} onChange={(e) => setFilters({ ...filters, date_to: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm" />
         </div>
@@ -252,16 +252,16 @@ function TrayCard({ row, onClick }) {
       className="relative aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200 cursor-pointer hover:border-blue-400 hover:shadow-sm transition">
       {src ? <img src={src} alt="" className="w-full h-full object-cover" />
         : <div className="w-full h-full grid place-items-center text-slate-300"><FileImage className="h-8 w-8" /></div>}
-      <span className={`absolute top-1 left-1 text-[9px] px-1.5 py-0.5 rounded ${status.tone}`}>
+      <span className={`absolute top-1 left-1 text-xs px-1.5 py-0.5 rounded ${status.tone}`}>
         {status.label}
       </span>
       {row.exif_taken_at && (
-        <span className="absolute bottom-1 left-1 text-[9px] px-1.5 py-0.5 rounded bg-black/60 text-white inline-flex items-center gap-1">
+        <span className="absolute bottom-1 left-1 text-xs px-1.5 py-0.5 rounded bg-black/60 text-white inline-flex items-center gap-1">
           <Clock className="h-2.5 w-2.5" /> {formatDateDisplay(row.exif_taken_at)}
         </span>
       )}
       {row.exif_gps_lat != null && (
-        <span className="absolute bottom-1 right-1 text-[9px] px-1 py-0.5 rounded bg-black/60 text-white">
+        <span className="absolute bottom-1 right-1 text-xs px-1 py-0.5 rounded bg-black/60 text-white">
           <MapPin className="h-2.5 w-2.5 inline" />
         </span>
       )}
@@ -272,7 +272,7 @@ function TrayCard({ row, onClick }) {
             row.ai_confidence_score
               ? ` (${Math.round(row.ai_confidence_score * 100)}%)` : ""
           }`}
-          className={`absolute top-1 right-1 text-[9px] px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${
+          className={`absolute top-1 right-1 text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${
             row.ai_analysis_status === "complete"
               ? "bg-blue-600 text-white"
               : row.ai_analysis_status === "failed"
@@ -346,13 +346,13 @@ function DetailContent({ row, onTagClick, onArchive }) {
       {/* Bucket F Phase 3 -- AI analysis section. */}
       <AiAnalysisCard trayId={row.id} />
       <div className="grid grid-cols-2 gap-3 text-xs">
-        <div><span className="text-slate-500 uppercase text-[10px]">Source:</span> {SOURCE_LABELS[row.capture_source] || row.capture_source}</div>
-        <div><span className="text-slate-500 uppercase text-[10px]">Status:</span> {STATUS_LABELS[row.status]?.label}</div>
-        <div><span className="text-slate-500 uppercase text-[10px]">Uploaded:</span> {new Date(row.uploaded_at).toLocaleString()}</div>
-        {row.exif_taken_at && <div><span className="text-slate-500 uppercase text-[10px]">EXIF taken:</span> {new Date(row.exif_taken_at).toLocaleString()}</div>}
-        <div><span className="text-slate-500 uppercase text-[10px]">Size:</span> {row.width}×{row.height} · {Math.round((row.file_size_bytes || 0) / 1024)} KB</div>
-        {row.phash && <div><span className="text-slate-500 uppercase text-[10px]">pHash:</span> <span className="font-mono">{row.phash}</span></div>}
-        {row.sha256 && <div className="col-span-2"><span className="text-slate-500 uppercase text-[10px]">SHA-256:</span> <span className="font-mono text-[10px]">{row.sha256}</span></div>}
+        <div><span className="text-slate-500 uppercase text-xs">Source:</span> {SOURCE_LABELS[row.capture_source] || row.capture_source}</div>
+        <div><span className="text-slate-500 uppercase text-xs">Status:</span> {STATUS_LABELS[row.status]?.label}</div>
+        <div><span className="text-slate-500 uppercase text-xs">Uploaded:</span> {new Date(row.uploaded_at).toLocaleString()}</div>
+        {row.exif_taken_at && <div><span className="text-slate-500 uppercase text-xs">EXIF taken:</span> {new Date(row.exif_taken_at).toLocaleString()}</div>}
+        <div><span className="text-slate-500 uppercase text-xs">Size:</span> {row.width}×{row.height} · {Math.round((row.file_size_bytes || 0) / 1024)} KB</div>
+        {row.phash && <div><span className="text-slate-500 uppercase text-xs">pHash:</span> <span className="font-mono">{row.phash}</span></div>}
+        {row.sha256 && <div className="col-span-2"><span className="text-slate-500 uppercase text-xs">SHA-256:</span> <span className="font-mono text-xs">{row.sha256}</span></div>}
       </div>
 
       {tags.length > 0 && (
@@ -362,7 +362,7 @@ function DetailContent({ row, onTagClick, onArchive }) {
             {tags.map((t) => (
               <li key={t.id} className="flex items-center gap-2">
                 <Check className="h-3 w-3 text-emerald-600" />
-                <span className="font-mono text-[10px]">{(t.daily_report_id || "").slice(0, 8)}</span>
+                <span className="font-mono text-xs">{(t.daily_report_id || "").slice(0, 8)}</span>
                 <span>{t.photo_class}</span>
                 {t.evidentiary_flag && <span className="text-amber-700">[evidentiary]</span>}
                 {t.tag_caption && <span className="italic">"{t.tag_caption}"</span>}

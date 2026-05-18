@@ -26,6 +26,9 @@ from services.schedule_diff import compute_schedule_diff, auto_diff_on_approval
 from services.schedule_ai_review import review_schedule_diff
 from services.schedule_proposal import parsed_to_task_create_payload, validate_payload
 from services.schedule_summary_filter import detect_summary_rows, visible_rows
+from services.schedule_work_category import (
+    tag_work_categories, set_row_work_category, WORK_CATEGORIES,
+)
 from services.cpm import compute_cpm
 
 router = APIRouter(tags=["schedule-proposals"])
@@ -103,6 +106,17 @@ async def upload_schedule_proposal(
     # Run Claude review (best-effort — falls back to heuristic if LLM unavailable)
     ai_review = await review_schedule_diff(diff, project_name=proj.get("name", ""))
 
+    # Feature F1 (2026-05-17) -- AI-tag every parsed task with a
+    # work_category. Runs AFTER parsing + diff, BEFORE the proposal is
+    # persisted/reviewed. `visible` rows are the SAME dict objects that
+    # sit in `parsed_rows` (visible_rows is a filter, not a copy), so
+    # the tags land on parsed_rows and persist with the proposal.
+    # tag_work_categories never raises -- on any AI failure every task
+    # defaults to field_work and is flagged for review.
+    work_category_tagging = await tag_work_categories(
+        visible, project_name=proj.get("name", ""),
+    )
+
     proposal = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -113,6 +127,7 @@ async def upload_schedule_proposal(
         "parsed_rows": parsed_rows,
         "diff": diff,
         "ai_review": ai_review,
+        "work_category_tagging": work_category_tagging,
         "uploaded_by": ctx["user"]["id"],
         "uploaded_at": utc_now().isoformat(),
         "reviewed_by": None,
@@ -138,6 +153,7 @@ async def upload_schedule_proposal(
         "row_count": len(parsed_rows),
         "diff": diff,
         "ai_review": ai_review,
+        "work_category_tagging": work_category_tagging,
         "parse_warnings": parse_errors or [],
         "requires_approval_by": "pm_or_admin",
     }
@@ -538,6 +554,100 @@ async def toggle_rows(
             flagged += 1
     new_diff = await _recompute_diff_and_save(db, proposal, ctx)
     return {"updated": flagged, "diff": new_diff}
+
+
+# ============================================================
+# Feature F1 (2026-05-17) -- work-category tag review.
+# The schedule-import AI tagging step (services.schedule_work_category)
+# classifies every parsed task. These two endpoints let the reviewer
+# correct a tag or re-run the AI with extra context. Tags are METADATA
+# -- they do NOT affect the diff, so neither endpoint recomputes it.
+# ============================================================
+class WorkCategoryOverride(StrictModel):
+    activity_code: str
+    work_category: str
+
+
+@router.post("/schedule-proposals/{proposal_id}/set-work-category")
+async def set_work_category(
+    proposal_id: str,
+    payload: WorkCategoryOverride,
+    ctx: dict = Depends(require_tenant),
+):
+    """Reviewer override of one task's work_category tag. Marks the row
+    as a user override so a later AI re-review can preserve it."""
+    if payload.work_category not in WORK_CATEGORIES:
+        raise HTTPException(
+            422, f"work_category must be one of {sorted(WORK_CATEGORIES)}",
+        )
+    db = get_db()
+    proposal = await db.schedule_proposals.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal_id}), {"_id": 0},
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    if proposal["status"] != "pending_review":
+        raise HTTPException(409, f"Proposal already {proposal['status']}")
+    rows = proposal.get("parsed_rows") or []
+    found = set_row_work_category(
+        rows, payload.activity_code, payload.work_category,
+    )
+    if not found:
+        raise HTTPException(
+            404, f"Activity {payload.activity_code} not in proposal",
+        )
+    await db.schedule_proposals.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal_id}),
+        {"$set": {"parsed_rows": rows}},
+    )
+    return {"ok": True, "activity_code": payload.activity_code,
+            "work_category": payload.work_category, "source": "user"}
+
+
+class RetagPayload(StrictModel):
+    # Extra context the reviewer wants the model to consider.
+    context_note: str = ""
+    # When True, discard manual overrides and let the AI redo every
+    # task. Default False -- manual overrides are preserved.
+    redo_all: bool = False
+
+
+@router.post("/schedule-proposals/{proposal_id}/retag-work-categories")
+async def retag_work_categories(
+    proposal_id: str,
+    payload: RetagPayload,
+    ctx: dict = Depends(require_tenant),
+):
+    """Ask the AI to re-review the work-category tags, optionally with a
+    reviewer context note. Manual overrides are preserved unless
+    redo_all is set. Never fails the request -- on AI error every
+    non-preserved task defaults to field_work + needs_review."""
+    db = get_db()
+    proposal = await db.schedule_proposals.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal_id}), {"_id": 0},
+    )
+    if not proposal:
+        raise HTTPException(404, "Proposal not found")
+    if proposal["status"] != "pending_review":
+        raise HTTPException(409, f"Proposal already {proposal['status']}")
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal["project_id"]}),
+        {"_id": 0, "name": 1},
+    ) or {}
+    rows = proposal.get("parsed_rows") or []
+    # Tag only the real (non-summary) tasks -- the same set the diff +
+    # applier use. tag_work_categories mutates the row dicts in place.
+    tagging = await tag_work_categories(
+        visible_rows(rows),
+        project_name=proj.get("name", ""),
+        context_note=payload.context_note or "",
+        skip_user_overrides=not payload.redo_all,
+    )
+    await db.schedule_proposals.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": proposal_id}),
+        {"$set": {"parsed_rows": rows, "work_category_tagging": tagging}},
+    )
+    return {"ok": True, "work_category_tagging": tagging}
 
 
 # ============================================================

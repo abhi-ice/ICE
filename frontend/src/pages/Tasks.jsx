@@ -122,7 +122,7 @@ function TaskGapIcon({ gap }) {
     <Link to={`/resource-leveling?tab=gaps&trade=${encodeURIComponent(gap.trade)}`}
       title={`${gap.trade} shortage on ${gap.date} (gap ${gap.gap}${gap.is_critical_path ? ", on CP" : ""}). Click to open Resource Leveling.`}
       data-testid={`task-gap-icon-${gap.gap_id}`}
-      className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded border text-[10px] font-mono ${tone}`}>
+      className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded border text-xs font-mono ${tone}`}>
       <Users className="h-3 w-3" />
       <span className="hidden md:inline">{gap.severity[0].toUpperCase()}</span>
     </Link>
@@ -342,7 +342,7 @@ export default function Tasks() {
                 <div className="col-span-2">
                   <label className="field-label">Predecessors (comma-separated activity_codes)</label>
                   <input data-testid="task-predecessors" value={form.predecessors} onChange={(e) => setForm({ ...form, predecessors: e.target.value })} placeholder="e.g. 1.2, 1.5" className="w-full h-9 px-3 rounded border border-slate-200 font-mono text-sm" />
-                  <div className="text-[11px] text-slate-400 mt-1">Comma-separated activity codes from this project. CPM is recomputed automatically.</div>
+                  <div className="text-xs text-slate-400 mt-1">Comma-separated activity codes from this project. CPM is recomputed automatically.</div>
                 </div>
                 <label className="col-span-2 flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={!!form.is_milestone} onChange={(e) => setForm({ ...form, is_milestone: e.target.checked })} />
@@ -451,7 +451,7 @@ export default function Tasks() {
                 <td className="tabular-nums text-xs text-slate-500">{idx + 1}</td>
                 <td className="truncate max-w-[280px]">
                   <div className="font-medium text-sm">{t.description}</div>
-                  <div className="text-[10px] text-slate-400 font-mono">{t.activity_code}{t.is_milestone ? " · milestone" : ""}</div>
+                  <div className="text-xs text-slate-400 font-mono">{t.activity_code}{t.is_milestone ? " · milestone" : ""}</div>
                 </td>
                 <td className="text-xs">
                   {t.resource_names && t.resource_names.length
@@ -676,7 +676,7 @@ function BlockerCell({ task, open, onToggle }) {
         className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
       >
         <AlertTriangle className="h-3 w-3" /> {count}
-        <span className="text-[10px] text-red-500/70">
+        <span className="text-xs text-red-500/70">
           {[
             counts.delay && `${counts.delay}d`,
             counts.rfi && `${counts.rfi}r`,
@@ -719,7 +719,7 @@ function BlockerCell({ task, open, onToggle }) {
                 <div className="flex items-start gap-1.5 py-1 border-b border-slate-100 last:border-0">
                   <Icon className={`h-3 w-3 mt-0.5 ${sevColor} shrink-0`} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[10px] uppercase tracking-wide text-slate-500">{s.entity_type.replace(/_/g, " ")} · {s.severity || "—"}</div>
+                    <div className="text-xs uppercase tracking-wide text-slate-500">{s.entity_type.replace(/_/g, " ")} · {s.severity || "—"}</div>
                     <div className="truncate text-slate-800">{s.label || s.entity_id?.slice(0, 8)}</div>
                   </div>
                 </div>

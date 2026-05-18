@@ -192,7 +192,7 @@ export default function DrawingViewer({ revisionId, onClose }) {
               );
             })}
           </div>
-          <div className="ml-2 text-[11px] text-slate-500">{markups.length} markup{markups.length !== 1 ? "s" : ""}</div>
+          <div className="ml-2 text-xs text-slate-500">{markups.length} markup{markups.length !== 1 ? "s" : ""}</div>
           <button
             data-testid="drawing-ocr-btn"
             title="OCR title block"

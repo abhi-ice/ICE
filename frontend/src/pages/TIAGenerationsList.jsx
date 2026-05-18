@@ -66,7 +66,7 @@ export default function TIAGenerationsList() {
                   <td className="p-2 border border-slate-200 text-right">{r.total_evidence_items}</td>
                   <td className="p-2 border border-slate-200 text-right">{(r.download_log || []).length}</td>
                   <td className="p-2 border border-slate-200">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                    <span className={`px-1.5 py-0.5 rounded text-xs ${
                       r.status === "complete" ? "bg-emerald-100 text-emerald-800"
                         : r.status === "failed" ? "bg-rose-100 text-rose-800"
                         : "bg-amber-100 text-amber-800"
@@ -77,7 +77,7 @@ export default function TIAGenerationsList() {
                       ? <span className="inline-flex items-center gap-1 text-amber-700"><ShieldAlert className="h-3 w-3" /> privileged</span>
                       : <span className="inline-flex items-center gap-1 text-slate-500"><ShieldOff className="h-3 w-3" /> open</span>}
                   </td>
-                  <td className="p-2 border border-slate-200 font-mono text-[10px] text-slate-400">{r.id.slice(0, 8)}</td>
+                  <td className="p-2 border border-slate-200 font-mono text-xs text-slate-400">{r.id.slice(0, 8)}</td>
                   <td className="p-2 border border-slate-200">
                     <Link to={`/tia/generations/${r.id}`} className="text-blue-600 hover:underline inline-flex items-center gap-1">
                       <FileText className="h-3 w-3" /> Open

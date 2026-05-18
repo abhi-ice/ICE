@@ -141,14 +141,14 @@ export default function SupplementWizard({
           {step === 1 && (
             <>
               <div>
-                <label className="text-[11px] text-slate-500 uppercase">Fact type *</label>
+                <label className="text-xs text-slate-500 uppercase">Fact type *</label>
                 <select data-testid="supplement-fact-type" value={factType} onChange={(e) => setFactType(e.target.value)}
                   className="block w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
                   {FACT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
               <div>
-                <label className="text-[11px] text-slate-500 uppercase">Reason this is filed late *</label>
+                <label className="text-xs text-slate-500 uppercase">Reason this is filed late *</label>
                 <textarea data-testid="supplement-reason" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
                   placeholder="e.g. sub provided rework photos this morning; original DR was already submitted"
                   className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
@@ -183,7 +183,7 @@ export default function SupplementWizard({
                   ))}
                 </div>
               )}
-              <div className="text-[10px] text-slate-500">{pickedIds.length} selected</div>
+              <div className="text-xs text-slate-500">{pickedIds.length} selected</div>
               <div className="flex justify-between">
                 <button onClick={() => setStep(1)} className="h-9 px-3 rounded bg-slate-100 text-slate-700 text-sm hover:bg-slate-200 inline-flex items-center gap-1">
                   <ChevronLeft className="h-3.5 w-3.5" /> Back
@@ -201,13 +201,13 @@ export default function SupplementWizard({
               <div className="text-xs text-slate-500">Describe the {FACT_TYPES.find((t) => t.value === factType)?.label}:</div>
               {factType === "rfi" && (
                 <div>
-                  <label className="text-[11px] text-slate-500 uppercase">Subject *</label>
+                  <label className="text-xs text-slate-500 uppercase">Subject *</label>
                   <input data-testid="supplement-subject" value={subject} onChange={(e) => setSubject(e.target.value)}
                     className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
                 </div>
               )}
               <div>
-                <label className="text-[11px] text-slate-500 uppercase">
+                <label className="text-xs text-slate-500 uppercase">
                   {factType === "rfi" ? "Question" : "Description"} *
                 </label>
                 <textarea data-testid="supplement-description" rows={3} value={description} onChange={(e) => setDescription(e.target.value)}
@@ -215,7 +215,7 @@ export default function SupplementWizard({
               </div>
               {(factType === "delay" || factType === "qc_issue" || factType === "safety_event") && (
                 <div>
-                  <label className="text-[11px] text-slate-500 uppercase">Severity</label>
+                  <label className="text-xs text-slate-500 uppercase">Severity</label>
                   <select data-testid="supplement-severity" value={severity} onChange={(e) => setSeverity(e.target.value)}
                     className="block w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
                     {SEVERITY_OPTS.map((s) => <option key={s} value={s}>{s}</option>)}

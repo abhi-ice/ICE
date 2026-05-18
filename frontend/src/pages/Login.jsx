@@ -45,11 +45,11 @@ export default function Login() {
           </p>
           <div className="flex flex-wrap gap-2 pt-2">
             {["Multi-tenant", "NIST 800-171", "Audit-immutable", "AI Copilot", "Activity-driven daily reports"].map((t) => (
-              <span key={t} className="text-[11px] px-2 py-1 rounded bg-white/10 border border-white/15">{t}</span>
+              <span key={t} className="text-xs px-2 py-1 rounded bg-white/10 border border-white/15">{t}</span>
             ))}
           </div>
         </div>
-        <div className="text-[11px] text-slate-400">© {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.</div>
+        <div className="text-xs text-slate-400">© {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.</div>
       </div>
 
       <div className="flex items-center justify-center p-6 lg:p-10 relative z-10">

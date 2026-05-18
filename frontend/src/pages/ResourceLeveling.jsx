@@ -228,7 +228,7 @@ export default function ResourceLeveling() {
         <div className="flex flex-wrap items-end gap-3 p-3 bg-slate-50 border border-slate-200 rounded">
           <Filter className="h-4 w-4 text-slate-500 mb-2" />
           <div>
-            <label className="text-[10px] uppercase text-slate-500 block">Window (days)</label>
+            <label className="text-xs uppercase text-slate-500 block">Window (days)</label>
             <select data-testid="rl-filter-days" value={String(days)}
               onChange={(e) => setFilters({ ...filters, days: e.target.value })}
               className="h-8 px-2 rounded border border-slate-300 text-sm bg-white">
@@ -241,14 +241,14 @@ export default function ResourceLeveling() {
             </select>
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500 block">Trade (csv)</label>
+            <label className="text-xs uppercase text-slate-500 block">Trade (csv)</label>
             <input data-testid="rl-filter-trade" value={filters.trade}
               onChange={(e) => setFilters({ ...filters, trade: e.target.value })}
               placeholder="Plumber,Electrician"
               className="h-8 px-2 rounded border border-slate-300 text-sm w-48" />
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500 block">Project id (csv)</label>
+            <label className="text-xs uppercase text-slate-500 block">Project id (csv)</label>
             <input data-testid="rl-filter-project" value={filters.project_id}
               onChange={(e) => setFilters({ ...filters, project_id: e.target.value })}
               placeholder="project id"
@@ -456,7 +456,7 @@ function HeatMapTab({ dashboard, onCellClick, showFirstRun, loading }) {
             <tr>
               <th className="text-left p-2 sticky left-0 bg-slate-50 z-10 font-medium border-r border-slate-200">Trade</th>
               {dates.map((d) => (
-                <th key={d} className="p-1 text-center font-mono text-[10px] text-slate-500 whitespace-nowrap">
+                <th key={d} className="p-1 text-center font-mono text-xs text-slate-500 whitespace-nowrap">
                   {d.slice(5)}
                 </th>
               ))}
@@ -478,8 +478,8 @@ function HeatMapTab({ dashboard, onCellClick, showFirstRun, loading }) {
                         onClick={() => onCellClick(t, d, cell)}
                         title={`${t} · ${d}\nsupply ${cell.supply} / demand ${cell.demand} / gap ${cell.gap}${cell.is_critical_path ? " · on CP" : ""}`}
                         className={`h-7 w-12 rounded border ${cls} hover:ring-2 hover:ring-blue-400 transition`}>
-                        <span className="block text-[10px] leading-tight">{cell.supply}/{cell.demand}</span>
-                        <span className="block text-[8px] leading-tight">g{cell.gap >= 0 ? "+" : ""}{cell.gap}</span>
+                        <span className="block text-xs leading-tight">{cell.supply}/{cell.demand}</span>
+                        <span className="block text-xs leading-tight">g{cell.gap >= 0 ? "+" : ""}{cell.gap}</span>
                       </button>
                     </td>
                   );
@@ -508,8 +508,8 @@ function HeatMapTab({ dashboard, onCellClick, showFirstRun, loading }) {
                   <button key={d}
                     onClick={() => onCellClick(t, d, cell)}
                     className={`p-1 rounded border ${cls} text-left`}>
-                    <div className="text-[10px] font-mono text-slate-600">{d.slice(5)}</div>
-                    <div className="text-[10px]">s{cell.supply}/d{cell.demand}/g{cell.gap}</div>
+                    <div className="text-xs font-mono text-slate-600">{d.slice(5)}</div>
+                    <div className="text-xs">s{cell.supply}/d{cell.demand}/g{cell.gap}</div>
                   </button>
                 );
               })}
@@ -569,7 +569,7 @@ function GapListTab({ gaps, onGapClick, loading }) {
               </td>
               <td className="p-2">
                 {r.is_critical_path && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">CP</span>
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">CP</span>
                 )}
               </td>
               <td className="p-2 text-xs text-slate-600">
@@ -696,7 +696,7 @@ function DrillDown({ cell, onReallocate }) {
       )}
       {cell.contributing_project_ids?.length > 0 && (
         <div>
-          <div className="text-[10px] uppercase text-slate-500 mb-1">Contributing projects</div>
+          <div className="text-xs uppercase text-slate-500 mb-1">Contributing projects</div>
           <div className="text-xs space-y-0.5">
             {cell.contributing_project_ids.map((pid) => (
               <div key={pid} className="font-mono text-slate-600">{pid.slice(0, 8)}…</div>
@@ -705,7 +705,7 @@ function DrillDown({ cell, onReallocate }) {
         </div>
       )}
       <div>
-        <div className="text-[10px] uppercase text-slate-500 mb-1">Resolution suggestions</div>
+        <div className="text-xs uppercase text-slate-500 mb-1">Resolution suggestions</div>
         {cell.loading ? (
           <SkeletonBlock height="3rem" />
         ) : cell.error ? (
@@ -722,14 +722,14 @@ function DrillDown({ cell, onReallocate }) {
                     : "bg-slate-50 border-slate-200"
                 }`}>
                 <div className="font-medium mb-0.5">
-                  <span className="text-[9px] uppercase tracking-wide mr-1 px-1 py-0.5 rounded bg-slate-200 text-slate-700">
+                  <span className="text-xs uppercase tracking-wide mr-1 px-1 py-0.5 rounded bg-slate-200 text-slate-700">
                     {s.action_type.replace(/_/g, " ")}
                   </span>
                   {s.title}
                 </div>
                 <div className="text-slate-700">{s.rationale}</div>
                 {(s.from_project_id || s.to_project_id) && (
-                  <div className="mt-1 text-[10px] text-slate-500 font-mono">
+                  <div className="mt-1 text-xs text-slate-500 font-mono">
                     {s.from_project_id ? `from ${s.from_project_id.slice(0, 8)}…` : ""}
                     {s.to_project_id ? ` → to ${s.to_project_id.slice(0, 8)}…` : ""}
                   </div>
@@ -780,7 +780,7 @@ function CrewCalendar({ data }) {
                 <td className="p-2 text-right">{d.committed_headcount}</td>
                 <td className="p-2 text-right">{d.available_headcount}</td>
                 <td className="p-2">{d.is_holiday ? "yes" : ""}</td>
-                <td className="p-2 text-[10px] uppercase text-slate-500">{d.computed_from}</td>
+                <td className="p-2 text-xs uppercase text-slate-500">{d.computed_from}</td>
               </tr>
             ))}
           </tbody>
@@ -1022,7 +1022,7 @@ function Metric({ label, value, tone = "slate" }) {
   };
   return (
     <div className={`p-2 rounded border ${tones[tone]} text-center`}>
-      <div className="text-[10px] uppercase tracking-wide opacity-75">{label}</div>
+      <div className="text-xs uppercase tracking-wide opacity-75">{label}</div>
       <div className="text-lg font-semibold tabular-nums">{value}</div>
     </div>
   );

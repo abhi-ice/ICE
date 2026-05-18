@@ -38,6 +38,12 @@ def parsed_to_task_create_payload(parsed: dict, project_id: str) -> dict:
         "predecessors": list(parsed.get("predecessors", [])),
         "resource_names": list(parsed.get("resource_names", [])),
         "source": parsed.get("source", "master_schedule"),
+        # Feature F1 (2026-05-17) -- carry the AI-assigned (or
+        # reviewer-overridden) work-category tag through to the task
+        # record. None when the row was never tagged; the None-drop
+        # below keeps it out of the payload in that case (TaskCreate
+        # declares it Optional). METADATA ONLY -- not read by CPM.
+        "work_category": parsed.get("work_category"),
     }
     # Drop None values so StrictModel validation doesn't trip on Optional fields
     # that don't accept None at construction time. BUT keep keys that exist

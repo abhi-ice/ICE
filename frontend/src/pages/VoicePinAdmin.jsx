@@ -61,7 +61,7 @@ export default function VoicePinAdmin() {
               ))}
             </tbody>
           </table>
-          <div className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-200">
+          <div className="px-4 py-2 text-xs text-slate-500 border-t border-slate-200">
             Direct foremen to <a href="/voice-login" className="text-blue-600 hover:underline">/voice-login</a> and have them key in their PIN. Each PIN is single-use.
           </div>
         </div>

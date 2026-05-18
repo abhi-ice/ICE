@@ -14,6 +14,7 @@ import { Plus, X, AlertTriangle, ShieldCheck } from "lucide-react";
 import api from "../../lib/api";
 import { localTodayISO } from "../../lib/dateUtil";
 import { toast } from "../ui/sonner";
+import { isMasterTaskComplete } from "../../lib/taskCompletion";
 // Bucket G Phase 3 (2026-05-11) -- Jigsaw pre-fill wrapper. Renders
 // the AI-suggested chrome on edit-mode fields. On create-mode (no
 // initial.id) it passes through cleanly (no entity to bind against
@@ -88,6 +89,9 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   const [tasks, setTasks] = useState([]);  // [{id, activity_code, description, total_float_days, is_critical_path}]
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [picker, setPicker] = useState("");
+  // Feature F5 (2026-05-18) -- completed tasks are hidden from the
+  // linked-task picker by default; this toggle reveals them.
+  const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [form, setForm] = useState(() => ({
     description: initial?.description || "",
     severity: initial?.severity || "moderate",
@@ -174,7 +178,14 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
 
   const taskById = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
   const linkedIds = form.impacts.map((i) => i.task_id);
-  const availableTasks = tasks.filter((t) => !linkedIds.includes(t.id));
+  // Feature F5 -- a completed task already linked keeps its impact row
+  // (we never drop existing links); completed tasks are only hidden
+  // from the dropdown of NEW options unless the toggle is on.
+  const unlinkedTasks = tasks.filter((t) => !linkedIds.includes(t.id));
+  const hiddenCompletedCount = unlinkedTasks.filter(isMasterTaskComplete).length;
+  const availableTasks = showCompletedTasks
+    ? unlinkedTasks
+    : unlinkedTasks.filter((t) => !isMasterTaskComplete(t));
 
   const addLinkedTask = () => {
     if (!picker) return;
@@ -426,7 +437,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
                     className="h-7 w-20 px-1 border border-slate-200 rounded text-sm tabular-nums"
                   />
                 </label>
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] ${colorClass}`}>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs ${colorClass}`}>
                   {flag.color === "red" ? <AlertTriangle className="h-3 w-3" /> : <ShieldCheck className="h-3 w-3" />}
                   {flag.label}
                 </span>
@@ -436,7 +447,17 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           {!form.impacts.length && (
             <div className="text-xs text-slate-400 italic">No tasks linked yet — pick one below.</div>
           )}
-          <div className="flex items-center gap-2 pt-1">
+          {/* Feature F5 -- "Show completed tasks" toggle, default OFF. */}
+          <label className="flex items-center gap-1.5 pt-1 text-xs text-slate-500 cursor-pointer">
+            <input type="checkbox" data-testid="delay-form-show-completed"
+              checked={showCompletedTasks}
+              onChange={(e) => setShowCompletedTasks(e.target.checked)} />
+            Show completed tasks
+            {hiddenCompletedCount > 0 && !showCompletedTasks && (
+              <span className="text-slate-400">({hiddenCompletedCount} hidden)</span>
+            )}
+          </label>
+          <div className="flex items-center gap-2">
             <select data-testid="delay-form-add-task-select" value={picker}
               onChange={(e) => setPicker(e.target.value)}
               className="flex-1 h-8 px-2 rounded border border-slate-200 text-sm"
@@ -514,7 +535,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             onChange={(e) => setEditReason(e.target.value)}
             placeholder="Why this edit is needed (min 10 chars)"
             className="mt-1 w-full p-2 rounded border border-slate-200 text-sm" />
-          <div className="text-[10px] text-slate-500 text-right">
+          <div className="text-xs text-slate-500 text-right">
             {(editReason || "").trim().length} / {REASON_MIN} min
             {isFieldEdit ? " — required for field changes" : " — optional for status-only"}
           </div>
