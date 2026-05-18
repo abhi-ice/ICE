@@ -8,11 +8,11 @@
 
 body {
     margin: 0;
-    /* Typography standard (2026-05-18): Inter-first modern sans-serif,
-       16px base body size, 1.5 line-height. Inter is loaded via the
-       Google Fonts <link> in public/index.html. */
+    /* Typography standard (2026-05-18, scale bump): Inter-first modern
+       sans-serif, 18px base body size, 1.5 line-height. Raised from
+       16px -- dense data screens still read small at the prior size. */
     font-family: 'Inter', -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -26,13 +26,14 @@ code, pre, .font-mono {
     font-variant-ligatures: none;
 }
 
-/* Typography standard (2026-05-18): form controls never render below
-   16px. A sub-16px font-size makes iOS Safari auto-zoom the viewport on
-   focus -- a big part of why the app read as small/awkward. !important
-   is required to win over the per-element Tailwind text-* utilities
-   still present on some dense inline inputs. */
+/* Typography standard (2026-05-18, scale bump): form controls render
+   at the 18px body size so inputs are never smaller than the text
+   around them; this also stays >=16px, which keeps iOS Safari from
+   auto-zooming the viewport on focus. !important is required to win
+   over the per-element Tailwind text-* utilities still present on some
+   dense inline inputs. */
 input, select, textarea {
-    font-size: 16px !important;
+    font-size: 18px !important;
 }
 
 @layer base {
