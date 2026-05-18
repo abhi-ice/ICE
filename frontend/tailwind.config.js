@@ -7,23 +7,25 @@ module.exports = {
   ],
   theme: {
   	extend: {
-  		// Typography standard (2026-05-18) -- modern sans-serif + a
-  		// 4-size type scale. Inter is the primary family with a
-  		// system-sans fallback; the fontSize tokens are remapped so
-  		// every text-* utility across the app lands on the scale
-  		// (body 16, secondary 14, subheading 20, page title 24-26)
-  		// with researched line-heights (1.5 body, ~1.3 headings).
+  		// Typography standard (2026-05-18, scale bump) -- modern
+  		// sans-serif + a 4-size type scale. Inter is the primary family
+  		// with a system-sans fallback. The fontSize tokens are remapped
+  		// so every text-* utility across the app lands on the scale
+  		// (body 18, secondary 16, subheading 22, page title 26-28) with
+  		// researched line-heights (1.5 body, ~1.3 headings). Raised one
+  		// step from the prior 16/14 base -- dense data screens still
+  		// read small at 14-16px, especially on high-density displays.
   		fontFamily: {
   			sans: ['Inter', '-apple-system', '"Segoe UI"', 'Roboto', 'system-ui', 'sans-serif'],
   		},
   		fontSize: {
-  			xs: ['14px', { lineHeight: '1.5' }],     // secondary / captions / labels
-  			sm: ['16px', { lineHeight: '1.5' }],     // body (collapsed onto base)
-  			base: ['16px', { lineHeight: '1.5' }],   // body / default
-  			lg: ['20px', { lineHeight: '1.4' }],     // subheading
-  			xl: ['20px', { lineHeight: '1.4' }],     // subheading
-  			'2xl': ['24px', { lineHeight: '1.3' }],  // page title
-  			'3xl': ['26px', { lineHeight: '1.25' }], // page title (large)
+  			xs: ['16px', { lineHeight: '1.5' }],     // secondary / captions / labels / table headers
+  			sm: ['18px', { lineHeight: '1.5' }],     // body (collapsed onto base)
+  			base: ['18px', { lineHeight: '1.5' }],   // body / default
+  			lg: ['22px', { lineHeight: '1.4' }],     // subheading
+  			xl: ['22px', { lineHeight: '1.4' }],     // subheading
+  			'2xl': ['26px', { lineHeight: '1.3' }],  // page title
+  			'3xl': ['28px', { lineHeight: '1.25' }], // page title (large)
   		},
   		borderRadius: {
   			lg: 'var(--radius)',
