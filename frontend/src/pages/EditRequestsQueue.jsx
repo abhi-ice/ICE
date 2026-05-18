@@ -78,7 +78,7 @@ export default function EditRequestsQueue() {
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto" data-testid="edit-requests-page">
+    <div className="p-6" data-testid="edit-requests-page">
       <header className="mb-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">

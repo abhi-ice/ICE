@@ -105,7 +105,7 @@ export default function Photos() {
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see photos.</div>;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto" data-testid="photos-page">
+    <div className="p-6" data-testid="photos-page">
       <header className="mb-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
