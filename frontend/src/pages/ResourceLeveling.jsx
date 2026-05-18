@@ -197,7 +197,7 @@ export default function ResourceLeveling() {
 
   // ---- Render -----
   return (
-    <div data-testid="resource-leveling-page" className="p-4 sm:p-6 max-w-[1400px] mx-auto">
+    <div data-testid="resource-leveling-page" className="p-4 sm:p-6">
       {/* Header */}
       <header className="mb-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
