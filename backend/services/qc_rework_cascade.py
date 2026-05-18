@@ -1,10 +1,9 @@
 """Bucket D Phase 5 -- QC -> rework -> CPM cascade.
 
 When a QC issue is logged with severity='rework_required' and the
-super enters rework_duration_hours, the platform:
+super enters rework_duration_days, the platform:
   1. Creates a synthetic Delay record (cause_class=quality_rework)
-     with delay_days = ceil(hours/8 * 2) / 2  (round up to nearest
-     half-day; matches Bucket C1's day-granularity cascade).
+     with delay_days = the entered rework duration directly.
   2. Cross-links: qc_issue.linked_synthetic_delay_id ->
      delay.id; delay.linked_qc_issue_id -> qc.id.
   3. Triggers the existing C1 CPM cascade
@@ -12,8 +11,25 @@ super enters rework_duration_hours, the platform:
      downstream activities pick up the projected slip.
   4. Audits QC_REWORK_DELAY_CREATED with both ids + super estimate.
 
+QC rework days (2026-05-17) -- the rework duration is now entered in
+WORKING DAYS (0.5-day increments), consistent with delay / RFI impact
+units. The old "hours" input + h/8 conversion (_hours_to_days) were
+removed: the entered value is already days and flows straight into
+the synthetic delay's delay_days / per_task_impacts, so the synthetic
+quality_rework delay is unit-identical to a manually-logged delay and
+rides the SAME float-aware, holiday-aware cascade with no
+special-casing.
+
+KNOWN LIMITATION (accepted -- the cascade engine is NOT changed
+here): the cascade (task_status.py compute_projected_finish_dates)
+applies WHOLE-day impacts -- it does int(round(...)) on the per-task
+impact, so a 0.5-day rework rounds to 0 working days of schedule
+shift (1.5 -> 2, 2.5 -> 2). The half-day value is still stored +
+displayed; the QC form shows a non-blocking warning so the super is
+not misled.
+
 Outcome capture (separate endpoint, mirrors C2 mitigation pattern):
-  * Updates qc.rework_actual_hours + outcome notes.
+  * Updates qc.rework_actual_days + outcome notes.
   * Recomputes synthetic delay's delay_days from actual.
   * Re-runs cascade.
   * Audits QC_REWORK_OUTCOME_RECORDED.
@@ -22,22 +38,10 @@ Outcome capture (separate endpoint, mirrors C2 mitigation pattern):
     source='qc_rework' for cross-domain training data.
 """
 from __future__ import annotations
-import math
 from typing import Optional
 
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
-
-
-def _hours_to_days(hours: float) -> float:
-    """Convert hours -> working days, rounded up to nearest 0.5. Matches
-    the precision of CPM cascade math (which works in half-day increments
-    via Bucket C1's projected_finish recalc)."""
-    if hours is None or hours <= 0:
-        return 0.0
-    raw = hours / 8.0
-    # Round up to nearest 0.5
-    return math.ceil(raw * 2) / 2.0
 
 
 async def create_synthetic_delay_for_qc(
@@ -45,7 +49,7 @@ async def create_synthetic_delay_for_qc(
     owner_attribution: str = "gc",
 ) -> Optional[dict]:
     """Phase 5 entrypoint. Returns the synthetic delay doc on success;
-    None if QC isn't rework_required or rework_duration_hours not set.
+    None if QC isn't rework_required or rework_duration_days not set.
 
     Idempotent: if the QC issue already carries linked_synthetic_delay_id,
     this is a no-op (returns the existing delay doc). Prevents duplicate
@@ -53,8 +57,8 @@ async def create_synthetic_delay_for_qc(
     network blip, or future PATCH-severity-to-rework_required flows)."""
     if qc_issue.get("severity") != "rework_required":
         return None
-    hours = qc_issue.get("rework_duration_hours")
-    if not hours or float(hours) <= 0:
+    days = qc_issue.get("rework_duration_days")
+    if not days or float(days) <= 0:
         return None
 
     db = get_db()
@@ -70,7 +74,11 @@ async def create_synthetic_delay_for_qc(
             return existing
         # Back-pointer set but the delay row is gone -- fall through
         # and recreate (fix the orphan back-pointer).
-    delay_days = _hours_to_days(float(hours))
+    # QC rework days (2026-05-17) -- the entered value is already in
+    # working days; it flows straight into delay_days with NO
+    # conversion, so the synthetic delay is unit-identical to a
+    # manually-logged delay.
+    delay_days = float(days)
     now_iso = utc_now().isoformat()
     delay_doc = {
         "id": gen_id(),
@@ -128,7 +136,7 @@ async def create_synthetic_delay_for_qc(
         record_id=delay_doc["id"], before=None, after={
             "qc_issue_id": qc_issue["id"],
             "delay_days": delay_days,
-            "rework_duration_hours": hours,
+            "rework_duration_days": days,
             "linked_task_ids": delay_doc["linked_task_ids"],
             "owner_attribution": owner_attribution,
         },
@@ -166,19 +174,22 @@ async def create_synthetic_delay_for_qc(
 
 
 async def record_rework_outcome(
-    *, tenant_id: str, qc_issue: dict, actual_hours: float,
+    *, tenant_id: str, qc_issue: dict, actual_days: float,
     notes: Optional[str], actor_id: str, request_id: Optional[str] = None,
 ) -> dict:
     """Phase 5 outcome capture. Updates qc + synthetic delay,
-    re-runs cascade, audits, returns the updated qc + delay docs."""
+    re-runs cascade, audits, returns the updated qc + delay docs.
+
+    QC rework days (2026-05-17) -- actual_days is the rework actual in
+    WORKING DAYS (was actual_hours; the h/8 conversion is gone)."""
     db = get_db()
     delay_id = qc_issue.get("linked_synthetic_delay_id")
     now_iso = utc_now().isoformat()
 
-    actual_days = _hours_to_days(float(actual_hours))
+    actual_days = float(actual_days)
 
     qc_updates = {
-        "rework_actual_hours": float(actual_hours),
+        "rework_actual_days": actual_days,
         "rework_outcome_notes": notes,
         "rework_completed_at": now_iso,
         "rework_outcome_recorded_by": actor_id,
@@ -201,7 +212,7 @@ async def record_rework_outcome(
             "status": "resolved",
             "resolved_date": now_iso[:10],
             "resolved_note": (
-                f"Rework completed; actual {actual_hours}h ({actual_days}d). "
+                f"Rework completed; actual {actual_days}d. "
                 + (notes or "")
             ).strip()[:500],
             "resolved_by_user_id": actor_id,
@@ -215,7 +226,6 @@ async def record_rework_outcome(
         tenant_id=tenant_id, table_name="qc_issues",
         op="QC_REWORK_OUTCOME_RECORDED",
         record_id=qc_issue["id"], before=None, after={
-            "rework_actual_hours": float(actual_hours),
             "rework_actual_days": actual_days,
             "linked_synthetic_delay_id": delay_id,
             "notes": notes,
@@ -233,9 +243,9 @@ async def record_rework_outcome(
             "project_id": qc_issue.get("project_id"),
             "source": "qc_rework",
             "source_id": qc_issue["id"],
-            "predicted_hours": qc_issue.get("rework_duration_hours"),
-            "predicted_days": _hours_to_days(qc_issue.get("rework_duration_hours") or 0),
-            "actual_hours": float(actual_hours),
+            # QC rework days (2026-05-17) -- predicted + actual are
+            # both WORKING DAYS now (the h/8 conversion is gone).
+            "predicted_days": qc_issue.get("rework_duration_days"),
             "actual_days": actual_days,
             "estimate_basis": qc_issue.get("rework_duration_basis"),
             "outcome_notes": notes,
@@ -277,30 +287,36 @@ async def record_rework_outcome(
 
 
 async def suggest_ai_benchmark(tenant_id: str, project_id: str) -> dict:
-    """Phase 5 -- calibration RAG suggestion for rework hours. Pulls
-    prior qc_rework outcomes and returns a {benchmark_hours, basis}
+    """Phase 5 -- calibration RAG suggestion for rework DAYS. Pulls
+    prior qc_rework outcomes and returns a {benchmark_days, basis}
     dict. Currently uses simple mean; future iteration can plug a
     similarity model (TF-IDF on QC description) per the C2 calibration
-    pattern. Returns {benchmark_hours: None, basis: ...} when no
-    history exists."""
+    pattern. Returns {benchmark_days: None, basis: ...} when no
+    history exists.
+
+    QC rework days (2026-05-17) -- queries actual_days (was
+    actual_hours). Pre-change mitigation_outcomes rows that only
+    carry actual_hours are simply skipped -- this is a pure-advisory
+    feature and the history self-heals as new days-based outcomes
+    are recorded."""
     db = get_db()
     rows = await db.mitigation_outcomes.find(
         tenant_filter(tenant_id, {
             "project_id": project_id, "source": "qc_rework",
-            "actual_hours": {"$type": "number", "$gt": 0},
+            "actual_days": {"$type": "number", "$gt": 0},
         }),
-        {"_id": 0, "actual_hours": 1},
+        {"_id": 0, "actual_days": 1},
     ).to_list(length=200)
     if not rows:
-        return {"benchmark_hours": None,
+        return {"benchmark_days": None,
                 "basis": "No prior QC rework outcomes recorded; super judgment only."}
-    actuals = [float(r["actual_hours"]) for r in rows]
+    actuals = [float(r["actual_days"]) for r in rows]
     avg = sum(actuals) / len(actuals)
     return {
-        "benchmark_hours": round(avg, 1),
+        "benchmark_days": round(avg, 1),
         "basis": (
             f"Calibration RAG: similar QC issues averaged "
-            f"~{round(avg, 1)}h based on {len(actuals)} prior outcomes "
+            f"~{round(avg, 1)}d based on {len(actuals)} prior outcomes "
             f"on this project."
         ),
     }
