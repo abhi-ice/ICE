@@ -1884,7 +1884,10 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   // scope) picker. OPTIONAL for safety per spec (some events area-wide);
   // empty list still saves.
   const [draft, setDraft] = useState({
-    description: "", severity: "minor", event_type: "near_miss",
+    // 2026-05-18 -- no pre-selected defaults for event_type/severity.
+    // Forces super to consciously pick before saving (validation
+    // gate in create() below).
+    description: "", severity: "", event_type: "",
     linked_task_ids: [],
   });
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
@@ -1899,6 +1902,8 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const create = async () => {
     if (busy) return;
     if (!draft.description) return toast.error("Description required");
+    if (!draft.event_type) return toast.error("Event type is required");
+    if (!draft.severity) return toast.error("Severity is required");
     if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
       return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
     }
@@ -1910,7 +1915,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         linked_task_ids: draft.linked_task_ids,
         ...(locked ? { add_reason: addReason.trim() } : {}),
       });
-      setDraft({ description: "", severity: "minor", event_type: "near_miss",
+      setDraft({ description: "", severity: "", event_type: "",
                   linked_task_ids: [] });
       setAddReason("");
       reload();
@@ -1942,9 +1947,11 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           testidPrefix="safety-activity" />
         <div className="grid grid-cols-2 gap-2">
           <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            <option value="">— select event type —</option>
             {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
           </select>
           <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            <option value="">— select severity —</option>
             {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
