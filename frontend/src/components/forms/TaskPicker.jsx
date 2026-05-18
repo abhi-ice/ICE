@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
 import api from "../../lib/api";
+import { isMasterTaskComplete } from "../../lib/taskCompletion";
 
 export default function TaskPicker({
   projectId, value = [], onChange,
@@ -31,6 +32,9 @@ export default function TaskPicker({
   const [tasks, setTasks] = useState([]);
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [picker, setPicker] = useState("");
+  // Feature F5 (2026-05-18) -- completed tasks (100% / status complete)
+  // are hidden from the picker by default; this toggle reveals them.
+  const [showCompleted, setShowCompleted] = useState(false);
 
   useEffect(() => {
     if (!projectId) {
@@ -48,7 +52,14 @@ export default function TaskPicker({
     [tasks],
   );
   const valueSet = useMemo(() => new Set(value || []), [value]);
-  const availableTasks = tasks.filter((t) => !valueSet.has(t.id));
+  // Feature F5 -- a completed task already linked still renders as a
+  // chip (we never drop existing links); it's only hidden from the
+  // dropdown of NEW options. The toggle reveals completed options.
+  const unlinkedTasks = tasks.filter((t) => !valueSet.has(t.id));
+  const hiddenCompletedCount = unlinkedTasks.filter(isMasterTaskComplete).length;
+  const availableTasks = showCompleted
+    ? unlinkedTasks
+    : unlinkedTasks.filter((t) => !isMasterTaskComplete(t));
 
   const add = () => {
     if (!picker) return;
@@ -95,7 +106,17 @@ export default function TaskPicker({
             No tasks linked yet — pick one below.
           </div>
         )}
-        <div className="flex items-center gap-2 pt-1">
+        {/* Feature F5 -- "Show completed tasks" toggle, default OFF. */}
+        <label className="flex items-center gap-1.5 pt-1 text-[11px] text-slate-500 cursor-pointer">
+          <input type="checkbox" data-testid={`${testidPrefix}-show-completed`}
+            checked={showCompleted}
+            onChange={(e) => setShowCompleted(e.target.checked)} />
+          Show completed tasks
+          {hiddenCompletedCount > 0 && !showCompleted && (
+            <span className="text-slate-400">({hiddenCompletedCount} hidden)</span>
+          )}
+        </label>
+        <div className="flex items-center gap-2">
           <select data-testid={`${testidPrefix}-select`} value={picker}
             onChange={(e) => setPicker(e.target.value)}
             className="flex-1 h-8 px-2 rounded border border-slate-200 text-sm"

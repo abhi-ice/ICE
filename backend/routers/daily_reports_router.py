@@ -362,6 +362,35 @@ async def get_daily_report(daily_report_id: str, ctx: dict = Depends(require_ten
     return DailyReport(**doc)
 
 
+async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
+    """Features F2/F3/F4 (2026-05-18) -- stamp the DR Activity Grid view
+    fields onto each grid row from its linked task. One $in query, not
+    per-row lookups.
+
+      work_category      -- F1 tag; the grid sections rows off it.
+      open_blocker_count -- F3 blocker badge (the persisted count the
+                            Tasks page already shows -- task_status.py).
+      auto_status        -- F4 automatic status.
+      task_updated_at    -- optimistic-lock token (pre-existing).
+
+    METADATA / VIEW ONLY -- none of these are persisted back to the
+    daily_report_activities collection or read by the CPM engine.
+    Mutates `rows` in place and returns it."""
+    from services.dr_activity_grid import enrich_grid_row
+    task_ids = [r["schedule_activity_id"] for r in rows if r.get("schedule_activity_id")]
+    by_id: dict = {}
+    if task_ids:
+        tasks = await db.tasks.find(
+            tenant_filter(tenant_id, {"id": {"$in": task_ids}}),
+            {"_id": 0, "id": 1, "updated_at": 1, "work_category": 1,
+             "open_blocker_count": 1},
+        ).to_list(len(task_ids))
+        by_id = {t["id"]: t for t in tasks}
+    for r in rows:
+        enrich_grid_row(r, by_id.get(r.get("schedule_activity_id")))
+    return rows
+
+
 @router.get("/daily-reports/{daily_report_id}/grid", response_model=list[DailyReportActivity])
 async def get_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -372,6 +401,7 @@ async def get_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     rows = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id}, {"_id": 0},
     ).sort("position", 1).to_list(200)
+    await _enrich_grid_rows(db, ctx["tenant_id"], rows)
     return [DailyReportActivity(**r) for r in rows]
 
 
@@ -619,6 +649,19 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     #    sync_state metadata so the UI can show the provisional indicator.
     now_iso = utc_now().isoformat()
     row_updates = dict(updates)
+    # Feature F4 (2026-05-18) -- the row's end-of-day status is AUTO-
+    # computed from the linked task's open-blocker count + the row's
+    # EOD%; it is no longer a manually-set field (auto overrides
+    # manual). Recomputed on every PATCH so a progress edit immediately
+    # flips the stored status. The /grid + /context reads recompute
+    # auto_status live on top of this for real-time display.
+    from services.dr_activity_grid import compute_auto_status
+    _eod_for_status = updates.get(
+        "pct_complete_end_of_day", before.get("pct_complete_end_of_day", 0),
+    )
+    row_updates["status_at_end_of_day"] = compute_auto_status(
+        (task_before or {}).get("open_blocker_count", 0), _eod_for_status,
+    )
     row_updates["sync_state"] = "provisional"
     row_updates["last_sync_at"] = now_iso
     row_updates["task_external_modified_warning"] = False
@@ -951,52 +994,16 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
             },
         )
 
-    # Bucket C3a Phase 3 — submit-time validation. A zero-progress row
-    # (EOD% == SOD%) without an explicit constraint isn't TIA-ready.
-    # If a constraint type that needs a reference is set but the
-    # reference is missing, also reject. Returns a structured per-row
-    # error list so the frontend can show inline messages instead of
-    # a single toast.
-    grid_rows = await db.daily_report_activities.find(
-        {"daily_report_id": daily_report_id}, {"_id": 0},
-    ).to_list(500)
-    row_errors: list[dict] = []
-    for r in grid_rows:
-        sod = float(r.get("pct_complete_start_of_day") or 0)
-        eod = float(r.get("pct_complete_end_of_day") or 0)
-        ct = r.get("constraint_type")
-        if eod == sod and ct in (None, "not_constrained"):
-            row_errors.append({
-                "row_id": r.get("id"),
-                "activity_code": r.get("activity_code"),
-                "field": "constraint_type",
-                "message": "Activity shows zero progress. Set a constraint type or record progress.",
-            })
-            continue
-        if ct and ct not in ("not_constrained", "other"):
-            if not r.get("constraint_reference_entity_id"):
-                row_errors.append({
-                    "row_id": r.get("id"),
-                    "activity_code": r.get("activity_code"),
-                    "field": "constraint_reference_entity_id",
-                    "message": f"Pick a reference entity for constraint '{ct}'.",
-                })
-        elif ct == "other" and not (r.get("constraint_other_description") or "").strip():
-            row_errors.append({
-                "row_id": r.get("id"),
-                "activity_code": r.get("activity_code"),
-                "field": "constraint_other_description",
-                "message": "Describe the constraint.",
-            })
-    if row_errors:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "row_validation_failed",
-                "message": f"{len(row_errors)} grid row(s) need attention before submit.",
-                "row_errors": row_errors,
-            },
-        )
+    # Feature F3 (2026-05-18) -- submit-time constraint validation
+    # REMOVED. The Constraints column has been removed from the DR
+    # Activity Grid: it was redundant with the F3 blocker badge, which
+    # surfaces the same open RFIs / delays / over-SLA submittals from
+    # the linked task. A zero-progress row therefore no longer requires
+    # an explicit constraint to submit -- "why a row didn't move" is
+    # read off the blocker badge instead. The constraint_* fields stay
+    # on the daily_report_activities model so historical (pre-F3) rows
+    # keep their data and the DR PDF still renders it; only the submit
+    # gate is dropped.
 
     updates = {
         "status": "submitted",
@@ -1722,18 +1729,12 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0}) or {}
 
     grid = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"_id": 0}).sort("position", 1).to_list(500)
-    # Bucket C1 Phase 1 — denormalize task.updated_at onto each grid row
-    # so the frontend has the optimistic-lock token without a second
-    # round-trip. Single $in query, not per-row lookups.
     grid_task_ids = [r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")]
-    if grid_task_ids:
-        task_lmts = await db.tasks.find(
-            tenant_filter(ctx["tenant_id"], {"id": {"$in": grid_task_ids}}),
-            {"_id": 0, "id": 1, "updated_at": 1},
-        ).to_list(len(grid_task_ids))
-        lmt_by_id = {t["id"]: t.get("updated_at") for t in task_lmts}
-        for r in grid:
-            r["task_updated_at"] = lmt_by_id.get(r.get("schedule_activity_id"))
+    # Features F2/F3/F4 (2026-05-18) -- stamp the DR Activity Grid view
+    # fields (work_category, open_blocker_count, auto_status) onto each
+    # row alongside the pre-existing task_updated_at optimistic-lock
+    # token. Single $in query. METADATA / VIEW ONLY.
+    await _enrich_grid_rows(db, ctx["tenant_id"], grid)
 
     # Bucket C3a Phase 3 — pre-populate constraint_type +
     # constraint_reference for any row that has no constraint set yet,

@@ -15,6 +15,7 @@ import { ChevronRight, ChevronLeft, Check, Loader2, Sparkles, Filter } from "luc
 import api from "../../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { toast } from "../ui/sonner";
+import { isDrActivityComplete } from "../../lib/taskCompletion";
 
 // Map AI-suggested event type values to the wizard's EVENT_TYPES.value.
 // AI returns "qc_issue" / "safety_event" / etc.; wizard fields are
@@ -79,6 +80,10 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
   // filters step-3 options by the suggested trade; true expands.
   const [aiSuggestion, setAiSuggestion] = useState(null);
   const [showAllTrades, setShowAllTrades] = useState(false);
+  // Feature F5 (2026-05-18) -- for the Activity (WBS row) event type,
+  // completed activity rows are hidden from step 3 by default; this
+  // toggle reveals them.
+  const [showCompletedActivities, setShowCompletedActivities] = useState(false);
 
   // Reset when the dialog opens for a new tray entry.
   useEffect(() => {
@@ -88,6 +93,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
     setEventOptions([]);
     setEventId("");
     setShowAllTrades(false);
+    setShowCompletedActivities(false);
     // Pull the AI suggestion + use it for the initial selections.
     // The tray row carries the AI fields directly from the upload
     // response, but we re-fetch to make sure we have the freshest
@@ -156,18 +162,31 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
   // trade AND the user hasn't toggled showAllTrades, filter options
   // by trade_code (events carry trade_code on most collections;
   // daily_report_activities have it via the linked task).
+  // Feature F5 (2026-05-18) -- for the Activity (WBS row) event type,
+  // completed activity rows are hidden by default. Photos still tag to
+  // events of other types unchanged (those are events, not tasks).
+  const isActivityType = eventType === "daily_report_activity_id";
+  const hiddenCompletedActivities = isActivityType
+    ? eventOptions.filter(isDrActivityComplete).length
+    : 0;
+
   const filteredEventOptions = useMemo(() => {
+    // F5 -- drop completed activity rows unless the toggle is on.
+    let base = eventOptions;
+    if (eventType === "daily_report_activity_id" && !showCompletedActivities) {
+      base = base.filter((o) => !isDrActivityComplete(o));
+    }
     const suggestedTrade = aiSuggestion?.ai_suggested_trade;
-    if (!suggestedTrade || showAllTrades) return eventOptions;
+    if (!suggestedTrade || showAllTrades) return base;
     const wanted = suggestedTrade.toLowerCase().trim();
-    const matched = eventOptions.filter((o) => {
+    const matched = base.filter((o) => {
       const t = (o.trade_code || o.trade || "").toLowerCase().trim();
       return t && (t === wanted || t.includes(wanted) || wanted.includes(t));
     });
     // If filter removes everything, fall back to all options so the
     // user isn't stranded with an empty picker.
-    return matched.length ? matched : eventOptions;
-  }, [eventOptions, aiSuggestion, showAllTrades]);
+    return matched.length ? matched : base;
+  }, [eventOptions, aiSuggestion, showAllTrades, eventType, showCompletedActivities]);
 
   // Load event options for step 3 whenever drId / eventType change.
   useEffect(() => {
@@ -383,6 +402,20 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                     {showAllTrades ? "Re-apply trade filter" : "Show all trades"}
                   </button>
                 </div>
+              )}
+              {/* Feature F5 -- "Show completed tasks" toggle for the
+                  Activity (WBS row) event type, default OFF. Completed
+                  activity rows are hidden from the picker by default. */}
+              {isActivityType && eventOptions.length > 0 && (
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-500 cursor-pointer">
+                  <input type="checkbox" data-testid="tag-wizard-show-completed"
+                    checked={showCompletedActivities}
+                    onChange={(e) => setShowCompletedActivities(e.target.checked)} />
+                  Show completed tasks
+                  {hiddenCompletedActivities > 0 && !showCompletedActivities && (
+                    <span className="text-slate-400">({hiddenCompletedActivities} hidden)</span>
+                  )}
+                </label>
               )}
               {eventOptionsLoading ? (
                 <div className="text-slate-400 inline-flex items-center gap-1"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…</div>
