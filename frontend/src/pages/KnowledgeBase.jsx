@@ -100,10 +100,10 @@ export default function KnowledgeBase() {
         {list.map((e) => (
           <div key={e.id} data-testid={`kb-row-${e.id}`} className="surface p-3">
             <div className="flex items-center gap-2 mb-1">
-              <span className={`pill ${SOURCE_PILL[e.source_kind] || "pill-slate"} text-[10px] capitalize`}>{e.source_kind?.replace(/_/g, " ")}</span>
-              {e._score && <span className="pill pill-slate text-[10px]">match {(e._score * 100).toFixed(0)}%</span>}
-              {(e.tags || []).map((t) => <span key={t} className="text-[10px] text-slate-500">#{t}</span>)}
-              <span className="text-[10px] text-slate-400 ml-auto">{new Date(e.created_at).toLocaleDateString()}</span>
+              <span className={`pill ${SOURCE_PILL[e.source_kind] || "pill-slate"} text-xs capitalize`}>{e.source_kind?.replace(/_/g, " ")}</span>
+              {e._score && <span className="pill pill-slate text-xs">match {(e._score * 100).toFixed(0)}%</span>}
+              {(e.tags || []).map((t) => <span key={t} className="text-xs text-slate-500">#{t}</span>)}
+              <span className="text-xs text-slate-400 ml-auto">{new Date(e.created_at).toLocaleDateString()}</span>
             </div>
             <div className="font-medium text-sm">{e.title}</div>
             <div className="text-xs text-slate-600 mt-1 whitespace-pre-wrap line-clamp-4">{e.body}</div>

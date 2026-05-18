@@ -93,7 +93,7 @@ export default function VoiceCaptureButton() {
           <>
             {activeDrId && (
               <span data-testid="voice-fab-dr-badge"
-                className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 shadow-sm"
+                className="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 shadow-sm"
                 title="Voice memo will auto-link to the open daily report">
                 ↓ linked to open DR
               </span>
@@ -102,7 +102,7 @@ export default function VoiceCaptureButton() {
               data-testid="voice-kind-select"
               value={kind}
               onChange={(e) => setKind(e.target.value)}
-              className="h-7 px-2 rounded-full bg-white border border-slate-200 text-[11px] shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-7 px-2 rounded-full bg-white border border-slate-200 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               title="Voice kind"
             >
               {KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
@@ -142,7 +142,7 @@ export default function VoiceCaptureButton() {
             </div>
             <div>
               <div className="field-label">Extracted fields (Claude)</div>
-              <pre className="text-[11px] bg-slate-900 text-slate-200 p-2 rounded overflow-x-auto max-h-44 scrollbar-soft">{JSON.stringify(result.structured_fields || {}, null, 2)}</pre>
+              <pre className="text-xs bg-slate-900 text-slate-200 p-2 rounded overflow-x-auto max-h-44 scrollbar-soft">{JSON.stringify(result.structured_fields || {}, null, 2)}</pre>
             </div>
             {result.kind === "coordination_event" ? (
               // Followup-fix 4 (2026-05-07): backend auto-creates a draft
@@ -168,7 +168,7 @@ export default function VoiceCaptureButton() {
                 <Wand2 className="h-4 w-4" /> Create {result.kind?.replace(/_/g, " ")} from this
               </button>
             )}
-            <div className="text-[10px] text-slate-400">
+            <div className="text-xs text-slate-400">
               Annotation saved (id <code>{result.id?.slice(0, 8)}</code>). Audio in object storage.
               {activeDrId ? " Linked to the open daily report." : " Pre-filled fields will open in the create dialog."}
             </div>

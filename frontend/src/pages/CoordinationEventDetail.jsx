@@ -118,7 +118,7 @@ export default function CoordinationEventDetail() {
           <div className="flex flex-col gap-1 items-end">
             <span className={`pill ${outClass} capitalize`}>{ev.outcome.replace(/_/g, " ")}</span>
             {ev.voice_extracted && (
-              <span className="pill pill-amber text-[10px]">voice draft</span>
+              <span className="pill pill-amber text-xs">voice draft</span>
             )}
           </div>
           <div className="flex flex-col gap-1">

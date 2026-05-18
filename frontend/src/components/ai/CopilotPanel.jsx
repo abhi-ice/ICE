@@ -69,7 +69,7 @@ export default function CopilotPanel({ open, onClose }) {
         <Bot className="h-4 w-4 text-primary" />
         <div className="font-semibold text-sm">AI Copilot</div>
         {activeDrId && (
-          <span data-testid="copilot-dr-scope" className="ml-2 inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <span data-testid="copilot-dr-scope" className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
             <FileSpreadsheet className="h-3 w-3" /> Daily report scope
           </span>
         )}
@@ -96,7 +96,7 @@ export default function CopilotPanel({ open, onClose }) {
             {m.tools && m.tools.length > 0 && (
               <div data-testid={`copilot-tools-${i}`} className="mt-1 flex flex-wrap gap-1">
                 {m.tools.map((tt, j) => (
-                  <span key={j} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                  <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
                     <CheckCircle2 className="h-2.5 w-2.5" /> {tt}
                   </span>
                 ))}
@@ -110,14 +110,14 @@ export default function CopilotPanel({ open, onClose }) {
                 <button
                   data-testid={`copilot-send-qc-${i}`}
                   onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
-                  className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-blue-200 text-blue-700 hover:bg-blue-50"
+                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-blue-200 text-blue-700 hover:bg-blue-50"
                 >
                   <ClipboardCheck className="h-3 w-3" /> Send to QC description
                 </button>
                 <button
                   data-testid={`copilot-send-safety-${i}`}
                   onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
-                  className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-amber-200 text-amber-700 hover:bg-amber-50"
+                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-amber-200 text-amber-700 hover:bg-amber-50"
                 >
                   <ShieldAlert className="h-3 w-3" /> Send to Safety description
                 </button>

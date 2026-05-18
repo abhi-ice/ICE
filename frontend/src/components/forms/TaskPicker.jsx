@@ -83,7 +83,7 @@ export default function TaskPicker({
                 {t?.description || "(task not in current project list)"}
               </span>
               {t?.is_critical_path && (
-                <span className="text-[10px] px-1 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200 font-mono uppercase">
+                <span className="text-xs px-1 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200 font-mono uppercase">
                   CP
                 </span>
               )}

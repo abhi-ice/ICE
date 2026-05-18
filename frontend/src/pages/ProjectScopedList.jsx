@@ -425,7 +425,7 @@ export default function ProjectScopedList({ kind }) {
           aggregates across all DRs in the project. Click a date or affected-activity chip to
           jump to the parent DR.
           <div className="mt-2 flex items-center gap-2">
-            <label className="uppercase tracking-wide text-[10px]">Filter by activity id</label>
+            <label className="uppercase tracking-wide text-xs">Filter by activity id</label>
             <input data-testid={`${kind}-affected-activity-filter`}
               value={affectedActivityId}
               onChange={(e) => setAffectedActivityId(e.target.value)}
@@ -579,7 +579,7 @@ function AiFlaggedSafetyPhotosBanner({ projectId }) {
               <div className="text-slate-700 truncate">
                 {r.ai_suggested_caption || "(no caption)"}
               </div>
-              <div className="text-[10px] text-slate-500 mt-0.5">
+              <div className="text-xs text-slate-500 mt-0.5">
                 Concerns: {(r.ai_safety_concerns_detected || []).slice(0, 3).join(", ") || "—"}
                 {r.ai_confidence_score != null && (
                   <span className="ml-2">
@@ -594,7 +594,7 @@ function AiFlaggedSafetyPhotosBanner({ projectId }) {
             <button data-testid={`safety-ai-create-${r.id}`}
               onClick={() => createEvent(r)}
               disabled={busyId === r.id}
-              className="h-7 px-2 rounded bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-[11px] inline-flex items-center gap-1 shrink-0">
+              className="h-7 px-2 rounded bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs inline-flex items-center gap-1 shrink-0">
               {busyId === r.id ? (
                 <><Loader2 className="h-3 w-3 animate-spin" /> Filing…</>
               ) : (
@@ -605,7 +605,7 @@ function AiFlaggedSafetyPhotosBanner({ projectId }) {
         ))}
       </ul>
       {rows.length > 5 && (
-        <div className="mt-2 text-[11px] text-rose-700">
+        <div className="mt-2 text-xs text-rose-700">
           + {rows.length - 5} more flagged photos. Open the Photo tray to review.
         </div>
       )}

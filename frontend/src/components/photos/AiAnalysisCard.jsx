@@ -169,7 +169,7 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
           <span className="font-medium">AI analysis failed</span>
         </div>
         <div className="text-rose-800">{label}</div>
-        <div className="text-[10px] text-rose-700 font-mono">{reason}</div>
+        <div className="text-xs text-rose-700 font-mono">{reason}</div>
         <button data-testid="ai-card-retry" onClick={triggerAnalyze} disabled={busy}
           className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 disabled:opacity-50 inline-flex items-center gap-1">
           <RefreshCw className={`h-3 w-3 ${busy ? "animate-spin" : ""}`} />
@@ -252,7 +252,7 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
           immediately see this analysis cost zero tokens. */}
       {data.ai_reused_from_phash && (
         <div data-testid="ai-card-reused-banner"
-          className="px-2 py-1.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 text-[11px] flex items-center gap-2">
+          className="px-2 py-1.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2">
           <Check className="h-3.5 w-3.5 shrink-0" />
           <span>
             <span className="font-medium">AI analysis reused from previous upload.</span>{" "}
@@ -263,7 +263,7 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
       <div className="flex items-center gap-2">
         <Sparkles className="h-3.5 w-3.5 text-blue-700" />
         <span className="font-medium text-blue-900">AI suggestion</span>
-        <span className={`ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] ${conf.tone}`}>
+        <span className={`ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs ${conf.tone}`}>
           {Math.round((data.ai_confidence_score || 0) * 100)}% · {conf.label}
         </span>
       </div>
@@ -276,14 +276,14 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
           <div className="flex flex-wrap gap-1">
             {safety.map((s, i) => (
               <span key={i} data-testid={`ai-safety-${i}`}
-                className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-200">
+                className="text-xs px-1.5 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-200">
                 {s}
               </span>
             ))}
           </div>
           <a href={`/safety-events?from_photo=${trayId}`}
             data-testid="ai-card-create-safety"
-            className="inline-flex items-center gap-1 text-[10px] text-rose-700 underline">
+            className="inline-flex items-center gap-1 text-xs text-rose-700 underline">
             Create safety event from this →
           </a>
         </div>
@@ -291,26 +291,26 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-1">
         <div>
-          <div className="text-[10px] uppercase text-slate-500">Class</div>
+          <div className="text-xs uppercase text-slate-500">Class</div>
           <div className="font-medium text-slate-800 capitalize">
             {data.ai_suggested_class || "—"}
           </div>
         </div>
         <div>
-          <div className="text-[10px] uppercase text-slate-500">Event type</div>
+          <div className="text-xs uppercase text-slate-500">Event type</div>
           <div className="font-medium text-slate-800">
             {(data.ai_suggested_event_type || "none").replace(/_/g, " ")}
           </div>
         </div>
         <div>
-          <div className="text-[10px] uppercase text-slate-500">Trade</div>
+          <div className="text-xs uppercase text-slate-500">Trade</div>
           <div className="font-medium text-slate-800">
             {data.ai_suggested_trade || "—"}
           </div>
         </div>
         <div>
-          <div className="text-[10px] uppercase text-slate-500">Model</div>
-          <div className="text-slate-600 text-[10px] font-mono">
+          <div className="text-xs uppercase text-slate-500">Model</div>
+          <div className="text-slate-600 text-xs font-mono">
             {data.ai_model_version || "—"}
           </div>
         </div>
@@ -318,13 +318,13 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
 
       {data.ai_suggested_caption && (
         <div className="bg-white border border-slate-200 rounded p-2">
-          <div className="text-[10px] uppercase text-slate-500 mb-0.5">Caption</div>
+          <div className="text-xs uppercase text-slate-500 mb-0.5">Caption</div>
           <div className="text-slate-800 italic">"{data.ai_suggested_caption}"</div>
         </div>
       )}
 
       {data.ai_user_overridden && (
-        <div className="flex items-center gap-1 text-amber-700 text-[10px]">
+        <div className="flex items-center gap-1 text-amber-700 text-xs">
           <Edit3 className="h-3 w-3" />
           Overridden by user{data.ai_user_override_reason ? `: "${data.ai_user_override_reason}"` : ""}
         </div>
@@ -398,19 +398,19 @@ function AiOverrideDialog({ open, onOpenChange, data, trayId, onSaved }) {
         <DialogHeader><DialogTitle>Override AI suggestion</DialogTitle></DialogHeader>
         <div className="space-y-2 text-sm">
           <div>
-            <label className="text-[10px] uppercase text-slate-500">Photo class</label>
+            <label className="text-xs uppercase text-slate-500">Photo class</label>
             <select value={photoClass} onChange={(e) => setPhotoClass(e.target.value)}
               className="w-full h-8 px-2 rounded border border-slate-300 bg-white text-sm">
               {OVERRIDE_CLASSES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500">Caption</label>
+            <label className="text-xs uppercase text-slate-500">Caption</label>
             <input value={caption} onChange={(e) => setCaption(e.target.value)}
               className="w-full h-8 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500">Event type</label>
+            <label className="text-xs uppercase text-slate-500">Event type</label>
             <select value={eventType} onChange={(e) => setEventType(e.target.value)}
               className="w-full h-8 px-2 rounded border border-slate-300 bg-white text-sm">
               {OVERRIDE_EVENT_TYPES.map((c) => (
@@ -419,13 +419,13 @@ function AiOverrideDialog({ open, onOpenChange, data, trayId, onSaved }) {
             </select>
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500">Trade</label>
+            <label className="text-xs uppercase text-slate-500">Trade</label>
             <input value={trade} onChange={(e) => setTrade(e.target.value)}
               placeholder="plumber, electrician, drywall…"
               className="w-full h-8 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500">Why are you overriding? (5+ chars) *</label>
+            <label className="text-xs uppercase text-slate-500">Why are you overriding? (5+ chars) *</label>
             <textarea value={reason} onChange={(e) => setReason(e.target.value)}
               rows={2}
               placeholder="e.g. AI labeled progress but this is rework"
@@ -476,7 +476,7 @@ function AiRejectDialog({ open, onOpenChange, trayId, onSaved }) {
             The photo stays in the tray; manual tagging is still available.
           </div>
           <div>
-            <label className="text-[10px] uppercase text-slate-500">Why? (10+ chars) *</label>
+            <label className="text-xs uppercase text-slate-500">Why? (10+ chars) *</label>
             <textarea value={reason} onChange={(e) => setReason(e.target.value)}
               rows={3}
               placeholder="e.g. AI completely misread; this is a delivery photo not a QC issue"

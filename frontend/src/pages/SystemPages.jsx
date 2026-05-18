@@ -334,7 +334,7 @@ export function AuditLog() {
       {/* Phase 5 -- filter row. */}
       <div className="flex flex-wrap items-end gap-2 p-2 bg-slate-50 border border-slate-200 rounded text-sm">
         <div>
-          <label className="text-[10px] uppercase text-slate-500 block">Op</label>
+          <label className="text-xs uppercase text-slate-500 block">Op</label>
           <select data-testid="audit-filter-op" value={opFilter}
             onChange={(e) => setOpFilter(e.target.value)}
             className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
@@ -347,7 +347,7 @@ export function AuditLog() {
           </select>
         </div>
         <div>
-          <label className="text-[10px] uppercase text-slate-500 block">Table name</label>
+          <label className="text-xs uppercase text-slate-500 block">Table name</label>
           <input data-testid="audit-filter-table" value={tableFilter}
             onChange={(e) => setTableFilter(e.target.value)}
             placeholder="e.g. crew_capacity"
@@ -375,7 +375,7 @@ export function AuditLog() {
                 <td className="font-mono text-xs">{r.table_name}</td>
                 <td className="font-mono text-xs truncate max-w-[180px]">{r.record_id}</td>
                 <td className="font-mono text-xs truncate max-w-[140px]">{r.actor_id || "—"}</td>
-                <td className="font-mono text-[10px] text-muted-foreground truncate max-w-[160px]">{r.hash?.slice(0, 24)}…</td>
+                <td className="font-mono text-xs text-muted-foreground truncate max-w-[160px]">{r.hash?.slice(0, 24)}…</td>
               </tr>
             ))}
             {!rows.length && <tr><td colSpan="6" className="text-center py-6 text-sm text-muted-foreground">No audit entries.</td></tr>}
@@ -602,7 +602,7 @@ function AiUsageTab() {
           </button>
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-[10px] uppercase text-slate-500">Window</label>
+          <label className="text-xs uppercase text-slate-500">Window</label>
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}
             className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
             <option value={7}>7 days</option>
@@ -743,7 +743,7 @@ function BudgetControls({ budget, editing, setEditing, onSaved }) {
           style={{ width: `${Math.min(100, pct)}%` }}
           data-testid="ai-budget-bar" />
       </div>
-      <div className="text-[10px] text-slate-500">
+      <div className="text-xs text-slate-500">
         Resets {budget?.reset_at ? new Date(budget.reset_at).toLocaleDateString() : "first of next month"}.
         Spend tracks the actual Anthropic input + output token cost; pHash
         reuse never adds to spend.
@@ -757,7 +757,7 @@ function BudgetControls({ budget, editing, setEditing, onSaved }) {
       ) : (
         <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-2">
           <div>
-            <label className="text-[10px] uppercase text-slate-500 block">Monthly cap (USD)</label>
+            <label className="text-xs uppercase text-slate-500 block">Monthly cap (USD)</label>
             <input data-testid="ai-budget-input" type="number" min="0" step="10"
               value={val} onChange={(e) => setVal(e.target.value)}
               className="h-8 px-2 rounded border border-slate-300 text-sm w-32" />
@@ -793,7 +793,7 @@ function KpiTile({ label, value, tone }) {
     : "text-slate-700";
   return (
     <div className="border border-slate-200 rounded p-2 bg-white">
-      <div className="text-[10px] uppercase text-slate-500">{label}</div>
+      <div className="text-xs uppercase text-slate-500">{label}</div>
       <div className={`text-base font-semibold tabular-nums mt-0.5 ${toneCls}`}>{value}</div>
     </div>
   );
@@ -815,7 +815,7 @@ function CostDashboardCard({ dashboard }) {
       {perDay.length > 0 && (
         <div data-testid="ai-cost-per-day"
           className="border border-slate-200 rounded p-2 bg-white">
-          <div className="text-[10px] uppercase text-slate-500 mb-2">Spend per day</div>
+          <div className="text-xs uppercase text-slate-500 mb-2">Spend per day</div>
           <div className="flex items-end gap-0.5 h-20">
             {perDay.map((d) => (
               <div key={d.date} title={`${d.date}: $${d.usd.toFixed(3)} (${d.analyses} analyses)`}
@@ -823,7 +823,7 @@ function CostDashboardCard({ dashboard }) {
                 style={{ height: `${(d.usd / maxUsd) * 100}%` }} />
             ))}
           </div>
-          <div className="flex justify-between text-[9px] text-slate-400 mt-1">
+          <div className="flex justify-between text-xs text-slate-400 mt-1">
             <span>{perDay[0]?.date}</span>
             <span>{perDay[perDay.length - 1]?.date}</span>
           </div>
@@ -831,7 +831,7 @@ function CostDashboardCard({ dashboard }) {
       )}
       {dashboard.per_model?.length > 0 && (
         <div data-testid="ai-cost-per-model">
-          <div className="text-[10px] uppercase text-slate-500 mb-1">By model version</div>
+          <div className="text-xs uppercase text-slate-500 mb-1">By model version</div>
           <div className="space-y-1">
             {dashboard.per_model.map((m) => (
               <div key={m.model} className="flex items-center justify-between text-xs border-b border-slate-100 py-1">
@@ -874,7 +874,7 @@ function TimingPercentilesCard({ timings }) {
           <Activity className="h-3.5 w-3.5 text-blue-700" />
           Vision call performance ({timings.window_days}d)
         </div>
-        <div className="text-[10px] text-slate-500">
+        <div className="text-xs text-slate-500">
           n = {timings.sample_size}
         </div>
       </div>
@@ -885,7 +885,7 @@ function TimingPercentilesCard({ timings }) {
         <KpiTile label="Max" value={fmt(timings.max_ms)} />
       </div>
       {timings.by_status && Object.keys(timings.by_status).length > 0 && (
-        <div className="text-[10px] uppercase text-slate-500 mt-2">By status</div>
+        <div className="text-xs uppercase text-slate-500 mt-2">By status</div>
       )}
       {timings.by_status && (
         <div className="space-y-0.5 text-xs">
@@ -932,7 +932,7 @@ function SuggestionSourceStatsCard({ stats }) {
           <Sparkles className="h-3.5 w-3.5 text-blue-700" />
           Suggestion acceptance rates ({stats.window_days}d)
         </div>
-        <div className="text-[10px] text-slate-500">
+        <div className="text-xs text-slate-500">
           {overall.total_created || 0} created · {overall.confirmed_count || 0} confirmed
           · {overall.rejected_count || 0} rejected
         </div>
@@ -953,24 +953,24 @@ function SuggestionSourceStatsCard({ stats }) {
                   <span className="font-medium text-slate-800">
                     {SOURCE_LABELS[r.source] || r.source}
                   </span>
-                  <span className={`px-1.5 py-0.5 rounded border text-[10px] ${rateTone(pct)}`}>
+                  <span className={`px-1.5 py-0.5 rounded border text-xs ${rateTone(pct)}`}>
                     {pct}% accepted
                   </span>
-                  <span className="text-slate-500 text-[10px]">
+                  <span className="text-slate-500 text-xs">
                     ({r.confirmed_count}/{r.confirmed_count + r.rejected_count} decided)
                   </span>
                   {r.pending_count > 0 && (
-                    <span className="text-[10px] text-slate-500">
+                    <span className="text-xs text-slate-500">
                       · {r.pending_count} pending
                     </span>
                   )}
                   {r.expired_count > 0 && (
-                    <span className="text-[10px] text-slate-400">
+                    <span className="text-xs text-slate-400">
                       · {r.expired_count} expired
                     </span>
                   )}
                   {r.avg_confidence_at_acceptance > 0 && (
-                    <span className="text-[10px] text-slate-500 ml-auto">
+                    <span className="text-xs text-slate-500 ml-auto">
                       avg conf at accept:&nbsp;
                       {Math.round(r.avg_confidence_at_acceptance * 100)}%
                     </span>
@@ -991,12 +991,12 @@ function SuggestionSourceStatsCard({ stats }) {
                 {/* Top 3 rejection reasons -- the calibration feedback. */}
                 {r.top_rejection_reasons?.length > 0 && (
                   <details className="mt-1.5">
-                    <summary className="text-[10px] cursor-pointer text-slate-600 hover:underline">
+                    <summary className="text-xs cursor-pointer text-slate-600 hover:underline">
                       Top {r.top_rejection_reasons.length} rejection reason(s)
                     </summary>
                     <ul className="mt-1 space-y-0.5">
                       {r.top_rejection_reasons.map((rr, idx) => (
-                        <li key={idx} className="text-[10px] text-rose-800 border-l-2 border-rose-200 pl-2">
+                        <li key={idx} className="text-xs text-rose-800 border-l-2 border-rose-200 pl-2">
                           "{rr.reason}" <span className="text-slate-500">×{rr.count}</span>
                         </li>
                       ))}
@@ -1043,7 +1043,7 @@ function CuiComplianceReport({ report }) {
                 <code className="text-slate-600">{f.tray_id}</code>
                 {" · "}status={f.status}
                 {f.reason && <> · reason={f.reason}</>}
-                <span className="ml-1 text-[9px] uppercase text-slate-500">[{f.severity}]</span>
+                <span className="ml-1 text-xs uppercase text-slate-500">[{f.severity}]</span>
               </li>
             ))}
           </ul>
@@ -1349,7 +1349,7 @@ export function AiHelpPanel({ onClose }) {
               members.role_on_project. Project membership controls
               VISIBILITY for non-admin roles.
             </p>
-            <table className="w-full text-[11px] border-collapse">
+            <table className="w-full text-xs border-collapse">
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500">
                   <th className="text-left px-1 py-1">Role</th>
@@ -1400,7 +1400,7 @@ export function AiHelpPanel({ onClose }) {
                 </tr>
               </tbody>
             </table>
-            <p className="text-[10px] text-slate-500 mt-1.5">
+            <p className="text-xs text-slate-500 mt-1.5">
               Bucket J Phase 1 added submittal_tech +
               scheduling_engineer. Existing users keep their current
               role; admins assign the new values via the Project
@@ -1755,7 +1755,7 @@ function ReportsGeneratorTab() {
         data-testid="generator-controls">
         <div className="flex flex-wrap items-end gap-2">
           <div>
-            <label className="text-[10px] uppercase text-slate-500 block">Report type</label>
+            <label className="text-xs uppercase text-slate-500 block">Report type</label>
             <select data-testid="generator-type"
               value={reportType}
               onChange={(e) => setReportType(e.target.value)}
@@ -1767,14 +1767,14 @@ function ReportsGeneratorTab() {
           {reportType !== "project_health_summary" && (
             <>
               <div>
-                <label className="text-[10px] uppercase text-slate-500 block">From</label>
+                <label className="text-xs uppercase text-slate-500 block">From</label>
                 <input data-testid="generator-period-start" type="date"
                   value={periodStart}
                   onChange={(e) => setPeriodStart(e.target.value)}
                   className="h-8 px-2 rounded border border-slate-200 text-sm" />
               </div>
               <div>
-                <label className="text-[10px] uppercase text-slate-500 block">To</label>
+                <label className="text-xs uppercase text-slate-500 block">To</label>
                 <input data-testid="generator-period-end" type="date"
                   value={periodEnd}
                   onChange={(e) => setPeriodEnd(e.target.value)}
@@ -1790,11 +1790,11 @@ function ReportsGeneratorTab() {
               : <Sparkles className="h-3.5 w-3.5" />}
             Generate
           </Button>
-          <div className="text-[10px] text-slate-500 ml-2">
+          <div className="text-xs text-slate-500 ml-2">
             Est. AI cost: ${reportType === "friday_recovery" ? "0.01–0.05" : "$0"}
           </div>
         </div>
-        <p className="text-[11px] text-slate-500">
+        <p className="text-xs text-slate-500">
           {project?.name && <>Project: <b>{project.name}</b>.</>}
           {" "}Generated reports auto-save as drafts. Finalize when ready
           to lock + write to the audit chain.
@@ -1889,14 +1889,14 @@ function ReportRow({ r, onOpen, onFinalize, onArchive, onExport, isAdminOrPm }) 
   return (
     <div data-testid={`report-row-${r.id}`}
       className="border border-slate-200 rounded p-2 bg-white text-xs flex items-center gap-2 flex-wrap">
-      <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-200 text-[10px]">
+      <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-200 text-xs">
         {r.report_type.replace(/_/g, " ")}
       </span>
-      <span className={`px-1.5 py-0.5 rounded border text-[10px] ${pillCls}`}>
+      <span className={`px-1.5 py-0.5 rounded border text-xs ${pillCls}`}>
         {r.status}
       </span>
       {r.is_degraded && (
-        <span className="px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-900 text-[10px] inline-flex items-center gap-0.5">
+        <span className="px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-900 text-xs inline-flex items-center gap-0.5">
           <AlertTriangle className="h-2.5 w-2.5" /> AI degraded
         </span>
       )}
@@ -1909,17 +1909,17 @@ function ReportRow({ r, onOpen, onFinalize, onArchive, onExport, isAdminOrPm }) 
           </span>
         )}
       </span>
-      <span className="text-slate-400 font-mono text-[10px]">
+      <span className="text-slate-400 font-mono text-xs">
         {new Date(r.generated_at).toLocaleString()}
       </span>
       <div className="flex items-center gap-1">
         <button onClick={onOpen} data-testid={`report-open-${r.id}`}
-          className="h-7 px-2 rounded bg-blue-600 text-white text-[10px] inline-flex items-center gap-1 hover:bg-blue-700">
+          className="h-7 px-2 rounded bg-blue-600 text-white text-xs inline-flex items-center gap-1 hover:bg-blue-700">
           <ChevronRight className="h-3 w-3" /> Open
         </button>
         {r.status === "draft" && isAdminOrPm && (
           <button onClick={onFinalize} data-testid={`report-finalize-${r.id}`}
-            className="h-7 px-2 rounded bg-emerald-600 text-white text-[10px] inline-flex items-center gap-1 hover:bg-emerald-700">
+            className="h-7 px-2 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700">
             <Check className="h-3 w-3" /> Finalize
           </button>
         )}
@@ -1930,22 +1930,22 @@ function ReportRow({ r, onOpen, onFinalize, onArchive, onExport, isAdminOrPm }) 
             title={r.status === "draft"
               ? "Finalize before exporting PDF / DOCX"
               : "Export PDF"}
-            className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+            className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
             <Download className="h-3 w-3" /> PDF
           </button>
         </div>
         <button onClick={() => onExport("docx")}
           disabled={r.status === "draft"}
-          className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
+          className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50 disabled:opacity-50">
           <Download className="h-3 w-3" /> DOCX
         </button>
         <button onClick={() => onExport("json")}
-          className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 hover:bg-slate-50">
+          className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50">
           <Download className="h-3 w-3" /> JSON
         </button>
         {isAdminOrPm && r.status !== "archived" && (
           <button onClick={onArchive} title="Archive"
-            className="h-7 px-1 rounded border border-slate-200 bg-white text-slate-500 text-[10px]">
+            className="h-7 px-1 rounded border border-slate-200 bg-white text-slate-500 text-xs">
             <X className="h-3 w-3" />
           </button>
         )}
@@ -1965,7 +1965,7 @@ function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
           <div className="text-sm font-medium inline-flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-blue-700" />
             {report.audit_op_label || `Report ${report.id.slice(0, 8)}`}
-            <span className={`px-1.5 py-0.5 rounded border text-[10px] ${
+            <span className={`px-1.5 py-0.5 rounded border text-xs ${
               STATUS_PILL[report.status] || ""
             }`}>{report.status}</span>
           </div>
@@ -1980,7 +1980,7 @@ function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {Object.entries(report.variance_summary || {}).map(([k, v]) => (
                 <div key={k} className="bg-slate-50 border border-slate-200 rounded p-2">
-                  <div className="text-[10px] uppercase text-slate-500">
+                  <div className="text-xs uppercase text-slate-500">
                     {k.replace(/_/g, " ")}
                   </div>
                   <div className="text-lg font-semibold tabular-nums mt-0.5">
@@ -2011,7 +2011,7 @@ function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
                 {report.recovery_actions.map((a, i) => (
                   <div key={i} className="border border-slate-200 rounded p-2 text-xs bg-white">
                     <div className="font-medium">{a.action}</div>
-                    <div className="text-slate-500 text-[10px] mt-1">
+                    <div className="text-slate-500 text-xs mt-1">
                       Owner: {a.owner || "—"} ·
                       Due: {formatDateDisplay(a.due_date)} ·
                       Confidence: {a.confidence != null
@@ -2035,7 +2035,7 @@ function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
                   <button key={a.type} onClick={() => onExport(a.type)}
                     className="h-7 px-2 rounded border border-slate-200 bg-white inline-flex items-center gap-1 hover:bg-slate-50">
                     <Download className="h-3 w-3" /> {a.type.toUpperCase()}
-                    <span className="text-[9px] text-slate-400 font-mono">
+                    <span className="text-xs text-slate-400 font-mono">
                       sha:{a.sha256.slice(0, 8)}
                     </span>
                   </button>

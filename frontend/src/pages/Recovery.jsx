@@ -92,7 +92,7 @@ export default function Recovery() {
           <div key={h.id} data-testid={`recovery-card-${h.id}`} className="bg-card border border-border rounded-lg p-4">
             <div className="text-xs text-muted-foreground mb-2 flex items-center gap-2">
               Generated {new Date(h.generated_at).toLocaleString()} • trigger: {h.trigger}
-              {h.status === "applied" && <span className="pill pill-green text-[10px]">applied (idx {h.chosen_suggestion_index})</span>}
+              {h.status === "applied" && <span className="pill pill-green text-xs">applied (idx {h.chosen_suggestion_index})</span>}
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {(h.suggestions || []).map((s, i) => {

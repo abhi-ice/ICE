@@ -45,7 +45,7 @@ export default function Signup() {
             Invite teammates from the Team page once you&apos;re in.
           </p>
         </div>
-        <div className="text-[11px] text-slate-400">© {new Date().getFullYear()} ICE Construction.</div>
+        <div className="text-xs text-slate-400">© {new Date().getFullYear()} ICE Construction.</div>
       </div>
 
       <div className="flex items-center justify-center p-6 lg:p-10 relative z-10">

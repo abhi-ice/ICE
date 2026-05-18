@@ -146,17 +146,17 @@ export default function TIAGenerator() {
         <h2 className="text-sm font-medium text-slate-700">Inputs</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <div>
-            <label className="text-[11px] text-slate-500 uppercase">Date range start</label>
+            <label className="text-xs text-slate-500 uppercase">Date range start</label>
             <input data-testid="tia-start" type="date" value={start} onChange={(e) => setStart(e.target.value)}
               className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-[11px] text-slate-500 uppercase">Date range end</label>
+            <label className="text-xs text-slate-500 uppercase">Date range end</label>
             <input data-testid="tia-end" type="date" value={end} onChange={(e) => setEnd(e.target.value)}
               className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-[11px] text-slate-500 uppercase">Cause class (optional)</label>
+            <label className="text-xs text-slate-500 uppercase">Cause class (optional)</label>
             <select data-testid="tia-cause" value={causeClass} onChange={(e) => setCauseClass(e.target.value)}
               className="block w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
               <option value="">(any)</option>
@@ -164,12 +164,12 @@ export default function TIAGenerator() {
             </select>
           </div>
           <div>
-            <label className="text-[11px] text-slate-500 uppercase">Zone ID (optional)</label>
+            <label className="text-xs text-slate-500 uppercase">Zone ID (optional)</label>
             <input data-testid="tia-zone" type="text" value={zoneId} onChange={(e) => setZoneId(e.target.value)}
               placeholder="e.g. floor-3-east" className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-[11px] text-slate-500 uppercase">Gating entity ID (optional)</label>
+            <label className="text-xs text-slate-500 uppercase">Gating entity ID (optional)</label>
             <input data-testid="tia-gate" type="text" value={gatingEntityId} onChange={(e) => setGatingEntityId(e.target.value)}
               placeholder="paste a UUID to scope" className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>
@@ -217,7 +217,7 @@ export default function TIAGenerator() {
               <span className="ml-2">· est. {latest.estimated_evidence_count} items</span>
             )}
             {latest.counsel_privileged_work_product && (
-              <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px]">PRIVILEGED</span>
+              <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs">PRIVILEGED</span>
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap" style={{ opacity: latest.status === "complete" ? 1 : 0.5 }}>
@@ -247,7 +247,7 @@ function Stat({ n, label }) {
   return (
     <div className="bg-slate-50 border border-slate-200 rounded p-2">
       <div className="text-xl font-semibold text-slate-800">{n ?? 0}</div>
-      <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
     </div>
   );
 }

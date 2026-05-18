@@ -431,7 +431,7 @@ function SlaPill({ status }) {
   const label = SLA_PILL_LABEL[status] || "—";
   return (
     <span data-testid={`sla-pill-${status || "n_a"}`}
-      className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] ${tone}`}>
+      className={`inline-flex items-center px-1.5 py-0.5 rounded border text-xs ${tone}`}>
       {label}
     </span>
   );
@@ -450,7 +450,7 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
       <td className="truncate max-w-[260px]">
         {s.title}
         {s.auto_generated && (
-          <span className="ml-2 inline-flex items-center gap-1 pill pill-blue text-[10px]">
+          <span className="ml-2 inline-flex items-center gap-1 pill pill-blue text-xs">
             <Wand2 className="h-2.5 w-2.5" /> auto
           </span>
         )}
@@ -482,7 +482,7 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
       </td>
       <td className="text-xs">
         {s.assigned_reviewer_id
-          ? <code className="text-[10px]">{String(s.assigned_reviewer_id).slice(0, 8)}</code>
+          ? <code className="text-xs">{String(s.assigned_reviewer_id).slice(0, 8)}</code>
           : "—"}
       </td>
       <td className="text-xs">{(s.status || "").replace(/_/g, " ")}</td>
@@ -491,7 +491,7 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
           {s.status === "not_yet_submitted" && (
             <button data-testid={`sub-submit-${s.submittal_number}`}
               onClick={() => onSubmitToAe(s)} title="Submit to A/E"
-              className="h-6 px-1 rounded bg-blue-600 text-white text-[10px] hover:bg-blue-700">
+              className="h-6 px-1 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">
               <Send className="h-3 w-3" />
             </button>
           )}
@@ -499,7 +499,7 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
             <button data-testid={`sub-pause-${s.submittal_number}`}
               onClick={() => onPauseResume(s)}
               title={s.sla_status === "paused" ? "Resume SLA" : "Pause SLA"}
-              className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-700 text-[10px] hover:bg-slate-50">
+              className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-700 text-xs hover:bg-slate-50">
               {s.sla_status === "paused"
                 ? <Play className="h-3 w-3" />
                 : <Pause className="h-3 w-3" />}
@@ -507,7 +507,7 @@ function RegisterRow({ s, taskById, isAdminOrPm, onSubmitToAe, onPauseResume, on
           )}
           <button data-testid={`sub-edit-${s.submittal_number}`}
             onClick={onOpenEdit} title="Edit + assign reviewer + record event"
-            className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-700 text-[10px] hover:bg-slate-50">
+            className="h-6 px-1 rounded border border-slate-200 bg-white text-slate-700 text-xs hover:bg-slate-50">
             <ChevronRight className="h-3 w-3" />
           </button>
         </div>
@@ -526,10 +526,10 @@ function RegisterCard({ s, isAdminOrPm, onSubmitToAe, onPauseResume, onOpenEdit 
         <SlaPill status={s.sla_status} />
       </div>
       <div className="font-medium">{s.title}</div>
-      <div className="text-slate-500 text-[10px]">
+      <div className="text-slate-500 text-xs">
         {s.discipline || "—"} · {(s.type || "").replace(/_/g, " ")} · rev {s.review_cycle_count || 0}
       </div>
-      <div className="grid grid-cols-2 gap-1 text-[10px] text-slate-600">
+      <div className="grid grid-cols-2 gap-1 text-xs text-slate-600">
         <div>Submitted: {formatDateDisplay(s.submitted_to_ae_at)}</div>
         <div>Due: {formatDateDisplay(s.a_e_review_due_at)}</div>
         <div>Aging: {s.aging_days != null ? `${s.aging_days}d` : "—"}</div>
@@ -541,20 +541,20 @@ function RegisterCard({ s, isAdminOrPm, onSubmitToAe, onPauseResume, onOpenEdit 
         {s.status === "not_yet_submitted" && (
           <button onClick={() => onSubmitToAe(s)}
             data-testid={`sub-card-submit-${s.submittal_number}`}
-            className="h-7 px-2 rounded bg-blue-600 text-white text-[10px] inline-flex items-center gap-1 hover:bg-blue-700">
+            className="h-7 px-2 rounded bg-blue-600 text-white text-xs inline-flex items-center gap-1 hover:bg-blue-700">
             <Send className="h-3 w-3" /> Submit
           </button>
         )}
         {isAdminOrPm && s.submitted_to_ae_at && (
           <button onClick={() => onPauseResume(s)}
-            className="h-7 px-2 rounded border border-slate-200 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1">
+            className="h-7 px-2 rounded border border-slate-200 bg-white text-slate-700 text-xs inline-flex items-center gap-1">
             {s.sla_status === "paused"
               ? <><Play className="h-3 w-3" /> Resume</>
               : <><Pause className="h-3 w-3" /> Pause</>}
           </button>
         )}
         <button onClick={onOpenEdit}
-          className="h-7 px-2 rounded border border-slate-200 bg-white text-slate-700 text-[10px] inline-flex items-center gap-1 ml-auto">
+          className="h-7 px-2 rounded border border-slate-200 bg-white text-slate-700 text-xs inline-flex items-center gap-1 ml-auto">
           <ChevronRight className="h-3 w-3" /> Edit
         </button>
       </div>
@@ -978,7 +978,7 @@ function AgingTab() {
           <div key={b.label}
             data-testid={`aging-bucket-${b.label}`}
             className="bg-white border border-slate-200 rounded p-3">
-            <div className="text-[10px] uppercase text-slate-500">{b.label}</div>
+            <div className="text-xs uppercase text-slate-500">{b.label}</div>
             <div className="text-2xl font-semibold tabular-nums mt-0.5">{b.count}</div>
             <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden">
               <div
@@ -1049,7 +1049,7 @@ function AgingTab() {
               ));
             })()}
           </div>
-          <div className="flex justify-between text-[9px] text-slate-400 mt-1">
+          <div className="flex justify-between text-xs text-slate-400 mt-1">
             <span>{summary.breach_trend[0]?.date}</span>
             <span>{summary.breach_trend[summary.breach_trend.length - 1]?.date}</span>
           </div>

@@ -430,7 +430,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             onChange={(e) => setEditReason(e.target.value)}
             placeholder="Why this edit is needed (min 10 chars)"
             className="mt-1 w-full p-2 rounded border border-slate-200 text-sm" />
-          <div className="text-[10px] text-slate-500 text-right">
+          <div className="text-xs text-slate-500 text-right">
             {(editReason || "").trim().length} / {COORD_REASON_MIN} min
             {isFieldEdit ? " — required for field changes" : " — optional for outcome-only"}
           </div>

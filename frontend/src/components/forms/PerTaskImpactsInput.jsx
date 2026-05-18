@@ -340,7 +340,7 @@ export default function PerTaskImpactsInput({
                     <div className="text-xs font-semibold text-slate-700">
                         Schedule impact{isSubmittalMode ? "" : " (optional)"}
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">
+                    <div className="text-xs text-slate-500 mt-0.5">
                         {effectiveHelperText}
                     </div>
                 </div>
@@ -367,7 +367,7 @@ export default function PerTaskImpactsInput({
             {isWithinSla && (
                 <div
                     data-testid={`${testidPrefix}-within-sla-banner`}
-                    className="flex items-center gap-1.5 text-[11px] text-slate-600 bg-slate-200/60 border border-slate-300 rounded px-2 py-1"
+                    className="flex items-center gap-1.5 text-xs text-slate-600 bg-slate-200/60 border border-slate-300 rounded px-2 py-1"
                 >
                     <Info className="h-3 w-3 text-slate-500" />
                     <span>
@@ -428,7 +428,7 @@ export default function PerTaskImpactsInput({
                                 onChange={(e) => handleInput(tid, e.target.value)}
                                 className="w-16 h-7 px-2 rounded border border-slate-200 text-right text-xs"
                             />
-                            <span className="text-[10px] text-slate-500 w-8">
+                            <span className="text-xs text-slate-500 w-8">
                                 day{currentDays === "1" ? "" : "s"}
                             </span>
                             {showSourcePill && (
@@ -445,7 +445,7 @@ export default function PerTaskImpactsInput({
                                     data-testid={`${testidPrefix}-reset-${tid}`}
                                     onClick={() => handleResetToSuggestion(tid)}
                                     title={`Reset to auto-suggested value (${origSuggested} day${origSuggested === 1 ? "" : "s"})`}
-                                    className="text-[10px] text-blue-700 hover:text-blue-900 inline-flex items-center gap-0.5 underline"
+                                    className="text-xs text-blue-700 hover:text-blue-900 inline-flex items-center gap-0.5 underline"
                                 >
                                     <RotateCcw className="h-3 w-3" />
                                     reset
@@ -457,7 +457,7 @@ export default function PerTaskImpactsInput({
                                     data-testid={`${testidPrefix}-clear-${tid}`}
                                     onClick={() => handleClear(tid)}
                                     title="Clear impact estimate for this task"
-                                    className="text-[10px] text-slate-500 hover:text-rose-600 underline"
+                                    className="text-xs text-slate-500 hover:text-rose-600 underline"
                                 >
                                     clear
                                 </button>
@@ -487,7 +487,7 @@ function SourcePill({ source, originalSuggested, currentDays, testid }) {
                 data-testid={testid}
                 data-source="system_suggested"
                 title={`Auto-suggested from aging: ${currentDays} ${daysWord}. Edit to override.`}
-                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-700 border border-slate-200"
+                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs bg-slate-100 text-slate-700 border border-slate-200"
             >
                 <Info className="h-2.5 w-2.5" />
                 suggested
@@ -503,7 +503,7 @@ function SourcePill({ source, originalSuggested, currentDays, testid }) {
                 data-testid={testid}
                 data-source="super_overridden"
                 title={`Super-edited${wasText}. Click reset to restore the suggestion.`}
-                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-900 border border-amber-200"
+                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs bg-amber-50 text-amber-900 border border-amber-200"
             >
                 <AlertTriangle className="h-2.5 w-2.5" />
                 edited
