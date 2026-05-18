@@ -42,7 +42,7 @@ export default function ScheduleDiffs() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto" data-testid="schedule-diffs-page">
+    <div className="p-6" data-testid="schedule-diffs-page">
       <header className="mb-4 flex items-center gap-2">
         <GitPullRequest className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">Schedule updates</h1>

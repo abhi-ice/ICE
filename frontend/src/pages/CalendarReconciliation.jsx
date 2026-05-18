@@ -68,7 +68,7 @@ export default function CalendarReconciliation() {
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project.</div>;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto" data-testid="calendar-reconciliation">
+    <div className="p-6" data-testid="calendar-reconciliation">
       <header className="mb-4 flex items-center gap-2">
         <CalendarClock className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">Calendar reconciliation</h1>

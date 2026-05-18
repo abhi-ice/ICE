@@ -120,7 +120,7 @@ export default function CascadeDashboard() {
   if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to view cascade dashboard.</div>;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto" data-testid="cascade-dashboard">
+    <div className="p-6" data-testid="cascade-dashboard">
       <header className="mb-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
