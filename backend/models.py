@@ -1051,6 +1051,19 @@ class DailyReportActivity(ReadModel):
     # the frontend the optimistic-lock token for the linked task without
     # forcing a second round-trip to /tasks.
     task_updated_at: Optional[datetime] = None
+    # Features F2/F3/F4 (2026-05-18) -- DR Activity Grid view fields.
+    # Read-time injected (NOT persisted to mongo) by /grid + /context
+    # from the linked task via services.dr_activity_grid.enrich_grid_row:
+    #   work_category      -- F1 tag; the grid groups rows into 3
+    #                         sections off this (null -> Field Work).
+    #   open_blocker_count -- F3 blocker badge; the SAME persisted count
+    #                         the Tasks page shows (task_status.py).
+    #   auto_status        -- F4 automatic status (blocked > complete >
+    #                         in_progress > not_started).
+    # METADATA / VIEW ONLY -- the CPM engine never reads these.
+    work_category: Optional[WorkCategory] = None
+    open_blocker_count: int = 0
+    auto_status: Optional[TaskStatus] = None
     # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
     # the gating entity that's blocking this row, or free-text "other").
     # constraint_auto_filled marks rows where the system pre-populated
