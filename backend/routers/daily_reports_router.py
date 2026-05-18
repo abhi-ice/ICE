@@ -1002,8 +1002,7 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     # an explicit constraint to submit -- "why a row didn't move" is
     # read off the blocker badge instead. The constraint_* fields stay
     # on the daily_report_activities model so historical (pre-F3) rows
-    # keep their data and the DR PDF still renders it; only the submit
-    # gate is dropped.
+    # keep their data; only the submit gate is dropped.
 
     updates = {
         "status": "submitted",
