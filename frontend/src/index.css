@@ -129,6 +129,13 @@ input, select, textarea {
 .sidebar-link {
     @apply flex items-center gap-2.5 mx-2 px-3 py-1.5 text-xs rounded-md text-slate-300 hover:bg-slate-800 hover:text-white transition-colors;
 }
+/* 2026-05-19 -- nested children of Daily reports (Photos, Photo tray,
+   Delays, Safety, QC issues, Coordination). Adds extra left padding
+   AND a vertical guide line on the left edge so supers see them
+   visually attached as sub-items of the parent Daily reports entry. */
+.sidebar-link-nested {
+    @apply ml-5 pl-3 border-l border-slate-700;
+}
 .sidebar-link.active {
     @apply bg-blue-600 text-white hover:bg-blue-600 hover:text-white;
     box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);

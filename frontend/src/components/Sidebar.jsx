@@ -126,7 +126,11 @@ export default function Sidebar() {
                         to={item.path}
                         end={item.path === "/"}
                         data-testid={item.testid}
-                        className={({ isActive }) => `sidebar-link ${isActive ? "active" : ""}`}
+                        className={({ isActive }) =>
+                          `sidebar-link ${isActive ? "active" : ""}${
+                            item.nested ? " sidebar-link-nested" : ""
+                          }`
+                        }
                       >
                         <Icon className="h-4 w-4 shrink-0" strokeWidth={1.6} />
                         <span className="flex-1 truncate">{item.label}</span>

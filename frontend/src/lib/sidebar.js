@@ -27,14 +27,17 @@ export const SIDEBAR_SECTIONS = [
     title: "DAILY OPERATIONS",
     items: [
       { label: "Daily reports", path: "/daily-reports", icon: ClipboardList, testid: "sidebar-daily-reports" },
-      { label: "Photos", path: "/photos", icon: Camera, testid: "sidebar-photos" },
-      // Bucket D Phase 2 — staging area before tagging.
-      { label: "Photo tray", path: "/photo-tray", icon: Camera, testid: "sidebar-photo-tray" },
-      { label: "Delays", path: "/delays", icon: AlertTriangle, testid: "sidebar-delays" },
-      { label: "Safety", path: "/safety-events", icon: ShieldAlert, testid: "sidebar-safety" },
-      { label: "QC issues", path: "/qc-issues", icon: ClipboardCheck, testid: "sidebar-qc" },
-      // Bucket C3b Phase 1 — coordination event log (TIA-ready).
-      { label: "Coordination", path: "/coordination", icon: MessagesSquare, testid: "sidebar-coordination" },
+      // 2026-05-18 -- Photos, Photo tray, Delays, Safety, QC issues,
+      // and Coordination are all rolled into the Daily report at the
+      // end of the day. They render with extra left indent in the
+      // sidebar so supers see them visually nested beneath the
+      // parent "Daily reports" entry.
+      { label: "Photos", path: "/photos", icon: Camera, testid: "sidebar-photos", nested: true },
+      { label: "Photo tray", path: "/photo-tray", icon: Camera, testid: "sidebar-photo-tray", nested: true },
+      { label: "Delays", path: "/delays", icon: AlertTriangle, testid: "sidebar-delays", nested: true },
+      { label: "Safety", path: "/safety-events", icon: ShieldAlert, testid: "sidebar-safety", nested: true },
+      { label: "QC issues", path: "/qc-issues", icon: ClipboardCheck, testid: "sidebar-qc", nested: true },
+      { label: "Coordination", path: "/coordination", icon: MessagesSquare, testid: "sidebar-coordination", nested: true },
     ],
   },
   {
