@@ -419,12 +419,12 @@ export default function Tasks() {
         </div>
       )}
 
-      <div className="surface overflow-x-auto scrollbar-soft" data-testid="tasks-table-scroll">
-        <table className="dense-table min-w-max">
+      <div className="surface overflow-auto scrollbar-soft max-h-[calc(100vh-200px)]" data-testid="tasks-table-scroll">
+        <table className="dense-table dense-table-frozen min-w-max">
           <thead>
             <tr>
-              <th className="w-10">#</th>
-              <th>Description</th>
+              <th className="w-10 col-pin-1">#</th>
+              <th className="col-pin-2">Description</th>
               <th>Resource</th>
               <th>Predecessors</th>
               <th>Trade</th>
@@ -478,8 +478,8 @@ export default function Tasks() {
                 : (cliffTint || slipTint);
               return (
               <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={rowClass}>
-                <td className="tabular-nums text-xs text-slate-500">{idx + 1}</td>
-                <td className="truncate max-w-[280px]">
+                <td className={`tabular-nums text-xs text-slate-500 col-pin-1 ${rowClass || "bg-white"}`}>{idx + 1}</td>
+                <td className={`truncate max-w-[280px] col-pin-2 ${rowClass || "bg-white"}`}>
                   <div className="font-medium text-sm">{t.description}</div>
                   {/* N1: activity-code sub-line + work_category badge */}
                   <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-0.5 whitespace-normal">

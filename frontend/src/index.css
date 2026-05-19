@@ -141,6 +141,61 @@ input, select, textarea {
     box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
 }
 
+/* 2026-05-19 -- Freeze-pane support for the Tasks table (and any other
+   dense-table that opts in via the .dense-table-frozen class on the
+   table element). Two pieces:
+   1. Sticky thead -- column headers stay visible when the user
+      scrolls vertically. Sits 3.5rem (topbar height) below the top.
+   2. Sticky left columns (`.col-pin-1`, `.col-pin-2`) -- the # column
+      and the Description column stay pinned while the user scrolls
+      horizontally to see Slip / Float / Rem Float / Gap columns.
+
+   Row tints (.bg-rose-50, .bg-rose-100) are preserved on pinned
+   cells because we explicitly re-apply the same class on each
+   sticky <td> in the JSX (cells inherit row background-color via
+   `background-color: inherit`).
+*/
+.dense-table-frozen thead th {
+    position: sticky;
+    top: 0;                  /* sticks to the top of the table's own scroll wrapper */
+    background-color: rgb(248 250 252);  /* slate-50 */
+    z-index: 5;
+    box-shadow: 0 1px 0 0 rgb(226 232 240); /* slate-200 */
+}
+.dense-table-frozen td.col-pin-1,
+.dense-table-frozen th.col-pin-1 {
+    position: sticky;
+    left: 0;
+    background-color: inherit;
+    z-index: 3;
+}
+.dense-table-frozen td.col-pin-2,
+.dense-table-frozen th.col-pin-2 {
+    position: sticky;
+    left: 2.5rem;           /* width of the # column (w-10 == 40px) */
+    background-color: inherit;
+    z-index: 3;
+    /* Subtle vertical divider so users see where the pinned region
+       ends as horizontal-scrolled content slides under it. */
+    box-shadow: 2px 0 0 -1px rgb(226 232 240);
+}
+/* Header pinned cells layer above the row cells AND above the
+   non-pinned headers so the corner intersection stays on top.
+   Also re-establish a solid bg color (thead's tr is transparent so
+   the inherited `bg-color: inherit` on .col-pin would otherwise let
+   horizontally-scrolled cells bleed through the corner). */
+.dense-table-frozen thead th.col-pin-1,
+.dense-table-frozen thead th.col-pin-2 {
+    z-index: 6;
+    background-color: rgb(248 250 252);  /* slate-50, same as thead */
+}
+/* Default row background -- ensures non-tinted rows have a solid
+   color for the sticky cells to inherit (otherwise tbody rows are
+   transparent and horizontally-scrolled content shows through). */
+.dense-table-frozen tbody tr {
+    background-color: white;
+}
+
 /* Top bar — solid white, sticky */
 .app-topbar {
     @apply h-14 bg-white border-b border-slate-200 flex items-center gap-3 px-4 sticky top-0 z-30;
