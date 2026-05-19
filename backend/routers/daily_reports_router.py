@@ -383,7 +383,7 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
         tasks = await db.tasks.find(
             tenant_filter(tenant_id, {"id": {"$in": task_ids}}),
             {"_id": 0, "id": 1, "updated_at": 1, "work_category": 1,
-             "open_blocker_count": 1},
+             "open_blocker_count": 1, "open_blocker_summary": 1},
         ).to_list(len(task_ids))
         by_id = {t["id"]: t for t in tasks}
     for r in rows:

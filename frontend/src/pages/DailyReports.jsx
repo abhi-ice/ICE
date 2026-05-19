@@ -30,6 +30,7 @@ import DrActivityPicker from "../components/forms/DrActivityPicker";
 // DrActivityPicker. DrActivityPicker stays imported because nothing else
 // uses it on this page yet -- safe to remove once nothing references it.
 import TaskPicker from "../components/forms/TaskPicker";
+import { BlockerPopover } from "../components/BlockerPopover";
 // CPM Part J-6 (2026-05-15) -- per-task RFI impact input.
 import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -1262,20 +1263,11 @@ function GridStatusPill({ status, testid }) {
   );
 }
 
-// F3 -- blocker badge. Shows the count of OPEN blockers on the linked
-// task (open RFIs, delays, over-SLA submittals) -- the same persisted
-// open_blocker_count the Tasks page reads. 0 -> no badge.
-function BlockerBadge({ count, testid }) {
-  const n = Number(count || 0);
-  if (n <= 0) return <span data-testid={testid} className="text-slate-300 text-xs">—</span>;
-  return (
-    <span data-testid={testid}
-      title={`${n} open blocker${n === 1 ? "" : "s"} on the linked task (open RFIs, delays, over-SLA submittals)`}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold tabular-nums">
-      <AlertTriangle className="h-3 w-3" /> {n}
-    </span>
-  );
-}
+// F3 -- blocker badge with click-popover lives in
+// components/BlockerPopover.jsx (shared with the Tasks page so both
+// views render an identical UX). The local BlockerBadge that used to
+// live here was display-only; it is gone now that DR uses the shared
+// click-popover version.
 
 // F2/F3/F4 -- one Activity Grid row. `editable` (true only for the
 // Field Work section) decides whether the progress cells render as
@@ -1352,7 +1344,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
         )}
       </td>
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
-      <td><BlockerBadge count={r.open_blocker_count} testid={`dr-blocker-${r.activity_code}`} /></td>
+      <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
       <td>
         {editable ? (
           <input type="text" defaultValue={r.notes || ""}

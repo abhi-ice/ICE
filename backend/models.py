@@ -1063,6 +1063,11 @@ class DailyReportActivity(ReadModel):
     # METADATA / VIEW ONLY -- the CPM engine never reads these.
     work_category: Optional[WorkCategory] = None
     open_blocker_count: int = 0
+    # 2026-05-19 -- mirror the open_blocker_summary list from the linked
+    # task so the DR Activity Grid blocker badge can render the same
+    # click-popover the Tasks page uses (entity_type / severity / label
+    # per item). Read-time only; never persisted on the DR row itself.
+    open_blocker_summary: list = Field(default_factory=list)
     auto_status: Optional[TaskStatus] = None
     # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
     # the gating entity that's blocking this row, or free-text "other").
