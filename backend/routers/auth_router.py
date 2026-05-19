@@ -4,7 +4,7 @@ import os
 import re
 import secrets
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import Field
 from database import get_db
 from models import (
@@ -182,7 +182,7 @@ async def accept_invite(payload: InviteAccept):
 
 # ----- Authenticated team management -----
 @team_router.post("/invites")
-async def create_invite(payload: InviteCreate, ctx: dict = Depends(require_tenant)):
+async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Depends(require_tenant)):
     if (ctx["user"].get("role") or "").lower() != "admin":
         raise HTTPException(403, "Only tenant admins can invite teammates")
     db = get_db()
@@ -226,14 +226,43 @@ async def create_invite(payload: InviteCreate, ctx: dict = Depends(require_tenan
         {"id": ctx["tenant_id"]}, {"_id": 0, "name": 1},
     )
     tenant_name = (tenant_row or {}).get("name") or "your team"
-    base_url = (
-        os.environ.get("INVITE_BASE_URL")
-        or os.environ.get("REACT_APP_BACKEND_URL")
-        or ""
-    ).rstrip("/")
+    # 2026-05-18 -- derive the invite link host from the INCOMING REQUEST
+    # so an invite sent from production lands on production, and an
+    # invite sent from preview lands on preview. Prevents the deployed
+    # app from sending preview-URL links (and vice versa) without
+    # juggling per-environment env vars.
+    #
+    # Precedence:
+    #   1. Origin header (set by the browser; trustworthy for CORS-clean
+    #      first-party calls; carries scheme + host + port)
+    #   2. Referer header host (fallback if Origin missing on
+    #      same-origin POSTs that some browsers omit Origin for)
+    #   3. INVITE_BASE_URL env var (explicit override, e.g. when admins
+    #      run a back-fill script that has no request context)
+    #   4. REACT_APP_BACKEND_URL env var (legacy fallback)
+    base_url = ""
+    origin = request.headers.get("origin") or ""
+    if origin:
+        base_url = origin.rstrip("/")
+    else:
+        referer = request.headers.get("referer") or ""
+        if referer:
+            try:
+                from urllib.parse import urlparse
+                u = urlparse(referer)
+                if u.scheme and u.netloc:
+                    base_url = f"{u.scheme}://{u.netloc}"
+            except Exception:
+                base_url = ""
+    if not base_url:
+        base_url = (
+            os.environ.get("INVITE_BASE_URL")
+            or os.environ.get("REACT_APP_BACKEND_URL")
+            or ""
+        ).rstrip("/")
     # Strip a trailing /api so the base for the user-facing accept-
-    # invite page is the frontend origin. If INVITE_BASE_URL points at
-    # the frontend directly (no /api), this is a no-op.
+    # invite page is the frontend origin. If the resolved URL points
+    # at the frontend directly (no /api), this is a no-op.
     if base_url.endswith("/api"):
         base_url = base_url[:-4]
     invite_link = f"{base_url}/accept-invite?code={code}" if base_url else f"/accept-invite?code={code}"
