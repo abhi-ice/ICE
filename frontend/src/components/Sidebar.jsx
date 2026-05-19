@@ -1,23 +1,35 @@
 import { NavLink } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_SECTIONS, APP_BRAND } from "../lib/sidebar";
 import api from "../lib/api";
 
-const COLLAPSE_KEY = "ice.sidebar.collapsed";
+const SECTION_COLLAPSE_KEY = "ice.sidebar.collapsed";
+// 2026-05-19 -- whole-sidebar collapse state. Default = collapsed
+// (true) so first-time users land in compact-rail mode that gives the
+// data table the maximum horizontal space. Persisted across sessions
+// via localStorage so a super who expands it once stays expanded.
+const RAIL_COLLAPSE_KEY = "ice.sidebar.rail.collapsed";
 
 export default function Sidebar() {
   const [badges, setBadges] = useState({
     approvals: 0, rfis: 0, submittals: 0, work_items: 0,
     aging: 0, edit_requests: 0, suggestions: 0,
-    // Bucket G Phase 4: when the suggestions feed has more rows than
-    // the badge fetch could read, we show "N+" so a 50-task schedule
-    // import doesn't undercount.
     suggestions_more: false,
   });
   const [collapsed, setCollapsed] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}"); }
+    try { return JSON.parse(localStorage.getItem(SECTION_COLLAPSE_KEY) || "{}"); }
     catch { return {}; }
+  });
+  // Compact "icon rail" state -- defaults to TRUE for new users so the
+  // Tasks page (and every other dense-table view) gets maximum width
+  // without the super having to learn about a sidebar toggle first.
+  const [rail, setRail] = useState(() => {
+    try {
+      const raw = localStorage.getItem(RAIL_COLLAPSE_KEY);
+      if (raw === null) return true;   // first visit -> collapsed
+      return JSON.parse(raw);
+    } catch { return true; }
   });
 
   useEffect(() => {
@@ -77,49 +89,126 @@ export default function Sidebar() {
   const toggle = (title) => {
     const next = { ...collapsed, [title]: !collapsed[title] };
     setCollapsed(next);
-    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next));
+    localStorage.setItem(SECTION_COLLAPSE_KEY, JSON.stringify(next));
+  };
+  const toggleRail = () => {
+    const next = !rail;
+    setRail(next);
+    localStorage.setItem(RAIL_COLLAPSE_KEY, JSON.stringify(next));
   };
 
   const Brand = APP_BRAND.icon;
   return (
-    <aside data-testid="app-sidebar" className="w-64 shrink-0 app-sidebar h-screen sticky top-0 overflow-y-auto scrollbar-soft">
-      <div className="px-5 py-4 border-b border-slate-800 flex items-center gap-2.5">
-        <div className="h-8 w-8 grid place-items-center rounded bg-blue-600">
+    <aside
+      data-testid="app-sidebar"
+      data-collapsed={rail ? "true" : "false"}
+      className={`${rail ? "w-14" : "w-64"} shrink-0 app-sidebar h-screen sticky top-0 overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out`}
+    >
+      <div className={`${rail ? "px-2" : "px-5"} py-4 border-b border-slate-800 flex items-center ${rail ? "justify-center" : "gap-2.5"}`}>
+        <button
+          data-testid="sidebar-rail-toggle"
+          onClick={toggleRail}
+          title={rail ? "Expand sidebar" : "Collapse sidebar"}
+          className="h-8 w-8 grid place-items-center rounded bg-blue-600 hover:bg-blue-700 shrink-0"
+        >
           <Brand className="h-4 w-4 text-white" strokeWidth={1.6} />
-        </div>
-        <div>
-          <div className="font-semibold text-xs tracking-tight text-white leading-tight">{APP_BRAND.name}</div>
-          <div className="text-xs text-slate-500 leading-tight">Federal construction OS</div>
-        </div>
+        </button>
+        {!rail && (
+          <>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold text-xs tracking-tight text-white leading-tight truncate">{APP_BRAND.name}</div>
+              <div className="text-xs text-slate-500 leading-tight">Federal construction OS</div>
+            </div>
+            <button
+              data-testid="sidebar-rail-collapse"
+              onClick={toggleRail}
+              title="Collapse sidebar"
+              className="h-7 w-7 grid place-items-center rounded text-slate-400 hover:text-white hover:bg-slate-800 shrink-0"
+            >
+              <PanelLeftClose className="h-4 w-4" strokeWidth={1.6} />
+            </button>
+          </>
+        )}
       </div>
+      {rail && (
+        /* Tiny "expand" affordance just under the brand button -- so
+           a user who doesn't realise the brand icon toggles the rail
+           has a second, more obvious entry point. */
+        <div className="px-2 pt-2">
+          <button
+            data-testid="sidebar-rail-expand"
+            onClick={toggleRail}
+            title="Expand sidebar"
+            className="h-7 w-full grid place-items-center rounded text-slate-400 hover:text-white hover:bg-slate-800"
+          >
+            <PanelLeftOpen className="h-4 w-4" strokeWidth={1.6} />
+          </button>
+        </div>
+      )}
 
       <nav className="pb-6">
         {SIDEBAR_SECTIONS.map((section) => {
           const isCollapsed = !!collapsed[section.title];
+          // In rail mode every section is rendered fully (we can't show
+          // section titles anyway -- not enough horizontal room) and
+          // the user-selected per-section collapse is ignored.
+          const showItems = rail ? true : !isCollapsed;
           return (
             <div key={section.title}>
-              <button
-                onClick={() => toggle(section.title)}
-                data-testid={`sidebar-section-${section.title.replace(/\s+/g, '-').toLowerCase()}`}
-                className="w-full flex items-center gap-1 px-4 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
-              >
-                {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                <span className="text-xs font-semibold uppercase tracking-[0.13em]">{section.title}</span>
-              </button>
-              {!isCollapsed && (
-                /* N3 (2026-05-18): indent the feature links so they sit
-                   visibly nested beneath their section heading. The
-                   heading keeps its px-4 indent; only the links shift. */
-                <div className="space-y-0.5 pl-6">
+              {!rail && (
+                <button
+                  onClick={() => toggle(section.title)}
+                  data-testid={`sidebar-section-${section.title.replace(/\s+/g, '-').toLowerCase()}`}
+                  className="w-full flex items-center gap-1 px-4 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                  <span className="text-xs font-semibold uppercase tracking-[0.13em]">{section.title}</span>
+                </button>
+              )}
+              {rail && (
+                /* Hairline group separator in rail mode -- gives the
+                   eye a visual break between OVERVIEW / DAILY OPS /
+                   PLANNING etc. without consuming horizontal space. */
+                <div className="mx-2 mt-3 mb-1 border-t border-slate-800" />
+              )}
+              {showItems && (
+                <div className={`space-y-0.5 ${rail ? "px-2" : "pl-6"}`}>
                   {section.items.map((item) => {
                     const Icon = item.icon;
                     const badge = item.badgeKey ? badges[item.badgeKey] : 0;
-                    // Bucket G Phase 4: the approvals badge rolls in
-                    // pending suggestions; show "N+" when there are
-                    // more suggestion rows beyond what we fetched.
                     const badgeMore = item.badgeKey === "approvals"
                       ? badges.suggestions_more
                       : false;
+                    if (rail) {
+                      // Rail mode -- icon-only NavLink, native title
+                      // tooltip on hover, badge collapsed to a small
+                      // count chip in the bottom-right corner.
+                      return (
+                        <NavLink
+                          key={item.path}
+                          to={item.path}
+                          end={item.path === "/"}
+                          data-testid={item.testid}
+                          title={item.label + (badge > 0 ? ` (${badge}${badgeMore ? "+" : ""} pending)` : "")}
+                          className={({ isActive }) =>
+                            `relative h-10 grid place-items-center rounded-md mx-0 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors ${isActive ? "bg-blue-600 text-white hover:bg-blue-600" : ""}`
+                          }
+                        >
+                          <Icon className="h-4 w-4" strokeWidth={1.6} />
+                          {badge > 0 && (
+                            <span
+                              data-testid={`sidebar-${item.badgeKey}-badge`}
+                              className="absolute top-0.5 right-0.5 inline-flex items-center justify-center text-[10px] font-semibold leading-none px-1 py-0.5 rounded bg-amber-500 text-slate-900 min-w-[16px]"
+                              title={badgeMore
+                                ? `${badge}+ pending (more available beyond first page)`
+                                : `${badge} pending`}
+                            >
+                              {badge > 99 ? "99" : badge}{badgeMore ? "+" : ""}
+                            </span>
+                          )}
+                        </NavLink>
+                      );
+                    }
                     return (
                       <NavLink
                         key={item.path}
@@ -155,9 +244,11 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="px-4 py-3 mt-auto border-t border-slate-800 text-xs text-slate-500">
-        v0.3 · Iter 3 · {new Date().getFullYear()}
-      </div>
+      {!rail && (
+        <div className="px-4 py-3 mt-auto border-t border-slate-800 text-xs text-slate-500">
+          v0.3 · Iter 3 · {new Date().getFullYear()}
+        </div>
+      )}
     </aside>
   );
 }
