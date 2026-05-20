@@ -1,6 +1,6 @@
 """Projects + floors + locations CRUD."""
 from datetime import date, datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from typing import Optional
 from database import get_db, tenant_filter
 from models import (
@@ -8,7 +8,7 @@ from models import (
     Floor, FloorCreate, Location, LocationCreate,
     gen_id, utc_now,
 )
-from auth import require_tenant
+from auth import require_tenant, can_manage_project_members
 from audit import write_audit
 
 router = APIRouter(tags=["projects"])
@@ -175,6 +175,156 @@ async def update_project(project_id: str, payload: ProjectUpdate, ctx: dict = De
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     return Project(**after)
+
+
+# ============================================================
+# Feature Client DR Template Export (2026-05-20)
+# Per-project DR template management. One active template per
+# project; admin or PM can upload / replace / delete via these
+# endpoints. The Project model's dr_template_* fields are NOT
+# editable through ProjectUpdate -- this is the only write path.
+# ============================================================
+
+@router.post("/projects/{project_id}/dr-template")
+async def upload_dr_template(
+    project_id: str,
+    file: UploadFile = File(...),
+    ctx: dict = Depends(require_tenant),
+):
+    """Upload (or replace) the client DR template for a project.
+    Accepts .xlsx (export engine target) or .pdf (slot saved but export
+    returns 400 'not yet supported'). Admin or PM only."""
+    role = (ctx["user"].get("role") or "").lower()
+    if not can_manage_project_members(role):
+        raise HTTPException(
+            403,
+            "Only project admins or PMs can upload a DR template.",
+        )
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+
+    filename = file.filename or "dr_template"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    if ext not in ("xlsx", "pdf"):
+        raise HTTPException(
+            400, f"Only .xlsx or .pdf templates are accepted (got .{ext}).",
+        )
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Uploaded file is empty.")
+
+    from services.storage import put_object, make_path
+    path = make_path(ctx["tenant_id"], "dr_templates", ext)
+    content_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if ext == "xlsx" else "application/pdf"
+    )
+    put_object(path, data, content_type)
+
+    now = utc_now().isoformat()
+    updates = {
+        "dr_template_file_url": path,
+        "dr_template_file_name": filename,
+        "dr_template_uploaded_at": now,
+        "dr_template_uploaded_by": ctx["user"]["id"],
+    }
+    await db.projects.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"$set": updates},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="projects",
+        op="DR_TEMPLATE_UPLOADED", record_id=project_id,
+        before={"dr_template_file_name": proj.get("dr_template_file_name")},
+        after={"dr_template_file_name": filename, "size_bytes": len(data)},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {
+        "file_name": filename,
+        "uploaded_at": now,
+        "uploaded_by": ctx["user"]["id"],
+        "size_bytes": len(data),
+    }
+
+
+@router.delete("/projects/{project_id}/dr-template")
+async def delete_dr_template(
+    project_id: str,
+    ctx: dict = Depends(require_tenant),
+):
+    """Remove the project's DR template (clears the four
+    dr_template_* fields). Admin or PM only. Idempotent."""
+    role = (ctx["user"].get("role") or "").lower()
+    if not can_manage_project_members(role):
+        raise HTTPException(
+            403,
+            "Only project admins or PMs can remove the DR template.",
+        )
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "dr_template_file_name": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    if not proj.get("dr_template_file_name"):
+        return {"ok": True, "already_empty": True}
+    await db.projects.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"$set": {
+            "dr_template_file_url": None,
+            "dr_template_file_name": None,
+            "dr_template_uploaded_at": None,
+            "dr_template_uploaded_by": None,
+        }},
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="projects",
+        op="DR_TEMPLATE_REMOVED", record_id=project_id,
+        before={"dr_template_file_name": proj.get("dr_template_file_name")},
+        after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True}
+
+
+@router.get("/projects/{project_id}/dr-template")
+async def get_dr_template_meta(
+    project_id: str,
+    ctx: dict = Depends(require_tenant),
+):
+    """Return template metadata only (no file bytes). Surfaced to any
+    user with project access so the DR list page can enable / disable
+    the "Export: Client Format" button."""
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "dr_template_file_name": 1, "dr_template_uploaded_at": 1,
+         "dr_template_uploaded_by": 1},
+    )
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    name = proj.get("dr_template_file_name")
+    if not name:
+        return {"present": False}
+    uploaded_by_id = proj.get("dr_template_uploaded_by")
+    uploaded_by_name = ""
+    if uploaded_by_id:
+        u = await db.users.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": uploaded_by_id}),
+            {"_id": 0, "full_name": 1},
+        )
+        uploaded_by_name = (u or {}).get("full_name", "") or ""
+    return {
+        "present": True,
+        "file_name": name,
+        "uploaded_at": proj.get("dr_template_uploaded_at"),
+        "uploaded_by": uploaded_by_id,
+        "uploaded_by_name": uploaded_by_name,
+    }
 
 
 # --- floors ---
