@@ -262,9 +262,10 @@ body {{ font-family: 'Helvetica', sans-serif; color: #0f172a; font-size: 10pt; }
 h1 {{ font-size: 18pt; margin: 0; }}
 .muted {{ color: #64748b; }}
 .meta {{ margin-top: 4px; font-size: 9pt; color: #475569; }}
-table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 8.5pt; }}
+table {{ width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 8.5pt; table-layout: fixed; }}
 th {{ background: #1e293b; color: white; padding: 6px; text-align: left; font-weight: 600; }}
-td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }}
+th.num {{ text-align: right; }}
+td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; word-wrap: break-word; }}
 .code {{ font-family: monospace; font-size: 8pt; }}
 .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .pill {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e2e8f0; font-size: 8pt; }}
@@ -293,13 +294,13 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 
 <h2>Crew presence ({len(presence)})</h2>
 <table>
-<thead><tr><th>Trade</th><th>Company</th><th>Headcount</th><th>Hrs/person</th><th>Sub-total</th><th>Notes</th></tr></thead>
+<thead><tr><th>Trade</th><th>Company</th><th class='num'>Headcount</th><th class='num'>Hrs/person</th><th class='num'>Sub-total</th><th>Notes</th></tr></thead>
 <tbody>{presence_rows_html}</tbody>
 </table>
 
 <h2>Activity grid ({len(grid)})</h2>
 <table>
-<thead><tr><th>Code</th><th>Description</th><th>Location</th><th>SOD</th><th>EOD</th><th>Crew</th><th>Hrs</th><th>Status</th></tr></thead>
+<thead><tr><th>Code</th><th>Description</th><th>Location</th><th class='num'>SOD</th><th class='num'>EOD</th><th class='num'>Crew</th><th class='num'>Hrs</th><th>Status</th></tr></thead>
 <tbody>{grid_rows_html}</tbody>
 </table>
 

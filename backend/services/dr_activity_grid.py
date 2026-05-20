@@ -118,6 +118,10 @@ def enrich_grid_row(row: dict, task: dict | None) -> dict:
     row["task_updated_at"] = task.get("updated_at")
     count = task.get("open_blocker_count") or 0
     row["open_blocker_count"] = count
+    # 2026-05-19 -- also surface open_blocker_summary so the DR Activity
+    # Grid blocker badge can render the same click-popover the Tasks
+    # page uses (entity_type / severity / label / link per item).
+    row["open_blocker_summary"] = task.get("open_blocker_summary") or []
     row["auto_status"] = compute_auto_status(
         count, row.get("pct_complete_end_of_day"),
     )

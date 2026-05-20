@@ -84,21 +84,34 @@ def _project_short_id(project_id: str) -> str:
 
 # Column spec (ORDER MATTERS -- frontend XLSX/PDF render in this order).
 # Each entry: (key_in_payload_row, header_label).
+#
+# 2026-05-18 export-parity: columns rewritten to mirror the Tasks page
+# UI 1:1 (frontend/src/pages/Tasks.jsx). Removed task_id (UUID),
+# linked_dr_count, linked_event_count, last_synced_at, raw has_blocker
+# bool, and required_headcount -- none of those surface in the UI.
+# Added: predecessors, work_category, projected_start (Impacted Start),
+# slip_wd, duration_days, cp_marker, total_float_days, remaining_float_days,
+# blockers (count + summary), gap_severity -- all of which the UI shows.
 TASKS_COLUMNS: list[tuple[str, str]] = [
-    ("task_id",              "task_id"),
-    ("activity_code",        "activity_code"),
-    ("description",          "description"),
-    ("required_trade",       "required_trade"),
-    ("required_headcount",   "required_headcount"),
-    ("planned_start",        "planned_start"),
-    ("planned_finish",       "planned_finish"),
-    ("projected_finish",     "projected_finish"),
-    ("pct_complete",         "pct_complete"),
-    ("status",               "status"),
-    ("has_blocker",          "has_blocker"),
-    ("linked_dr_count",      "linked_dr_count"),
-    ("linked_event_count",   "linked_event_count"),
-    ("last_synced_at",       "last_synced_at"),
+    ("description",          "Description"),
+    ("activity_code",        "Code"),
+    ("work_category",        "Category"),
+    ("resource",             "Resource"),
+    ("predecessors",         "Predecessors"),
+    ("trade",                "Trade"),
+    ("planned_start",        "Plan start"),
+    ("planned_finish",       "Plan finish"),
+    ("impacted_start",       "Impacted Start"),
+    ("impacted_finish",      "Impacted Finish"),
+    ("slip_wd",              "Slip (wd)"),
+    ("duration_days",        "Dur (d)"),
+    ("pct_complete",         "%"),
+    ("status",               "Status"),
+    ("blockers",             "Blockers"),
+    ("cp",                   "CP"),
+    ("total_float_days",     "Float (d)"),
+    ("remaining_float_days", "Rem Float (d)"),
+    ("gap",                  "Gap"),
 ]
 
 
@@ -139,67 +152,142 @@ async def gather_tasks_for_export(
     ).sort([("sequence", 1), ("planned_start", 1),
              ("activity_code", 1)]).to_list(length=10000)
 
-    # Bulk-count linked_dr (daily_report_activities) per task. One
-    # aggregation across all tasks beats N per-task queries.
+    # 2026-05-18 export-parity: pre-fetch resource-leveling gaps so the
+    # Tasks export's "Gap" column mirrors what TaskGapIcon shows in the
+    # UI (one gap per task -- most severe wins, CP-tagged variants tie-
+    # break above non-CP). Gap collection is keyed by task_id.
     task_ids = [t.get("id") for t in tasks if t.get("id")]
-    linked_dr_counts: dict[str, int] = {}
+    gap_by_task: dict[str, dict] = {}
     if task_ids:
-        pipeline = [
-            {"$match": {"schedule_activity_id": {"$in": task_ids}}},
-            {"$group": {"_id": "$schedule_activity_id",
-                         "count": {"$sum": 1}}},
-        ]
-        async for row in db.daily_report_activities.aggregate(pipeline):
-            linked_dr_counts[row["_id"]] = int(row.get("count") or 0)
-
-    # Bulk-count linked_event across delays / rfis / qc_issues /
-    # safety_events / coordination_events / deliveries. linked_task_ids
-    # is a multikey array on each event collection -- one task can
-    # appear on multiple events.
-    EVENT_COLLECTIONS = [
-        "delays", "rfis", "qc_issues", "safety_events",
-        "coordination_events", "deliveries",
-    ]
-    linked_event_counts: dict[str, int] = {tid: 0 for tid in task_ids}
-    for coll in EVENT_COLLECTIONS:
-        if not task_ids:
-            break
-        pipeline = [
-            {"$match": tenant_filter(tenant_id, {
-                "linked_task_ids": {"$in": task_ids},
-            })},
-            {"$unwind": "$linked_task_ids"},
-            {"$match": {"linked_task_ids": {"$in": task_ids}}},
-            {"$group": {"_id": "$linked_task_ids",
-                         "count": {"$sum": 1}}},
-        ]
-        async for row in db[coll].aggregate(pipeline):
-            tid = row["_id"]
-            linked_event_counts[tid] = (
-                linked_event_counts.get(tid, 0) + int(row.get("count") or 0)
+        # Resource gaps live in the resource_levelling_gaps collection
+        # in the live schema. We only need the worst gap per task for
+        # the export, matching the UI's single-icon-per-task behavior.
+        gaps_cur = db.resource_levelling_gaps.find(
+            tenant_filter(tenant_id, {
+                "task_id": {"$in": task_ids},
+                "status": {"$ne": "resolved"},
+            }),
+            {"_id": 0, "task_id": 1, "trade": 1, "date": 1,
+             "gap": 1, "severity": 1, "is_critical_path": 1},
+        )
+        _sev_rank = {"major": 3, "moderate": 2, "minor": 1}
+        async for g in gaps_cur:
+            tid = g.get("task_id")
+            if not tid:
+                continue
+            cur = gap_by_task.get(tid)
+            new_rank = (
+                (2 if g.get("is_critical_path") else 0)
+                + _sev_rank.get(g.get("severity") or "", 0)
             )
+            cur_rank = (
+                (2 if (cur or {}).get("is_critical_path") else 0)
+                + _sev_rank.get((cur or {}).get("severity") or "", 0)
+            ) if cur else -1
+            if new_rank > cur_rank:
+                gap_by_task[tid] = g
 
-    # Shape rows.
+    # Shape rows -- 1:1 mapping with Tasks.jsx columns.
     rows: list[dict] = []
     for t in tasks:
         tid = t.get("id")
-        sync_block = t.get("last_synced_from_dr") or {}
-        sync_at = sync_block.get("synced_at") if isinstance(sync_block, dict) else None
+        # Predecessors -- match frontend formatPredecessors (FS+0 -> bare
+        # code, otherwise <code><type>+/-<lag>d). Both legacy bare-string
+        # and post-018 {code,type,lag_days} shapes supported.
+        preds_raw = t.get("predecessors") or []
+        pred_parts: list[str] = []
+        for p in (preds_raw if isinstance(preds_raw, list) else []):
+            if isinstance(p, str):
+                pred_parts.append(p)
+                continue
+            if not isinstance(p, dict):
+                continue
+            code = p.get("code") or p.get("activity_code") or ""
+            ptype = (p.get("type") or "FS").upper()
+            lag = p.get("lag_days") or 0
+            if ptype == "FS" and (lag == 0 or lag is None):
+                pred_parts.append(str(code))
+            else:
+                lag_str = (f"+{lag}d" if (lag or 0) > 0
+                           else (f"{lag}d" if lag else ""))
+                pred_parts.append(f"{code}{ptype}{lag_str}")
+        # Slip in working days -- compute via the same helper the
+        # backend exports already use via the working_days service so
+        # the export number matches what the UI shows (slipDays clamps
+        # negatives to 0 -- acceleration is not a slip).
+        slip_wd = 0
+        pf_iso = _iso_date(t.get("projected_finish_date"))
+        plan_fin_iso = _iso_date(t.get("planned_finish"))
+        if pf_iso and plan_fin_iso and pf_iso > plan_fin_iso:
+            try:
+                from services.working_days import working_days_between
+                from datetime import date as _date
+                slip_wd = working_days_between(
+                    _date.fromisoformat(plan_fin_iso),
+                    _date.fromisoformat(pf_iso),
+                )
+            except Exception:
+                slip_wd = _date_diff_days(plan_fin_iso, pf_iso)
+        # CP marker -- "CP" structural, "CP*" effectively-critical, "" otherwise
+        cp_marker = (
+            "CP" if t.get("is_critical_path")
+            else ("CP*" if t.get("is_currently_critical") else "")
+        )
+        # Blockers cell -- count + short summary (matches BlockerCell).
+        # open_blocker_summary may be a list (one entry per blocker) or
+        # a pre-joined string depending on schema age; handle both.
+        blocker_count = int(t.get("open_blocker_count") or 0)
+        _summary_raw = t.get("open_blocker_summary")
+        if isinstance(_summary_raw, list):
+            blocker_summary = "; ".join(
+                str(s).strip() for s in _summary_raw if s
+            )
+        else:
+            blocker_summary = (str(_summary_raw) if _summary_raw else "").strip()
+        if blocker_count and blocker_summary:
+            blockers_text = f"{blocker_count} ({blocker_summary})"
+        elif blocker_count:
+            blockers_text = str(blocker_count)
+        else:
+            blockers_text = ""
+        # Gap cell -- severity + trade + date + gap size when present
+        g = gap_by_task.get(tid)
+        if g:
+            gap_text = (
+                f"{g.get('severity') or '?'} ({g.get('trade') or '?'} on "
+                f"{_iso_date(g.get('date')) or '?'}, gap "
+                f"{g.get('gap') or '?'}"
+                f"{', on CP' if g.get('is_critical_path') else ''})"
+            )
+        else:
+            gap_text = ""
+        # Resource cell -- mirrors UI's t.resource_names.join(", ").
+        resource_names = t.get("resource_names") or []
+        resource_text = (
+            ", ".join(str(r) for r in resource_names)
+            if isinstance(resource_names, list) and resource_names else ""
+        )
+
         rows.append({
-            "task_id":            tid,
-            "activity_code":      t.get("activity_code"),
-            "description":        t.get("description"),
-            "required_trade":     t.get("required_trade"),
-            "required_headcount": t.get("required_headcount"),
-            "planned_start":      _iso_date(t.get("planned_start")),
-            "planned_finish":     _iso_date(t.get("planned_finish")),
-            "projected_finish":   _iso_date(t.get("projected_finish_date")),
-            "pct_complete":       float(t.get("pct_complete") or 0),
-            "status":             t.get("computed_status") or t.get("status") or "—",
-            "has_blocker":        bool(t.get("has_open_blocker")),
-            "linked_dr_count":    int(linked_dr_counts.get(tid, 0)),
-            "linked_event_count": int(linked_event_counts.get(tid, 0)),
-            "last_synced_at":     _iso_datetime(sync_at),
+            "description":          t.get("description"),
+            "activity_code":        t.get("activity_code"),
+            "work_category":        t.get("work_category") or "",
+            "resource":             resource_text,
+            "predecessors":         ", ".join(pred_parts),
+            "trade":                t.get("trade_code") or t.get("required_trade") or "",
+            "planned_start":        _iso_date(t.get("planned_start")),
+            "planned_finish":       _iso_date(t.get("planned_finish")),
+            "impacted_start":       _iso_date(t.get("projected_start_date")),
+            "impacted_finish":      _iso_date(t.get("projected_finish_date")),
+            "slip_wd":              slip_wd,
+            "duration_days":        t.get("duration_days"),
+            "pct_complete":         float(t.get("pct_complete") or 0),
+            "status":               t.get("computed_status") or t.get("status") or "—",
+            "blockers":             blockers_text,
+            "cp":                   cp_marker,
+            "total_float_days":     t.get("total_float_days"),
+            "remaining_float_days": t.get("remaining_float_days"),
+            "gap":                  gap_text,
         })
 
     return {
@@ -218,19 +306,21 @@ async def gather_tasks_for_export(
 # =====================================================================
 
 LOOKAHEAD_COLUMNS: list[tuple[str, str]] = [
-    ("task_id",              "task_id"),
-    ("activity_code",        "activity_code"),
-    ("description",          "description"),
-    ("planned_start",        "planned_start"),
-    ("planned_finish",       "planned_finish"),
-    ("days_until_start",     "days_until_start"),
-    ("at_risk_flag",         "at_risk_flag"),
-    ("risk_reasons",         "risk_reasons"),
-    ("required_trade",       "required_trade"),
-    ("required_headcount",   "required_headcount"),
-    ("assigned_crew",        "assigned_crew"),
-    ("predecessor_status",   "predecessor_status"),
-    ("has_blocker",          "has_blocker"),
+    # 2026-05-18 export-parity: columns mirror Lookahead.jsx list view 1:1.
+    # Removed task_id (UUID), days_until_start, at_risk_flag,
+    # risk_reasons, required_headcount, assigned_crew, predecessor_status,
+    # has_blocker -- none of those appear in the Lookahead UI list view.
+    ("activity_code",        "Code"),
+    ("description",          "Description"),
+    ("trade",                "Trade"),
+    ("planned_start",        "Plan start"),
+    ("planned_finish",       "Plan finish"),
+    ("impacted_start",       "Impacted Start"),
+    ("impacted_finish",      "Impacted Finish"),
+    ("slip_wd",              "Slip (wd)"),
+    ("remaining_float_days", "Rem Float"),
+    ("pct_complete",         "%"),
+    ("status",               "Status"),
 ]
 
 
@@ -403,24 +493,50 @@ async def gather_lookahead_for_export(
         if at_risk:
             at_risk_count += 1
 
-        # Resolve crew label.
-        crew_id_eff = t.get("current_crew_id") or t.get("crew_id")
-        crew_label = crew_by_id.get(crew_id_eff) if crew_id_eff else None
+        # 2026-05-18 export-parity: surface the same status pill the
+        # Lookahead.jsx list view shows -- precedence blocked > behind
+        # > at-risk-from-projection > computed_status (default).
+        if blocker or cs == "blocked":
+            status_label = "blocked"
+        elif cs == "behind":
+            status_label = "behind"
+        elif cs == "complete":
+            status_label = "complete"
+        elif pf_iso and plan_fin and pf_iso > plan_fin:
+            status_label = "at risk"
+        else:
+            status_label = (cs or "on_track").replace("_", " ")
+
+        # Slip in working days -- matches the UI's slipDays(planned_finish,
+        # projected_finish_date) so the exported value tracks the on-screen number.
+        slip_wd = 0
+        if pf_iso and plan_fin and pf_iso > plan_fin:
+            try:
+                from services.working_days import working_days_between
+                from datetime import date as _date
+                slip_wd = working_days_between(
+                    _date.fromisoformat(plan_fin),
+                    _date.fromisoformat(pf_iso),
+                )
+            except Exception:
+                slip_wd = _date_diff_days(plan_fin, pf_iso)
 
         rows.append({
-            "task_id":              t.get("id"),
             "activity_code":        t.get("activity_code"),
             "description":          t.get("description"),
+            "trade":                t.get("trade_code") or t.get("required_trade") or "",
             "planned_start":        ps_iso,
             "planned_finish":       plan_fin,
-            "days_until_start":     days_until_start,
+            "impacted_start":       _iso_date(t.get("projected_start_date")),
+            "impacted_finish":      pf_iso,
+            "slip_wd":              slip_wd,
+            "remaining_float_days": t.get("remaining_float_days"),
+            "pct_complete":         float(t.get("pct_complete") or 0),
+            "status":               status_label,
+            # at_risk_flag stays on the dict (not in LOOKAHEAD_COLUMNS)
+            # so _render_xlsx / _render_pdf can still tint at-risk rows
+            # via the at_risk_key="at_risk_flag" pass-through.
             "at_risk_flag":         at_risk,
-            "risk_reasons":         ", ".join(risk_reasons) if risk_reasons else "",
-            "required_trade":       t.get("required_trade"),
-            "required_headcount":   t.get("required_headcount"),
-            "assigned_crew":        crew_label or "—",
-            "predecessor_status":   pred_status,
-            "has_blocker":          blocker,
         })
 
     return {
@@ -901,7 +1017,9 @@ def _date_diff_days(a_iso: str, b_iso: str) -> int:
 _PDF_DATE_COLUMN_KEYS = frozenset({
     "planned_start",
     "planned_finish",
-    "projected_finish",
+    "projected_finish",   # legacy key, kept for backward compat
+    "impacted_start",
+    "impacted_finish",
 })
 
 

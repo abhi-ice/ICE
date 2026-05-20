@@ -30,6 +30,7 @@ import DrActivityPicker from "../components/forms/DrActivityPicker";
 // DrActivityPicker. DrActivityPicker stays imported because nothing else
 // uses it on this page yet -- safe to remove once nothing references it.
 import TaskPicker from "../components/forms/TaskPicker";
+import { BlockerPopover } from "../components/BlockerPopover";
 // CPM Part J-6 (2026-05-15) -- per-task RFI impact input.
 import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -289,7 +290,6 @@ export default function DailyReports() {
 // ------------------------------------------------------------
 function DailyReportDetail({ id, onBack }) {
   const [bundle, setBundle] = useState(null);
-  const [available, setAvailable] = useState([]);
   const [busy, setBusy] = useState(false);
   // Bucket C3a Phase 3 — per-row submit errors keyed by row id. Cleared
   // on next submit attempt or when the user successfully edits the row.
@@ -307,13 +307,14 @@ function DailyReportDetail({ id, onBack }) {
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
-    const [{ data: ctx }, { data: avail }, remindersRes] = await Promise.all([
+    // 2026-05-19 -- /available-tasks call removed along with the
+    // planned-activity picker. The grid renders straight from the
+    // master schedule via /context.
+    const [{ data: ctx }, remindersRes] = await Promise.all([
       api.get(`/daily-reports/${id}/context`),
-      api.get(`/daily-reports/${id}/available-tasks`),
       api.get(`/daily-reports/${id}/delay-reminders`).catch(() => ({ data: [] })),
     ]);
     setBundle(ctx);
-    setAvailable(avail);
     setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
@@ -695,7 +696,7 @@ function DailyReportDetail({ id, onBack }) {
         projectId={project.id} grid={grid} reportDate={report.report_date} />
 
       {/* ACTIVITY GRID */}
-      <ActivityGridPanel grid={grid} available={available} reload={reload}
+      <ActivityGridPanel grid={grid} reload={reload}
         dailyReportId={id} locked={locked} reportDate={report.report_date}
         presence={presence} submitRowErrors={submitRowErrors} />
 
@@ -1262,20 +1263,11 @@ function GridStatusPill({ status, testid }) {
   );
 }
 
-// F3 -- blocker badge. Shows the count of OPEN blockers on the linked
-// task (open RFIs, delays, over-SLA submittals) -- the same persisted
-// open_blocker_count the Tasks page reads. 0 -> no badge.
-function BlockerBadge({ count, testid }) {
-  const n = Number(count || 0);
-  if (n <= 0) return <span data-testid={testid} className="text-slate-300 text-xs">—</span>;
-  return (
-    <span data-testid={testid}
-      title={`${n} open blocker${n === 1 ? "" : "s"} on the linked task (open RFIs, delays, over-SLA submittals)`}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold tabular-nums">
-      <AlertTriangle className="h-3 w-3" /> {n}
-    </span>
-  );
-}
+// F3 -- blocker badge with click-popover lives in
+// components/BlockerPopover.jsx (shared with the Tasks page so both
+// views render an identical UX). The local BlockerBadge that used to
+// live here was display-only; it is gone now that DR uses the shared
+// click-popover version.
 
 // F2/F3/F4 -- one Activity Grid row. `editable` (true only for the
 // Field Work section) decides whether the progress cells render as
@@ -1352,7 +1344,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
         )}
       </td>
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
-      <td><BlockerBadge count={r.open_blocker_count} testid={`dr-blocker-${r.activity_code}`} /></td>
+      <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
       <td>
         {editable ? (
           <input type="text" defaultValue={r.notes || ""}
@@ -1375,8 +1367,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
   );
 }
 
-function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
-  const [picking, setPicking] = useState("");
+function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture
@@ -1442,25 +1433,12 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
     try { await api.delete(`/daily-report-activities/${rowId}`); reload(); }
     catch (e) { toast.error(formatErr(e, "Remove row")); }
   };
-  const addActivity = async () => {
-    if (!picking) return;
-    if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
-      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
-    }
-    try {
-      await api.post(`/daily-reports/${dailyReportId}/grid`, {
-        schedule_activity_id: picking,
-        ...(locked ? { add_reason: addReason.trim() } : {}),
-      });
-      setPicking("");
-      if (locked) { setAddReason(""); toast.success("Activity row added (post-submit). Audit chain captured."); }
-      reload();
-    } catch (e) {
-      if (!handleLockedAddError(e, "activity")) {
-        toast.error(formatErr(e, "Add planned activity"));
-      }
-    }
-  };
+  // 2026-05-19 -- the "Add planned activity" picker was removed from
+  // the UI. The grid auto-populates from the master schedule for the
+  // report date (see refreshFromSchedule above + the per-DR cron in
+  // services/dr_activity_grid.py), so a manual planned-row picker was
+  // redundant. The handler and `picking` state are gone. Unplanned
+  // adds remain -- those represent work the schedule didn't predict.
   // Bucket D Fix E -- double-click guard for unplanned-activity create.
   const [creatingUnplanned, setCreatingUnplanned] = useState(false);
   const createUnplanned = async () => {
@@ -1556,41 +1534,25 @@ function ActivityGridPanel({ grid, available, reload, dailyReportId, locked, rep
           <LockedAddReasonBlock value={addReason} onChange={setAddReason}
             eventLabel="an activity row" testid="activity-add-reason" />
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* PLANNED ADD */}
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-slate-600">Add planned activity ({available.length} available for {reportDate})</div>
-            <div className="flex gap-2">
-              <select data-testid="dr-add-activity-select" value={picking} onChange={(e) => setPicking(e.target.value)} className="flex-1 h-8 px-2 rounded border border-slate-200 text-sm">
-                <option value="">— Pick —</option>
-                {available.map((a) => <option key={a.id} value={a.id}>[{a.activity_code}] {a.description}{a.trade_code ? ` · ${a.trade_code}` : ""}</option>)}
-              </select>
-              <button data-testid="dr-add-activity-button" onClick={addActivity}
-                disabled={!picking || (locked && !isAddReasonValid(addReason))}
-                title={locked && !isAddReasonValid(addReason)
-                  ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
-                  : undefined}
-                className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-700">
-                {locked ? "Add (post-submit)" : "Add"}
-              </button>
-            </div>
+        {/* UNPLANNED ADD only -- the planned-activity picker was
+            removed (2026-05-19) since the grid auto-populates from
+            the schedule. Unplanned activities still need a manual
+            entry path because the schedule by definition didn't
+            anticipate them. */}
+        <div className="bg-amber-50 border border-amber-200 rounded p-3 space-y-2">
+          <div className="text-xs font-medium text-amber-800 flex items-center gap-1"><Wand2 className="h-3 w-3" /> Create unplanned activity (flagged for PM review)</div>
+          <div className="grid grid-cols-3 gap-2">
+            <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
+            <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
           </div>
-          {/* UNPLANNED ADD */}
-          <div className="space-y-2 bg-amber-50 border border-amber-200 rounded p-3">
-            <div className="text-xs font-medium text-amber-800 flex items-center gap-1"><Wand2 className="h-3 w-3" /> Create unplanned activity (flagged for PM review)</div>
-            <div className="grid grid-cols-3 gap-2">
-              <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
-              <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
-            </div>
-            <button data-testid="unplanned-add" onClick={createUnplanned}
-              disabled={creatingUnplanned || (locked && !isAddReasonValid(addReason))}
-              title={locked && !isAddReasonValid(addReason)
-                ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
-                : undefined}
-              className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
-              <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
-            </button>
-          </div>
+          <button data-testid="unplanned-add" onClick={createUnplanned}
+            disabled={creatingUnplanned || (locked && !isAddReasonValid(addReason))}
+            title={locked && !isAddReasonValid(addReason)
+              ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
+              : undefined}
+            className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
+            <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
+          </button>
         </div>
       </div>
     </PanelShell>
@@ -1884,7 +1846,10 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   // scope) picker. OPTIONAL for safety per spec (some events area-wide);
   // empty list still saves.
   const [draft, setDraft] = useState({
-    description: "", severity: "minor", event_type: "near_miss",
+    // 2026-05-18 -- no pre-selected defaults for event_type/severity.
+    // Forces super to consciously pick before saving (validation
+    // gate in create() below).
+    description: "", severity: "", event_type: "",
     linked_task_ids: [],
   });
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
@@ -1899,6 +1864,8 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const create = async () => {
     if (busy) return;
     if (!draft.description) return toast.error("Description required");
+    if (!draft.event_type) return toast.error("Event type is required");
+    if (!draft.severity) return toast.error("Severity is required");
     if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
       return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
     }
@@ -1910,7 +1877,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         linked_task_ids: draft.linked_task_ids,
         ...(locked ? { add_reason: addReason.trim() } : {}),
       });
-      setDraft({ description: "", severity: "minor", event_type: "near_miss",
+      setDraft({ description: "", severity: "", event_type: "",
                   linked_task_ids: [] });
       setAddReason("");
       reload();
@@ -1942,9 +1909,11 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           testidPrefix="safety-activity" />
         <div className="grid grid-cols-2 gap-2">
           <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            <option value="">— select event type —</option>
             {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
           </select>
           <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
+            <option value="">— select severity —</option>
             {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>

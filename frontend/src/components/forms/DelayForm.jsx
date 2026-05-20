@@ -94,19 +94,19 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [form, setForm] = useState(() => ({
     description: initial?.description || "",
-    severity: initial?.severity || "moderate",
-    reason_category: initial?.reason_category || "weather",
-    status: initial?.status || "open",
+    // 2026-05-18 -- defaults for CREATE mode are now empty ("") so the
+    // user has to consciously pick a value. The placeholder option
+    // "— select —" guards the form via the submit() validation below;
+    // backend still applies its own defaults if a field is omitted,
+    // but our client always sends the selected value (never empty)
+    // because the validation gate runs first.
+    severity: initial?.severity || "",
+    reason_category: initial?.reason_category || "",
+    status: initial?.status || "",
     resolved_date: initial?.resolved_date || "",
     resolved_note: initial?.resolved_note || "",
-    // Followup-fix 7 (2026-05-07): owner_attribution + cause_class.
-    owner_attribution: initial?.owner_attribution || "none",
-    cause_class: initial?.cause_class || "other",
-    // impacts: array of {task_id, projected_impact_days, float_at_logging_days?, ...}
-    // The impacts list IS the master-schedule linkage -- the form
-    // builds linked_task_ids from impacts.map(i => i.task_id) on save.
-    // No second picker needed; linked_dr_activity_ids was a wrong-
-    // build duplicate (dropped in Bucket D Corrective).
+    owner_attribution: initial?.owner_attribution || "",
+    cause_class: initial?.cause_class || "",
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
   const [busy, setBusy] = useState(false);
@@ -157,10 +157,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   const isFieldEdit = (() => {
     if (!initial?.id) return false;
     if ((form.description || "") !== (initial.description || "")) return true;
-    if ((form.severity || "moderate") !== (initial.severity || "moderate")) return true;
-    if ((form.reason_category || "weather") !== (initial.reason_category || "weather")) return true;
-    if ((form.owner_attribution || "none") !== (initial.owner_attribution || "none")) return true;
-    if ((form.cause_class || "other") !== (initial.cause_class || "other")) return true;
+    if ((form.severity || "") !== (initial.severity || "")) return true;
+    if ((form.reason_category || "") !== (initial.reason_category || "")) return true;
+    if ((form.owner_attribution || "") !== (initial.owner_attribution || "")) return true;
+    if ((form.cause_class || "") !== (initial.cause_class || "")) return true;
     const initImpacts = initial.per_task_impacts || [];
     if (form.impacts.length !== initImpacts.length) return true;
     const initBy = Object.fromEntries(
@@ -222,6 +222,15 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
 
   const submit = async () => {
     if (!form.description.trim()) { toast.error("What happened? is required"); return; }
+    // 2026-05-18 -- explicit dropdown selection required. No more
+    // pre-selected defaults; supers must pick each field consciously
+    // so we don't end up with false "moderate / weather" data on
+    // unattended logs.
+    if (!form.severity) { toast.error("Severity is required"); return; }
+    if (!form.reason_category) { toast.error("Category is required"); return; }
+    if (!form.owner_attribution) { toast.error("Owner attribution is required"); return; }
+    if (!form.cause_class) { toast.error("Cause class is required"); return; }
+    if (!form.status) { toast.error("Status is required"); return; }
     if (!form.impacts.length) { toast.error("Link at least one task"); return; }
     // Bucket D Addition 5 -- client-side add-reason gate. Uniform
     // across roles; backend bypass for admin/PM still operates as the
@@ -344,6 +353,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-severity" value={form.severity}
               onChange={(e) => setForm({ ...form, severity: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
+              <option value="">— select —</option>
               {SEVERITY_OPTS.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </JigsawField>
@@ -357,6 +367,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-category" value={form.reason_category}
               onChange={(e) => setForm({ ...form, reason_category: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
+              <option value="">— select —</option>
               {REASON_OPTS.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
             </select>
           </JigsawField>
@@ -379,6 +390,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-owner-attribution" value={form.owner_attribution}
               onChange={(e) => setForm({ ...form, owner_attribution: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
+              <option value="">— select —</option>
               {OWNER_ATTRIBUTION_OPTS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
@@ -396,6 +408,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-cause-class" value={form.cause_class}
               onChange={(e) => setForm({ ...form, cause_class: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
+              <option value="">— select —</option>
               {CAUSE_CLASS_OPTS.map((c) => (
                 <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
               ))}
@@ -489,6 +502,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
         <select data-testid="delay-form-status" value={form.status}
           onChange={(e) => setForm({ ...form, status: e.target.value })}
           className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
+          <option value="">— select —</option>
           {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
         </select>
       </div>
