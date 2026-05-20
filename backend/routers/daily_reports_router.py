@@ -1157,10 +1157,36 @@ async def export_daily_pdf(daily_report_id: str, ctx: dict = Depends(require_ten
     if not dr:
         raise HTTPException(404, "Daily report not found")
     rows = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"_id": 0}).sort("position", 1).to_list(200)
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0, "name": 1})
+    # Feature DR Header Auto-Population (2026-05-20) -- need the full
+    # project record so the formal contract header (client / station /
+    # contract # / contractor) prints alongside the project name.
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0},
+    )
+    # Signer is the canonical submitter when the DR has been submitted,
+    # else the preparer, else (last resort) the exporter -- so the
+    # signature line doesn't change per-viewer when re-exported later.
+    signer_id = dr.get("submitted_by") or dr.get("prepared_by")
+    signer_name = ""
+    if signer_id:
+        _u = await db.users.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": signer_id}),
+            {"_id": 0, "full_name": 1},
+        )
+        signer_name = (_u or {}).get("full_name", "") or ""
+    if not signer_name:
+        signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
 
+    proj = proj or {}
     lines = [
-        f"DAILY REPORT — {proj['name'] if proj else dr['project_id']}",
+        f"DAILY REPORT — {proj.get('name') or dr['project_id']}",
+        # Feature DR Header Auto-Population (2026-05-20).
+        f"Client:           {proj.get('client_name') or ''}",
+        f"Station:          {proj.get('station_id') or ''}",
+        f"Project title:    {proj.get('name') or ''}",
+        f"Contract number:  {proj.get('contract_number') or ''}",
+        f"Contractor:       {proj.get('contractor_name') or ''}",
+        f"Signature:        {signer_name}",
         f"Date: {format_date_mmddyyyy(dr['report_date'])}",
         f"Status: {dr['status']}",
         f"Weather: {dr.get('weather_conditions') or 'n/a'}, "
@@ -1186,6 +1212,82 @@ async def export_daily_pdf(daily_report_id: str, ctx: dict = Depends(require_ten
         content=body,
         media_type="text/plain; charset=utf-8",
         headers={"content-disposition": f'attachment; filename="daily_report_{dr["report_date"]}.txt"'},
+    )
+
+
+# ============================================================
+# Feature Client DR Template Export (2026-05-20)
+# Fill the project's uploaded client template with this DR's data
+# via openpyxl, stream the resulting xlsx back as an attachment.
+# Returns 404 if no template is uploaded for the project, 400 if
+# the uploaded template is a PDF (engine is xlsx-only this sprint).
+# ============================================================
+@router.get("/daily-reports/{daily_report_id}/export/client-template")
+async def export_dr_via_client_template(
+    daily_report_id: str,
+    ctx: dict = Depends(require_tenant),
+):
+    from fastapi import Response
+    db = get_db()
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0},
+    )
+    if not dr:
+        raise HTTPException(404, "Daily report not found")
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0},
+    )
+    if not proj or not proj.get("dr_template_file_url"):
+        raise HTTPException(
+            404, "No client template uploaded for this project.",
+        )
+    template_name = proj.get("dr_template_file_name") or "template"
+    ext = template_name.rsplit(".", 1)[-1].lower() if "." in template_name else ""
+    if ext == "pdf":
+        raise HTTPException(
+            400,
+            "PDF template export not yet supported -- please upload an "
+            "xlsx template.",
+        )
+
+    # Activity rows from the DR grid.
+    activities = await db.daily_report_activities.find(
+        {"daily_report_id": daily_report_id}, {"_id": 0},
+    ).sort("position", 1).to_list(100)
+
+    # Signer precedence -- same as the PDF exports (submitted_by ->
+    # prepared_by -> current exporter).
+    signer_id = dr.get("submitted_by") or dr.get("prepared_by")
+    signer_name = ""
+    if signer_id:
+        _u = await db.users.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": signer_id}),
+            {"_id": 0, "full_name": 1},
+        )
+        signer_name = (_u or {}).get("full_name", "") or ""
+    if not signer_name:
+        signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
+
+    # Load + inject -- best-effort, never errors on cell-level mismatch.
+    from services.storage import get_object
+    from services.dr_template_export import inject_dr_into_template
+    template_bytes, _ct = get_object(proj["dr_template_file_url"])
+    filled_bytes = inject_dr_into_template(
+        template_bytes,
+        dr=dr, project=proj, activities=activities, signer_name=signer_name,
+    )
+
+    safe_proj = (proj.get("name") or "project").replace("/", "-").replace("\\", "-")
+    out_name = f"DR_{dr.get('report_date') or 'unknown'}_{safe_proj}.xlsx"
+    return Response(
+        content=filled_bytes,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "content-disposition": f'attachment; filename="{out_name}"',
+        },
     )
 
 

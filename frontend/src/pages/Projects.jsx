@@ -16,6 +16,10 @@ const EMPTY_FORM = {
   name: "",
   contract_number: "",
   client_name: "",
+  // Feature DR Header Auto-Population (2026-05-20) -- station + GC
+  // surfaced in every Daily Report header. Both optional.
+  station_id: "",
+  contractor_name: "",
   contract_value_usd: "",
   address_line1: "",
   city: "",
@@ -52,6 +56,9 @@ export default function Projects() {
       name: p.name || "",
       contract_number: p.contract_number || "",
       client_name: p.client_name || "",
+      // Feature DR Header Auto-Population (2026-05-20).
+      station_id: p.station_id || "",
+      contractor_name: p.contractor_name || "",
       contract_value_usd: p.contract_value_usd != null ? String(p.contract_value_usd) : "",
       address_line1: p.address_line1 || "",
       city: p.city || "",
@@ -110,13 +117,29 @@ export default function Projects() {
                 <label className="field-label">Project name *</label>
                 <input data-testid="np-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
+              {/* Feature DR Header Auto-Population (2026-05-20) -- the
+                  four contract / client fields are surfaced (read-only)
+                  in every Daily Report header. All optional. */}
+              <div className="pt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Project / Contract Information
+              </div>
               <div>
                 <label className="field-label">Contract number</label>
                 <input data-testid="np-contract" value={form.contract_number} onChange={(e) => setForm({ ...form, contract_number: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               <div>
                 <label className="field-label">Client</label>
-                <input data-testid="np-client" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
+                <input data-testid="np-client" placeholder="e.g. VA Medical Center, Bronx NY" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="field-label">Station</label>
+                  <input data-testid="np-station" placeholder="e.g. 526-25-100" value={form.station_id} onChange={(e) => setForm({ ...form, station_id: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
+                </div>
+                <div>
+                  <label className="field-label">Contractor</label>
+                  <input data-testid="np-contractor" placeholder="e.g. Integrated Construction Enterprises, Inc." value={form.contractor_name} onChange={(e) => setForm({ ...form, contractor_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
+                </div>
               </div>
               <div>
                 <label className="field-label">Contract value (USD)</label>
