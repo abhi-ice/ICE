@@ -147,16 +147,14 @@ export default function DailyReports() {
   const [openId, setOpenId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerDate, setPickerDate] = useState(localTodayISO());
-  // Feature Client DR Template Export (2026-05-20) -- track whether
-  // the active project has a client template uploaded (gates the
-  // per-row "Export: Client Format" button), the current role (gates
-  // the header "Upload DR Template" button), and the per-row export
-  // in-flight state (for the loading spinner on that row's button).
+  // Feature Client DR Template Export (2026-05-20) -- the role gate
+  // here is for the "Upload DR Template" button in the list header.
+  // The per-DR "Client Format" export now lives on the DR detail view
+  // (next to the existing Internal / External export buttons), so the
+  // list page no longer needs templateMeta or per-row export state.
   const navigate = useNavigate();
   const userRole = (getUser()?.role || "").toLowerCase();
   const isAdminOrPm = userRole === "admin" || userRole === "pm";
-  const [templateMeta, setTemplateMeta] = useState(null);
-  const [exportingId, setExportingId] = useState(null);
 
   // Bucket D Phase 3 -- gallery chips + date links route here with
   // ?openId=<dr-id>; honor it on first mount so the DR opens directly.
@@ -176,16 +174,6 @@ export default function DailyReports() {
   }, [activeId]);
   useEffect(() => { load(); }, [load]);
 
-  // Feature Client DR Template Export (2026-05-20) -- pull the
-  // template metadata when the active project changes so the per-row
-  // export button can branch on whether one is uploaded.
-  useEffect(() => {
-    if (!activeId) { setTemplateMeta(null); return; }
-    api.get(`/projects/${activeId}/dr-template`)
-      .then(({ data }) => setTemplateMeta(data))
-      .catch(() => setTemplateMeta({ present: false }));
-  }, [activeId]);
-
   const handleUploadTemplate = () => {
     if (!activeId) return toast.error("Pick a project first");
     if (!isAdminOrPm) {
@@ -194,43 +182,6 @@ export default function DailyReports() {
       );
     }
     navigate(`/projects/${activeId}/dr-template`);
-  };
-
-  const handleClientExport = async (r) => {
-    if (!templateMeta?.present) {
-      return toast.error(
-        "No client template uploaded. Click 'Upload DR Template' to add one.",
-      );
-    }
-    if (exportingId) return;
-    setExportingId(r.id);
-    try {
-      const res = await api.get(
-        `/daily-reports/${r.id}/export/client-template`,
-        { responseType: "blob" },
-      );
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `DR_${r.report_date}_client_format.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      // Server returned an error blob -- decode as text for the toast.
-      let detail = "Client-format export failed";
-      if (e.response?.data instanceof Blob) {
-        try {
-          const txt = await e.response.data.text();
-          const parsed = JSON.parse(txt);
-          detail = parsed.detail || detail;
-        } catch { /* leave generic message */ }
-      } else {
-        detail = e.response?.data?.detail || detail;
-      }
-      toast.error(detail);
-    } finally {
-      setExportingId(null);
-    }
   };
 
   // Tell the copilot which DR we're scoped to.
@@ -348,26 +299,6 @@ export default function DailyReports() {
                     <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline mr-3">
                       Open
                     </button>
-                    {/* Feature Client DR Template Export (2026-05-20)
-                        -- third export option, lives ONLY on the list
-                        row (not on the opened detail view per spec).
-                        If no template is uploaded, the click shows a
-                        toast pointing the user at the upload button. */}
-                    <button
-                      data-testid={`export-client-${r.id}`}
-                      onClick={() => handleClientExport(r)}
-                      disabled={exportingId === r.id}
-                      title={templateMeta?.present
-                        ? "Export this DR using the project's uploaded client template (xlsx)"
-                        : "No client template uploaded for this project"}
-                      className="text-sm text-emerald-700 hover:underline mr-3 inline-flex items-center gap-1 align-middle disabled:opacity-50"
-                    >
-                      {exportingId === r.id ? (
-                        <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Exporting…</>
-                      ) : (
-                        <><FileSpreadsheet className="h-3.5 w-3.5" /> Client format</>
-                      )}
-                    </button>
                     <button
                       data-testid={`delete-dr-${r.id}`}
                       onClick={() => removeReport(r)}
@@ -395,6 +326,12 @@ export default function DailyReports() {
 function DailyReportDetail({ id, onBack }) {
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Feature Client DR Template Export (2026-05-20) -- the third export
+  // button (next to Internal / External) is gated on the project
+  // having a client xlsx template uploaded. We fetch the metadata
+  // once the bundle resolves and only render the button when present.
+  const [templateMeta, setTemplateMeta] = useState(null);
+  const [exportingClient, setExportingClient] = useState(false);
   // Bucket C3a Phase 3 — per-row submit errors keyed by row id. Cleared
   // on next submit attempt or when the user successfully edits the row.
   const [submitRowErrors, setSubmitRowErrors] = useState({});
@@ -504,6 +441,19 @@ function DailyReportDetail({ id, onBack }) {
     }, 15000);
     return () => clearInterval(t);
   }, [id]);
+
+  // Feature Client DR Template Export (2026-05-20) -- fetch the
+  // project's template metadata once the bundle loads so the Header
+  // can decide whether to render the third export button. A 404 /
+  // failure falls back to present=false, which simply hides the
+  // button (no error toast on the detail view).
+  const projectIdForTemplate = bundle?.project?.id;
+  useEffect(() => {
+    if (!projectIdForTemplate) { setTemplateMeta(null); return; }
+    api.get(`/projects/${projectIdForTemplate}/dr-template`)
+      .then(({ data }) => setTemplateMeta(data))
+      .catch(() => setTemplateMeta({ present: false }));
+  }, [projectIdForTemplate]);
 
   if (!bundle) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
@@ -688,6 +638,46 @@ function DailyReportDetail({ id, onBack }) {
     URL.revokeObjectURL(url);
   };
 
+  // Feature Client DR Template Export (2026-05-20) -- third export
+  // option, adjacent to Internal / External above. The button only
+  // renders when templateMeta.present is true (see Header), but we
+  // still guard here in case the metadata raced with the click.
+  const downloadClientTemplate = async () => {
+    if (!templateMeta?.present) {
+      toast.error("No client template uploaded for this project.");
+      return;
+    }
+    if (exportingClient) return;
+    setExportingClient(true);
+    try {
+      const res = await api.get(
+        `/daily-reports/${id}/export/client-template`,
+        { responseType: "blob" },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `DR_${report.report_date}_client_format.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      // Server returned an error blob -- decode as text for the toast.
+      let detail = "Client-format export failed";
+      if (e.response?.data instanceof Blob) {
+        try {
+          const txt = await e.response.data.text();
+          const parsed = JSON.parse(txt);
+          detail = parsed.detail || detail;
+        } catch { /* leave generic message */ }
+      } else {
+        detail = e.response?.data?.detail || detail;
+      }
+      toast.error(detail);
+    } finally {
+      setExportingClient(false);
+    }
+  };
+
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
       {/* HEADER */}
@@ -697,6 +687,9 @@ function DailyReportDetail({ id, onBack }) {
               locked={locked}
               onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
               busy={busy} validate={validate}
+              templateMeta={templateMeta}
+              exportingClient={exportingClient}
+              onDownloadClientTemplate={downloadClientTemplate}
               onQuickLogCoordination={() => setCoordOpen(true)} />
 
       {/* Feature DR Header Auto-Population (2026-05-20) -- the formal
@@ -873,7 +866,8 @@ function StatusPill({ status }) {
 
 function Header({ report, project, userLabels, ppc, totalHours,
                   totalHeadcount, totalCrewHours, locked, onBack, onSubmit,
-                  onApprove, onDownload, busy, validate, onQuickLogCoordination }) {
+                  onApprove, onDownload, busy, validate, onQuickLogCoordination,
+                  templateMeta, exportingClient, onDownloadClientTemplate }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
@@ -945,6 +939,26 @@ function Header({ report, project, userLabels, ppc, totalHours,
             className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
             <Download className="h-4 w-4" /> Export for External
           </button>
+          {/* Feature Client DR Template Export (2026-05-20) -- third
+              export option, sits next to Internal / External. Only
+              rendered when the project has a client xlsx template
+              uploaded; otherwise hidden entirely (no toast, no
+              disabled button -- the upload flow is on the list
+              header). */}
+          {templateMeta?.present && (
+            <button
+              data-testid="dr-download-client-template"
+              onClick={onDownloadClientTemplate}
+              disabled={exportingClient || busy}
+              title={`Export this DR using the project's client template (${templateMeta.file_name || "xlsx"})`}
+              className="h-9 px-3 rounded border border-emerald-300 bg-white text-emerald-700 text-sm flex items-center gap-1 hover:bg-emerald-50 disabled:opacity-50">
+              {exportingClient ? (
+                <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
+              ) : (
+                <><FileSpreadsheet className="h-4 w-4" /> Export: Client Format</>
+              )}
+            </button>
+          )}
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
