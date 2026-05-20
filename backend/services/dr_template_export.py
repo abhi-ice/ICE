@@ -105,8 +105,19 @@ def _build_value_map(*, dr: dict, project: dict, signer_name: str) -> dict:
 
 
 def _is_writable(cell) -> bool:
-    """Never overwrite a formula cell."""
-    return getattr(cell, "data_type", None) != "f"
+    """Skip cells that openpyxl refuses to write to:
+       - formula cells (data_type == 'f') -- preserve client's math.
+       - MergedCell instances (every cell in a merged range except the
+         anchor / top-left). openpyxl raises AttributeError "value is
+         read-only" if you assign to .value on these.
+    """
+    if getattr(cell, "data_type", None) == "f":
+        return False
+    # MergedCell lives in openpyxl.cell.cell; check by class name so we
+    # don't need an extra import.
+    if type(cell).__name__ == "MergedCell":
+        return False
+    return True
 
 
 def _label_lookup(text: str) -> str | None:
