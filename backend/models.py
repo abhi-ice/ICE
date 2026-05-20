@@ -185,6 +185,12 @@ class ProjectCreate(StrictModel):
     name: str
     contract_number: Optional[str] = None
     client_name: Optional[str] = None
+    # Feature DR Header Auto-Population (2026-05-20) -- station ID and
+    # contractor name surfaced in every Daily Report's auto-populated
+    # header. Both optional -- legacy projects render the matching DR
+    # header cells blank, no error.
+    station_id: Optional[str] = None
+    contractor_name: Optional[str] = None
     owner_name: Optional[str] = None
     project_type: Optional[str] = None
     naics_code: Optional[str] = None
@@ -235,6 +241,10 @@ class ProjectUpdate(StrictModel):
     actual_completion_date: Optional[date] = None
     contract_number: Optional[str] = None
     client_name: Optional[str] = None
+    # Feature DR Header Auto-Population (2026-05-20) -- editable in
+    # ProjectUpdate so admins can backfill on existing projects.
+    station_id: Optional[str] = None
+    contractor_name: Optional[str] = None
     address_line1: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -260,6 +270,10 @@ class Project(ReadModel):
     name: str
     contract_number: Optional[str] = None
     client_name: Optional[str] = None
+    # Feature DR Header Auto-Population (2026-05-20) -- station + GC
+    # name surfaced in every Daily Report's auto-populated header.
+    station_id: Optional[str] = None
+    contractor_name: Optional[str] = None
     owner_name: Optional[str] = None
     contract_value_usd: Optional[float] = None
     address_line1: Optional[str] = None
@@ -286,6 +300,16 @@ class Project(ReadModel):
     # Bucket E Phase 1 (2026-05-11) -- A/E review SLA settings.
     submittal_review_sla_days: int = SUBMITTAL_DEFAULT_SLA_DAYS
     submittal_sla_uses_calendar_days: bool = False
+    # Feature Client DR Template (2026-05-20) -- per-project client
+    # daily-report template file. One active template per project;
+    # managed by the dedicated POST/DELETE /api/projects/{id}/dr-template
+    # endpoints (NOT editable via ProjectUpdate). When set, the DR list
+    # surfaces "Export: Client Format" which injects DR + project data
+    # into this template via openpyxl and streams the filled xlsx.
+    dr_template_file_url: Optional[str] = None
+    dr_template_file_name: Optional[str] = None
+    dr_template_uploaded_at: Optional[datetime] = None
+    dr_template_uploaded_by: Optional[str] = None
 
 
 # ---------- Locations / floors ----------

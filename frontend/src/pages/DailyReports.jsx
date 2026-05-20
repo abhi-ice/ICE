@@ -10,11 +10,13 @@
  * call DR-only tools: record_presence, mark_activity_status, create_unplanned_activity.
  */
 import { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { localTodayISO, formatDateDisplay } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
+import { getUser } from "../lib/auth";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
 // Addition 4 -- locked-DR edit modal (reusable across event types).
@@ -38,6 +40,7 @@ import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
   Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil, Sparkles, Loader2,
+  Upload, FileSpreadsheet,
 } from "lucide-react";
 // Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
 // AI analysis lands (3-5s wait). Imported as a default export from
@@ -144,6 +147,14 @@ export default function DailyReports() {
   const [openId, setOpenId] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerDate, setPickerDate] = useState(localTodayISO());
+  // Feature Client DR Template Export (2026-05-20) -- the role gate
+  // here is for the "Upload DR Template" button in the list header.
+  // The per-DR "Client Format" export now lives on the DR detail view
+  // (next to the existing Internal / External export buttons), so the
+  // list page no longer needs templateMeta or per-row export state.
+  const navigate = useNavigate();
+  const userRole = (getUser()?.role || "").toLowerCase();
+  const isAdminOrPm = userRole === "admin" || userRole === "pm";
 
   // Bucket D Phase 3 -- gallery chips + date links route here with
   // ?openId=<dr-id>; honor it on first mount so the DR opens directly.
@@ -162,6 +173,16 @@ export default function DailyReports() {
     api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => setReports(data));
   }, [activeId]);
   useEffect(() => { load(); }, [load]);
+
+  const handleUploadTemplate = () => {
+    if (!activeId) return toast.error("Pick a project first");
+    if (!isAdminOrPm) {
+      return toast.error(
+        "Only project admins can upload a client template. Contact your project admin.",
+      );
+    }
+    navigate(`/projects/${activeId}/dr-template`);
+  };
 
   // Tell the copilot which DR we're scoped to.
   useEffect(() => {
@@ -216,11 +237,25 @@ export default function DailyReports() {
             One page per day — weather, crew presence, activities, events, photos, voice. Copilot is scoped to the open report.
           </p>
         </div>
-        <button data-testid="dr-new-button"
-          onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
-          className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm flex items-center gap-2">
-          <FilePlus2 className="h-4 w-4" /> + New daily report
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Feature Client DR Template Export (2026-05-20) -- visible
+              to every user (so they SEE the feature exists), but the
+              navigate only happens for admin / PM; other roles get a
+              toast pointing them at their project admin. */}
+          <button data-testid="dr-upload-template-button"
+            onClick={handleUploadTemplate}
+            title={isAdminOrPm
+              ? "Upload your client's xlsx daily report template"
+              : "Only project admins can upload a client template"}
+            className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-2 hover:bg-slate-50">
+            <Upload className="h-4 w-4" /> Upload DR Template
+          </button>
+          <button data-testid="dr-new-button"
+            onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
+            className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm flex items-center gap-2">
+            <FilePlus2 className="h-4 w-4" /> + New daily report
+          </button>
+        </div>
       </div>
 
       {pickerOpen && (
@@ -291,6 +326,12 @@ export default function DailyReports() {
 function DailyReportDetail({ id, onBack }) {
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Feature Client DR Template Export (2026-05-20) -- the third export
+  // button (next to Internal / External) is gated on the project
+  // having a client xlsx template uploaded. We fetch the metadata
+  // once the bundle resolves and only render the button when present.
+  const [templateMeta, setTemplateMeta] = useState(null);
+  const [exportingClient, setExportingClient] = useState(false);
   // Bucket C3a Phase 3 — per-row submit errors keyed by row id. Cleared
   // on next submit attempt or when the user successfully edits the row.
   const [submitRowErrors, setSubmitRowErrors] = useState({});
@@ -401,10 +442,28 @@ function DailyReportDetail({ id, onBack }) {
     return () => clearInterval(t);
   }, [id]);
 
+  // Feature Client DR Template Export (2026-05-20) -- fetch the
+  // project's template metadata once the bundle loads so the Header
+  // can decide whether to render the third export button. A 404 /
+  // failure falls back to present=false, which simply hides the
+  // button (no error toast on the detail view).
+  const projectIdForTemplate = bundle?.project?.id;
+  useEffect(() => {
+    if (!projectIdForTemplate) { setTemplateMeta(null); return; }
+    api.get(`/projects/${projectIdForTemplate}/dr-template`)
+      .then(({ data }) => setTemplateMeta(data))
+      .catch(() => setTemplateMeta({ present: false }));
+  }, [projectIdForTemplate]);
+
   if (!bundle) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
   const { report, project, grid, presence, photos, voice_annotations, delays,
           safety_events, qc_issues, rfis, deliveries, audit_log, user_labels } = bundle;
+  // Feature DR Header Auto-Population (2026-05-20) -- signature is the
+  // current logged-in user's full name per spec ("the logged-in user
+  // filling the DR"); the other 5 header fields come from the project
+  // record. All read-only, all auto-populated.
+  const currentUserName = getUser()?.full_name || "";
   const locked = report.status === "submitted" || report.status === "approved";
   const isRenovation = RENOVATION_TYPES.includes(project.project_type || "");
 
@@ -579,6 +638,46 @@ function DailyReportDetail({ id, onBack }) {
     URL.revokeObjectURL(url);
   };
 
+  // Feature Client DR Template Export (2026-05-20) -- third export
+  // option, adjacent to Internal / External above. The button only
+  // renders when templateMeta.present is true (see Header), but we
+  // still guard here in case the metadata raced with the click.
+  const downloadClientTemplate = async () => {
+    if (!templateMeta?.present) {
+      toast.error("No client template uploaded for this project.");
+      return;
+    }
+    if (exportingClient) return;
+    setExportingClient(true);
+    try {
+      const res = await api.get(
+        `/daily-reports/${id}/export/client-template`,
+        { responseType: "blob" },
+      );
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `DR_${report.report_date}_client_format.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      // Server returned an error blob -- decode as text for the toast.
+      let detail = "Client-format export failed";
+      if (e.response?.data instanceof Blob) {
+        try {
+          const txt = await e.response.data.text();
+          const parsed = JSON.parse(txt);
+          detail = parsed.detail || detail;
+        } catch { /* leave generic message */ }
+      } else {
+        detail = e.response?.data?.detail || detail;
+      }
+      toast.error(detail);
+    } finally {
+      setExportingClient(false);
+    }
+  };
+
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
       {/* HEADER */}
@@ -588,7 +687,18 @@ function DailyReportDetail({ id, onBack }) {
               locked={locked}
               onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
               busy={busy} validate={validate}
+              templateMeta={templateMeta}
+              exportingClient={exportingClient}
+              onDownloadClientTemplate={downloadClientTemplate}
               onQuickLogCoordination={() => setCoordOpen(true)} />
+
+      {/* Feature DR Header Auto-Population (2026-05-20) -- the formal
+          contract / station / signature block shown on every Daily
+          Report. Read-only, auto-populated from the project record and
+          the current logged-in user. Blank cells render as em-dash if
+          the project field is empty -- no error, no block on DR
+          creation. Above the date/weather block per the spec. */}
+      <DrAutoHeader project={project} currentUserName={currentUserName} />
 
       {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.
           Pre-links the event to this daily report on save so it shows up
@@ -756,7 +866,8 @@ function StatusPill({ status }) {
 
 function Header({ report, project, userLabels, ppc, totalHours,
                   totalHeadcount, totalCrewHours, locked, onBack, onSubmit,
-                  onApprove, onDownload, busy, validate, onQuickLogCoordination }) {
+                  onApprove, onDownload, busy, validate, onQuickLogCoordination,
+                  templateMeta, exportingClient, onDownloadClientTemplate }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
@@ -828,6 +939,26 @@ function Header({ report, project, userLabels, ppc, totalHours,
             className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
             <Download className="h-4 w-4" /> Export for External
           </button>
+          {/* Feature Client DR Template Export (2026-05-20) -- third
+              export option, sits next to Internal / External. Only
+              rendered when the project has a client xlsx template
+              uploaded; otherwise hidden entirely (no toast, no
+              disabled button -- the upload flow is on the list
+              header). */}
+          {templateMeta?.present && (
+            <button
+              data-testid="dr-download-client-template"
+              onClick={onDownloadClientTemplate}
+              disabled={exportingClient || busy}
+              title={`Export this DR using the project's client template (${templateMeta.file_name || "xlsx"})`}
+              className="h-9 px-3 rounded border border-emerald-300 bg-white text-emerald-700 text-sm flex items-center gap-1 hover:bg-emerald-50 disabled:opacity-50">
+              {exportingClient ? (
+                <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
+              ) : (
+                <><FileSpreadsheet className="h-4 w-4" /> Export: Client Format</>
+              )}
+            </button>
+          )}
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
@@ -841,6 +972,42 @@ function Header({ report, project, userLabels, ppc, totalHours,
             </button>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Feature DR Header Auto-Population (2026-05-20) -- read-only project
+// / contract / signature block. Six fields, all auto-populated, never
+// editable. Blank values render as em-dash; absent project fields do
+// NOT block DR creation. Shown on every Daily Report (creation flow +
+// detail view) above the date / weather block.
+function DrAutoHeader({ project, currentUserName }) {
+  const fields = [
+    { label: "Client",          value: project.client_name,      testid: "dr-hdr-client" },
+    { label: "Station",         value: project.station_id,       testid: "dr-hdr-station" },
+    { label: "Project title",   value: project.name,             testid: "dr-hdr-project-title" },
+    { label: "Contract number", value: project.contract_number,  testid: "dr-hdr-contract" },
+    { label: "Contractor",      value: project.contractor_name,  testid: "dr-hdr-contractor" },
+    { label: "Signature",       value: currentUserName,          testid: "dr-hdr-signature" },
+  ];
+  return (
+    <div className="surface p-4" data-testid="dr-auto-header">
+      <div className="text-xs uppercase tracking-wide text-slate-500 mb-2 flex items-center gap-2">
+        <span className="font-semibold">Project / Contract Information</span>
+        <span className="text-slate-400 normal-case font-normal">— auto-populated, read-only</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-2">
+        {fields.map((f) => (
+          <div key={f.label} data-testid={f.testid}>
+            <div className="text-xs text-slate-500 uppercase tracking-wide">{f.label}</div>
+            <div className="text-sm text-slate-700">
+              {f.value
+                ? f.value
+                : <span className="text-slate-300" data-testid={`${f.testid}-empty`}>—</span>}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

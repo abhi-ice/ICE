@@ -64,6 +64,22 @@ async def export_daily_report_pdf(
     )
     project_id = dr["project_id"]
 
+    # Feature DR Header Auto-Population (2026-05-20) -- the formal
+    # signature on an exported DR is the canonical submitter (or the
+    # preparer for a still-draft DR); falls back to the exporter only
+    # when neither is set. Avoids the signature line changing per-viewer
+    # when the report is re-exported later by a different user.
+    signer_id = dr.get("submitted_by") or dr.get("prepared_by")
+    signer_name = ""
+    if signer_id:
+        _u = await db.users.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": signer_id}),
+            {"_id": 0, "full_name": 1},
+        )
+        signer_name = (_u or {}).get("full_name", "") or ""
+    if not signer_name:
+        signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
+
     grid = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id}, {"_id": 0},
     ).sort("position", 1).to_list(500)
@@ -279,9 +295,31 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 .photo-placeholder {{ height: 80px; display: flex; align-items: center; justify-content: center; background: #f1f5f9; color: #94a3b8; font-size: 8pt; border-radius: 2px; }}
 .photo-caption {{ font-size: 8.5pt; color: #1e293b; margin-top: 4px; }}
 .photo-meta {{ font-size: 7.5pt; color: #94a3b8; margin-top: 2px; font-variant-numeric: tabular-nums; }}
+/* Feature DR Header Auto-Population (2026-05-20) -- formal contract /
+   station / signature block printed above the date/weather banner. */
+.header-meta {{ width: 100%; margin: 6px 0 8px; border-collapse: collapse; font-size: 9pt; }}
+.header-meta th {{ background: #f1f5f9; color: #475569; padding: 4px 6px; border: 1px solid #cbd5e1; text-align: left; font-weight: 600; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.04em; width: 14%; }}
+.header-meta td {{ padding: 4px 6px; border: 1px solid #cbd5e1; vertical-align: top; background: #ffffff; color: #0f172a; }}
 </style></head><body>
 <div class='audience'>{'CLIENT COPY' if not is_internal else 'INTERNAL'}</div>
 <h1>Daily Report — {_html_escape(proj['name'] if proj else dr['project_id'])}{title_suffix}</h1>
+<!-- Feature DR Header Auto-Population (2026-05-20) -- formal project /
+     contract / signature block. Same six fields shown on the live DR
+     header in the UI. Same for internal and external exports. -->
+<table class='header-meta'>
+  <tr>
+    <th>Client</th><td>{_html_escape((proj or {{}}).get('client_name') or '')}</td>
+    <th>Contract number</th><td>{_html_escape((proj or {{}}).get('contract_number') or '')}</td>
+  </tr>
+  <tr>
+    <th>Station</th><td>{_html_escape((proj or {{}}).get('station_id') or '')}</td>
+    <th>Contractor</th><td>{_html_escape((proj or {{}}).get('contractor_name') or '')}</td>
+  </tr>
+  <tr>
+    <th>Project title</th><td>{_html_escape((proj or {{}}).get('name') or dr['project_id'])}</td>
+    <th>Signature</th><td>{_html_escape(signer_name)}</td>
+  </tr>
+</table>
 <div class='meta'>Date: <b>{dr['report_date']}</b> · Status: <span class='pill'>{dr['status']}</span></div>
 <div class='banner'>
   <b>Weather:</b> {_html_escape(dr.get('weather_conditions') or 'n/a')} ·

@@ -11,6 +11,7 @@ import Projects from "./pages/Projects";
 import Tasks from "./pages/Tasks";
 import Lookahead from "./pages/Lookahead";
 import DailyReports from "./pages/DailyReports";
+import DrTemplate from "./pages/DrTemplate";
 import ProjectScopedList from "./pages/ProjectScopedList";
 import GettingStarted from "./pages/GettingStarted";
 import ResourceList, { Availability } from "./pages/Resources";
@@ -76,6 +77,10 @@ export default function App() {
 
             {/* Daily ops */}
             <Route path="daily-reports" element={<DailyReports />} />
+            {/* Feature Client DR Template Export (2026-05-20) -- per-
+                project page to upload the client's required xlsx
+                daily-report template. Linked from the DR list page. */}
+            <Route path="projects/:projectId/dr-template" element={<DrTemplate />} />
             <Route path="photos" element={<Photos />} />
             <Route path="photo-tray" element={<PhotoTray />} />
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />
