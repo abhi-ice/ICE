@@ -871,40 +871,15 @@ function Header({ report, project, userLabels, ppc, totalHours,
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
-      <div className="flex flex-wrap items-start gap-4">
+      <div className="flex flex-wrap items-center gap-4">
         <button onClick={onBack} className="text-sm text-blue-600 hover:underline flex items-center gap-1">
           <ChevronLeft className="h-4 w-4" /> Back
         </button>
-        <div>
-          <div className="text-xs text-slate-500 uppercase tracking-wide">Project</div>
-          <div className="font-semibold">{project.name}</div>
-        </div>
-        <div>
-          <div className="text-xs text-slate-500 uppercase tracking-wide">Report date</div>
-          <div className="font-mono text-base">{formatDateDisplay(report.report_date)}</div>
-        </div>
-        <div>
-          <div className="text-xs text-slate-500 uppercase tracking-wide">Status</div>
-          <div className="flex items-center gap-1">
-            <StatusPill status={report.status} />
-            {locked && <Lock className="h-3.5 w-3.5 text-slate-500" />}
-          </div>
-          {report.is_no_work_day && (
-            <div data-testid="dr-no-work-pill"
-              className="mt-1 inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-xs uppercase tracking-wide"
-              title={report.no_work_note || "No-work day"}>
-              No-work day · {(report.no_work_reason || "").replace(/_/g, " ")}
-            </div>
-          )}
-        </div>
-        <div className="hidden md:block min-w-[180px]">
-          <div className="text-xs text-slate-500 uppercase tracking-wide">Trail</div>
-          <div className="text-xs text-slate-600 leading-snug">
-            <div>Prepared: {userLabels[report.prepared_by] || "—"}</div>
-            <div>Submitted: {userLabels[report.submitted_by] || "—"}</div>
-            <div>Approved: {userLabels[report.approved_by] || "—"}</div>
-          </div>
-        </div>
+        {/* 2026-05-20 -- the project / date / status / trail block was
+            removed from this header; the date and project context live
+            in the DrAutoHeader block below, and the formal status pill
+            is surfaced alongside the action buttons. The KPI row now
+            spans the full width of the header bar. */}
         <div className="ml-auto flex flex-wrap gap-3">
           <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
           <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
