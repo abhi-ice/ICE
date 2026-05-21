@@ -286,13 +286,53 @@ written there, so the filled template represents the same daily report in the
 CLIENT'S own format. The key insight is that the client's template uses its own
 labels and layout; you must map by MEANING, not by literal text.
 
-Output shape (one entry per worksheet that needs writes):
-    { "<sheet_name>": { "<cell_address>": <value>, "<cell_address>": <value>, ... } }
+You own the FULL end-to-end fill. The caller does NOT pre-clear the template; the
+output xlsx is built by starting from the original template and then applying YOUR
+mapping cell-by-cell. So for every cell you must decide one of three things:
 
-RULES
------
-1. Match labels to data by SEMANTIC meaning, not literal text. Equivalents include:
-     "Owner" / "GC" / "Prime Contractor" / "General Contractor" / "Contractor"
+    FILL       -- return { "<address>": <value> }
+                  Write a new value into this cell. Use this for value cells where
+                  you have new DR data. Also use this to REWRITE a cell that holds a
+                  combined "Label: value" string (e.g. the template cell reads
+                  "STATION - VA Medical center, Bronx NY" -- you must return the
+                  whole string with the new station, like
+                  "STATION - " + our station_id).
+
+    BLANK      -- return { "<address>": null }
+                  Clear this cell. Use this for value cells that hold STALE prefilled
+                  data left over from the previous fill (e.g. last week's foreman
+                  name, an old trade row in the manpower table, a "Sunny" weather
+                  entry from a prior day). The user wants the template to look like
+                  a fresh fill for THIS daily report.
+
+    LEAVE ALONE -- omit the cell address entirely from your output
+                  Do NOT include the cell. Use this for everything that should
+                  survive verbatim from the original template:
+                    - agency/department headings ("DEPARTMENT OF VETERANS AFFAIRS")
+                    - boilerplate / Paperwork Reduction Act blocks
+                    - section labels ("Weather:", "Temperature:", "NAME OF
+                      CONTRACTOR", "Date", "Day of Week:")
+                    - table header rows ("SKILLED WORKERS", "UNSKILLED",
+                      "LOCATION AND DESCRIPTION OF WORK", "EQUIPMENT", "FORCE",
+                      "DELIVERY OF MATERIALS:")
+                    - summary labels ("TOTAL", "SATISFACTORY")
+                    - any cell whose is_formula is true (formulas are PRESERVED)
+                    - styling-only cells (logos, separators)
+
+Output shape (only sheets where you have at least one FILL or BLANK):
+    {
+      "<sheet_name>": {
+        "<cell_address>": <value-to-fill>   OR   null,
+        ...
+      },
+      ...
+    }
+
+SEMANTIC MAPPING REFERENCE
+--------------------------
+Match cell labels to DR data by MEANING, not literal text. Common equivalents:
+     "Owner" / "GC" / "Prime Contractor" / "General Contractor" / "Contractor" /
+     "NAME OF CONTRACTOR"
         -> our contractor_name  (top-level)
      "Project No." / "Job No." / "Contract Number" / "Contract #" / "Project #"
         -> our contract_number  (top-level)
@@ -306,7 +346,8 @@ RULES
         -> our project.address_line1 (+ project.city / project.state /
            project.postal_code as separate cells if the template lays
            them out individually)
-     "Signed by" / "Submitted by" / "Foreman" / "Prepared by" / "Signature" / "Name"
+     "Signed by" / "Submitted by" / "Foreman" / "Prepared by" / "Signature" /
+     "SIGNATURE OF SUPERVISOR" / "Name"
         -> our signer_name
      "Date" / "Report Date" / "Day Of"
         -> our report_date (MM/DD/YYYY)
@@ -327,51 +368,46 @@ RULES
      "Status" / "Report Status"
         -> our status
 
-2. CELL ADDRESS to return — usually the EMPTY cell IMMEDIATELY TO THE RIGHT OF a
-   label cell, OR DIRECTLY BELOW a label cell. Some templates layout labels with the
-   value on the same row, others stack value-below-label. Use surrounding cells to
-   judge. NEVER return a label-cell address (you would overwrite the label).
+CELL-ADDRESS PATTERNS
+---------------------
+- LABEL adjacent to a separate VALUE cell: target the value cell (cell to the right
+  of, or directly below, the label). LEAVE the label cell alone.
+- "Label: value" in ONE cell (e.g. "STATION - VA Medical center, Bronx NY",
+  "Contract Number:  526-25-100", "SIGNATURE OF SUPERVISOR : Camil Cherbaka"):
+  REWRITE that single cell preserving the label prefix and substituting our value.
+- Activity / manpower / equipment / delays tables: detect the header row (e.g.
+  "SKILLED WORKERS", "UNSKILLED", "LOCATION AND DESCRIPTION OF WORK"; or "Trade",
+  "Description", "Crew", "Hours"; or "EQUIPMENT", "FORCE"), then FILL the rows
+  below the header with our records, ONE record per row, mapped column-by-column
+  by header label. BLANK any leftover prefilled rows in the table that our data
+  doesn't reach (so an old row of last week's data is cleared rather than left
+  behind). LEAVE the header row alone.
+- If the template has a section we have NO data for (e.g. an equipment list and we
+  have no equipment records), BLANK any stale prefilled data rows in that section
+  but LEAVE the section header.
 
-3. ACTIVITY TABLES — detect the table by spotting a row that contains multiple
-   adjacent header labels like "Trade", "Description", "Crew", "Hours",
-   "% Complete", "Delay". Once detected, fill our activities into the rows BELOW
-   the header, one activity per row, mapping our fields to the right column by
-   matching the header label semantically. Stop after our activities list is
-   exhausted. Do not invent placeholder rows.
+GENERAL RULES
+-------------
+- Never invent values. If we have no DR data for a value cell, BLANK it (null) --
+  don't echo the label, don't paraphrase, don't synthesize.
+- Never overwrite a cell whose is_formula is true. Omit it from the mapping.
+- Numbers: emit as JSON numbers, not strings (72, not "72"). Dates: MM/DD/YYYY
+  string. Day-of-week: full weekday name string.
+- A cell address present with value `null` MEANS BLANK -- it is NOT the same as
+  omitting the cell. Omitting means "leave the original template value as-is."
+- Do NOT BLANK headers, labels, boilerplate, section titles, or formula cells.
+  When in doubt about whether a cell is a label vs. a stale value, LEAVE IT ALONE.
 
-4. CREW PRESENCE TABLES — many federal templates have a separate "Crew" or
-   "Manpower" table (often columns: Trade, Company, Headcount, Hours). If you see
-   one, fill it from crew_presence the same way you fill the activity table.
+OUTPUT FORMAT (STRICT)
+----------------------
+- Return ONE valid JSON object.
+- Top-level keys are sheet names. Each value is itself an object whose keys are
+  cell addresses (A1 notation) and whose values are EITHER the value to FILL
+  OR the JSON literal null to BLANK.
+- NO markdown, NO code fences, NO prose, NO trailing commas, NO comments.
 
-5. DELAYS section — if the template has a delays/incidents block, fill it from
-   our delays list. If not, IGNORE delays — do not invent rows.
-
-6. OMIT what doesn't apply:
-     - If a template label has NO corresponding data in our DR, OMIT that cell.
-       Do not invent values. Do not echo the label as the value.
-     - If our DR has a field with NO corresponding cell in the template, OMIT it.
-       Not every DR field belongs in every client's template.
-     - Do NOT fabricate, summarize, paraphrase, or translate values. Use the
-       value from our DR data as-is.
-
-7. TYPING:
-     - Dates: MM/DD/YYYY string.
-     - Day-of-week: full weekday name string.
-     - Numbers: emit as JSON numbers, not strings (e.g. 72, not "72").
-     - Booleans: emit "Yes" / "No" strings if the cell looks like a checkbox column;
-       emit JSON booleans only if the existing header obviously expects a boolean.
-     - null / missing: OMIT the cell entirely (do not write "" or null).
-
-8. NEVER target a cell whose is_formula is true.
-
-9. OUTPUT FORMAT (STRICT):
-     - Return ONE valid JSON object.
-     - Top-level keys are sheet names. Each value is itself an object whose keys
-       are cell addresses and whose values are the values to write.
-     - NO markdown, NO code fences, NO prose, NO trailing commas, NO comments.
-
-If you cannot map a single cell with reasonable semantic confidence, return an empty
-object: {}
+If you cannot map a single cell with reasonable semantic confidence, return an
+empty object: {}
 """
 
 
@@ -437,48 +473,39 @@ async def inject_dr_into_template(
             "could not be parsed."
         )
 
-    # 2026-05-20 -- blank out EVERY non-formula cell before applying
-    # the AI's mapping. The AI returns mappings only for cells it has
-    # data for; without this step any prefilled values still in the
-    # template (sample data from the original document, leftover from a
-    # prior fill, vendor-specific placeholders) would leak into the
-    # output for cells the AI didn't touch. Formula cells are preserved
-    # (data_type == 'f'), and merged-cell secondaries are skipped via
-    # try/except since only the merge anchor is writable.
-    from openpyxl.cell.cell import MergedCell as _MergedCell
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if isinstance(cell, _MergedCell):
-                    continue
-                if not _is_writable(cell):
-                    continue
-                if cell.value is None:
-                    continue
-                try:
-                    cell.value = None
-                except (AttributeError, TypeError):
-                    # Defensive -- some openpyxl cell subclasses
-                    # reject value assignment; skip rather than abort.
-                    continue
-
-    # Apply the mapping back to the workbook. Skip formula cells and
-    # any address that doesn't exist on the target worksheet.
+    # 2026-05-21 -- apply the AI's per-cell intent. The mapping now
+    # carries a three-way decision PER CELL:
+    #   - cell address present, value != null  -> FILL with that value
+    #     (this includes rewriting label+value cells like
+    #      "STATION - <new station>" or "SIGNATURE OF SUPERVISOR : Abhi")
+    #   - cell address present, value == null  -> BLANK the cell
+    #     (the AI saw a stale prefilled value and decided we have no
+    #      DR data for it; clear the leftover)
+    #   - cell address absent                  -> LEAVE ALONE
+    #     (labels, boilerplate, section headers, formulas the AI
+    #      wanted to preserve verbatim)
+    # Formula cells (data_type == 'f') are still never overwritten,
+    # even if the AI mistakenly targets one. Formatting / fonts /
+    # borders / merges / column widths / images are untouched (we
+    # only mutate cell.value).
     sheet_index = {ws.title: ws for ws in wb.worksheets}
     for sheet_name, cells in mapping.items():
         ws = sheet_index.get(sheet_name)
         if ws is None or not isinstance(cells, dict):
             continue
         for addr, value in cells.items():
-            if value is None:
-                continue
             try:
                 cell = ws[addr]
             except Exception:
                 continue
             if not _is_writable(cell):
                 continue
-            cell.value = value
+            try:
+                cell.value = value  # None is a legitimate blank intent
+            except (AttributeError, TypeError):
+                # Merged-cell secondaries / read-only cell subclasses
+                # reject .value assignment -- skip without aborting.
+                continue
 
     out = BytesIO()
     wb.save(out)
