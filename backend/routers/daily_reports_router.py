@@ -1255,6 +1255,22 @@ async def export_dr_via_client_template(
         {"daily_report_id": daily_report_id}, {"_id": 0},
     ).sort("position", 1).to_list(100)
 
+    # Feature Client DR Template Export (2026-05-20, AI rewrite) --
+    # the AI engine also reasons about crew-presence and delay rows
+    # so a template with a manpower table or delays section gets
+    # filled correctly. Soft-skip rows that aren't there.
+    presence = await db.daily_presence.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
+        {"_id": 0},
+    ).sort("trade", 1).to_list(200)
+    delays = await db.delays.find(
+        tenant_filter(
+            ctx["tenant_id"],
+            {"daily_report_id": daily_report_id, "status": {"$ne": "deleted"}},
+        ),
+        {"_id": 0},
+    ).sort("reported_at", -1).to_list(100)
+
     # Signer precedence -- same as the PDF exports (submitted_by ->
     # prepared_by -> current exporter).
     signer_id = dr.get("submitted_by") or dr.get("prepared_by")
@@ -1268,14 +1284,25 @@ async def export_dr_via_client_template(
     if not signer_name:
         signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
 
-    # Load + inject -- best-effort, never errors on cell-level mismatch.
+    # AI-powered injection. DrTemplateExportError -> 502 with the AI's
+    # error attached. No fallback to a heuristic engine (per spec).
     from services.storage import get_object
-    from services.dr_template_export import inject_dr_into_template
-    template_bytes, _ct = get_object(proj["dr_template_file_url"])
-    filled_bytes = inject_dr_into_template(
-        template_bytes,
-        dr=dr, project=proj, activities=activities, signer_name=signer_name,
+    from services.dr_template_export import (
+        inject_dr_into_template,
+        DrTemplateExportError,
     )
+    template_bytes, _ct = get_object(proj["dr_template_file_url"])
+    try:
+        filled_bytes = await inject_dr_into_template(
+            template_bytes,
+            dr=dr, project=proj, activities=activities,
+            presence=presence, delays=delays,
+            signer_name=signer_name,
+            tenant_id=ctx["tenant_id"],
+            request_id=ctx["request_id"],
+        )
+    except DrTemplateExportError as e:
+        raise HTTPException(502, str(e))
 
     safe_proj = (proj.get("name") or "project").replace("/", "-").replace("\\", "-")
     out_name = f"DR_{dr.get('report_date') or 'unknown'}_{safe_proj}.xlsx"

@@ -1,64 +1,118 @@
-"""Feature Client DR Template Export (2026-05-20) -- inject Daily
-Report + project data into a project's uploaded xlsx template via
-openpyxl. Returns the filled workbook as in-memory bytes.
+"""Feature Client DR Template Export (2026-05-20) -- AI-powered
+semantic cell mapping for the client DR template export.
 
-Three passes:
-  1. Token replacement -- cells containing the documented {{tokens}}
-     are replaced with the corresponding value.
-  2. Heuristic label fill -- if no token matched a particular cell,
-     cells whose value looks like a known label (e.g. "Client",
-     "Station", "Contract Number") have their IMMEDIATE RIGHT
-     neighbor populated, but only if that neighbor is currently
-     empty and not a formula cell.
-  3. Activities table -- the first row with >=2 adjacent non-empty
-     string cells is treated as the activity-table header. Up to
-     20 activity rows are written below it (trade / worker count /
-     description). If a {{activities}} token was present in pass 1,
-     that anchor wins over the heuristic header detection.
+Replaces the prior keyword-scanning heuristic engine. The new pipeline:
 
-Strict guards:
-  - Formula cells (data_type == 'f') are NEVER overwritten.
-  - Cell formatting / font / border / fill / merged cells / column
-    widths are left untouched (we only set cell.value).
-  - Workbook is returned as in-memory bytes -- nothing is written to
-    disk.
-  - PDF templates are out of scope -- the caller (the export router)
-    returns 400 BEFORE invoking this engine.
+  1. Use openpyxl to READ the structure of the uploaded xlsx template
+     -- every non-empty cell on every worksheet, with its A1 address,
+     row/column index, text, and whether the cell is a formula.
+  2. Build a compact, structured snapshot of the Daily Report payload
+     (project header, date, weather, signer, activities, crew
+     presence, delays, notes).
+  3. Send both to Anthropic's claude-sonnet-4-5-20250929 via the same
+     emergentintegrations LlmChat shim used by every other AI feature
+     in this codebase (services/ai_agents.py). The model returns a
+     JSON object shaped:
+         {"<sheet_name>": {"<cell_address>": <value>, ...}, ...}
+     telling us exactly which cells should receive which values, based
+     on SEMANTIC meaning (e.g. "GC" -> contractor_name) rather than
+     literal label matching.
+  4. Parse the JSON, then write the values back into the workbook with
+     openpyxl. Cell-level guards:
+        - Formula cells (data_type == 'f') are NEVER overwritten.
+        - Formatting / font / borders / merges / column widths are
+          left untouched (we only set cell.value).
+        - The workbook is round-tripped through BytesIO -- no disk I/O.
+
+If the AI call fails the engine raises DrTemplateExportError. The
+caller surfaces this as an HTTP 502 with a clear message; we never
+fall back to the prior heuristic engine (per spec).
 """
 from __future__ import annotations
-from datetime import datetime, date as date_cls
+
+import json
+import os
+import re
+from datetime import datetime, date as date_cls, timezone
 from io import BytesIO
+from typing import Any, Optional
+
+from emergentintegrations.llm.chat import LlmChat, UserMessage
+from database import get_db
+from models import gen_id, utc_now
 
 
-# Heuristic label -> field-key map. Case-insensitive substring match;
-# trailing punctuation (":", "*") and whitespace stripped before matching.
-_LABEL_MAP = [
-    ("client", "client_name"),
-    ("station", "station"),
-    ("project title", "project_title"),
-    ("project name", "project_title"),
-    ("contract number", "contract_number"),
-    ("contract no", "contract_number"),
-    ("contract #", "contract_number"),
-    ("contractor", "contractor_name"),
-    ("date", "date"),
-    ("day of week", "day_of_week"),
-    ("day", "day_of_week"),
-    ("weather", "weather"),
-    ("conditions", "weather"),
-    ("high temp", "temp_high"),
-    ("temp high", "temp_high"),
-    ("low temp", "temp_low"),
-    ("temp low", "temp_low"),
-    ("precip", "precipitation"),
-    ("signature", "signature"),
-    ("signed by", "signature"),
-    ("prepared by", "signature"),
-    ("notes", "notes"),
-    ("remarks", "notes"),
-]
+MODEL_PROVIDER = "anthropic"
+MODEL_NAME = "claude-sonnet-4-5-20250929"
 
 
+class DrTemplateExportError(RuntimeError):
+    """Raised when the AI mapping call fails. The router catches this
+    and returns a 502 with the message attached -- we DO NOT fall back
+    to the legacy heuristic engine."""
+
+
+def _key() -> str:
+    return os.environ.get("EMERGENT_LLM_KEY", "")
+
+
+def _new_chat(session_id: str, system_message: str) -> LlmChat:
+    """Same _new_chat shape as services/ai_agents.py so the export
+    inherits the existing emergentintegrations -> Anthropic shim."""
+    return LlmChat(
+        api_key=_key(),
+        session_id=session_id,
+        system_message=system_message,
+    ).with_model(MODEL_PROVIDER, MODEL_NAME)
+
+
+async def _track_usage(tenant_id: str, request_id: str, latency_ms: int, ok: bool):
+    """Mirrors ai_agents._track_usage. Best-effort -- a write failure
+    here must not block the export response."""
+    try:
+        db = get_db()
+        await db.ai_usage_tracking.insert_one({
+            "id": gen_id(),
+            "tenant_id": tenant_id,
+            "request_id": request_id,
+            "service": MODEL_PROVIDER,
+            "model": MODEL_NAME,
+            "feature": "dr_template_export",
+            "latency_ms": latency_ms,
+            "ok": ok,
+            "created_at": utc_now().isoformat(),
+        })
+    except Exception:
+        pass
+
+
+# ---- JSON-object parser (analogous to ai_agents._parse_json_array) ----
+def _parse_json_object(text: str) -> dict:
+    """Strip optional code fences, locate the outer { ... }, json.loads.
+    Returns {} if parsing fails -- the caller treats that as a hard
+    failure (raises DrTemplateExportError)."""
+    if not text:
+        return {}
+    cleaned = re.sub(
+        r"^```(?:json)?\s*|\s*```$",
+        "",
+        text.strip(),
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    try:
+        obj = json.loads(cleaned[start:end + 1])
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    return {}
+
+
+# ---- Date helpers (preserved from prior engine) -----------------------
 def _format_date_mmddyyyy(d) -> str:
     if not d:
         return ""
@@ -82,145 +136,319 @@ def _day_of_week(d) -> str:
         return ""
 
 
-def _build_value_map(*, dr: dict, project: dict, signer_name: str) -> dict:
-    """One source of truth for both token replacement (pass 1) and
-    heuristic label fill (pass 2). Keys match the documented token
-    names (sans {{ }})."""
-    p = project or {}
-    return {
-        "client_name": p.get("client_name") or "",
-        "station": p.get("station_id") or "",
-        "project_title": p.get("name") or "",
-        "contract_number": p.get("contract_number") or "",
-        "contractor_name": p.get("contractor_name") or "",
-        "date": _format_date_mmddyyyy(dr.get("report_date")),
-        "day_of_week": _day_of_week(dr.get("report_date")),
-        "weather": dr.get("weather_conditions") or "",
-        "temp_high": dr.get("weather_temp_high_f") or "",
-        "temp_low": dr.get("weather_temp_low_f") or "",
-        "precipitation": dr.get("weather_precipitation_in") or "",
-        "signature": signer_name or "",
-        "notes": dr.get("notes") or "",
-    }
-
-
 def _is_writable(cell) -> bool:
     """Never overwrite a formula cell."""
     return getattr(cell, "data_type", None) != "f"
 
 
-def _label_lookup(text: str) -> str | None:
-    """Returns the value-map key a label cell points at, or None."""
-    s = (text or "").strip().lower().rstrip(":").rstrip("*").strip()
-    if not s:
-        return None
-    for label, field in _LABEL_MAP:
-        if label in s:
-            return field
-    return None
+# ---- Template snapshot -----------------------------------------------
+def _extract_template_snapshot(wb) -> dict:
+    """Walk every worksheet and capture every non-empty cell as
+    {address, row, col, value, is_formula}. The AI uses this list to
+    locate label cells and infer where the empty value cell sits."""
+    sheets: dict[str, dict] = {}
+    for ws in wb.worksheets:
+        cells: list[dict] = []
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value is None:
+                    continue
+                v = cell.value
+                if isinstance(v, str) and not v.strip():
+                    continue
+                # Truncate huge values so we don't blow the context.
+                if isinstance(v, str) and len(v) > 200:
+                    v = v[:200] + "..."
+                cells.append({
+                    "address": cell.coordinate,
+                    "row": cell.row,
+                    "col": cell.column,
+                    "value": v,
+                    "is_formula": cell.data_type == "f",
+                })
+        sheets[ws.title] = {
+            "max_row": ws.max_row or 0,
+            "max_col": ws.max_column or 0,
+            "non_empty_cells": cells,
+        }
+    return sheets
 
 
-def inject_dr_into_template(
+# ---- DR data snapshot ------------------------------------------------
+def _build_dr_snapshot(
+    *,
+    dr: dict,
+    project: dict,
+    activities: list[dict],
+    presence: list[dict],
+    delays: list[dict],
+    signer_name: str,
+) -> dict:
+    """Compact structured payload the AI consumes. Strips internal-only
+    fields (tenant_id, audit hashes, _id, etc.) and renames a few keys
+    so the AI doesn't have to learn our internal vocabulary."""
+    p = project or {}
+    dr = dr or {}
+
+    def _act(a: dict) -> dict:
+        return {
+            "trade_code": a.get("trade_code"),
+            "activity_code": a.get("activity_code"),
+            "description": a.get("activity_description"),
+            "headcount": a.get("crew_count"),
+            "hours_worked": a.get("hours_worked"),
+            "pct_complete_start": a.get("pct_complete_start_of_day"),
+            "pct_complete_end": a.get("pct_complete_end_of_day"),
+            "delay_minutes": a.get("delay_minutes"),
+            "notes": a.get("notes"),
+        }
+
+    def _pres(p_row: dict) -> dict:
+        hpc = p_row.get("hours_per_person") or 0
+        hc = p_row.get("headcount") or 0
+        return {
+            "trade": p_row.get("trade"),
+            "company": p_row.get("company_name") or p_row.get("sub_name"),
+            "headcount": hc,
+            "hours_per_person": hpc,
+            "total_hours": p_row.get("total_hours") or (hc * hpc),
+        }
+
+    def _delay(d_row: dict) -> dict:
+        return {
+            "reason": d_row.get("delay_reason") or d_row.get("category"),
+            "minutes_lost": d_row.get("minutes_lost"),
+            "description": d_row.get("description"),
+            "linked_activity_codes": d_row.get("affected_activity_codes"),
+        }
+
+    return {
+        "report_date": _format_date_mmddyyyy(dr.get("report_date")),
+        "day_of_week": _day_of_week(dr.get("report_date")),
+        "status": dr.get("status"),
+        "is_no_work_day": bool(dr.get("is_no_work_day")),
+        "no_work_reason": dr.get("no_work_reason"),
+        "no_work_note": dr.get("no_work_note"),
+        "signer_name": signer_name or "",
+        "project": {
+            "name": p.get("name"),
+            "client_name": p.get("client_name"),
+            "station_id": p.get("station_id"),
+            "contract_number": p.get("contract_number"),
+            "contractor_name": p.get("contractor_name"),
+            "owner_name": p.get("owner_name"),
+            "address_line1": p.get("address_line1"),
+            "city": p.get("city"),
+            "state": p.get("state"),
+            "postal_code": p.get("postal_code"),
+            "project_type": p.get("project_type"),
+        },
+        "weather": {
+            "conditions": dr.get("weather_conditions"),
+            "temp_high_f": dr.get("weather_temp_high_f"),
+            "temp_low_f": dr.get("weather_temp_low_f"),
+            "precipitation_in": dr.get("weather_precipitation_in"),
+            "wind_speed_mph": dr.get("weather_wind_speed_mph"),
+        },
+        "activities": [_act(a) for a in (activities or [])],
+        "crew_presence": [_pres(pr) for pr in (presence or [])],
+        "delays": [_delay(d) for d in (delays or [])],
+        "notes": dr.get("notes"),
+    }
+
+
+# ---- System prompt ---------------------------------------------------
+SYSTEM_PROMPT = """You are a semantic data-mapping engine for federal-construction daily-report
+exports inside ICE Schedule Ops.
+
+You receive two structured payloads on every call:
+
+1. TEMPLATE — a CLIENT'S blank daily-report xlsx template, given per worksheet as a list
+   of every non-empty cell with:
+      - address (Excel A1 notation, e.g. "B5")
+      - row, col (1-indexed)
+      - value (the text the cell currently holds — usually a LABEL like "Date:",
+        "Contractor:", section headers, or table headers like "Trade", "Description",
+        "Crew", "Hours")
+      - is_formula (true means the cell holds a formula -- you MUST NOT target it)
+
+2. DR DATA — our internal Daily Report payload (project header, date, weather, signer,
+   list of work activities, crew presence rows, delays, notes).
+
+YOUR JOB
+--------
+Produce a JSON object that maps Excel cell addresses to the values that should be
+written there, so the filled template represents the same daily report in the
+CLIENT'S own format. The key insight is that the client's template uses its own
+labels and layout; you must map by MEANING, not by literal text.
+
+Output shape (one entry per worksheet that needs writes):
+    { "<sheet_name>": { "<cell_address>": <value>, "<cell_address>": <value>, ... } }
+
+RULES
+-----
+1. Match labels to data by SEMANTIC meaning, not literal text. Equivalents include:
+     "Owner" / "GC" / "Prime Contractor" / "General Contractor" / "Contractor"
+        -> our project.contractor_name
+     "Project No." / "Job No." / "Contract Number" / "Contract #" / "Project #"
+        -> our project.contract_number
+     "Client" / "Customer" / "End User" / "Agency"
+        -> our project.client_name
+     "Station" / "Facility" / "Site ID" / "Location Code" / "Bldg #"
+        -> our project.station_id
+     "Project Name" / "Project Title" / "Site"
+        -> our project.name
+     "Address" / "Site Address" / "Location"
+        -> our project.address_line1 (+ city/state/postal as separate cells if
+           the template lays them out individually)
+     "Signed by" / "Submitted by" / "Foreman" / "Prepared by" / "Signature" / "Name"
+        -> our signer_name
+     "Date" / "Report Date" / "Day Of"
+        -> our report_date (MM/DD/YYYY)
+     "Day" / "Day of Week"
+        -> our day_of_week (full weekday name like "Wednesday")
+     "Weather" / "Conditions" / "Sky"
+        -> our weather.conditions
+     "Hi" / "High" / "Max Temp" / "Temp High"
+        -> our weather.temp_high_f (number)
+     "Lo" / "Low" / "Min Temp" / "Temp Low"
+        -> our weather.temp_low_f (number)
+     "Precip" / "Precipitation" / "Rainfall"
+        -> our weather.precipitation_in (number)
+     "Wind"
+        -> our weather.wind_speed_mph (number)
+     "Notes" / "Remarks" / "Comments" / "Description of Work" / "Daily Narrative"
+        -> our notes (full string -- one cell, even if long)
+     "Status" / "Report Status"
+        -> our status
+
+2. CELL ADDRESS to return — usually the EMPTY cell IMMEDIATELY TO THE RIGHT OF a
+   label cell, OR DIRECTLY BELOW a label cell. Some templates layout labels with the
+   value on the same row, others stack value-below-label. Use surrounding cells to
+   judge. NEVER return a label-cell address (you would overwrite the label).
+
+3. ACTIVITY TABLES — detect the table by spotting a row that contains multiple
+   adjacent header labels like "Trade", "Description", "Crew", "Hours",
+   "% Complete", "Delay". Once detected, fill our activities into the rows BELOW
+   the header, one activity per row, mapping our fields to the right column by
+   matching the header label semantically. Stop after our activities list is
+   exhausted. Do not invent placeholder rows.
+
+4. CREW PRESENCE TABLES — many federal templates have a separate "Crew" or
+   "Manpower" table (often columns: Trade, Company, Headcount, Hours). If you see
+   one, fill it from crew_presence the same way you fill the activity table.
+
+5. DELAYS section — if the template has a delays/incidents block, fill it from
+   our delays list. If not, IGNORE delays — do not invent rows.
+
+6. OMIT what doesn't apply:
+     - If a template label has NO corresponding data in our DR, OMIT that cell.
+       Do not invent values. Do not echo the label as the value.
+     - If our DR has a field with NO corresponding cell in the template, OMIT it.
+       Not every DR field belongs in every client's template.
+     - Do NOT fabricate, summarize, paraphrase, or translate values. Use the
+       value from our DR data as-is.
+
+7. TYPING:
+     - Dates: MM/DD/YYYY string.
+     - Day-of-week: full weekday name string.
+     - Numbers: emit as JSON numbers, not strings (e.g. 72, not "72").
+     - Booleans: emit "Yes" / "No" strings if the cell looks like a checkbox column;
+       emit JSON booleans only if the existing header obviously expects a boolean.
+     - null / missing: OMIT the cell entirely (do not write "" or null).
+
+8. NEVER target a cell whose is_formula is true.
+
+9. OUTPUT FORMAT (STRICT):
+     - Return ONE valid JSON object.
+     - Top-level keys are sheet names. Each value is itself an object whose keys
+       are cell addresses and whose values are the values to write.
+     - NO markdown, NO code fences, NO prose, NO trailing commas, NO comments.
+
+If you cannot map a single cell with reasonable semantic confidence, return an empty
+object: {}
+"""
+
+
+# ---- Public API ------------------------------------------------------
+async def inject_dr_into_template(
     template_bytes: bytes,
     *,
     dr: dict,
     project: dict,
     activities: list[dict],
+    presence: Optional[list[dict]] = None,
+    delays: Optional[list[dict]] = None,
     signer_name: str,
+    tenant_id: str,
+    request_id: str,
 ) -> bytes:
-    """Fill `template_bytes` (an .xlsx) with DR + project data and
-    return the filled workbook as bytes. Best-effort -- cells that
-    can't be mapped are left as-is; the export never errors on a
-    template-content mismatch."""
+    """Fill `template_bytes` (an .xlsx) with DR + project data using the
+    AI mapping engine and return the filled workbook as bytes.
+
+    Raises DrTemplateExportError if the AI call fails or returns
+    something we can't parse. Callers must surface the error to the
+    user -- there is NO fallback to the heuristic engine.
+    """
     from openpyxl import load_workbook
 
-    values = _build_value_map(dr=dr, project=project, signer_name=signer_name)
     wb = load_workbook(BytesIO(template_bytes))
+    template_snapshot = _extract_template_snapshot(wb)
+    dr_snapshot = _build_dr_snapshot(
+        dr=dr, project=project, activities=activities,
+        presence=presence or [], delays=delays or [],
+        signer_name=signer_name,
+    )
 
-    for ws in wb.worksheets:
-        # ---- Pass 1: token replacement ------------------------------
-        # We also record the cell that held {{activities}} (if any)
-        # so Pass 3 can target it as the activity-table anchor.
-        activities_anchor: tuple[int, int] | None = None
-        for row in ws.iter_rows():
-            for cell in row:
-                if not _is_writable(cell):
-                    continue
-                v = cell.value
-                if not isinstance(v, str) or "{{" not in v:
-                    continue
-                if "{{activities}}" in v:
-                    activities_anchor = (cell.row, cell.column)
-                    v = v.replace("{{activities}}", "").strip()
-                    cell.value = v if v else None
-                    if not v:
-                        continue
-                new_v = v
-                for key, val in values.items():
-                    new_v = new_v.replace("{{" + key + "}}", str(val))
-                if new_v != cell.value:
-                    cell.value = new_v
+    user_text = (
+        "TEMPLATE (per-worksheet, only non-empty cells listed):\n"
+        f"{json.dumps(template_snapshot, default=str, indent=2)}\n\n"
+        "DR DATA:\n"
+        f"{json.dumps(dr_snapshot, default=str, indent=2)}\n\n"
+        "Return the JSON object now. Remember: shape is "
+        "{ \"<sheet_name>\": { \"<cell_address>\": <value>, ... }, ... }. "
+        "No prose, no fences."
+    )
 
-        # ---- Pass 2: heuristic label fill ---------------------------
-        # For each cell that LOOKS like a label, fill the cell to its
-        # immediate right -- only if empty + writable. Runs after
-        # token replacement so a label cell whose template already had
-        # a token next to it isn't double-filled.
-        max_col = ws.max_column or 1
-        for row in ws.iter_rows():
-            for cell in row:
-                if cell.column >= max_col:
-                    continue
-                if not isinstance(cell.value, str):
-                    continue
-                field = _label_lookup(cell.value)
-                if not field:
-                    continue
-                neighbor = ws.cell(row=cell.row, column=cell.column + 1)
-                if not _is_writable(neighbor):
-                    continue
-                if neighbor.value not in (None, ""):
-                    continue
-                v = values.get(field, "")
-                if v not in (None, ""):
-                    neighbor.value = v
+    started = datetime.now(timezone.utc)
+    try:
+        chat = _new_chat(f"dr-template-{request_id}", SYSTEM_PROMPT)
+        resp = await chat.send_message(UserMessage(text=user_text))
+    except Exception as e:
+        latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        await _track_usage(tenant_id, request_id, latency_ms, ok=False)
+        raise DrTemplateExportError(
+            f"AI mapping engine unavailable: {e}"
+        ) from e
 
-        # ---- Pass 3: activities table ------------------------------
-        anchor_row: int | None = None
-        anchor_col: int | None = None
-        if activities_anchor:
-            anchor_row, anchor_col = activities_anchor
-        else:
-            for row in ws.iter_rows():
-                cells = list(row)
-                for i in range(len(cells) - 1):
-                    a, b = cells[i], cells[i + 1]
-                    if (isinstance(a.value, str) and a.value
-                            and isinstance(b.value, str) and b.value):
-                        anchor_row = a.row + 1   # row BELOW header
-                        anchor_col = a.column
-                        break
-                if anchor_row:
-                    break
+    latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    mapping = _parse_json_object(resp if isinstance(resp, str) else str(resp))
+    await _track_usage(tenant_id, request_id, latency_ms, ok=bool(mapping))
 
-        if anchor_row and anchor_col and activities:
-            for i, act in enumerate(activities[:20]):
-                vals = [
-                    act.get("trade_code") or "",
-                    act.get("crew_count") or "",
-                    act.get("activity_description") or "",
-                ]
-                for col_offset, v in enumerate(vals):
-                    target = ws.cell(
-                        row=anchor_row + i, column=anchor_col + col_offset,
-                    )
-                    if not _is_writable(target):
-                        continue
-                    # Don't overwrite a cell that already has content
-                    # (e.g. an example / legend row from the template).
-                    if target.value not in (None, ""):
-                        continue
-                    target.value = v
+    if not mapping:
+        raise DrTemplateExportError(
+            "AI mapping engine returned no cells. The template may not "
+            "match a recognizable daily-report layout, or the response "
+            "could not be parsed."
+        )
+
+    # Apply the mapping back to the workbook. Skip formula cells and
+    # any address that doesn't exist on the target worksheet.
+    sheet_index = {ws.title: ws for ws in wb.worksheets}
+    for sheet_name, cells in mapping.items():
+        ws = sheet_index.get(sheet_name)
+        if ws is None or not isinstance(cells, dict):
+            continue
+        for addr, value in cells.items():
+            if value is None:
+                continue
+            try:
+                cell = ws[addr]
+            except Exception:
+                continue
+            if not _is_writable(cell):
+                continue
+            cell.value = value
 
     out = BytesIO()
     wb.save(out)
