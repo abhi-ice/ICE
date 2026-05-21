@@ -223,19 +223,23 @@ def _build_dr_snapshot(
         }
 
     return {
+        # The five core formal-header fields are hoisted to top-level
+        # so the AI can map them into a client template's header block
+        # without traversing nested paths. The richer `project` block
+        # below carries the secondary fields (address, owner, type).
+        "project_name": p.get("name"),
+        "client_name": p.get("client_name"),
+        "station_id": p.get("station_id"),
+        "contract_number": p.get("contract_number"),
+        "contractor_name": p.get("contractor_name"),
+        "signer_name": signer_name or "",
         "report_date": _format_date_mmddyyyy(dr.get("report_date")),
         "day_of_week": _day_of_week(dr.get("report_date")),
         "status": dr.get("status"),
         "is_no_work_day": bool(dr.get("is_no_work_day")),
         "no_work_reason": dr.get("no_work_reason"),
         "no_work_note": dr.get("no_work_note"),
-        "signer_name": signer_name or "",
         "project": {
-            "name": p.get("name"),
-            "client_name": p.get("client_name"),
-            "station_id": p.get("station_id"),
-            "contract_number": p.get("contract_number"),
-            "contractor_name": p.get("contractor_name"),
             "owner_name": p.get("owner_name"),
             "address_line1": p.get("address_line1"),
             "city": p.get("city"),
@@ -289,18 +293,19 @@ RULES
 -----
 1. Match labels to data by SEMANTIC meaning, not literal text. Equivalents include:
      "Owner" / "GC" / "Prime Contractor" / "General Contractor" / "Contractor"
-        -> our project.contractor_name
+        -> our contractor_name  (top-level)
      "Project No." / "Job No." / "Contract Number" / "Contract #" / "Project #"
-        -> our project.contract_number
+        -> our contract_number  (top-level)
      "Client" / "Customer" / "End User" / "Agency"
-        -> our project.client_name
+        -> our client_name  (top-level)
      "Station" / "Facility" / "Site ID" / "Location Code" / "Bldg #"
-        -> our project.station_id
+        -> our station_id  (top-level)
      "Project Name" / "Project Title" / "Site"
-        -> our project.name
+        -> our project_name  (top-level)
      "Address" / "Site Address" / "Location"
-        -> our project.address_line1 (+ city/state/postal as separate cells if
-           the template lays them out individually)
+        -> our project.address_line1 (+ project.city / project.state /
+           project.postal_code as separate cells if the template lays
+           them out individually)
      "Signed by" / "Submitted by" / "Foreman" / "Prepared by" / "Signature" / "Name"
         -> our signer_name
      "Date" / "Report Date" / "Day Of"
@@ -431,6 +436,31 @@ async def inject_dr_into_template(
             "match a recognizable daily-report layout, or the response "
             "could not be parsed."
         )
+
+    # 2026-05-20 -- blank out EVERY non-formula cell before applying
+    # the AI's mapping. The AI returns mappings only for cells it has
+    # data for; without this step any prefilled values still in the
+    # template (sample data from the original document, leftover from a
+    # prior fill, vendor-specific placeholders) would leak into the
+    # output for cells the AI didn't touch. Formula cells are preserved
+    # (data_type == 'f'), and merged-cell secondaries are skipped via
+    # try/except since only the merge anchor is writable.
+    from openpyxl.cell.cell import MergedCell as _MergedCell
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell, _MergedCell):
+                    continue
+                if not _is_writable(cell):
+                    continue
+                if cell.value is None:
+                    continue
+                try:
+                    cell.value = None
+                except (AttributeError, TypeError):
+                    # Defensive -- some openpyxl cell subclasses
+                    # reject value assignment; skip rather than abort.
+                    continue
 
     # Apply the mapping back to the workbook. Skip formula cells and
     # any address that doesn't exist on the target worksheet.
