@@ -1947,11 +1947,20 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
 
     return {
         "report": dr,
+        # Feature DR Header Auto-Population (2026-05-20) -- the project
+        # sub-dict must also surface the four fields read by
+        # DrAutoHeader (client_name, station_id, contract_number,
+        # contractor_name). Without these the header rendered as
+        # em-dashes regardless of what was set on the project record.
         "project": {"id": proj.get("id"), "name": proj.get("name"),
                     "project_type": proj.get("project_type"),
                     "address_line1": proj.get("address_line1"),
                     "city": proj.get("city"), "state": proj.get("state"),
-                    "em_385_required": proj.get("em_385_required")},
+                    "em_385_required": proj.get("em_385_required"),
+                    "client_name": proj.get("client_name"),
+                    "station_id": proj.get("station_id"),
+                    "contract_number": proj.get("contract_number"),
+                    "contractor_name": proj.get("contractor_name")},
         "grid": grid, "presence": presence, "photos": photos,
         "voice_annotations": voice, "delays": delays,
         "safety_events": safety, "qc_issues": qc, "rfis": rfis,
