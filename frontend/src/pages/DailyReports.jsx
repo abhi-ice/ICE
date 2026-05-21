@@ -684,6 +684,10 @@ function DailyReportDetail({ id, onBack }) {
       <Header report={report} project={project} userLabels={user_labels}
               ppc={ppc} totalHours={totalHours}
               totalHeadcount={totalHeadcount} totalCrewHours={totalCrewHours}
+              delaysCount={(delays || []).length}
+              rfisCount={(rfis || []).length}
+              safetyCount={(safety_events || []).length}
+              qcCount={(qc_issues || []).length}
               locked={locked}
               onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
               busy={busy} validate={validate}
@@ -865,26 +869,32 @@ function StatusPill({ status }) {
 }
 
 function Header({ report, project, userLabels, ppc, totalHours,
-                  totalHeadcount, totalCrewHours, locked, onBack, onSubmit,
+                  totalHeadcount, totalCrewHours,
+                  delaysCount = 0, rfisCount = 0, safetyCount = 0, qcCount = 0,
+                  locked, onBack, onSubmit,
                   onApprove, onDownload, busy, validate, onQuickLogCoordination,
                   templateMeta, exportingClient, onDownloadClientTemplate }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
-      <div className="flex flex-wrap items-center gap-4">
-        <button onClick={onBack} className="text-sm text-blue-600 hover:underline flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-3">
+        <button onClick={onBack} className="text-sm text-blue-600 hover:underline flex items-center gap-1 shrink-0">
           <ChevronLeft className="h-4 w-4" /> Back
         </button>
-        {/* 2026-05-20 -- the project / date / status / trail block was
-            removed from this header; the date and project context live
-            in the DrAutoHeader block below, and the formal status pill
-            is surfaced alongside the action buttons. The KPI row now
-            spans the full width of the header bar. */}
-        <div className="ml-auto flex flex-wrap gap-3">
+        {/* 2026-05-21 -- KPI row now spans the full width via a grid
+            (4 cols mobile, 8 cols md+). Operational stats on the left
+            (PPC / Headcount / Crew hours / Activity hrs); event-count
+            stats on the right (Delays / RFIs / Safety / QC). Same KPI
+            tile so the row reads as a single stat band. */}
+        <div className="flex-1 min-w-0 grid grid-cols-4 md:grid-cols-8 gap-2">
           <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
           <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
           <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
           <KPI label="Activity hrs" value={totalHours.toFixed(1)} testid="kpi-activity-hours" />
+          <KPI label="Delays" value={delaysCount} testid="kpi-delays" />
+          <KPI label="RFIs" value={rfisCount} testid="kpi-rfis" />
+          <KPI label="Safety" value={safetyCount} testid="kpi-safety" />
+          <KPI label="QC" value={qcCount} testid="kpi-qc" />
         </div>
       </div>
 
@@ -990,9 +1000,9 @@ function DrAutoHeader({ project, currentUserName }) {
 
 function KPI({ label, value, testid }) {
   return (
-    <div className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded text-center min-w-[80px]" data-testid={testid}>
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
-      <div className="font-semibold tabular-nums">{value}</div>
+    <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded text-center w-full" data-testid={testid}>
+      <div className="text-[11px] text-slate-500 uppercase tracking-wide truncate">{label}</div>
+      <div className="font-semibold tabular-nums text-base leading-tight">{value}</div>
     </div>
   );
 }
