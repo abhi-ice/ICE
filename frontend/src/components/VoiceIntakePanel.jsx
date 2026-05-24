@@ -700,7 +700,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   };
   const stopLive = async () => {
     // Flush any in-progress turn so the last spoken bits are captured.
-    _flushTurn();
+    _commitTurns();
     try { liveWsRef.current?.close(); } catch { /* ignore */ }
     try { liveAudioCtxRef.current?.close(); } catch { /* ignore */ }
     try { livePlaybackCtxRef.current?.close(); } catch { /* ignore */ }
