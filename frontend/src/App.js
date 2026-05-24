@@ -2,6 +2,7 @@ import { Routes, Route, BrowserRouter, Navigate } from "react-router-dom";
 import { Toaster } from "./components/ui/sonner";
 import { isAuthenticated } from "./lib/auth";
 import AppLayout from "./components/AppLayout";
+import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import AcceptInvite from "./pages/AcceptInvite";
@@ -54,7 +55,10 @@ import ProjectAccess from "./pages/ProjectAccess";
 import "./App.css";
 
 function Guard({ children }) {
-  if (!isAuthenticated()) return <Navigate to="/login" replace />;
+  // 2026-05-24 -- public landing now lives at /landing; unauthenticated
+  // users land there first, with explicit "Sign in" CTAs that route to
+  // /login. Keeps the login screen focused on the auth form.
+  if (!isAuthenticated()) return <Navigate to="/landing" replace />;
   return children;
 }
 
@@ -64,6 +68,10 @@ export default function App() {
       <Toaster />
       <BrowserRouter>
         <Routes>
+          {/* Public landing page (2026-05-24) -- holds the marketing
+              pitch that used to sit beneath the Login card. Now the
+              first page an unauthenticated user lands on. */}
+          <Route path="/landing" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />

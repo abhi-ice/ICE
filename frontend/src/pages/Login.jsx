@@ -30,14 +30,23 @@ export default function Login() {
     <div className="min-h-screen login-bg flex flex-col relative" data-testid="login-page">
       <Toaster />
 
-      {/* Top-left logo lockup -- standard placement on every modern SaaS site. */}
-      <header className="relative z-10 px-6 py-5 lg:px-10 lg:py-6">
-        <div className="flex items-center gap-2 text-white" data-testid="login-logo">
-          <div className="h-9 w-9 rounded grid place-items-center bg-blue-600">
+      {/* Top-left logo lockup -- standard placement on every modern SaaS site.
+          Clicking the brand returns to the public landing page (which holds
+          the product pitch + feature chips that used to sit below this card). */}
+      <header className="relative z-10 px-6 py-5 lg:px-10 lg:py-6 flex items-center justify-between">
+        <Link to="/landing" className="flex items-center gap-2 text-white" data-testid="login-logo">
+          <div className="h-9 w-9 rounded grid place-items-center bg-[#ef233c]">
             <Layers className="h-5 w-5" strokeWidth={1.6} />
           </div>
           <div className="font-semibold tracking-tight text-base">ICE Schedule Ops</div>
-        </div>
+        </Link>
+        <Link
+          to="/landing"
+          data-testid="login-back-landing"
+          className="text-xs text-white/70 hover:text-white"
+        >
+          ← Back to home
+        </Link>
       </header>
 
       {/* Centered sign-in card. flex-1 + items-center + justify-center keeps it
@@ -117,43 +126,14 @@ export default function Login() {
         </div>
       </main>
 
-      {/* Marketing strip BELOW the card -- pitch + capability pills + footer
-          copyright. Stays out of the way of the auth flow but is visible on
-          first paint so visitors know what this product is. */}
-      <section
-        className="relative z-10 px-6 pb-10 lg:px-10 text-white"
-        data-testid="login-marketing"
+      {/* Marketing pitch + feature chips moved to /landing (2026-05-24).
+          Login page kept clean per spec. */}
+      <footer
+        data-testid="login-footer"
+        className="relative z-10 px-6 pb-6 lg:px-10 text-center text-xs text-slate-300/80"
       >
-        <div className="max-w-3xl mx-auto text-center space-y-4">
-          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight leading-tight">
-            The operating system for federal construction.
-          </h2>
-          <p className="text-sm text-slate-200 leading-relaxed">
-            Schedules, daily reports, RFIs, drawings, specs, photos, and AI
-            agents — one tenant-isolated platform built for GSA, NYCHA, USMS,
-            and other federal contracts.
-          </p>
-          <div className="flex flex-wrap gap-2 justify-center pt-1">
-            {[
-              "Multi-tenant",
-              "NIST 800-171",
-              "Audit-immutable",
-              "AI Copilot",
-              "Activity-driven daily reports",
-            ].map((t) => (
-              <span
-                key={t}
-                className="text-xs px-2.5 py-1 rounded bg-white/10 border border-white/15"
-              >
-                {t}
-              </span>
-            ))}
-          </div>
-          <div className="text-xs text-slate-400 pt-3">
-            © {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.
-          </div>
-        </div>
-      </section>
+        © {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.
+      </footer>
     </div>
   );
 }
