@@ -232,10 +232,7 @@ export default function DailyReports() {
     <div data-testid="daily-reports-page" className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Daily reports</h1>
-          <p className="text-sm text-muted-foreground">
-            One page per day — weather, crew presence, activities, events, photos, voice. Copilot is scoped to the open report.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight">Daily reports</h1>
         </div>
         <div className="flex items-center gap-2">
           {/* Feature Client DR Template Export (2026-05-20) -- visible
@@ -977,10 +974,9 @@ function DrAutoHeader({ project, currentUserName }) {
     { label: "Signature",       value: currentUserName,          testid: "dr-hdr-signature" },
   ];
   return (
-    <div className="surface p-4" data-testid="dr-auto-header">
-      <div className="text-xs uppercase tracking-wide text-slate-500 mb-2 flex items-center gap-2">
-        <span className="font-semibold">Project / Contract Information</span>
-        <span className="text-slate-400 normal-case font-normal">— auto-populated, read-only</span>
+    <div className="surface p-5" data-testid="dr-auto-header">
+      <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 mb-3 font-semibold">
+        Project / Contract Information
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-2">
         {fields.map((f) => (
@@ -1009,11 +1005,15 @@ function KPI({ label, value, testid }) {
 
 function PanelShell({ icon: Icon, title, count, testid, children, badge }) {
   return (
-    <div data-testid={testid} className="surface p-4">
-      <div className="flex items-center gap-2 mb-3">
-        <Icon className="h-4 w-4 text-slate-500" />
-        <div className="font-medium text-sm">{title}</div>
-        {typeof count === "number" && <span className="text-xs text-slate-500">({count})</span>}
+    <div data-testid={testid} className="surface p-5">
+      <div className="flex items-center gap-2 mb-4 pb-3 border-b border-white/[0.06]">
+        <Icon className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
+        <div className="font-semibold text-sm tracking-tight text-foreground">{title}</div>
+        {typeof count === "number" && (
+          <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-white/[0.06] text-white/60 ml-1">
+            {count}
+          </span>
+        )}
         {badge}
       </div>
       {children}

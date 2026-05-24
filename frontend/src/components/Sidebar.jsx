@@ -167,10 +167,12 @@ export default function Sidebar() {
                 <button
                   onClick={() => toggle(section.title)}
                   data-testid={`sidebar-section-${section.title.replace(/\s+/g, '-').toLowerCase()}`}
-                  className="w-full flex items-center gap-1 px-4 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
+                  className="w-full flex items-center gap-1.5 px-4 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
                 >
-                  {isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                  <span className="text-xs font-semibold uppercase tracking-[0.13em]">{section.title}</span>
+                  {isCollapsed
+                    ? <ChevronRight className="h-3 w-3 shrink-0" />
+                    : <ChevronDown  className="h-3 w-3 shrink-0" />}
+                  <span className="text-xs font-semibold uppercase tracking-[0.12em] min-w-0 truncate">{section.title}</span>
                 </button>
               )}
               {rail && (

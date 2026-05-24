@@ -4,7 +4,7 @@ import { getUser, getTenant, clearAuth } from "../lib/auth";
 import { useProjects } from "../lib/projects";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuSeparator, DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -13,11 +13,9 @@ import api from "../lib/api";
 import NotificationsBell from "./NotificationsBell";
 import GlobalSearch from "./GlobalSearch";
 
-// TopBar (2026-05-24 rev 2) — quieter, denser, closer to modern SaaS
-// (Linear / Notion / Vercel) than the previous "Tenant: [...]
-// Project: [...]" inline-labelled layout. Selectors are unlabelled,
-// the avatar block is compact (initials + chevron, name shows on
-// click), and the whole bar is 48px tall instead of 56px.
+// TopBar (2026-05-24 rev 3) — 56px height, larger search field + avatar.
+// Profile dropdown given a proper structured header card with the
+// avatar at top-left, name + email + role pill in a clean stack.
 export default function TopBar() {
   const [user] = useState(getUser());
   const [tenant] = useState(getTenant());
@@ -38,11 +36,10 @@ export default function TopBar() {
   return (
     <header
       data-testid="app-topbar"
-      className="h-12 border-b border-border bg-card flex items-center gap-2 px-4 sticky top-0 z-10"
+      className="h-14 border-b border-border bg-card flex items-center gap-2 px-4 sticky top-0 z-10"
     >
-      {/* Tenant + project selectors — unlabelled, compact */}
       <Select value={tenant?.id} onValueChange={() => {}}>
-        <SelectTrigger className="h-8 w-[150px] text-xs" data-testid="tenant-switcher">
+        <SelectTrigger className="h-9 w-[160px] text-sm" data-testid="tenant-switcher">
           <SelectValue placeholder="Tenant" />
         </SelectTrigger>
         <SelectContent>
@@ -53,7 +50,7 @@ export default function TopBar() {
       </Select>
 
       <Select value={activeId || ""} onValueChange={(v) => setActiveId(v)}>
-        <SelectTrigger className="h-8 w-[240px] text-xs" data-testid="project-switcher">
+        <SelectTrigger className="h-9 w-[260px] text-sm" data-testid="project-switcher">
           <SelectValue placeholder="Project" />
         </SelectTrigger>
         <SelectContent>
@@ -65,7 +62,7 @@ export default function TopBar() {
         </SelectContent>
       </Select>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-3">
         <GlobalSearch />
         <NotificationsBell />
 
@@ -73,34 +70,42 @@ export default function TopBar() {
           <DropdownMenuTrigger asChild>
             <button
               data-testid="topbar-user-menu"
-              className="flex items-center gap-2 h-8 pl-1 pr-2 rounded-md hover:bg-white/[0.06] transition-colors"
+              className="flex items-center gap-2 h-10 pl-1.5 pr-2.5 rounded-md hover:bg-white/[0.06] transition-colors"
               title={user?.full_name}
             >
-              <div className="h-7 w-7 rounded-full bg-[#10b981]/15 text-[#34d399] border border-[#10b981]/30 grid place-items-center text-[11px] font-semibold tracking-wide">
+              <div className="h-8 w-8 rounded-full bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30 grid place-items-center text-xs font-semibold tracking-wide">
                 {initials}
               </div>
-              <ChevronDown className="h-3 w-3 text-white/50" strokeWidth={2} />
+              <ChevronDown className="h-3.5 w-3.5 text-white/50" strokeWidth={2} />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-60">
-            <DropdownMenuLabel className="font-normal">
-              <div className="text-sm font-medium leading-tight">{user?.full_name}</div>
-              <div className="text-xs text-muted-foreground mt-0.5">{user?.email}</div>
-              {user?.role && (
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground/80 mt-1.5">
-                  {user.role}
-                </div>
-              )}
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem><User2 className="h-4 w-4 mr-2" /> Profile</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              data-testid="logout-button"
-              onClick={() => { clearAuth(); window.location.href = "/login"; }}
-            >
-              <LogOut className="h-4 w-4 mr-2" /> Sign out
-            </DropdownMenuItem>
+          <DropdownMenuContent align="end" className="w-72 p-0">
+            {/* Profile card header */}
+            <div className="px-4 pt-4 pb-3 flex items-start gap-3">
+              <div className="h-10 w-10 rounded-full bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30 grid place-items-center text-sm font-semibold tracking-wide flex-shrink-0">
+                {initials}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-foreground truncate">{user?.full_name}</div>
+                <div className="text-xs text-muted-foreground truncate mt-0.5">{user?.email}</div>
+                {user?.role && (
+                  <span className="inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30">
+                    {user.role}
+                  </span>
+                )}
+              </div>
+            </div>
+            <DropdownMenuSeparator className="my-0" />
+            <div className="p-1">
+              <DropdownMenuItem className="text-sm py-2"><User2 className="h-4 w-4 mr-2.5 opacity-70" /> Profile</DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="logout-button"
+                className="text-sm py-2"
+                onClick={() => { clearAuth(); window.location.href = "/login"; }}
+              >
+                <LogOut className="h-4 w-4 mr-2.5 opacity-70" /> Sign out
+              </DropdownMenuItem>
+            </div>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

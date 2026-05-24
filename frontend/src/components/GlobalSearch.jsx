@@ -37,15 +37,15 @@ export default function GlobalSearch() {
   };
 
   return (
-    <div ref={ref} className="relative w-72 hidden md:block">
-      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+    <div ref={ref} className="relative w-80 hidden md:block">
+      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
       <input
         data-testid="global-search-input"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onFocus={() => results.length && setOpen(true)}
         placeholder="Search projects, RFIs, activities..."
-        className="pl-7 pr-3 h-8 w-full rounded border border-input bg-background text-sm"
+        className="pl-9 pr-3 h-9 w-full rounded-md border border-input bg-background text-sm"
       />
       {open && results.length > 0 && (
         <div data-testid="topbar-search-results" className="absolute top-9 left-0 right-0 bg-white border border-slate-200 rounded shadow-lg z-30 max-h-80 overflow-y-auto">
