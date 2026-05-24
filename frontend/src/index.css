@@ -144,7 +144,20 @@ input, select, textarea {
             mask-image: radial-gradient(circle at center, black 35%, transparent 80%);
     z-index: 0;
 }
-.page-shell > * { position: relative; z-index: 1; }
+/* CRITICAL: do NOT set position:relative here -- it was overriding
+   position:fixed on the AI Copilot FAB and VoiceCaptureButton, which
+   are immediate children of .page-shell. They were getting yanked
+   into document flow at the top of the page. Just set the stacking
+   context via z-index on the pseudo-elements (they're at z-index: 0
+   already) -- siblings naturally render above them. */
+.page-shell > aside,
+.page-shell > div,
+.page-shell > main,
+.page-shell > header,
+.page-shell > nav {
+    position: relative;
+    z-index: 1;
+}
 
 /* Parallax starfield — two layers of pinprick stars drifting up.
    Pure box-shadow technique, no JS, GPU-friendly. The dots are 1-2px
@@ -870,5 +883,43 @@ select { color-scheme: dark; }
 /* Mobile foreman (separate /m/foreman layout) -- if it bypasses the
    main page-shell, ensure its body bg is still dark */
 body[data-page="mobile-foreman"] { background: #000 !important; }
+
+/* ============================================================
+   PHASE 12 — preview QA fixes (2026-05-24)
+   Bugs surfaced by clicking through the live Emergent preview.
+   ============================================================ */
+
+/* Bug: buttons in DR-list header (Upload DR Template / + New daily
+   report) wrap to 2 lines because at 18px body font-size + h-9
+   (36px) container, "Upload DR Template" exceeds inline width and
+   wraps. Default white-space: normal on buttons. Force nowrap on
+   all buttons globally so button labels never wrap their content. */
+button { white-space: nowrap; }
+
+/* Bug: table-cell text on .dense-table rows appears to have a
+   horizontal artifact through it (the submitted-time cell shows
+   what looks like a strikethrough). Cause: the 1px row border on
+   td renders at the same y-coordinate as a horizontal half-pixel
+   on certain timestamp glyphs. Use `box-shadow` for the row
+   divider instead of `border-bottom` to avoid the half-pixel
+   alignment artifact, and increase divider opacity slightly. */
+.dense-table td {
+    border-bottom: 0 !important;
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+}
+.dense-table tbody tr:last-child td {
+    box-shadow: none;
+}
+
+/* Bug: brand text "ICE Schedule Ops" in the sidebar gets truncated
+   to "ICE Schedule O..." even though there's space. The truncate
+   utility is applied unconditionally. Allow it to span 2 lines on
+   the rail-expanded state so the full brand reads. */
+[data-testid="app-sidebar"][data-collapsed="false"] .truncate.text-white {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.2;
+}
 
 /* Image rounded corners on photo cards stay; no theming needed */
