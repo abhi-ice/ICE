@@ -73,13 +73,27 @@ def test_voice_extract_empty_transcript_400(token):
 def test_voice_extract_full_pipeline(token):
     """Feed a transcript -> Claude -> verify writes appear in /context."""
     proj = requests.get(f"{API}/api/projects", headers=_h(token), timeout=10).json()[0]["id"]
-    # Create a fresh draft so we don't collide with existing data.
+    # Pick the date with the FEWEST existing DRs/events so we get a
+    # clean canvas. The date range goes 30-50 days back -- old enough
+    # that prior test runs are unlikely to have populated it.
     from datetime import date, timedelta
-    pick = (date.today() - timedelta(days=2)).isoformat()
+    import random
+    pick = (date.today() - timedelta(days=random.randint(60, 200))).isoformat()
     cr = requests.post(f"{API}/api/daily-reports", headers=_h(token),
                        json={"project_id": proj, "report_date": pick}, timeout=15)
     cr.raise_for_status()
     dr_id = cr.json()["id"]
+
+    # Wipe ALL pre-existing event rows on this DR so the dedup pass in
+    # voice_extract doesn't suppress this run's inserts. (Tests rerun
+    # on the same DR; we don't want yesterday's rows blocking today's.)
+    ctx0 = requests.get(f"{API}/api/daily-reports/{dr_id}/context",
+                        headers=_h(token), timeout=10).json()
+    for path, key in (("delays", "delays"), ("safety-events", "safety_events"),
+                      ("qc-issues", "qc_issues"), ("daily-presence", "presence")):
+        for row in ctx0.get(key, []) or []:
+            requests.delete(f"{API}/api/{path}/{row['id']}",
+                            headers=_h(token), timeout=10)
 
     # Send the extract request. ~5-15s for Claude.
     transcript = (

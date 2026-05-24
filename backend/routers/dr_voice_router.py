@@ -373,10 +373,28 @@ async def voice_extract(
             )
             applied["activity_updates"] += 1
 
-    # 3. Crew presence rows -- pure append; super reviews dups in UI.
+    # 3. Crew presence rows -- dedupe by (trade, company) so re-running
+    # the same recording (or a paraphrase) doesn't double the headcount.
+    existing_presence = await db.daily_presence.find(
+        {"daily_report_id": dr_id},
+        {"_id": 0, "trade": 1, "company_name": 1, "id": 1},
+    ).to_list(200)
+    presence_keys_seen = {
+        (str(p.get("trade") or "").upper(),
+         (p.get("company_name") or "").strip().lower())
+        for p in existing_presence
+    }
     for cp in (parsed.get("crew_presence") or []):
         if not isinstance(cp, dict) or not cp.get("trade_code"):
             continue
+        trade = str(cp["trade_code"])[:32].upper()
+        company = (cp.get("company_name") or "").strip().lower()
+        key = (trade, company)
+        if key in presence_keys_seen:
+            log.info("dr_voice: skipping duplicate presence row on dr=%s: %s/%s",
+                     dr_id, trade, company)
+            continue
+        presence_keys_seen.add(key)
         headcount = int(cp["headcount"]) if cp.get("headcount") else 0
         hours_per = float(cp["hours_per_person"]) if cp.get("hours_per_person") else 8.0
         await db.daily_presence.insert_one({
@@ -402,6 +420,53 @@ async def voice_extract(
     #    Each one needs linked_task_ids resolved from activity_codes.
     code_to_task = {g["activity_code"]: g.get("schedule_activity_id") for g in grid if g.get("activity_code")}
 
+    # Pre-fetch existing event descriptions on this DR so we can dedupe
+    # when the same recording is processed twice (network retry, user
+    # hits Stop twice, or Claude returns two delays that describe the
+    # same incident). Token-overlap >= 60% on the description text is
+    # treated as a duplicate and skipped.
+    def _norm_tokens(text: str) -> set:
+        STOP = {"the","a","of","in","on","and","is","are","was","were","to","for",
+                "with","at","by","an","that","this","it","be","not","no"}
+        return {t for t in (text or "").lower().replace(",", " ").replace(".", " ").split()
+                if t not in STOP and len(t) > 2}
+
+    def _is_duplicate(description: str, existing_descriptions: list[str]) -> bool:
+        new_tok = _norm_tokens(description)
+        if not new_tok:
+            return False
+        for d in existing_descriptions:
+            old_tok = _norm_tokens(d)
+            if not old_tok:
+                continue
+            overlap = len(new_tok & old_tok) / max(len(new_tok | old_tok), 1)
+            if overlap >= 0.6:
+                return True
+        return False
+
+    existing_delay_descs = [d["description"] for d in await db.delays.find(
+        {"daily_report_id": dr_id, "status": {"$ne": "deleted"}},
+        {"_id": 0, "description": 1}).to_list(200)
+        if d.get("description")]
+    existing_safety_descs = [d["description"] for d in await db.safety_events.find(
+        {"daily_report_id": dr_id, "status": {"$ne": "deleted"}},
+        {"_id": 0, "description": 1}).to_list(200)
+        if d.get("description")]
+    existing_qc_descs = [d["description"] for d in await db.qc_issues.find(
+        {"daily_report_id": dr_id, "status": {"$ne": "deleted"}},
+        {"_id": 0, "description": 1}).to_list(200)
+        if d.get("description")]
+    existing_delivery_descs = [d["description"] for d in await db.deliveries.find(
+        {"daily_report_id": dr_id},
+        {"_id": 0, "description": 1}).to_list(200)
+        if d.get("description")]
+    existing_coord_descs = [d["description"] for d in await db.coordination_events.find(
+        {"daily_report_id": dr_id},
+        {"_id": 0, "description": 1}).to_list(200)
+        if d.get("description")]
+    skipped_dupes = {"delays": 0, "safety_events": 0, "qc_issues": 0,
+                     "deliveries": 0, "coordination_events": 0}
+
     async def _link_task_ids(activity_codes):
         if not activity_codes:
             return []
@@ -424,6 +489,12 @@ async def voice_extract(
     for d in (parsed.get("delays") or []):
         if not isinstance(d, dict) or not d.get("description"):
             continue
+        desc = str(d["description"])[:2000]
+        if _is_duplicate(desc, existing_delay_descs):
+            skipped_dupes["delays"] += 1
+            log.info("dr_voice: skipping duplicate delay on dr=%s: %r", dr_id, desc[:80])
+            continue
+        existing_delay_descs.append(desc)
         linked = await _link_task_ids(d.get("linked_activity_codes") or [])
         # If Claude didn't link a code but the delay description
         # mentions an activity word like "electrical shaft", try
@@ -459,6 +530,11 @@ async def voice_extract(
     for s in (parsed.get("safety_events") or []):
         if not isinstance(s, dict) or not s.get("description"):
             continue
+        desc = str(s["description"])[:2000]
+        if _is_duplicate(desc, existing_safety_descs):
+            skipped_dupes["safety_events"] += 1
+            continue
+        existing_safety_descs.append(desc)
         linked = await _link_task_ids(s.get("linked_activity_codes") or [])
         await db.safety_events.insert_one({
             "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
@@ -479,6 +555,11 @@ async def voice_extract(
     for q in (parsed.get("qc_issues") or []):
         if not isinstance(q, dict) or not q.get("description"):
             continue
+        desc = str(q["description"])[:2000]
+        if _is_duplicate(desc, existing_qc_descs):
+            skipped_dupes["qc_issues"] += 1
+            continue
+        existing_qc_descs.append(desc)
         linked = await _link_task_ids(q.get("linked_activity_codes") or [])
         await db.qc_issues.insert_one({
             "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
@@ -498,6 +579,11 @@ async def voice_extract(
     for dl in (parsed.get("deliveries") or []):
         if not isinstance(dl, dict) or not dl.get("description"):
             continue
+        desc = str(dl["description"])[:2000]
+        if _is_duplicate(desc, existing_delivery_descs):
+            skipped_dupes["deliveries"] += 1
+            continue
+        existing_delivery_descs.append(desc)
         linked = await _link_task_ids(dl.get("linked_activity_codes") or [])
         await db.deliveries.insert_one({
             "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
@@ -518,6 +604,11 @@ async def voice_extract(
     for ce in (parsed.get("coordination_events") or []):
         if not isinstance(ce, dict) or not ce.get("description"):
             continue
+        desc = str(ce["description"])[:2000]
+        if _is_duplicate(desc, existing_coord_descs):
+            skipped_dupes["coordination_events"] += 1
+            continue
+        existing_coord_descs.append(desc)
         linked = await _link_task_ids(ce.get("linked_activity_codes") or [])
         await db.coordination_events.insert_one({
             "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
@@ -546,6 +637,7 @@ async def voice_extract(
     return {
         "ok": True,
         "applied": applied,
+        "skipped_duplicates": skipped_dupes,
         "draft": parsed,   # so frontend can show diff/preview if it wants
     }
 
@@ -625,7 +717,12 @@ async def voice_live_token(
             status_code=503,
             detail="Live voice not configured -- GEMINI_API_KEY missing.",
         )
-    return {"token": api_key, "model": "gemini-3.1-flash-live-preview"}
+    # Per Google's models?supportedGenerationMethods=bidiGenerateContent
+    # probe (Feb 2026), the live conversational model name is
+    # `gemini-2.5-flash-native-audio-latest`. The deprecated names from
+    # earlier prototyping (gemini-2.0-flash-exp, gemini-3.1-flash-live-preview)
+    # are 404 / not registered for this account tier.
+    return {"token": api_key, "model": "gemini-2.5-flash-native-audio-latest"}
 
 
 # ---------------------------------------------------------------------

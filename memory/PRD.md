@@ -380,6 +380,55 @@ Multiple bugs surfaced:
    crew_presence=1 (CARP × 3 × 8 hr from ICE), and delays=1
    (3-day impact, linked to schedule_activity_id of the electrical task).
 
+### Iter 13.2 — Voice intake hardening + Live Voice fix (2026-05-25 night)
+After the codec/mic-stream fix, the user's first real voice recording
+worked at ~95% accuracy. Two follow-up issues:
+
+1. **Delays page 500'd**: `/api/projects/{id}/delays` returned 500 with
+   `Delay.date Field required` ValidationError. Legacy delay rows in
+   MongoDB predate `date` + `reported_at` being on the Delay model;
+   the FIRST legacy row in a list killed the whole endpoint. Added
+   defensive `_enrich_delay_for_read`, `_enrich_safety_for_read`,
+   `_enrich_qc_for_read` helpers that fall back to `created_at` /
+   `logged_date` / today's date. Three list endpoints now 200 again.
+
+2. **Duplicate event rows when voice memo runs twice**: A single
+   Claude response with two paraphrased delays (or two recordings on
+   the same DR) created duplicate delay rows. Added token-overlap
+   (≥60%) dedup in `dr_voice_router.py` for delays / safety / qc /
+   deliveries / coordination + (trade, company) dedup for presence.
+   Response now includes `skipped_duplicates` so the frontend toast
+   tells the user "skipped 2 duplicates already on this DR".
+
+3. **Live Voice WebSocket closed immediately**: model name
+   `gemini-3.1-flash-live-preview` was 404. Probed Google's
+   `models?supportedGenerationMethods=bidiGenerateContent` endpoint
+   and found the real live-capable models: `gemini-2.5-flash-native-
+   audio-latest` and `gemini-2.5-flash-native-audio-preview-09-2025`.
+   Updated `/voice/live-token` to return the correct model.
+
+4. **Live Voice setup required AUDIO modality**: native-audio model
+   rejects `response_modalities=["TEXT"]` with code 1007 "Cannot
+   extract voices from a non-audio request." Switched frontend to
+   `["AUDIO"]` + enabled `input_audio_transcription` and
+   `output_audio_transcription` so the user sees captioned text of
+   both AI and human speech. Added audio playback through Web Audio
+   API (24 kHz PCM chunks decoded + scheduled onto an AudioContext
+   queue so AI's voice plays back in real time).
+
+5. **Wait for setupComplete before streaming mic**: previously fired
+   mic samples immediately on ws.onopen, which Gemini drops. Now
+   waits for the setupComplete server message, then starts
+   ScriptProcessor mic loop.
+
+6. **Better Live Voice error UX**: WebSocket close handler now
+   distinguishes "closed during connect" (auth/model rejection) from
+   "closed during live" (network/timeout); explicit toast per case.
+
+7. **8/8 voice regression tests PASS** after all changes. E2E test
+   was updated to delete pre-existing rows on its target DR so it
+   doesn't trip the new dedup logic.
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

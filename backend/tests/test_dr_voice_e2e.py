@@ -88,7 +88,10 @@ def fresh_dr_id(token):
     """Create a fresh draft DR specifically for this test run.
 
     Picks a date 4 days back to avoid colliding with any existing
-    DRs created by other tests in this session.
+    DRs created by other tests in this session. To make the test
+    idempotent across multiple runs against the same backend, we
+    delete any pre-existing voice-intake rows on this DR so the
+    de-duplication logic doesn't suppress the test inserts.
     """
     proj = requests.get(f"{API}/api/projects", headers=_h(token), timeout=10).json()[0]["id"]
     from datetime import date, timedelta
@@ -98,7 +101,19 @@ def fresh_dr_id(token):
         json={"project_id": proj, "report_date": pick}, timeout=15,
     )
     cr.raise_for_status()
-    return cr.json()["id"]
+    dr_id = cr.json()["id"]
+
+    # Wipe ALL pre-existing event rows on this DR so the dedup pass in
+    # the voice extract router doesn't skip the new inserts. We use
+    # the broader sweep (not just source=voice_intake) because manual
+    # test data also lingers across runs.
+    ctx = requests.get(f"{API}/api/daily-reports/{dr_id}/context",
+                       headers=_h(token), timeout=10).json()
+    for path, key in (("delays", "delays"), ("safety-events", "safety_events"),
+                      ("qc-issues", "qc_issues"), ("daily-presence", "presence")):
+        for row in ctx.get(key, []) or []:
+            requests.delete(f"{API}/api/{path}/{row['id']}", headers=_h(token), timeout=10)
+    return dr_id
 
 
 def test_e2e_voice_memo_full_pipeline(token, synthesized_audio, fresh_dr_id):

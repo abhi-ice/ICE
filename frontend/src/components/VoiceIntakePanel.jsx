@@ -273,16 +273,29 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           );
         } else {
           const s = summarizeApplied(data.applied);
-          if (s === "no fields") {
+          const skipped = data.skipped_duplicates;
+          const totalSkipped = skipped
+            ? Object.values(skipped).reduce((sum, v) => sum + (v || 0), 0)
+            : 0;
+          const skipNote = totalSkipped > 0
+            ? ` (Skipped ${totalSkipped} duplicate entr${totalSkipped === 1 ? "y" : "ies"} already on this DR.)`
+            : "";
+          if (s === "no fields" && totalSkipped === 0) {
             toast.error(
               "AI heard you but couldn't extract any DR fields. "
               + "Review the transcript below and either re-record more clearly "
               + "or edit the DR by hand.",
               { duration: 8000 },
             );
+          } else if (s === "no fields" && totalSkipped > 0) {
+            toast.message(
+              `All ${totalSkipped} item${totalSkipped === 1 ? "" : "s"} from this recording `
+              + `were duplicates of entries already on this DR. Nothing new was added.`,
+              { duration: 7000 },
+            );
           } else {
             toast.success(
-              `AI applied: ${s}. Review the draft and submit when ready.`,
+              `AI applied: ${s}.${skipNote} Review the draft and submit when ready.`,
               { duration: 6000 },
             );
           }
@@ -334,6 +347,40 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   const [liveTranscript, setLiveTranscript] = useState("");
   const liveWsRef = useRef(null);
   const liveAudioCtxRef = useRef(null);
+  const livePlaybackCtxRef = useRef(null);
+  const liveNextPlaybackAtRef = useRef(0);
+
+  // Gemini Live returns AI audio as base64 PCM at 24 kHz, 16-bit signed,
+  // mono. Decode each chunk and schedule it onto an AudioContext play
+  // queue so chunks flow seamlessly into one voice line.
+  const _playLiveAudioChunk = async (b64) => {
+    try {
+      if (!livePlaybackCtxRef.current) {
+        livePlaybackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        liveNextPlaybackAtRef.current = 0;
+      }
+      const ctx = livePlaybackCtxRef.current;
+      const bin = atob(b64);
+      const len = bin.length / 2;
+      const buffer = ctx.createBuffer(1, len, 24000);
+      const channel = buffer.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const lo = bin.charCodeAt(i * 2);
+        const hi = bin.charCodeAt(i * 2 + 1);
+        const s16 = (hi << 8) | lo;
+        const signed = s16 > 0x7fff ? s16 - 0x10000 : s16;
+        channel[i] = signed / 0x8000;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      const startAt = Math.max(ctx.currentTime, liveNextPlaybackAtRef.current);
+      src.start(startAt);
+      liveNextPlaybackAtRef.current = startAt + buffer.duration;
+    } catch (e) {
+      console.warn("Live audio playback error:", e);
+    }
+  };
 
   const startLive = async () => {
     if (liveStatus === "live" || liveStatus === "connecting") return;
@@ -342,7 +389,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     try {
       const tok = await api.post(`/daily-reports/${dailyReportId}/voice/live-token`);
       const apiKey = tok.data.token;
-      const model = tok.data.model || "gemini-3.1-flash-live-preview";
+      const model = tok.data.model || "gemini-2.5-flash-native-audio-latest";
       // Open WS directly to Gemini Live. Browser side; the token /
       // key never proxies through our server for streaming audio.
       const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
@@ -350,12 +397,18 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       liveWsRef.current = ws;
       ws.onopen = () => {
         // Send setup message -- system instruction, model, voice config.
+        // The native-audio Live model REQUIRES response_modalities=["AUDIO"];
+        // text-only responses are rejected with code 1007. We additionally
+        // request input + output transcriptions so we can render BOTH
+        // the AI's question and the super's answer as scrollback text.
         ws.send(JSON.stringify({
           setup: {
             model: `models/${model}`,
             generation_config: {
-              response_modalities: ["TEXT"],
+              response_modalities: ["AUDIO"],
             },
+            input_audio_transcription: {},
+            output_audio_transcription: {},
             system_instruction: {
               parts: [{ text:
                 "You are guiding a construction superintendent through a daily report. "
@@ -368,32 +421,75 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             },
           },
         }));
-        setLiveStatus("live");
+        // Don't flip to "live" yet -- wait for setupComplete from server.
       };
       ws.onmessage = async (evt) => {
         try {
           let data = evt.data;
           if (data instanceof Blob) data = await data.text();
           const msg = JSON.parse(data);
-          if (msg.serverContent?.modelTurn?.parts) {
-            for (const part of msg.serverContent.modelTurn.parts) {
+          if (msg.setupComplete) {
+            // Server acknowledged setup -- now we can start streaming mic.
+            setLiveStatus("live");
+            void _startLiveMicStreaming(ws);
+            return;
+          }
+          const sc = msg.serverContent;
+          if (sc?.modelTurn?.parts) {
+            for (const part of sc.modelTurn.parts) {
               if (part.text) setLiveTranscript((t) => t + part.text);
+              if (part.inlineData?.data && part.inlineData?.mimeType?.startsWith("audio/")) {
+                // Play the AI's voice through the speakers.
+                void _playLiveAudioChunk(part.inlineData.data);
+              }
             }
           }
-          if (msg.serverContent?.turnComplete) setLiveTranscript((t) => t + "\n");
-        } catch { /* ignore parse error */ }
+          // Captions for what the AI said
+          if (sc?.outputTranscription?.text) {
+            setLiveTranscript((t) => t + sc.outputTranscription.text);
+          }
+          // Captions for what the user said
+          if (sc?.inputTranscription?.text) {
+            setLiveTranscript((t) => t + `\nYou: ${sc.inputTranscription.text}\nAI: `);
+          }
+          if (sc?.turnComplete) setLiveTranscript((t) => t + "\n");
+        } catch (parseErr) {
+          console.warn("Live WS parse error:", parseErr);
+        }
       };
       ws.onerror = (e) => {
         console.error("Gemini Live WS error", e);
         setLiveStatus("error");
-        toast.error("Live voice connection error.");
+        toast.error("Live voice connection error. Check console for details.");
       };
-      ws.onclose = () => {
-        setLiveStatus((s) => s === "live" ? "ended" : s);
+      ws.onclose = (evt) => {
+        console.info(`Gemini Live WS closed code=${evt.code} reason=${evt.reason}`);
+        if (liveStatus === "connecting") {
+          // Closed before we got setupComplete -- typically auth/model failure.
+          toast.error(
+            evt.code === 1008
+              ? "Live voice rejected by Gemini (likely model or quota). Use Voice Memo instead."
+              : `Live voice closed unexpectedly (code ${evt.code}).`
+          );
+          setLiveStatus("error");
+        } else {
+          setLiveStatus((s) => s === "live" ? "ended" : s);
+        }
       };
+      // Mic streaming starts only after setupComplete (see _startLiveMicStreaming).
+    } catch (e) {
+      setLiveStatus("error");
+      const msg = e?.response?.data?.detail || e.message;
+      toast.error(`Live voice failed to start: ${msg}`);
+    }
+  };
+  const _startLiveMicStreaming = async (ws) => {
+    try {
       // Stream microphone audio to Gemini. 16 kHz PCM is what the Live
       // API expects. We resample inline with an AudioContext at 16k.
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, channelCount: 1 },
+      });
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       liveAudioCtxRef.current = audioCtx;
       const source = audioCtx.createMediaStreamSource(stream);
@@ -420,15 +516,18 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       source.connect(processor);
       processor.connect(audioCtx.destination);
     } catch (e) {
-      setLiveStatus("error");
-      const msg = e?.response?.data?.detail || e.message;
-      toast.error(`Live voice failed to start: ${msg}`);
+      console.error("Failed to start mic streaming:", e);
+      toast.error(`Microphone error: ${e.message || e}`);
     }
   };
   const stopLive = async () => {
     try { liveWsRef.current?.close(); } catch { /* ignore */ }
     try { liveAudioCtxRef.current?.close(); } catch { /* ignore */ }
-    liveWsRef.current = null; liveAudioCtxRef.current = null;
+    try { livePlaybackCtxRef.current?.close(); } catch { /* ignore */ }
+    liveWsRef.current = null;
+    liveAudioCtxRef.current = null;
+    livePlaybackCtxRef.current = null;
+    liveNextPlaybackAtRef.current = 0;
     setLiveStatus("ended");
     // Send the accumulated transcript to the extract endpoint so the
     // DR gets populated from the live conversation as well.
