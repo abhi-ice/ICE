@@ -922,4 +922,150 @@ button { white-space: nowrap; }
     line-height: 1.2;
 }
 
+/* ============================================================
+   PHASE 13 — PREVIEW QA ROUND 2 (2026-05-24)
+   ============================================================ */
+
+/* CRITICAL: <input> / <select> / <textarea> without an explicit bg-*
+   class falls back to browser default WHITE. Multiple pages have
+   inputs styled as `border border-slate-200` (no bg). On the dark
+   theme those rendered as bright white boxes. Apply a default dark
+   bg to all form controls -- any element with an explicit bg-* class
+   already wins because of !important on the override blocks above. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]),
+select,
+textarea {
+    background-color: rgba(255, 255, 255, 0.04);
+    color: rgb(228 228 231);
+    border-color: rgba(255, 255, 255, 0.10);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):focus,
+select:focus,
+textarea:focus {
+    border-color: rgba(239, 35, 60, 0.55);
+    outline-color: rgba(239, 35, 60, 0.30);
+}
+
+/* Tailwind opacity-modifier classes (`bg-slate-100/80`, `bg-blue-50/30`,
+   `bg-white/60`, etc.) compile to escaped classes like
+   `.bg-slate-100\/80` -- different from the base `.bg-slate-100` and
+   therefore NOT caught by the Phase 4 :where(.bg-slate-100) override.
+   The DR activity-grid section headers (Preconstruction / Field Work /
+   Closeout Paperwork) use `bg-slate-100/80` and rendered as a bright
+   light bar on dark. Add escaped-class overrides. */
+[class*="bg-white\\/"], [class*="bg-slate-50\\/"], [class*="bg-slate-100\\/"],
+.bg-white\/60, .bg-white\/40, .bg-white\/30, .bg-white\/20, .bg-white\/10,
+.bg-slate-100\/80, .bg-slate-100\/60, .bg-slate-100\/40, .bg-slate-100\/30,
+.bg-slate-50\/80, .bg-slate-50\/60, .bg-slate-50\/40, .bg-slate-50\/30 {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+}
+.bg-blue-50\/30, .bg-blue-50\/40, .bg-blue-50\/60, .bg-blue-50\/80,
+.bg-blue-100\/30, .bg-blue-100\/60 {
+    background-color: rgba(239, 35, 60, 0.08) !important;
+}
+.bg-rose-50\/30, .bg-rose-50\/40, .bg-rose-50\/60, .bg-rose-50\/80,
+.bg-rose-100\/30, .bg-rose-100\/60 {
+    background-color: rgba(239, 35, 60, 0.08) !important;
+}
+.bg-amber-50\/30, .bg-amber-50\/40, .bg-amber-50\/60, .bg-amber-50\/80,
+.bg-amber-100\/30, .bg-amber-100\/60 {
+    background-color: rgba(245, 158, 11, 0.10) !important;
+}
+.bg-emerald-50\/30, .bg-emerald-50\/40, .bg-emerald-50\/60,
+.bg-emerald-100\/30, .bg-emerald-100\/60 {
+    background-color: rgba(16, 185, 129, 0.10) !important;
+}
+.bg-black\/40, .bg-black\/60, .bg-black\/70, .bg-black\/80 {
+    /* Modal overlay backdrops -- keep dark, slightly more opaque on
+       the dark theme for contrast. */
+    background-color: rgba(0, 0, 0, 0.85) !important;
+}
+
+/* DR activity-grid section header (Preconstruction / Field Work /
+   Closeout Paperwork) explicit dark stripe for visual separation. */
+tr.bg-slate-100\/80,
+tr.bg-slate-100 {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+tr.bg-slate-100\/80 td,
+tr.bg-slate-100 td {
+    background-color: transparent !important;
+}
+
+/* Native browser scrollbars (Chrome / Safari) -- global dark theme.
+   The .scrollbar-soft override above only applies when that class is
+   explicitly added. Apply by default everywhere so light scrollbars
+   don't leak through on dense tables. */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    background-color: rgba(255, 255, 255, 0.02);
+}
+::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(239, 35, 60, 0.5);
+}
+::-webkit-scrollbar-corner {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+/* Firefox */
+* {
+    scrollbar-color: rgba(255, 255, 255, 0.12) rgba(255, 255, 255, 0.02);
+    scrollbar-width: thin;
+}
+
+/* Sky color family — used by Resource Leveling for the "surplus" cell
+   state (supply > demand) and other tertiary callouts. NOT in the
+   Phase 6 sweep — adding now. */
+.bg-sky-50    { background-color: rgba(14, 165, 233, 0.10) !important; }
+.bg-sky-100   { background-color: rgba(14, 165, 233, 0.18) !important; }
+.bg-sky-500   { background-color: #0ea5e9 !important; }
+.bg-sky-600   { background-color: #0284c7 !important; }
+.bg-sky-700   { background-color: #0369a1 !important; }
+.text-sky-300 { color: rgb(125 211 252) !important; }
+.text-sky-700 { color: rgb(125 211 252) !important; }
+.text-sky-800 { color: rgb(186 230 253) !important; }
+.text-sky-900 { color: rgb(224 242 254) !important; }
+.border-sky-200 { border-color: rgba(14, 165, 233, 0.30) !important; }
+.border-sky-300 { border-color: rgba(14, 165, 233, 0.45) !important; }
+
+/* Section view dialog wrapper -- the bg-slate-50 wrapper inside the
+   dialog was already covered by Phase 4 override but let's also
+   explicitly ensure the Aging "All clear" success state uses
+   emerald-text-on-dark legibility. */
+.bg-emerald-50.border-emerald-300 {
+    /* First-run guided cards on Resource Leveling -- ensure "done"
+       state stays emerald-tinted on dark. */
+    background-color: rgba(16, 185, 129, 0.10) !important;
+    border-color: rgba(16, 185, 129, 0.40) !important;
+}
+
+/* Browser default form-control padding on the dark theme -- ensure
+   .text-* utilities on form controls still apply. Some inputs use
+   only text-sm without color class, defaulting to body color (already
+   white). Make sure ::placeholder is dim. */
+.dr-grid select, select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' fill='%23a1a1aa' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4z'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    padding-right: 1.75rem;
+}
+
+/* Tabs scrollbar artifact (small ▴▾ chevrons on Submittals + Weekly
+   reports tabs container) -- the radix tabs root has an internal
+   scrollarea that paints native scrollbar buttons. Hide them on the
+   tab list. */
+[role="tablist"] ::-webkit-scrollbar,
+[role="tablist"]::-webkit-scrollbar {
+    display: none;
+}
+[role="tablist"] {
+    scrollbar-width: none;
+}
+
 /* Image rounded corners on photo cards stay; no theming needed */
