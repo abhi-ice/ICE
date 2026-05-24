@@ -106,7 +106,10 @@ export default function Spatial3D() {
     const w = mount.clientWidth, h = mount.clientHeight;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf1f5f9);
+    // Red Noir: dark zinc-950 background instead of slate-100 light.
+    // Matches the rest of the dark theme so the 3D canvas doesn't
+    // appear as a bright white patch on the page.
+    scene.background = new THREE.Color(0x0a0a0c);
 
     const camera = new THREE.PerspectiveCamera(45, w / h, 0.5, 3000);
     camera.position.set(220, 240, 280);
