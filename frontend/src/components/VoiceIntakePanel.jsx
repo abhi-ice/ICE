@@ -585,14 +585,20 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
 
           // Captions: aggregate input + output transcription chunks
           // into per-turn lines so the display reads as conversation,
-          // not as one char per row.
+          // not as one char per row. Critically: when one speaker
+          // starts streaming, we hand off the OTHER speaker's
+          // accumulated buffer to the completed list. Without this,
+          // chunks like "con", "di", "tion" never aggregate into
+          // "conditions".
           if (sc.outputTranscription?.text) {
+            _handoffTo("ai");   // user just stopped → commit their turn
             aiTurnRef.current += sc.outputTranscription.text;
-            _flushTurn();   // re-render (cheap; rebuilds from refs)
+            _redraw();
           }
           if (sc.inputTranscription?.text) {
+            _handoffTo("user"); // AI just stopped → commit its turn
             userTurnRef.current += sc.inputTranscription.text;
-            _flushTurn();
+            _redraw();
           }
 
           // Interruption -- user started talking while AI was speaking.
@@ -604,13 +610,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
 
           // Turn boundary -- finalize whichever buffer has content.
           if (sc.turnComplete) {
-            _flushTurn();
-            // Push empty markers to advance the alignment counter so
-            // the next pair stays paired.
-            const u = userTurnsAllRef.current.length;
-            const a = aiTurnsAllRef.current.length;
-            if (u > a) aiTurnsAllRef.current.push("");
-            else if (a > u) userTurnsAllRef.current.push("");
+            _commitTurns();
           }
         } catch (parseErr) {
           console.warn("Live WS parse error:", parseErr);
