@@ -334,7 +334,15 @@ async def _resolve_task_impacts(
 
 def _enrich_delay_for_read(d: dict) -> dict:
     """Compute duration_days from logged/resolved dates. Mongo dicts arrive
-    with ISO date strings, so parse and produce an int day count."""
+    with ISO date strings, so parse and produce an int day count.
+
+    Defensive back-fill (2026-05-25): older delay documents predate the
+    `date` and `reported_at` fields being required on the Delay model.
+    Falling back to created_at / logged_date here lets the read path
+    tolerate them instead of 500-ing the whole list endpoint. The
+    fallback values are computed on-the-fly; the underlying Mongo
+    document is untouched.
+    """
     logged = d.get("logged_date") or d.get("date")
     resolved = d.get("resolved_date")
     if logged and resolved:
@@ -350,6 +358,19 @@ def _enrich_delay_for_read(d: dict) -> dict:
             d["duration_days"] = max(0, (_date.today() - ld).days)
         except Exception:
             d["duration_days"] = None
+
+    # Back-fill required fields for legacy documents so Pydantic doesn't
+    # blow up on the whole list.
+    if not d.get("date"):
+        # Prefer logged_date -> created_at date portion -> today
+        if d.get("logged_date"):
+            d["date"] = str(d["logged_date"])[:10]
+        elif d.get("created_at"):
+            d["date"] = str(d["created_at"])[:10]
+        else:
+            d["date"] = _date.today().isoformat()
+    if not d.get("reported_at"):
+        d["reported_at"] = d.get("created_at") or d.get("logged_date") or _date.today().isoformat()
     return d
 
 
@@ -1083,7 +1104,25 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
     # filter + per-task lookups still work); only the task-status
     # recompute is gone since safety no longer contributes to
     # has_open_blocker / open_blocker_count.
-    return SafetyEvent(**doc)
+    return SafetyEvent(**_enrich_safety_for_read(doc))
+
+
+def _enrich_safety_for_read(d: dict) -> dict:
+    """Back-fill required SafetyEvent fields for legacy documents.
+
+    Old safety_events records (pre 2026-05-25) lack `date` and
+    `reported_at` -- newer voice-intake writes set both. Mirror the
+    same defensive fallback we use for delays so the list endpoint
+    doesn't 500 the whole page.
+    """
+    if not d.get("date"):
+        if d.get("created_at"):
+            d["date"] = str(d["created_at"])[:10]
+        else:
+            d["date"] = _date.today().isoformat()
+    if not d.get("reported_at"):
+        d["reported_at"] = d.get("created_at") or _date.today().isoformat()
+    return d
 
 
 @router.get("/projects/{project_id}/safety-events", response_model=list[SafetyEvent])
@@ -1099,7 +1138,7 @@ async def list_safety(project_id: str,
     docs = await db.safety_events.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
-    return [SafetyEvent(**d) for d in docs]
+    return [SafetyEvent(**_enrich_safety_for_read(d)) for d in docs]
 
 
 # Addition 4 -- post-submit edit endpoint for safety_events. Same
@@ -1119,7 +1158,7 @@ async def update_safety_event(
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
     if not updates and not edit_reason:
-        return SafetyEvent(**before)
+        return SafetyEvent(**_enrich_safety_for_read(before))
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
     )
@@ -1170,7 +1209,7 @@ async def update_safety_event(
     # Bug #53 (2026-05-13) -- Bug #50 recompute hook here removed; safety
     # events no longer aggregate into task blocker count per Sid's
     # clarification.
-    return SafetyEvent(**after)
+    return SafetyEvent(**_enrich_safety_for_read(after))
 
 
 # --- QC ---
@@ -1309,6 +1348,19 @@ async def record_qc_rework_outcome(
     )
 
 
+def _enrich_qc_for_read(d: dict) -> dict:
+    """Back-fill required QcIssue fields for legacy documents (same
+    defensive pattern as delays / safety)."""
+    if not d.get("date"):
+        if d.get("created_at"):
+            d["date"] = str(d["created_at"])[:10]
+        else:
+            d["date"] = _date.today().isoformat()
+    if not d.get("reported_at"):
+        d["reported_at"] = d.get("created_at") or _date.today().isoformat()
+    return d
+
+
 @router.get("/projects/{project_id}/qc-issues", response_model=list[QcIssue])
 async def list_qc(project_id: str,
                    affected_activity_id: Optional[str] = None,
@@ -1322,7 +1374,7 @@ async def list_qc(project_id: str,
     docs = await db.qc_issues.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("date", -1).to_list(500)
-    return [QcIssue(**d) for d in docs]
+    return [QcIssue(**_enrich_qc_for_read(d)) for d in docs]
 
 
 # Addition 4 -- post-submit edit endpoint for qc_issues. Note: the
