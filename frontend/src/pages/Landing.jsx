@@ -1,93 +1,62 @@
-// Public landing page (2026-05-24, rev 2) — fully scrollable, multi-section
-// marketing site that mirrors the auth-page brand (login-bg crane photo for
-// the hero, then deeper sections on near-black with subtle crimson accents).
-// Sections:
-//   1. Sticky top nav
-//   2. Hero (above the fold) — pitch + chips + dual CTA
-//   3. Federal-contract proof strip
-//   4. "What's inside" — 6-card feature grid
-//   5. AI Copilot deep-dive
-//   6. Security & compliance row
-//   7. Workflow / how-it-works steps
-//   8. Final CTA
-//   9. Footer
+// Public landing page (2026-05-24, rev 3) — scrollable multi-section
+// marketing site. Tightened copy + SiteOpsLogo + premium emerald accents
+// per the Glass + Emerald design spec in design-mockup/.
+//
+// Section copy is intentionally short — punchy titles, one-line bodies.
+// No paragraphs of feature explanation; users skim, then click.
 import { Link, useNavigate } from "react-router-dom";
 import {
-  Layers, ArrowRight, Shield, Workflow, FileSpreadsheet, ScanLine, Bot,
+  ArrowRight, Shield, Workflow, FileSpreadsheet, ScanLine, Bot,
   ClipboardCheck, Activity, AlertTriangle, Camera, MessageSquare, HardHat,
-  Lock, Database, Eye, Sparkles, MapPin, Mic, Calendar, FileText, CheckCircle2,
-  Building2,
+  Lock, Database, Eye, Sparkles, Calendar, CheckCircle2, Building2,
 } from "lucide-react";
+import SiteOpsLogo from "../components/SiteOpsLogo";
 
 const FEATURE_CHIPS = [
   { icon: Workflow,        label: "Multi-tenant" },
   { icon: Shield,          label: "NIST 800-171" },
   { icon: FileSpreadsheet, label: "Audit-immutable" },
   { icon: Bot,             label: "AI Copilot" },
-  { icon: ScanLine,        label: "Activity-driven daily reports" },
+  { icon: ScanLine,        label: "Field-first" },
 ];
 
 const CONTRACT_LOGOS = [
-  { label: "GSA",        sub: "General Services Administration" },
-  { label: "NYCHA",      sub: "NYC Housing Authority" },
-  { label: "USMS",       sub: "US Marshals Service" },
-  { label: "VA",         sub: "Veterans Affairs" },
-  { label: "DoD",        sub: "Department of Defense" },
-  { label: "ICE",        sub: "Integrated Construction Enterprises" },
+  { label: "GSA"   },
+  { label: "NYCHA" },
+  { label: "USMS"  },
+  { label: "VA"    },
+  { label: "DoD"   },
+  { label: "ICE"   },
 ];
 
 const FEATURES = [
-  {
-    icon: ClipboardCheck,
-    title: "Activity-driven daily reports",
-    body: "Schedule activities flow straight into a per-day report grid. SOD/EOD % roll up. Submit blocks until every active row has progress.",
-  },
-  {
-    icon: MessageSquare,
-    title: "RFIs, submittals, change orders",
-    body: "First-class entities with aging, ball-in-court, and CSI-section tagging. Linked to drawings, specs, and the master doc.",
-  },
-  {
-    icon: Activity,
-    title: "Schedule diffs & recovery",
-    body: "P6/MSP imports diffed against the live plan. Cascade dashboard surfaces slip. Recovery scenarios are AI-proposed and human-approved.",
-  },
-  {
-    icon: Camera,
-    title: "Photos, drawings, specs, 3D",
-    body: "Every photo geotagged to a room. Drawings versioned. Spec sections cited inline. 2.5D mass model under the same coordinate frame.",
-  },
-  {
-    icon: HardHat,
-    title: "Field-first mobile",
-    body: "Mobile foreman page, voice login by PIN, voice-dictated DRs. Built for boots-on-site with gloves on, not for back-office PMs.",
-  },
-  {
-    icon: AlertTriangle,
-    title: "Delays, safety, QC",
-    body: "Field events flow into the daily report and into approvals. Gating entities track who's holding the line. Nothing slips silently.",
-  },
+  { icon: ClipboardCheck, title: "Daily reports",        tag: "Schedule-driven. SOD/EOD rollups." },
+  { icon: MessageSquare,  title: "RFIs & submittals",    tag: "Aging, ball-in-court, CSI tags." },
+  { icon: Activity,       title: "Schedule diffs",       tag: "P6/MSP imports. Cascade slip view." },
+  { icon: Camera,         title: "Photos, drawings, 3D", tag: "Geotagged. Versioned. Coordinated." },
+  { icon: HardHat,        title: "Field-first mobile",   tag: "Mobile foreman. Voice dictation." },
+  { icon: AlertTriangle,  title: "Delays, safety, QC",   tag: "All field events flow to DR." },
 ];
 
 const COPILOT_BULLETS = [
-  { icon: Sparkles,  text: "Drafts TIA narratives from delay events, schedule diffs, and weather records." },
-  { icon: Activity,  text: "Proposes recovery scenarios — fast-tracked, resequenced, or resourced — for PM review." },
-  { icon: Eye,       text: "Scoped to the open document. Sees only what the user can see. Tenant-isolated retrieval." },
-  { icon: CheckCircle2, text: "Every AI write goes through the approvals queue. Humans stay in the loop." },
+  { icon: Sparkles,     text: "Drafts TIA narratives from delays and diffs." },
+  { icon: Activity,     text: "Proposes recovery scenarios for PM review." },
+  { icon: Eye,          text: "Tenant-isolated. Scoped to your open doc." },
+  { icon: CheckCircle2, text: "Every AI write goes through approvals." },
 ];
 
 const COMPLIANCE = [
-  { icon: Lock,     title: "CMMC Level 2 ready",       body: "Architected to the L2 control set from day one. Audit logs, MFA, encryption at rest." },
-  { icon: Shield,   title: "NIST 800-171 aligned",     body: "AC, AU, IA, SC, SI families covered. CUI-handling guardrails baked into the data model." },
-  { icon: Database, title: "Tenant-isolated by row",   body: "Every table carries tenant_id. Cross-tenant reads are physically impossible at the query layer." },
-  { icon: FileSpreadsheet, title: "Audit-immutable",   body: "Every state change writes to an append-only ledger. Edits surface as new events, never overwrites." },
+  { icon: Lock,            title: "CMMC L2 ready",    tag: "Audit logs, MFA, encryption at rest." },
+  { icon: Shield,          title: "NIST 800-171",     tag: "AC, AU, IA, SC, SI families covered." },
+  { icon: Database,        title: "Tenant-isolated",  tag: "Row-level. No admin override." },
+  { icon: FileSpreadsheet, title: "Audit-immutable",  tag: "Append-only ledger." },
 ];
 
 const STEPS = [
-  { n: "01", icon: Building2,  title: "Spin up a tenant",   body: "Sign up. You're the first admin. Invite your team from the Team page once you're in." },
-  { n: "02", icon: Calendar,   title: "Import your schedule", body: "Drop in a P6 XER or MS Project XML. Activities, calendars, and predecessors land in minutes." },
-  { n: "03", icon: ClipboardCheck, title: "Start logging the field", body: "Daily reports auto-populate from the schedule. Photos auto-tag. Voice dictation for narrative fields." },
-  { n: "04", icon: Bot,        title: "Let the Copilot work", body: "TIA drafts, recovery scenarios, exception flags. All gated through approvals before they hit the record." },
+  { n: "01", icon: Building2,      title: "Spin up a tenant",     tag: "Sign up. Invite your team." },
+  { n: "02", icon: Calendar,       title: "Import your schedule", tag: "P6 XER or MSP XML in minutes." },
+  { n: "03", icon: ClipboardCheck, title: "Log from the field",   tag: "DRs auto-populate. Voice dictation." },
+  { n: "04", icon: Bot,            title: "Let the Copilot work", tag: "TIAs, recovery, all human-gated." },
 ];
 
 export default function Landing() {
@@ -95,23 +64,20 @@ export default function Landing() {
   return (
     <div className="min-h-screen flex flex-col relative bg-[#0a0a0c] text-white" data-testid="landing-page">
 
-      {/* ============================================================
-          STICKY TOP NAV
-          ============================================================ */}
+      {/* STICKY TOP NAV */}
       <header
         data-testid="landing-nav"
         className="sticky top-0 z-50 backdrop-blur-md bg-black/70 border-b border-white/10"
       >
         <div className="max-w-7xl mx-auto px-6 lg:px-10 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2" data-testid="landing-logo">
-            <div className="h-9 w-9 rounded grid place-items-center bg-[#ef233c]">
-              <Layers className="h-5 w-5" strokeWidth={1.6} />
-            </div>
-            <div className="font-semibold tracking-tight text-base">ICE Schedule Ops</div>
+          <div className="flex items-center gap-2.5" data-testid="landing-logo">
+            <SiteOpsLogo className="h-8 w-8" />
+            <span className="font-semibold tracking-tight text-base">SiteOps</span>
+            <span className="text-xs text-white/40 font-mono hidden sm:inline ml-1">/ Construction OS</span>
           </div>
           <nav className="hidden md:flex items-center gap-7 text-sm text-white/70">
-            <a href="#features"  className="hover:text-white transition">Features</a>
-            <a href="#copilot"   className="hover:text-white transition">AI Copilot</a>
+            <a href="#features"  className="hover:text-white transition">Platform</a>
+            <a href="#copilot"   className="hover:text-white transition">Copilot</a>
             <a href="#security"  className="hover:text-white transition">Security</a>
             <a href="#workflow"  className="hover:text-white transition">How it works</a>
           </nav>
@@ -126,47 +92,39 @@ export default function Landing() {
             <button
               data-testid="landing-cta-create"
               onClick={() => nav("/signup")}
-              className="h-9 px-4 rounded-md text-sm font-medium bg-[#ef233c] hover:bg-[#b91c2c] text-white inline-flex items-center gap-1.5 shadow-[0_0_18px_-4px_rgba(239,35,60,0.6)] transition"
+              className="h-9 px-4 rounded-md text-sm font-medium bg-[#10b981] hover:bg-[#059669] text-white inline-flex items-center gap-1.5 shadow-[0_0_18px_-4px_rgba(16,185,129,0.55)] transition"
             >
-              Create your organization
+              Get started
               <ArrowRight className="h-4 w-4" strokeWidth={2} />
             </button>
           </div>
         </div>
       </header>
 
-      {/* ============================================================
-          HERO — login-bg only here, so the crane photo stays
-          anchored above the fold. Below this, sections are on
-          near-black with red gradient accents.
-          ============================================================ */}
+      {/* HERO */}
       <section className="relative login-bg" data-testid="landing-hero">
         <div className="relative z-10 max-w-7xl mx-auto px-6 lg:px-10 py-20 lg:py-28">
-          <div className="max-w-4xl mx-auto text-center space-y-8">
+          <div className="max-w-4xl mx-auto text-center space-y-7">
             <span
               data-testid="landing-eyebrow"
               className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[11px] uppercase tracking-[0.16em] bg-white/10 border border-white/15 text-white/85"
             >
               <span className="relative flex h-2 w-2">
-                <span className="absolute inset-0 rounded-full bg-[#ef233c] opacity-75 animate-ping"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#ef233c]"></span>
+                <span className="absolute inset-0 rounded-full bg-[#34D399] opacity-75 animate-ping"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#34D399]"></span>
               </span>
-              Federal construction OS · CMMC Level 2 ready
+              Federal Construction OS &middot; CMMC L2 ready
             </span>
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.05]">
               The operating system for{" "}
-              <span className="text-[#ef233c]">federal construction.</span>
+              <span className="text-[#34D399]">federal construction.</span>
             </h1>
             <p className="text-base sm:text-lg text-slate-200 leading-relaxed max-w-2xl mx-auto">
-              Schedules, daily reports, RFIs, drawings, specs, photos, and AI agents —
-              one tenant-isolated platform built for GSA, NYCHA, USMS, and other
-              federal contracts.
+              CPM math, AI mitigation, and field-team daily reports in one
+              audit-clean platform &mdash; built for GSA, NYCHA, USMS work.
             </p>
 
-            <div
-              data-testid="landing-chips"
-              className="flex flex-wrap gap-2 justify-center"
-            >
+            <div data-testid="landing-chips" className="flex flex-wrap gap-2 justify-center">
               {FEATURE_CHIPS.map(({ icon: Icon, label }) => (
                 <span
                   key={label}
@@ -182,7 +140,7 @@ export default function Landing() {
               <button
                 data-testid="landing-cta-signin"
                 onClick={() => nav("/login")}
-                className="h-11 px-6 rounded-md text-sm font-semibold bg-[#ef233c] hover:bg-[#b91c2c] text-white inline-flex items-center gap-2 shadow-[0_0_28px_-6px_rgba(239,35,60,0.6)] transition"
+                className="h-11 px-6 rounded-md text-sm font-semibold bg-[#10b981] hover:bg-[#059669] text-white inline-flex items-center gap-2 shadow-[0_0_28px_-6px_rgba(16,185,129,0.55)] transition"
               >
                 Sign in
                 <ArrowRight className="h-4 w-4" strokeWidth={2} />
@@ -192,144 +150,107 @@ export default function Landing() {
                 to="/accept-invite"
                 className="h-11 px-6 rounded-md text-sm font-semibold border border-white/20 bg-white/5 hover:bg-white/10 text-white inline-flex items-center transition"
               >
-                Got an invite? Accept it here
+                Accept an invite
               </Link>
             </div>
-
-            <p
-              data-testid="landing-subtagline"
-              className="text-xs text-slate-300 max-w-2xl mx-auto pt-4"
-            >
-              One source of truth for your schedule. Information-dense. Audit-immutable.
-              Built by a federal GC, not a SaaS team.
-            </p>
           </div>
         </div>
       </section>
 
-      {/* ============================================================
-          FEDERAL-CONTRACT PROOF STRIP
-          ============================================================ */}
-      <section
-        data-testid="landing-contracts"
-        className="relative border-y border-white/10 bg-black/60"
-      >
-        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-10">
-          <div className="text-center text-[11px] uppercase tracking-[0.18em] text-white/50 mb-6">
+      {/* FEDERAL CONTRACTS STRIP */}
+      <section data-testid="landing-contracts" className="relative border-y border-white/10 bg-black/60">
+        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-8">
+          <div className="text-center text-[11px] uppercase tracking-[0.18em] text-white/50 mb-5">
             Built for the federal contract stack
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-            {CONTRACT_LOGOS.map(({ label, sub }) => (
-              <div
-                key={label}
-                className="text-center px-3 py-4 rounded-md border border-white/10 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/20 transition"
-              >
-                <div className="text-lg font-semibold tracking-tight text-white">{label}</div>
-                <div className="text-[10px] text-white/55 mt-1 leading-tight">{sub}</div>
+          <div className="flex flex-wrap items-center justify-center gap-10 md:gap-16 opacity-80">
+            {CONTRACT_LOGOS.map(({ label }) => (
+              <div key={label} className="text-base font-semibold tracking-tight text-white/70 hover:text-white transition">
+                {label}
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ============================================================
-          FEATURES GRID — "what's inside"
-          ============================================================ */}
-      <section
-        id="features"
-        data-testid="landing-features"
-        className="relative py-20 lg:py-28"
-      >
-        {/* subtle red gradient halo behind */}
+      {/* FEATURES */}
+      <section id="features" data-testid="landing-features" className="relative py-20 lg:py-24">
         <div
           className="pointer-events-none absolute inset-0 opacity-60"
-          style={{ background: "radial-gradient(800px 400px at 80% 0%, rgba(239,35,60,0.10), transparent 70%)" }}
+          style={{ background: "radial-gradient(800px 400px at 80% 0%, rgba(52,211,153,0.10), transparent 70%)" }}
         />
         <div className="relative max-w-7xl mx-auto px-6 lg:px-10">
-          <div className="max-w-2xl mb-12">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-[#ef233c] mb-3">What's inside</div>
+          <div className="max-w-2xl mb-10">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-[#34D399] mb-3">Platform</div>
             <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
               One platform. Every record a federal job touches.
             </h2>
-            <p className="text-base text-white/70 mt-4 leading-relaxed">
-              No bolt-ons. No syncing between Procore and BIM 360 and OpenSpace.
-              Every entity lives next to every other entity, linked by activity, schedule, and room.
-            </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {FEATURES.map(({ icon: Icon, title, body }) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {FEATURES.map(({ icon: Icon, title, tag }) => (
               <div
                 key={title}
-                className="group relative rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/20 p-6 transition"
+                className="rounded-lg border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/20 p-5 transition"
               >
-                <div className="h-10 w-10 rounded-md grid place-items-center bg-[#ef233c]/15 border border-[#ef233c]/30 mb-4">
-                  <Icon className="h-5 w-5 text-[#ef233c]" strokeWidth={1.8} />
+                <div className="flex items-center gap-3">
+                  <div className="h-9 w-9 rounded-md grid place-items-center bg-[#10b981]/15 border border-[#10b981]/30 shrink-0">
+                    <Icon className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold tracking-tight text-white">{title}</div>
+                    <div className="text-xs text-white/55 mt-0.5">{tag}</div>
+                  </div>
                 </div>
-                <div className="text-base font-semibold tracking-tight text-white mb-2">{title}</div>
-                <div className="text-sm text-white/65 leading-relaxed">{body}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ============================================================
-          AI COPILOT DEEP-DIVE
-          ============================================================ */}
-      <section
-        id="copilot"
-        data-testid="landing-copilot"
-        className="relative py-20 lg:py-28 border-y border-white/10 bg-black/40"
-      >
+      {/* AI COPILOT */}
+      <section id="copilot" data-testid="landing-copilot" className="relative py-20 lg:py-24 border-y border-white/10 bg-black/40">
         <div className="max-w-7xl mx-auto px-6 lg:px-10 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.18em] text-[#ef233c] mb-3 flex items-center gap-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-[#34D399] mb-3 flex items-center gap-2">
               <Bot className="h-3.5 w-3.5" /> AI Copilot
             </div>
             <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
-              A scheduling Copilot that lives inside your contract data.
+              A scheduling Copilot inside your contract data.
             </h2>
-            <p className="text-base text-white/70 mt-4 leading-relaxed">
-              Not a chatbot bolted onto a help center. The Copilot reads your live schedule,
-              your delay log, your daily reports, your RFIs, and your weather record — then
-              drafts TIA narratives, recovery scenarios, and exception flags for human approval.
-            </p>
-            <ul className="mt-7 space-y-3.5">
+            <ul className="mt-6 space-y-3">
               {COPILOT_BULLETS.map(({ icon: Icon, text }) => (
                 <li key={text} className="flex items-start gap-3">
-                  <div className="h-6 w-6 rounded-md grid place-items-center bg-[#ef233c]/15 border border-[#ef233c]/30 flex-shrink-0 mt-0.5">
-                    <Icon className="h-3.5 w-3.5 text-[#ef233c]" strokeWidth={2} />
+                  <div className="h-6 w-6 rounded-md grid place-items-center bg-[#10b981]/15 border border-[#10b981]/30 flex-shrink-0 mt-0.5">
+                    <Icon className="h-3.5 w-3.5 text-[#34D399]" strokeWidth={2} />
                   </div>
-                  <span className="text-sm text-white/80 leading-relaxed">{text}</span>
+                  <span className="text-sm text-white/80">{text}</span>
                 </li>
               ))}
             </ul>
           </div>
 
-          {/* Right-side mock console */}
           <div className="relative">
             <div
-              className="rounded-lg border border-white/10 bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-5 lg:p-6 shadow-2xl"
+              className="rounded-lg border border-white/10 bg-gradient-to-br from-white/[0.04] to-white/[0.01] p-5 lg:p-6 shadow-2xl backdrop-blur"
               data-testid="landing-copilot-mock"
             >
               <div className="flex items-center gap-2 pb-3 border-b border-white/10 mb-4">
-                <div className="h-2 w-2 rounded-full bg-[#ef233c]"></div>
+                <div className="h-2 w-2 rounded-full bg-[#34D399]"></div>
                 <div className="h-2 w-2 rounded-full bg-white/30"></div>
                 <div className="h-2 w-2 rounded-full bg-white/30"></div>
-                <div className="ml-3 text-[11px] text-white/50 font-mono">copilot · scoped to delay #DLY-118</div>
+                <div className="ml-3 text-[11px] text-white/50 font-mono">copilot &middot; delay #DLY-118</div>
               </div>
               <div className="space-y-3 text-sm">
                 <div className="text-white/60 text-[11px] uppercase tracking-wider">Draft TIA narrative</div>
                 <div className="rounded-md bg-black/40 border border-white/10 p-3 text-white/85 leading-relaxed font-mono text-[12.5px]">
-                  Activity 1.4.2 (Mech roughing — L3 East) is impacted by the
-                  03/14 ConEd shutdown overrun. Critical path slip = 6 working days.
-                  Recommend resequencing 1.4.3 to float window 03/22–03/28...
+                  Activity 1.4.2 (Mech roughing &mdash; L3 East) impacted by 03/14 ConEd shutdown.
+                  CP slip = 6 wd. Recommend resequencing 1.4.3 to float window 03/22&ndash;03/28.
                 </div>
                 <div className="grid grid-cols-3 gap-2 pt-2">
                   <div className="rounded border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] text-white/50">Slip</div>
-                    <div className="text-base font-semibold text-[#ef233c]">+6d</div>
+                    <div className="text-base font-semibold text-rose-400">+6d</div>
                   </div>
                   <div className="rounded border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] text-white/50">CP impact</div>
@@ -337,7 +258,7 @@ export default function Landing() {
                   </div>
                   <div className="rounded border border-white/10 bg-white/[0.03] p-2">
                     <div className="text-[10px] text-white/50">Recoverable</div>
-                    <div className="text-base font-semibold text-emerald-400">4d</div>
+                    <div className="text-base font-semibold text-[#34D399]">4d</div>
                   </div>
                 </div>
               </div>
@@ -346,100 +267,69 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ============================================================
-          SECURITY & COMPLIANCE
-          ============================================================ */}
-      <section
-        id="security"
-        data-testid="landing-security"
-        className="relative py-20 lg:py-28"
-      >
+      {/* SECURITY */}
+      <section id="security" data-testid="landing-security" className="relative py-20 lg:py-24">
         <div className="max-w-7xl mx-auto px-6 lg:px-10">
-          <div className="max-w-2xl mb-12">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-[#ef233c] mb-3">Security & compliance</div>
+          <div className="max-w-2xl mb-10">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-[#34D399] mb-3">Security</div>
             <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
               Federal-grade from the schema up.
             </h2>
-            <p className="text-base text-white/70 mt-4 leading-relaxed">
-              Tenant isolation isn't a setting you toggle. It's enforced at the row level on
-              every query, on every table, with no admin override path.
-            </p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            {COMPLIANCE.map(({ icon: Icon, title, body }) => (
-              <div
-                key={title}
-                className="rounded-lg border border-white/10 bg-white/[0.02] p-6"
-              >
-                <Icon className="h-6 w-6 text-[#ef233c] mb-4" strokeWidth={1.8} />
-                <div className="text-base font-semibold tracking-tight text-white mb-2">{title}</div>
-                <div className="text-sm text-white/65 leading-relaxed">{body}</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {COMPLIANCE.map(({ icon: Icon, title, tag }) => (
+              <div key={title} className="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+                <Icon className="h-5 w-5 text-[#34D399] mb-3" strokeWidth={1.8} />
+                <div className="text-sm font-semibold tracking-tight text-white mb-1">{title}</div>
+                <div className="text-xs text-white/60">{tag}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ============================================================
-          HOW IT WORKS — 4-step
-          ============================================================ */}
-      <section
-        id="workflow"
-        data-testid="landing-workflow"
-        className="relative py-20 lg:py-28 border-y border-white/10 bg-black/40"
-      >
+      {/* HOW IT WORKS */}
+      <section id="workflow" data-testid="landing-workflow" className="relative py-20 lg:py-24 border-y border-white/10 bg-black/40">
         <div className="max-w-7xl mx-auto px-6 lg:px-10">
-          <div className="max-w-2xl mb-12">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-[#ef233c] mb-3">How it works</div>
+          <div className="max-w-2xl mb-10">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-[#34D399] mb-3">How it works</div>
             <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
-              From signup to first daily report in under an hour.
+              Signup to first daily report in under an hour.
             </h2>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-            {STEPS.map(({ n, icon: Icon, title, body }) => (
-              <div
-                key={n}
-                className="relative rounded-lg border border-white/10 bg-white/[0.02] p-6"
-              >
-                <div className="flex items-baseline justify-between mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {STEPS.map(({ n, icon: Icon, title, tag }) => (
+              <div key={n} className="rounded-lg border border-white/10 bg-white/[0.02] p-5">
+                <div className="flex items-baseline justify-between mb-3">
                   <div className="text-3xl font-bold text-white/15 font-mono">{n}</div>
-                  <Icon className="h-5 w-5 text-[#ef233c]" strokeWidth={1.8} />
+                  <Icon className="h-5 w-5 text-[#34D399]" strokeWidth={1.8} />
                 </div>
-                <div className="text-base font-semibold tracking-tight text-white mb-2">{title}</div>
-                <div className="text-sm text-white/65 leading-relaxed">{body}</div>
+                <div className="text-sm font-semibold tracking-tight text-white mb-1">{title}</div>
+                <div className="text-xs text-white/60">{tag}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ============================================================
-          FINAL CTA
-          ============================================================ */}
-      <section
-        data-testid="landing-final-cta"
-        className="relative py-20 lg:py-28"
-      >
+      {/* FINAL CTA */}
+      <section data-testid="landing-final-cta" className="relative py-20 lg:py-24">
         <div
           className="pointer-events-none absolute inset-0"
-          style={{ background: "radial-gradient(700px 350px at 50% 50%, rgba(239,35,60,0.12), transparent 70%)" }}
+          style={{ background: "radial-gradient(700px 350px at 50% 50%, rgba(52,211,153,0.10), transparent 70%)" }}
         />
-        <div className="relative max-w-3xl mx-auto px-6 text-center space-y-7">
+        <div className="relative max-w-3xl mx-auto px-6 text-center space-y-6">
           <h2 className="text-3xl sm:text-4xl lg:text-5xl font-semibold tracking-tight leading-[1.1]">
-            Ready to run your jobs out of{" "}
-            <span className="text-[#ef233c]">one platform?</span>
+            Run your jobs out of{" "}
+            <span className="text-[#34D399]">one platform.</span>
           </h2>
-          <p className="text-base text-white/70 leading-relaxed max-w-xl mx-auto">
-            Stand up your tenant in 30 seconds. Import your schedule.
-            Have your supers logging from the field by tomorrow morning.
-          </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
               data-testid="landing-final-create"
               onClick={() => nav("/signup")}
-              className="h-12 px-7 rounded-md text-sm font-semibold bg-[#ef233c] hover:bg-[#b91c2c] text-white inline-flex items-center gap-2 shadow-[0_0_32px_-4px_rgba(239,35,60,0.65)] transition"
+              className="h-12 px-7 rounded-md text-sm font-semibold bg-[#10b981] hover:bg-[#059669] text-white inline-flex items-center gap-2 shadow-[0_0_32px_-4px_rgba(16,185,129,0.55)] transition"
             >
               Create your organization
               <ArrowRight className="h-4 w-4" strokeWidth={2} />
@@ -452,40 +342,27 @@ export default function Landing() {
               Sign in
             </Link>
           </div>
-          <div className="text-xs text-white/50 pt-2">
-            Got an invite from a teammate?{" "}
-            <Link to="/accept-invite" className="text-white/80 hover:text-white underline-offset-4 hover:underline">
-              Accept it here
-            </Link>.
-          </div>
         </div>
       </section>
 
-      {/* ============================================================
-          FOOTER
-          ============================================================ */}
-      <footer
-        data-testid="landing-footer"
-        className="relative border-t border-white/10 bg-black/60"
-      >
-        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-12">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-10">
+      {/* FOOTER */}
+      <footer data-testid="landing-footer" className="relative border-t border-white/10 bg-black/60">
+        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-10">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-8">
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <div className="h-7 w-7 rounded grid place-items-center bg-[#ef233c]">
-                  <Layers className="h-4 w-4" strokeWidth={1.6} />
-                </div>
-                <div className="font-semibold tracking-tight text-sm">ICE Schedule Ops</div>
+                <SiteOpsLogo className="h-7 w-7" />
+                <div className="font-semibold tracking-tight text-sm">SiteOps</div>
               </div>
               <p className="text-xs text-white/55 leading-relaxed">
-                Built by Integrated Construction Enterprises, LLC for federal contracts.
+                A product of Integrated Construction Enterprises.
               </p>
             </div>
             <div>
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/50 mb-3">Product</div>
               <ul className="space-y-2 text-sm text-white/70">
-                <li><a href="#features" className="hover:text-white transition">Features</a></li>
-                <li><a href="#copilot"  className="hover:text-white transition">AI Copilot</a></li>
+                <li><a href="#features" className="hover:text-white transition">Platform</a></li>
+                <li><a href="#copilot"  className="hover:text-white transition">Copilot</a></li>
                 <li><a href="#workflow" className="hover:text-white transition">How it works</a></li>
               </ul>
             </div>
@@ -493,22 +370,22 @@ export default function Landing() {
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/50 mb-3">Trust</div>
               <ul className="space-y-2 text-sm text-white/70">
                 <li><a href="#security" className="hover:text-white transition">Security</a></li>
-                <li className="text-white/55">CMMC Level 2 ready</li>
-                <li className="text-white/55">NIST 800-171 aligned</li>
+                <li className="text-white/55">CMMC L2 ready</li>
+                <li className="text-white/55">NIST 800-171</li>
               </ul>
             </div>
             <div>
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/50 mb-3">Get started</div>
               <ul className="space-y-2 text-sm text-white/70">
-                <li><Link to="/login" className="hover:text-white transition">Sign in</Link></li>
-                <li><Link to="/signup" className="hover:text-white transition">Create your organization</Link></li>
-                <li><Link to="/accept-invite" className="hover:text-white transition">Accept an invite</Link></li>
+                <li><Link to="/login"          className="hover:text-white transition">Sign in</Link></li>
+                <li><Link to="/signup"         className="hover:text-white transition">Create your org</Link></li>
+                <li><Link to="/accept-invite"  className="hover:text-white transition">Accept an invite</Link></li>
               </ul>
             </div>
           </div>
-          <div className="pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-white/55">
-            <div>© {new Date().getFullYear()} ICE Construction. All rights reserved.</div>
-            <div>CMMC Level 2 ready · NIST 800-171 aligned</div>
+          <div className="pt-5 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-white/55">
+            <div>&copy; {new Date().getFullYear()} ICE Construction. All rights reserved.</div>
+            <div>CMMC L2 &middot; NIST 800-171</div>
           </div>
         </div>
       </footer>

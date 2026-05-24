@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import api from "../lib/api";
 import { setAuth } from "../lib/auth";
-import { Layers, MailCheck } from "lucide-react";
+import { MailCheck } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast, Toaster } from "../components/ui/sonner";
+import SiteOpsLogo from "../components/SiteOpsLogo";
 
 export default function AcceptInvite() {
   const nav = useNavigate();
@@ -49,8 +50,8 @@ export default function AcceptInvite() {
       <Toaster />
       <div className="w-full max-w-md surface p-7 relative z-10">
         <div className="flex items-center gap-2 mb-4">
-          <Layers className="h-5 w-5 text-blue-600" strokeWidth={1.6} />
-          <div className="font-semibold tracking-tight">ICE Schedule Ops</div>
+          <SiteOpsLogo className="h-7 w-7" />
+          <div className="font-semibold tracking-tight">SiteOps</div>
         </div>
         <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
           <MailCheck className="h-5 w-5 text-emerald-600" /> Accept invite

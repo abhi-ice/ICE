@@ -115,4 +115,4 @@ export const SIDEBAR_SECTIONS = [
   },
 ];
 
-export const APP_BRAND = { name: "ICE Schedule Ops", icon: Layers };
+export const APP_BRAND = { name: "SiteOps", icon: Layers };
