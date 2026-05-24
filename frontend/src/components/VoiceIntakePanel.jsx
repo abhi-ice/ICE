@@ -45,10 +45,19 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   const [busy, setBusy] = useState(false);
   const [pendingClips, setPendingClips] = useState([]);
   const [lastResult, setLastResult] = useState(null);
+  // 2026-05-25 — live transcription preview using the browser's
+  // built-in Web Speech API. This runs IN PARALLEL with MediaRecorder
+  // so the super sees text appearing as they speak. Gemini still
+  // produces the canonical, more-accurate transcript that gets sent
+  // to Claude on stop; this preview is just a UX confidence signal.
+  const [livePreview, setLivePreview] = useState("");
+  const [finalTranscript, setFinalTranscript] = useState("");
+  const [extractWarning, setExtractWarning] = useState(null);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const recordStartRef = useRef(null);
   const tickRef = useRef(null);
+  const speechRecRef = useRef(null);
 
   // Connectivity tracking + auto-drain on reconnect.
   useEffect(() => {
@@ -111,18 +120,69 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       mediaRecorderRef.current = mr;
       recordStartRef.current = Date.now();
       setElapsedMs(0);
+      setLivePreview("");
+      setFinalTranscript("");
+      setExtractWarning(null);
+      setLastResult(null);
       tickRef.current = setInterval(() => {
         const el = Date.now() - recordStartRef.current;
         setElapsedMs(el);
         if (el >= MAX_CLIP_MS) stopRecording();
       }, 250);
       setRecording(true);
+
+      // Start live transcription preview (Web Speech API). This runs
+      // entirely in the browser, free, real-time. It's a UX
+      // confidence signal only -- Gemini does the canonical
+      // transcription on the server. If the browser doesn't support
+      // it (Firefox without flag, Safari < 14.1), we silently skip
+      // and the user just sees a "Recording…" indicator instead.
+      try {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SR) {
+          const sr = new SR();
+          sr.continuous = true;
+          sr.interimResults = true;
+          sr.lang = "en-US";
+          sr.onresult = (event) => {
+            let interim = "";
+            let final = "";
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const t = event.results[i][0].transcript;
+              if (event.results[i].isFinal) final += t + " ";
+              else interim += t;
+            }
+            setLivePreview((prev) => {
+              // The "final" portion accumulates; interim is appended
+              // ephemerally. We rebuild the string from scratch each
+              // tick to keep it monotonic from the user's perspective.
+              const base = prev.replace(/\s*\[…[^\]]*\]$/, "").trim();
+              const next = (base + " " + final).trim();
+              return interim ? `${next} [… ${interim}]` : next;
+            });
+          };
+          sr.onerror = () => { /* ignore browser STT errors -- not critical */ };
+          sr.onend = () => {
+            // Auto-restart while recording (browser STT times out after ~60s)
+            if (mediaRecorderRef.current?.state === "recording") {
+              try { sr.start(); } catch { /* race; ignore */ }
+            }
+          };
+          sr.start();
+          speechRecRef.current = sr;
+        }
+      } catch (e) {
+        // Web Speech not supported / blocked; carry on without preview.
+        console.warn("Live transcript preview unavailable:", e);
+      }
     } catch (e) {
       toast.error(`Microphone error: ${e.message || e}`);
     }
   };
   const stopRecording = () => {
     try { mediaRecorderRef.current?.stop(); } catch { /* ignore */ }
+    try { speechRecRef.current?.stop(); } catch { /* ignore */ }
+    speechRecRef.current = null;
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     setRecording(false);
   };
@@ -145,10 +205,30 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           { headers: { "Content-Type": "multipart/form-data" }, timeout: 180000 },
         );
         setLastResult(r.data);
-        toast.success(
-          `AI applied: ${summarizeApplied(r.data.applied)}. Review the draft and submit when ready.`,
-          { duration: 6000 },
-        );
+        setFinalTranscript(r.data.transcript || "");
+        setExtractWarning(r.data.warning || null);
+        if (r.data.warning === "no_speech_detected") {
+          toast.error(
+            "AI couldn't hear any speech in the recording. Check your "
+            + "mic, move closer, and try again.",
+            { duration: 8000 },
+          );
+        } else {
+          const s = summarizeApplied(r.data.applied);
+          if (s === "no fields") {
+            toast.error(
+              "AI heard you but couldn't extract any DR fields. "
+              + "Review the transcript below and either re-record more clearly "
+              + "or edit the DR by hand.",
+              { duration: 8000 },
+            );
+          } else {
+            toast.success(
+              `AI applied: ${s}. Review the draft and submit when ready.`,
+              { duration: 6000 },
+            );
+          }
+        }
         if (onApplied) onApplied();
       } catch (e) {
         toast.error(`Voice intake failed: ${e?.response?.data?.detail || e.message}`);
@@ -355,29 +435,60 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       )}
 
       {(mode === "voice_async" || mode === "offline_voice") && (
-        <div className="flex items-center gap-3">
-          {!recording ? (
-            <button
-              data-testid="voice-record-start"
-              onClick={startRecording}
-              disabled={blocked || busy}
-              className="h-10 px-4 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
-            >
-              <Mic className="h-4 w-4" /> Start recording
-            </button>
-          ) : (
-            <button
-              data-testid="voice-record-stop"
-              onClick={stopRecording}
-              className="h-10 px-4 rounded bg-rose-600 hover:bg-rose-700 text-white text-sm font-medium inline-flex items-center gap-2"
-            >
-              <Square className="h-4 w-4" /> Stop ({(elapsedMs / 1000).toFixed(0)}s)
-            </button>
-          )}
-          {busy && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
-          <div className="text-xs text-slate-500">
-            Up to 30 min per clip. {mode === "offline_voice" ? "Stored locally; auto-uploads when online." : "Uploads + AI fills DR on stop."}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            {!recording ? (
+              <button
+                data-testid="voice-record-start"
+                onClick={startRecording}
+                disabled={blocked || busy}
+                className="h-10 px-4 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium inline-flex items-center gap-2 disabled:opacity-50"
+              >
+                <Mic className="h-4 w-4" /> Start recording
+              </button>
+            ) : (
+              <button
+                data-testid="voice-record-stop"
+                onClick={stopRecording}
+                className="h-10 px-4 rounded bg-rose-600 hover:bg-rose-700 text-white text-sm font-medium inline-flex items-center gap-2"
+              >
+                <Square className="h-4 w-4" /> Stop ({(elapsedMs / 1000).toFixed(0)}s)
+              </button>
+            )}
+            {busy && (
+              <span className="text-xs text-slate-500 inline-flex items-center gap-1.5">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Transcribing &amp; extracting…
+              </span>
+            )}
+            {recording && (
+              <span className="text-xs text-emerald-500 inline-flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-rose-500 animate-pulse" />
+                Recording — speak clearly
+              </span>
+            )}
           </div>
+          <div className="text-xs text-slate-500">
+            Up to 30 min per clip. {mode === "offline_voice"
+              ? "Stored locally; auto-uploads when online."
+              : "Uploads on stop. AI fills the DR from your speech."}
+          </div>
+
+          {/* Live preview (browser Web Speech API, free & real-time).
+              Just a UX confidence signal; Gemini does the final
+              authoritative transcription server-side. */}
+          {recording && (
+            <div data-testid="voice-live-preview"
+              className="rounded border border-emerald-700/40 bg-emerald-950/30 p-3">
+              <div className="text-[11px] uppercase tracking-wide text-emerald-300 mb-1.5 flex items-center gap-1.5">
+                <Radio className="h-3 w-3" /> Live transcript preview
+                <span className="text-slate-500 normal-case">(browser-only; AI uses the final recording)</span>
+              </div>
+              <div className="text-sm text-slate-100 min-h-[2.5rem] whitespace-pre-wrap leading-relaxed">
+                {livePreview || <span className="text-slate-500 italic">Listening… start talking.</span>}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -444,13 +555,66 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
         </div>
       )}
 
-      {/* AI result summary */}
-      {lastResult?.applied && (
-        <div className="mt-4 pt-3 border-t border-slate-800 text-xs">
-          <div className="flex items-center gap-2 text-emerald-400 mb-2">
-            <CheckCircle2 className="h-4 w-4" /> AI populated the draft. Review fields below before submitting.
-          </div>
-          <pre className="text-slate-400 whitespace-pre-wrap">{summarizeApplied(lastResult.applied)}</pre>
+      {/* AI transcript + result summary -- the diagnostic surface
+          the super sees after recording. Shows EXACTLY what Gemini
+          heard so they can compare it to what they actually said,
+          and clearly explains why fields weren't filled if Claude
+          couldn't extract structured data. */}
+      {(finalTranscript || extractWarning || lastResult?.applied) && (
+        <div className="mt-4 pt-3 border-t border-slate-800 space-y-3" data-testid="voice-result-panel">
+          {extractWarning === "no_speech_detected" ? (
+            <div className="rounded border border-rose-700 bg-rose-950/40 p-3">
+              <div className="flex items-center gap-2 text-rose-300 text-sm font-medium mb-1">
+                <AlertCircle className="h-4 w-4" /> AI couldn't hear any speech
+              </div>
+              <div className="text-xs text-slate-300">
+                Your microphone may be muted, the recording was silent,
+                or the audio quality wasn't clear enough. Try:
+                <ul className="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
+                  <li>Check that your browser has microphone permission</li>
+                  <li>Move closer to the mic (within arm's length)</li>
+                  <li>Speak louder and slower</li>
+                  <li>Reduce background noise if possible</li>
+                </ul>
+              </div>
+            </div>
+          ) : finalTranscript ? (
+            <div className="rounded border border-slate-700 bg-slate-950/60 p-3">
+              <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1.5 flex items-center justify-between">
+                <span>What the AI heard (final transcript)</span>
+                <span className="text-slate-500 normal-case">{finalTranscript.length} chars</span>
+              </div>
+              <pre className="text-sm text-slate-100 whitespace-pre-wrap font-sans leading-relaxed max-h-48 overflow-y-auto">
+                {finalTranscript}
+              </pre>
+            </div>
+          ) : null}
+
+          {lastResult?.applied && (() => {
+            const applied = lastResult.applied;
+            const summary = summarizeApplied(applied);
+            const isEmpty = summary === "no fields";
+            return (
+              <div className={`rounded border p-3 ${
+                isEmpty
+                  ? "border-amber-700 bg-amber-950/30"
+                  : "border-emerald-700 bg-emerald-950/30"
+              }`}>
+                <div className={`flex items-center gap-2 text-sm font-medium mb-1 ${
+                  isEmpty ? "text-amber-300" : "text-emerald-300"
+                }`}>
+                  {isEmpty
+                    ? <><AlertCircle className="h-4 w-4" /> No DR fields extracted</>
+                    : <><CheckCircle2 className="h-4 w-4" /> Draft populated — review fields below</>}
+                </div>
+                <div className="text-xs text-slate-300">
+                  {isEmpty
+                    ? "The AI transcribed your speech but couldn't map it to specific DR fields. Try mentioning things explicitly — e.g. 'three carpenters from Acme on site eight hours', 'activity 1.4 is 50 percent complete', 'minor delay on electrical, two day impact'."
+                    : <span>AI applied: <strong>{summary}</strong></span>}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

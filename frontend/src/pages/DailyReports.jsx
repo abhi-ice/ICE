@@ -395,6 +395,11 @@ export default function DailyReports() {
 function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
+  // 5-Route DR (2026-05-25) — allow switching to voice mode AFTER the
+  // DR is already open. Initial value comes from the New-DR picker;
+  // user can flip it from inside the detail page via the header
+  // "Voice intake" toggle.
+  const [activeIntakeMode, setActiveIntakeMode] = useState(intakeMode);
   // Feature Client DR Template Export (2026-05-20) -- the third export
   // button (next to Internal / External) is gated on the project
   // having a client xlsx template uploaded. We fetch the metadata
@@ -840,14 +845,26 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       {/* 5-Route DR voice intake (Phase A 2026-05-25). The "Voice Memo"
           and "Live Voice" modes selected at New-DR time auto-expand
           the matching panel; Manual mode hides it. Recording / live /
-          offline-queue logic lives inside VoiceIntakePanel. */}
-      {intakeMode && intakeMode !== "manual" && (
+          offline-queue logic lives inside VoiceIntakePanel.
+          User can toggle the panel on any open DR via the header
+          "Voice intake" button below. */}
+      {activeIntakeMode && activeIntakeMode !== "manual" && (
         <VoiceIntakePanel
           dailyReportId={id}
-          initialMode={intakeMode === "voice_memo" ? "voice_async" : "voice_live"}
+          initialMode={activeIntakeMode === "voice_memo" ? "voice_async" : "voice_live"}
           locked={locked}
           onApplied={reload}
         />
+      )}
+      {activeIntakeMode === "manual" && !locked && (
+        <div className="flex justify-end -mt-2">
+          <button data-testid="dr-open-voice-intake"
+            onClick={() => setActiveIntakeMode("voice_memo")}
+            className="h-8 px-3 rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 text-xs inline-flex items-center gap-1.5 hover:bg-emerald-900/40"
+          >
+            <Mic className="h-3 w-3" /> Add via voice
+          </button>
+        </div>
       )}
 
       {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.

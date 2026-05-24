@@ -342,6 +342,44 @@ endpoints are LIVE.
   (full run including audio synthesis + Gemini + Claude + DB
   round-trip: 23s).
 
+### Iter 13.1 — Voice intake debugging UX + fixes (2026-05-25 evening)
+User filed a real voice memo for May 22 DR (3 carpenters + electrical
+rough-in 20% + 3-day electrical delay) and got "no fields applied".
+Multiple bugs surfaced:
+
+1. **MIME codec parameter broke Gemini**: browser MediaRecorder sends
+   `audio/webm;codecs=opus` but Gemini only accepts `audio/webm`.
+   Backend now strips the `;codecs=...` suffix before calling Part.from_bytes.
+2. **Activity grid was invisible to Claude**: the router pulled grid
+   rows with a `tenant_filter()` call, but `daily_report_activities`
+   docs don't carry tenant_id (tenant scope is enforced via DR
+   parent). Removed the bogus filter so Claude actually sees the grid.
+3. **Grid projection field name wrong**: was asking for `name` /
+   `description`; the actual field is `activity_description`. Fixed.
+4. **Description-based activity matching**: Claude now sees
+   `code + activity_description + trade` for every grid row and
+   matches spoken hints like "electrical rough in" to the right
+   activity code. Added a server-side fuzzy fallback (token-overlap
+   score) for cases where Claude leaves activity_code null but
+   provides a description hint.
+5. **Delay impact days**: extraction prompt now captures
+   `projected_impact_days`; router writes it into `delay.delay_days`
+   and into each `per_task_impacts` entry.
+6. **Frontend transparency**:
+   - **Live transcript preview** while recording, using the browser's
+     native Web Speech API (free, real-time, no Gemini cost).
+   - **Final Gemini transcript** displayed prominently after stop so
+     the super can compare what they said vs what AI heard.
+   - Color-coded result card: green when fields extracted, amber when
+     transcript came back but no structured fields, red when no
+     speech was detected at all (with troubleshooting tips).
+7. **"Add via voice" button** on DR detail header — users can now
+   open the voice intake panel on any draft DR, not just at creation.
+8. **Verified**: feeding user's exact transcript through `/voice/extract`
+   correctly produces activity_updates=1 (grid 1.9 → 20%),
+   crew_presence=1 (CARP × 3 × 8 hr from ICE), and delays=1
+   (3-day impact, linked to schedule_activity_id of the electrical task).
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

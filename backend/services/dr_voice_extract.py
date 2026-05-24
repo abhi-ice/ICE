@@ -102,7 +102,8 @@ Required JSON shape (every key optional, use the EXACT types shown):
       "owner_attribution": "<one of: gc|owner|design|sub|third_party|act_of_god|none>",
       "cause_class": "<one of: non_compensable|compensable|concurrent|excusable|inexcusable|other>",
       "status": "<one of: open|investigating|resolved>",
-      "linked_activity_codes": ["<list of activity codes this delay affected, e.g. ['1.7','1.8']>"]
+      "linked_activity_codes": ["<list of activity codes this delay affected, e.g. ['1.7','1.8']>"],
+      "projected_impact_days": <number or null -- if super said 'X day impact' or 'delays it by X days'>
     }
   ],
 
@@ -175,6 +176,7 @@ async def extract_dr_fields(
     transcript: str,
     *,
     activity_codes_in_dr: Optional[list[str]] = None,
+    activities_context: Optional[list[dict]] = None,
     project_name: Optional[str] = None,
     report_date_iso: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -187,6 +189,10 @@ async def extract_dr_fields(
     activity_codes_in_dr : OPTIONAL list of activity codes currently on
         the DR grid. When present, Claude is told to match the super's
         spoken hints against this list (improves activity_code accuracy).
+    activities_context : OPTIONAL list of {code, name, trade} for each
+        activity on the grid -- enables fuzzy description matching so
+        the super can say "electrical rough in" and Claude maps it to
+        the right activity_code without the super reciting the code.
     project_name, report_date_iso : OPTIONAL context Claude can use to
         disambiguate references like "yesterday" or to skip a project
         name the super mentioned in passing.
@@ -214,8 +220,26 @@ async def extract_dr_fields(
         ctx_lines.append(f"Project: {project_name}")
     if report_date_iso:
         ctx_lines.append(f"Report date: {report_date_iso}")
-    if activity_codes_in_dr:
-        # Cap to first 60 codes to keep prompt size sane.
+    if activities_context:
+        # Send the FULL grid (up to first 60 rows) with code+name+trade
+        # so Claude can map spoken descriptions to activity codes.
+        rows = []
+        for a in activities_context[:60]:
+            line = f"  - {a.get('code')}"
+            if a.get("name"):
+                line += f"  {a['name']}"
+            if a.get("trade"):
+                line += f"  [{a['trade']}]"
+            rows.append(line)
+        ctx_lines.append(
+            "Activities on this DR grid (super may refer to these by code OR by name):\n"
+            + "\n".join(rows)
+            + "\nWhen the super describes an activity in their own words, "
+            "MATCH it to the closest activity_code from this list -- e.g. "
+            "spoken 'electrical rough in' should match an activity with "
+            "'electrical' in the name."
+        )
+    elif activity_codes_in_dr:
         codes_str = ", ".join(activity_codes_in_dr[:60])
         ctx_lines.append(
             f"Activity codes present on this DR grid: {codes_str}. "

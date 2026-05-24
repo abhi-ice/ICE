@@ -94,11 +94,13 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
         "verbatim. Preserve every spoken word; do not summarize. "
         "If the speaker mentions activity codes like 'one point seven', "
         "write them as '1.7'. Return ONLY the transcript text -- no "
-        "preamble, no commentary, no formatting. CRITICAL: if the "
-        "audio contains NO clear human speech (silence, music, tones, "
-        "background noise only), respond with an empty string. Do "
-        "NOT fabricate, paraphrase, or invent content that wasn't "
-        "actually spoken."
+        "preamble, no commentary, no formatting. "
+        "If you can make out ANY human speech, transcribe it even if "
+        "the audio is noisy, distant, or has background construction "
+        "sounds. ONLY return an empty string if the audio is COMPLETELY "
+        "silent or contains zero human speech (e.g. pure tones, music "
+        "only, or total silence). Do NOT fabricate or paraphrase content "
+        "that wasn't actually spoken."
     )
 
     # Per Google's Feb-2026 deprecation schedule, `gemini-2.0-flash` is
@@ -181,15 +183,24 @@ async def voice_transcribe(
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio upload")
-    # 100 MB hard cap. Anything between ~18 MB and 100 MB goes through
-    # the Files API path (see _gemini_transcribe_audio). 100 MB is
-    # enough for a 60-minute high-quality voice memo.
     if len(raw) > 100 * 1024 * 1024:
-        raise HTTPException(
-            status_code=413, detail="audio file too large (>100 MB)")
+        raise HTTPException(status_code=413, detail="audio file too large (>100 MB)")
 
-    mime = audio.content_type or "audio/mp3"
+    # Browser MediaRecorder emits content types like
+    # "audio/webm;codecs=opus". Gemini's audio API only accepts the
+    # base MIME -- strip the codec parameter so Part.from_bytes
+    # validates cleanly. Default to audio/webm because that's what
+    # Chromium/Firefox MediaRecorder produces by default.
+    raw_mime = audio.content_type or "audio/webm"
+    mime = raw_mime.split(";")[0].strip()
+    if not mime.startswith("audio/"):
+        mime = "audio/webm"
+    log.info("dr_voice: /transcribe dr=%s bytes=%d mime=%s (raw=%s)",
+             dr_id, len(raw), mime, raw_mime)
+
     transcript = await _gemini_transcribe_audio(raw, mime)
+    log.info("dr_voice: /transcribe dr=%s -> %d chars transcript",
+             dr_id, len(transcript))
     return {"transcript": transcript, "char_count": len(transcript)}
 
 
@@ -221,12 +232,28 @@ async def voice_extract(
             detail="DR is not in draft status; voice extract is draft-only",
         )
 
-    # Pull activity grid for matching context.
+    # Pull activity grid for matching context. We need code + name +
+    # trade so Claude can fuzzy-match spoken descriptions like
+    # "electrical rough in" to the right grid row.
+    # NB: daily_report_activities does NOT carry tenant_id directly --
+    # tenant scope is enforced by the parent DR lookup above.
     grid = await db.daily_report_activities.find(
-        tenant_filter(tenant_id, {"daily_report_id": dr_id}),
-        {"_id": 0, "activity_code": 1, "id": 1, "schedule_activity_id": 1},
+        {"daily_report_id": dr_id},
+        {"_id": 0, "activity_code": 1, "id": 1, "schedule_activity_id": 1,
+         "activity_description": 1, "trade_code": 1, "work_category": 1,
+         "location_name": 1},
     ).to_list(500)
-    codes = [g.get("activity_code") for g in grid if g.get("activity_code")]
+    activities_ctx = []
+    for g in grid:
+        code = g.get("activity_code") or ""
+        if not code:
+            continue
+        descriptor = g.get("activity_description") or ""
+        trade = g.get("trade_code") or g.get("work_category") or ""
+        activities_ctx.append({"code": code, "name": descriptor, "trade": trade})
+    codes = [a["code"] for a in activities_ctx]
+    log.info("dr_voice: extract dr=%s grid_rows=%d codes=%s transcript_chars=%d",
+             dr_id, len(grid), codes[:10], len(transcript))
 
     project = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": dr["project_id"]}),
@@ -236,9 +263,17 @@ async def voice_extract(
     parsed = await extract_dr_fields(
         transcript,
         activity_codes_in_dr=codes,
+        activities_context=activities_ctx,
         project_name=project.get("name"),
         report_date_iso=dr.get("report_date"),
     )
+    log.info("dr_voice: extract dr=%s parsed_keys=%s "
+             "activity_updates=%d crew=%d delays=%d safety=%d",
+             dr_id, list(parsed.keys()),
+             len(parsed.get("activity_updates") or []),
+             len(parsed.get("crew_presence") or []),
+             len(parsed.get("delays") or []),
+             len(parsed.get("safety_events") or []))
 
     # ---- write-back ---------------------------------------------------
     applied = {
@@ -283,13 +318,43 @@ async def voice_extract(
             {"$set": update},
         )
 
-    # 2. Activity-grid updates -- match by activity_code -> DR row
+    # 2. Activity-grid updates -- match by activity_code -> DR row.
+    # Fallback: if Claude didn't get the code but gave a description
+    # hint, fuzzy-match against the grid row's activity_description.
     code_to_row = {g["activity_code"]: g for g in grid if g.get("activity_code")}
+    def _match_by_description(hint: str):
+        if not hint:
+            return None
+        hint_lower = hint.lower()
+        # Score = count of overlapping significant tokens (skip stop words)
+        STOP = {"the", "a", "of", "in", "on", "and", "is", "are", "was", "were",
+                "to", "for", "with", "at", "by", "an"}
+        hint_tokens = {t for t in hint_lower.split() if t not in STOP and len(t) > 2}
+        if not hint_tokens:
+            return None
+        best, best_score = None, 0
+        for g in grid:
+            desc = (g.get("activity_description") or "").lower()
+            if not desc:
+                continue
+            desc_tokens = {t for t in desc.replace("-", " ").replace(",", " ").split()
+                           if t not in STOP and len(t) > 2}
+            score = len(hint_tokens & desc_tokens)
+            if score > best_score:
+                best, best_score = g, score
+        return best if best_score >= 1 else None
+
     for au in (parsed.get("activity_updates") or []):
         if not isinstance(au, dict):
             continue
         code = (au.get("activity_code") or "").strip()
-        row = code_to_row.get(code)
+        row = code_to_row.get(code) if code else None
+        if not row:
+            # Try description-based match.
+            row = _match_by_description(au.get("activity_description_hint") or "")
+            if row:
+                log.info("dr_voice: matched activity_description_hint=%r to code=%s",
+                         au.get("activity_description_hint"), row.get("activity_code"))
         if not row:
             continue
         row_update: dict = {"updated_at": now}
@@ -303,7 +368,7 @@ async def voice_extract(
             row_update["notes"] = str(au["notes"])
         if len(row_update) > 1:
             await db.daily_report_activities.update_one(
-                tenant_filter(tenant_id, {"id": row["id"]}),
+                {"id": row["id"]},  # no tenant_id on grid rows
                 {"$set": row_update},
             )
             applied["activity_updates"] += 1
@@ -347,10 +412,29 @@ async def voice_extract(
                 out.append(tid)
         return out
 
+    # If Claude described an activity by name in `linked_activity_hint`
+    # but didn't resolve the code, try to match by description against
+    # the grid. Used by the delay/safety extractors below.
+    def _link_from_hint(hint: str):
+        row = _match_by_description(hint)
+        if row and row.get("schedule_activity_id"):
+            return [row["schedule_activity_id"]]
+        return []
+
     for d in (parsed.get("delays") or []):
         if not isinstance(d, dict) or not d.get("description"):
             continue
         linked = await _link_task_ids(d.get("linked_activity_codes") or [])
+        # If Claude didn't link a code but the delay description
+        # mentions an activity word like "electrical shaft", try
+        # description-fallback linking too.
+        if not linked:
+            linked = _link_from_hint(d.get("description") or "")
+        impact_days = d.get("projected_impact_days")
+        try:
+            impact_days_f = float(impact_days) if impact_days is not None else 0.0
+        except (TypeError, ValueError):
+            impact_days_f = 0.0
         await db.delays.insert_one({
             "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
             "description": str(d["description"])[:2000],
@@ -359,8 +443,9 @@ async def voice_extract(
             "owner_attribution": str(d.get("owner_attribution") or "none"),
             "cause_class": str(d.get("cause_class") or "other"),
             "status": str(d.get("status") or "open"),
+            "delay_days": impact_days_f if impact_days_f > 0 else None,
             "linked_task_ids": linked,
-            "per_task_impacts": [{"task_id": t, "projected_impact_days": 0}
+            "per_task_impacts": [{"task_id": t, "projected_impact_days": impact_days_f}
                                   for t in linked],
             "daily_report_id": dr_id,
             "date": dr.get("report_date"),
@@ -483,9 +568,30 @@ async def voice_transcribe_and_extract(
     if len(raw) > 100 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="audio file too large (>100 MB)")
 
-    mime = audio.content_type or "audio/mp3"
+    raw_mime = audio.content_type or "audio/webm"
+    mime = raw_mime.split(";")[0].strip()
+    if not mime.startswith("audio/"):
+        mime = "audio/webm"
+    log.info("dr_voice: /transcribe-and-extract dr=%s bytes=%d mime=%s (raw=%s)",
+             dr_id, len(raw), mime, raw_mime)
+
     transcript = await _gemini_transcribe_audio(raw, mime)
+    log.info("dr_voice: /transcribe-and-extract dr=%s transcript=%r",
+             dr_id, transcript[:300])
     # Reuse the same path -- pass transcript through extract endpoint.
+    if not transcript.strip():
+        # Gemini returned nothing -- don't call Claude with an empty
+        # transcript; return a structured response so the frontend can
+        # show a clear "AI couldn't hear you" message.
+        return {
+            "transcript": "",
+            "ok": True,
+            "applied": {"weather": False, "notes": False, "activity_updates": 0,
+                        "crew_presence": 0, "delays": 0, "safety_events": 0,
+                        "qc_issues": 0, "deliveries": 0, "coordination_events": 0},
+            "draft": {},
+            "warning": "no_speech_detected",
+        }
     extract_result = await voice_extract(
         dr_id, {"transcript": transcript}, ctx,
     )
