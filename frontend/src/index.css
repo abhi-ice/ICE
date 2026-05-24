@@ -1,16 +1,14 @@
-/* SiteOps / ICE Schedule Ops — RED NOIR skin (2026-05-22).
-   Migrated from Swiss/light-theme to a dark federal-construction look:
-   pure-black base, crimson #ef233c brand accent, frosted dark surfaces,
-   Atkinson-Hyperlegible body (low-vision optimized, Braille Institute),
-   Manrope display, JetBrains Mono for codes/numbers.
+/* SiteOps — PREMIUM EMERALD skin (2026-05-24).
+   Dark federal-construction look: pure-black base, premium emerald
+   #10b981 / #34D399 brand accent (replaces the aggressive red),
+   frosted dark surfaces, Inter body, Manrope display, JetBrains Mono
+   for codes/numbers. Atkinson Hyperlegible kept loaded as the
+   accessibility-toolbar low-vision toggle.
 
-   Every existing class name + selector kept so the page JSX never has
-   to change — only the visual layer.
-
-   Status pills retain semantic colors (amber/blue/emerald/red/slate)
-   so submitted-status (blue), approved (emerald), etc. continue to
-   read as they did before. Brand-red is reserved for the brand
-   accent + active nav + primary CTAs. */
+   Status pills retain semantic colors (amber/blue/emerald/red/slate).
+   Brand-emerald is reserved for the brand accent + active nav +
+   primary CTAs. Red stays available only for semantic danger
+   (delete, blocker, slip indicator). */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -50,19 +48,26 @@
 
 body {
     margin: 0;
-    /* Atkinson Hyperlegible primary (designed by Braille Institute for
-       low-vision readers — each glyph maximally distinct so I/l/1 and
-       O/0 can't be confused). Falls back to self-hosted Inter if the
-       Google Fonts CDN is blocked. Body size kept at 18px / line-
-       height 1.5 to preserve the 2026-05-18 scale bump. */
-    font-family: 'Atkinson Hyperlegible', 'Inter', -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
-    font-size: 18px;
-    line-height: 1.5;
+    /* Inter primary (modern SaaS standard — high-quality grotesque
+       sans, designed by Rasmus Andersson for UI). Atkinson Hyperlegible
+       moves to a fallback role here — it's still available via the
+       accessibility toolbar's "Low-vision font" toggle for users who
+       prefer the Braille Institute glyph distinctness. Sizes 15px /
+       1.55 for a denser, less "Word-document" feel. */
+    font-family: 'Inter', 'Atkinson Hyperlegible', -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    letter-spacing: -0.005em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background: #000000;                  /* Red Noir base */
+    background: #000000;
     color: rgb(228 228 231);              /* zinc-200 */
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+}
+/* When the accessibility toolbar adds .low-vision-font to <html>,
+   switch the body to Atkinson Hyperlegible for low-vision users. */
+html.low-vision-font body {
+    font-family: 'Atkinson Hyperlegible', 'Inter', sans-serif;
 }
 
 code, pre, .font-mono {
@@ -70,23 +75,28 @@ code, pre, .font-mono {
     font-variant-ligatures: none;
 }
 
-/* Form controls keep 18px (also >=16px so iOS Safari doesn't auto-zoom
-   on focus). Color flipped to white-on-dark for the new theme. */
+/* Form controls keep 16px (>=16px so iOS Safari doesn't auto-zoom on
+   focus). 15px body / 16px input gives the field a slightly bolder
+   weight without the "Word-document" effect of body+input both at 18. */
 input, select, textarea {
-    font-size: 18px !important;
+    font-size: 16px !important;
 }
+h1 { font-size: 1.75rem; line-height: 1.15; letter-spacing: -0.02em; }
+h2 { font-size: 1.375rem; line-height: 1.2; letter-spacing: -0.015em; }
+h3 { font-size: 1.125rem; line-height: 1.3; letter-spacing: -0.01em; }
+h4 { font-size: 1rem;     line-height: 1.4; }
 
 @layer base {
     :root {
-        /* RED NOIR theme tokens — black base + crimson brand. Tailwind
-           reads these via hsl(var(--*)) — see tailwind.config.js. */
+        /* PREMIUM EMERALD theme tokens â€” black base + crimson brand. Tailwind
+           reads these via hsl(var(--*)) â€” see tailwind.config.js. */
         --background: 0 0% 0%;             /* pure black page */
         --foreground: 0 0% 96%;            /* near-white text */
         --card: 240 5% 8%;                 /* zinc-950-ish surface */
         --card-foreground: 0 0% 96%;
         --popover: 240 5% 8%;
         --popover-foreground: 0 0% 96%;
-        --primary: 350 87% 54%;            /* brand red #ef233c */
+        --primary: 160 84% 39%;            /* brand red #10b981 */
         --primary-foreground: 0 0% 100%;
         --secondary: 240 5% 13%;           /* zinc-800 */
         --secondary-foreground: 0 0% 96%;
@@ -94,12 +104,12 @@ input, select, textarea {
         --muted-foreground: 240 5% 65%;    /* zinc-400 */
         --accent: 240 5% 14%;
         --accent-foreground: 0 0% 96%;
-        --destructive: 0 72% 51%;          /* red-600 — distinct from brand for danger UI */
+        --destructive: 0 72% 51%;          /* red-600 â€” distinct from brand for danger UI */
         --destructive-foreground: 0 0% 100%;
         --border: 240 5% 18%;              /* subtle dark border */
         --input: 240 5% 14%;
-        --ring: 350 87% 54%;               /* brand red for focus rings */
-        --chart-1: 350 87% 54%;            /* brand */
+        --ring: 160 84% 39%;               /* brand red for focus rings */
+        --chart-1: 160 84% 39%;            /* brand */
         --chart-2: 173 58% 49%;            /* teal */
         --chart-3: 35 90% 60%;             /* amber */
         --chart-4: 0 72% 51%;              /* red */
@@ -113,20 +123,20 @@ input, select, textarea {
     body { @apply bg-background text-foreground; }
     h1, h2, h3, h4 {
         @apply tracking-tight text-white;
-        font-family: 'Manrope', 'Atkinson Hyperlegible', sans-serif;
+        font-family: 'Inter', 'Manrope', sans-serif;
         font-weight: 600;
     }
 }
 
 /* ============================================================
-   PAGE CHROME — Red Noir surface system
+   PAGE CHROME â€” Red Noir surface system
    ============================================================ */
 
-/* Page shell — black base + bottom-right crimson glow + faint grid */
+/* Page shell â€” black base + bottom-right crimson glow + faint grid */
 .page-shell {
     background:
-        radial-gradient(900px 700px at 100% 0%, rgba(239, 35, 60, 0.10), transparent 60%),
-        radial-gradient(700px 500px at 0% 100%, rgba(239, 35, 60, 0.04), transparent 60%),
+        radial-gradient(900px 700px at 100% 0%, rgba(16, 185, 129, 0.10), transparent 60%),
+        radial-gradient(700px 500px at 0% 100%, rgba(16, 185, 129, 0.04), transparent 60%),
         #000000;
     position: relative;
 }
@@ -159,7 +169,29 @@ input, select, textarea {
     z-index: 1;
 }
 
-/* Parallax starfield — two layers of pinprick stars drifting up.
+/* ============================================================
+   FIXED-SIDEBAR LAYOUT (2026-05-24 rev 3)
+   --sidebar-w is set on :root by Sidebar.jsx (56px rail / 256px expanded).
+   .app-main is the right-hand column inside .page-shell and offsets
+   itself by --sidebar-w so it doesn't slide under the fixed sidebar.
+   The sidebar itself uses .fixed left-0 top-0 bottom-0 (Tailwind)
+   so it never scrolls with the page content.
+   ============================================================ */
+:root {
+    --sidebar-w: 56px;
+}
+.app-main {
+    margin-left: var(--sidebar-w);
+    min-height: 100vh;
+    transition: margin-left 150ms ease-out;
+}
+/* Sidebar itself — force fixed positioning + viewport height +
+   own scroll. Wins over any sticky fallback. */
+.app-sidebar.fixed {
+    position: fixed !important;
+}
+
+/* Parallax starfield â€” two layers of pinprick stars drifting up.
    Pure box-shadow technique, no JS, GPU-friendly. The dots are 1-2px
    so they read as ambience, not noise. */
 .page-shell::after {
@@ -201,7 +233,7 @@ input, select, textarea {
     .page-shell::after { animation: none; }
 }
 
-/* Sidebar (dark) — kept dark but border + tones recalibrated for noir */
+/* Sidebar (dark) â€” kept dark but border + tones recalibrated for noir */
 .app-sidebar {
     background: linear-gradient(180deg, #08080a 0%, #000 100%);
     color: rgb(228 228 231);              /* zinc-200 */
@@ -209,14 +241,14 @@ input, select, textarea {
 }
 .sidebar-section-title {
     @apply px-4 pt-5 pb-1 text-xs font-semibold uppercase tracking-[0.13em];
-    color: rgba(239, 35, 60, 0.65);       /* red-tinted section labels */
+    color: rgba(16, 185, 129, 0.65);       /* red-tinted section labels */
 }
 .sidebar-link {
     @apply flex items-center gap-2.5 mx-2 px-3 py-1.5 text-xs rounded-md transition-colors;
     color: rgb(212 212 216);              /* zinc-300 */
 }
 .sidebar-link:hover {
-    background: rgba(239, 35, 60, 0.10);
+    background: rgba(16, 185, 129, 0.10);
     color: #ffffff;
 }
 .sidebar-link-nested {
@@ -224,20 +256,20 @@ input, select, textarea {
     border-left: 1px solid rgba(255,255,255,0.08);
 }
 .sidebar-link.active {
-    background: rgba(239, 35, 60, 0.18);
+    background: rgba(16, 185, 129, 0.18);
     color: #ffffff;
     box-shadow:
-        inset 3px 0 0 0 #ef233c,           /* red left accent bar */
+        inset 3px 0 0 0 #10b981,           /* red left accent bar */
         inset 0 0 0 1px rgba(255,255,255,0.05),
-        0 0 12px -2px rgba(239, 35, 60, 0.45);  /* outer red glow */
+        0 0 12px -2px rgba(16, 185, 129, 0.45);  /* outer red glow */
 }
 .sidebar-link.active:hover {
-    background: rgba(239, 35, 60, 0.22);
+    background: rgba(16, 185, 129, 0.22);
     color: #ffffff;
 }
 
 /* ============================================================
-   FROZEN-PANE TABLES (Tasks page — keeps 19 columns intact)
+   FROZEN-PANE TABLES (Tasks page â€” keeps 19 columns intact)
    ============================================================ */
 /* Sticky thead + col-pin-1 (# column) + col-pin-2 (Description column)
    stay in place while scrolling. The bg color is the noir surface so
@@ -273,14 +305,14 @@ input, select, textarea {
     background-color: rgba(15, 15, 18, 0.85);   /* solid-ish dark row bg */
 }
 
-/* Top bar — dark glass, sticky */
+/* Top bar â€” dark glass, sticky */
 .app-topbar {
     @apply h-14 flex items-center gap-3 px-4 sticky top-0 z-30;
     background: rgba(8, 8, 10, 0.85);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
     border-bottom: 1px solid rgba(255,255,255,0.06);
-    box-shadow: 0 1px 0 rgba(239, 35, 60, 0.05);
+    box-shadow: 0 1px 0 rgba(16, 185, 129, 0.05);
 }
 
 /* KPI tile */
@@ -292,8 +324,8 @@ input, select, textarea {
 }
 .kpi-tile:hover {
     transform: translateY(-1px);
-    border-color: rgba(239, 35, 60, 0.35);
-    box-shadow: 0 0 24px -8px rgba(239, 35, 60, 0.30);
+    border-color: rgba(16, 185, 129, 0.35);
+    box-shadow: 0 0 24px -8px rgba(16, 185, 129, 0.30);
 }
 
 /* Surface card */
@@ -305,7 +337,7 @@ input, select, textarea {
     box-shadow: 0 1px 0 rgba(0,0,0,0.4);
 }
 
-/* Dense data table — same density rhythm, dark palette */
+/* Dense data table â€” same density rhythm, dark palette */
 .dense-table { width: 100%; }
 .dense-table th {
     @apply text-xs font-semibold uppercase tracking-wider px-3 py-2 text-left align-middle;
@@ -319,12 +351,12 @@ input, select, textarea {
     border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .dense-table tbody tr:hover td {
-    background: rgba(239, 35, 60, 0.05);
+    background: rgba(16, 185, 129, 0.05);
 }
 .dense-table tbody tr:last-child td { border-bottom: 0; }
 
 /* ============================================================
-   STATUS PILLS — semantic colors preserved (legibility on dark bg)
+   STATUS PILLS â€” semantic colors preserved (legibility on dark bg)
    ============================================================ */
 .pill {
     @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border;
@@ -341,9 +373,9 @@ input, select, textarea {
     border-color: rgba(245, 158, 11, 0.35);
 }
 .pill-red {
-    background: rgba(239, 35, 60, 0.14);
+    background: rgba(16, 185, 129, 0.14);
     color: rgb(252 165 165);              /* red-300 */
-    border-color: rgba(239, 35, 60, 0.40);
+    border-color: rgba(16, 185, 129, 0.40);
 }
 .pill-blue {
     background: rgba(59, 130, 246, 0.12);
@@ -357,7 +389,7 @@ input, select, textarea {
 }
 
 /* ============================================================
-   DR GRID INPUTS — dark inputs, brand-red focus ring
+   DR GRID INPUTS â€” dark inputs, brand-red focus ring
    ============================================================ */
 .dr-grid input,
 .dr-grid select,
@@ -370,8 +402,8 @@ input, select, textarea {
 .dr-grid input:focus,
 .dr-grid select:focus,
 .dr-grid textarea:focus {
-    border-color: rgba(239, 35, 60, 0.6);
-    box-shadow: 0 0 0 2px rgba(239, 35, 60, 0.25);
+    border-color: rgba(16, 185, 129, 0.6);
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
 }
 
 /* Compact form label */
@@ -398,11 +430,11 @@ input, select, textarea {
     border-radius: 3px;
 }
 .scrollbar-soft::-webkit-scrollbar-thumb:hover {
-    background: rgba(239, 35, 60, 0.5);
+    background: rgba(16, 185, 129, 0.5);
 }
 
 /* ============================================================
-   LOGIN BACKGROUND — keep the steel-construction overlay but darken
+   LOGIN BACKGROUND â€” keep the steel-construction overlay but darken
    the gradient stops so the form pops on the new dark theme
    ============================================================ */
 .login-bg {
@@ -418,20 +450,20 @@ input, select, textarea {
 }
 
 /* ============================================================
-   DR EVENT HIGHLIGHT — saffron→crimson pulse for gallery click-through
+   DR EVENT HIGHLIGHT â€” saffronâ†’crimson pulse for gallery click-through
    ============================================================ */
 .dr-event-highlight {
     animation: dr-event-pulse 2s ease-out;
     border-radius: 4px;
 }
 @keyframes dr-event-pulse {
-    0%   { background-color: rgba(239, 35, 60, 0.40); box-shadow: 0 0 0 4px rgba(239, 35, 60, 0.20); }
-    60%  { background-color: rgba(239, 35, 60, 0.25); box-shadow: 0 0 0 2px rgba(239, 35, 60, 0.10); }
+    0%   { background-color: rgba(16, 185, 129, 0.40); box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.20); }
+    60%  { background-color: rgba(16, 185, 129, 0.25); box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.10); }
     100% { background-color: transparent;             box-shadow: 0 0 0 0 transparent; }
 }
 
 /* ============================================================
-   HARD-CODED TAILWIND UTILITY OVERRIDES — re-skin pages that still
+   HARD-CODED TAILWIND UTILITY OVERRIDES â€” re-skin pages that still
    inline bg-white / bg-slate-50 / bg-blue-600 / text-slate-700 etc.
    Goal: no page JSX touched. Status pills (pill-blue) stay intact
    because they use their own composed selectors above, not raw
@@ -443,38 +475,38 @@ input, select, textarea {
     background-color: rgba(20, 20, 23, 0.55) !important;
 }
 
-/* Slate text utilities → white/zinc-300 on dark */
+/* Slate text utilities â†’ white/zinc-300 on dark */
 :where(.text-slate-900, .text-slate-800) { color: rgb(244 244 245) !important; }
 :where(.text-slate-700, .text-slate-600) { color: rgb(212 212 216) !important; }
 :where(.text-slate-500, .text-slate-400) { color: rgb(161 161 170) !important; }
 :where(.text-muted-foreground)           { color: rgb(161 161 170) !important; }
 
-/* Slate borders → subtle white */
+/* Slate borders â†’ subtle white */
 :where(.border-slate-200, .border-slate-100, .border-slate-300) {
     border-color: rgba(255,255,255,0.08) !important;
 }
 
-/* Blue brand fills → red brand. The pill-blue / spec-citation selectors
+/* Blue brand fills â†’ red brand. The pill-blue / spec-citation selectors
    above don't reach this branch because they use composed class chains. */
-.bg-blue-600 { background-color: #ef233c !important; }
-.bg-blue-700 { background-color: #b91c2c !important; }
-.bg-blue-500 { background-color: #ef233c !important; }
-.bg-blue-50  { background-color: rgba(239, 35, 60, 0.10) !important; }
-.bg-blue-100 { background-color: rgba(239, 35, 60, 0.18) !important; }
+.bg-blue-600 { background-color: #10b981 !important; }
+.bg-blue-700 { background-color: #059669 !important; }
+.bg-blue-500 { background-color: #10b981 !important; }
+.bg-blue-50  { background-color: rgba(16, 185, 129, 0.10) !important; }
+.bg-blue-100 { background-color: rgba(16, 185, 129, 0.18) !important; }
 .text-blue-600 { color: #ef4255 !important; }
 .text-blue-700 { color: #ef4255 !important; }
 .text-blue-500 { color: #ef4255 !important; }
-.border-blue-600 { border-color: #ef233c !important; }
-.border-blue-500 { border-color: #ef233c !important; }
-.border-blue-200 { border-color: rgba(239, 35, 60, 0.30) !important; }
-.hover\:bg-blue-700:hover { background-color: #b91c2c !important; }
-.hover\:bg-blue-50:hover  { background-color: rgba(239, 35, 60, 0.12) !important; }
-.focus\:ring-blue-500:focus { --tw-ring-color: rgba(239, 35, 60, 0.5) !important; }
-.focus\:border-blue-500:focus { border-color: #ef233c !important; }
+.border-blue-600 { border-color: #10b981 !important; }
+.border-blue-500 { border-color: #10b981 !important; }
+.border-blue-200 { border-color: rgba(16, 185, 129, 0.30) !important; }
+.hover\:bg-blue-700:hover { background-color: #059669 !important; }
+.hover\:bg-blue-50:hover  { background-color: rgba(16, 185, 129, 0.12) !important; }
+.focus\:ring-blue-500:focus { --tw-ring-color: rgba(16, 185, 129, 0.5) !important; }
+.focus\:border-blue-500:focus { border-color: #10b981 !important; }
 
 /* Spec citation explicitly restores its blue accent (composed class
    above already styles it, but the .bg-blue-50 override would otherwise
-   re-tint it red — restore it inline here). */
+   re-tint it red â€” restore it inline here). */
 .spec-citation,
 .spec-citation:hover {
     background-color: rgba(59, 130, 246, 0.12) !important;
@@ -488,7 +520,7 @@ input, select, textarea {
    utility overrides don't touch them. */
 
 /* ============================================================
-   PHASE 6 — EXTENDED UTILITY OVERRIDES (rose / amber / emerald
+   PHASE 6 â€” EXTENDED UTILITY OVERRIDES (rose / amber / emerald
    light-mode variants). These are heavily used across the codebase
    for slip indicators (rose), draft / warning / banner UI (amber),
    approved-status & success indicators (emerald). Re-skinned to
@@ -496,29 +528,29 @@ input, select, textarea {
    black noir background.
    ============================================================ */
 
-/* Rose — slip / over-budget / behind-schedule indicators.
+/* Rose â€” slip / over-budget / behind-schedule indicators.
    pages/Tasks.jsx, pages/Lookahead.jsx, pages/Aging.jsx,
    pages/CascadeDashboard.jsx use these heavily on row tints &
    warning callouts. */
-.bg-rose-50         { background-color: rgba(239, 35, 60, 0.07) !important; }
-.bg-rose-100        { background-color: rgba(239, 35, 60, 0.14) !important; }
-.bg-rose-600        { background-color: #ef233c !important; }       /* destructive button */
-.hover\:bg-rose-700:hover { background-color: #b91c2c !important; }
+.bg-rose-50         { background-color: rgba(16, 185, 129, 0.07) !important; }
+.bg-rose-100        { background-color: rgba(16, 185, 129, 0.14) !important; }
+.bg-rose-600        { background-color: #10b981 !important; }       /* destructive button */
+.hover\:bg-rose-700:hover { background-color: #059669 !important; }
 .text-rose-300      { color: rgb(253 164 175) !important; }
 .text-rose-600      { color: #fb7185 !important; }
 .text-rose-700      { color: #fb7185 !important; }
 .text-rose-800      { color: #fca5a5 !important; }
 .text-rose-900      { color: #fecaca !important; }
-.border-rose-200    { border-color: rgba(239, 35, 60, 0.25) !important; }
-.border-rose-300    { border-color: rgba(239, 35, 60, 0.40) !important; }
-.border-rose-400    { border-color: rgba(239, 35, 60, 0.55) !important; }
+.border-rose-200    { border-color: rgba(16, 185, 129, 0.25) !important; }
+.border-rose-300    { border-color: rgba(16, 185, 129, 0.40) !important; }
+.border-rose-400    { border-color: rgba(16, 185, 129, 0.55) !important; }
 
-/* Amber — draft status, no-work-day pill, validation warnings,
+/* Amber â€” draft status, no-work-day pill, validation warnings,
    permit / SLA banners. Heavily used in pages/DailyReports.jsx,
    pages/Recovery.jsx, pages/CalendarReconciliation.jsx. */
 .bg-amber-50        { background-color: rgba(245, 158, 11, 0.10) !important; }
 .bg-amber-100       { background-color: rgba(245, 158, 11, 0.18) !important; }
-.bg-amber-500       { background-color: #f59e0b !important; }       /* badge bg (sidebar counters) — keep gold for visibility */
+.bg-amber-500       { background-color: #f59e0b !important; }       /* badge bg (sidebar counters) â€” keep gold for visibility */
 .bg-amber-600       { background-color: #d97706 !important; }
 .text-amber-300     { color: rgb(252 211 77) !important; }
 .text-amber-700     { color: rgb(252 211 77) !important; }
@@ -528,14 +560,14 @@ input, select, textarea {
 .border-amber-300   { border-color: rgba(245, 158, 11, 0.45) !important; }
 .border-amber-400   { border-color: rgba(245, 158, 11, 0.60) !important; }
 
-/* Emerald — approved status, completed activities, success buttons.
+/* Emerald â€” approved status, completed activities, success buttons.
    Heavily used in pages/Approvals.jsx, pages/Tasks.jsx,
    pages/Recovery.jsx. Keep emerald saturated for semantic
-   success — buttons keep their solid bg, light tints become
+   success â€” buttons keep their solid bg, light tints become
    translucent. */
 .bg-emerald-50      { background-color: rgba(16, 185, 129, 0.10) !important; }
 .bg-emerald-100     { background-color: rgba(16, 185, 129, 0.18) !important; }
-.bg-emerald-600     { background-color: #10b981 !important; }       /* success button — keep emerald */
+.bg-emerald-600     { background-color: #10b981 !important; }       /* success button â€” keep emerald */
 .hover\:bg-emerald-700:hover { background-color: #059669 !important; }
 .text-emerald-300   { color: rgb(110 231 183) !important; }
 .text-emerald-600   { color: rgb(52 211 153) !important; }
@@ -546,7 +578,7 @@ input, select, textarea {
 .border-emerald-300 { border-color: rgba(16, 185, 129, 0.45) !important; }
 .border-emerald-400 { border-color: rgba(16, 185, 129, 0.60) !important; }
 
-/* Red — destructive actions (delete, reject) — semantically danger,
+/* Red â€” destructive actions (delete, reject) â€” semantically danger,
    different from brand red. Already partially in app via text-red-400
    on trash icons; round out the family. */
 .bg-red-50          { background-color: rgba(239, 68, 68, 0.08) !important; }
@@ -563,13 +595,13 @@ input, select, textarea {
 .border-red-200     { border-color: rgba(239, 68, 68, 0.30) !important; }
 .border-red-300     { border-color: rgba(239, 68, 68, 0.45) !important; }
 
-/* Blue (non-brand) — spec citations, RFI accents, links.
+/* Blue (non-brand) â€” spec citations, RFI accents, links.
    text-blue-900 wasn't in Phase 4. */
 .text-blue-300      { color: rgb(147 197 253) !important; }
 .text-blue-800      { color: rgb(147 197 253) !important; }
 .text-blue-900      { color: rgb(191 219 254) !important; }
 
-/* Slate — additional shades that escaped Phase 4 */
+/* Slate â€” additional shades that escaped Phase 4 */
 .bg-slate-200       { background-color: rgba(255,255,255,0.10) !important; }
 .bg-slate-300       { background-color: rgba(255,255,255,0.14) !important; }
 .bg-slate-700       { background-color: rgba(255,255,255,0.06) !important; }
@@ -604,9 +636,9 @@ input, select, textarea {
 .text-orange-700    { color: rgb(253 186 116) !important; }
 
 /* ============================================================
-   PHASE 7 — SVG visualization stroke / fill colors for spatial pages.
+   PHASE 7 â€” SVG visualization stroke / fill colors for spatial pages.
    These are inline SVG colors in components/spatial/SectionViewDialog
-   and pages/PolygonEditor / Spatial3D — they don't go through Tailwind
+   and pages/PolygonEditor / Spatial3D â€” they don't go through Tailwind
    so they need direct CSS-targeted overrides. Done by targeting
    specific data-attributes / class hooks added to those components.
    For now we rely on the JSX-level edits done separately. This block
@@ -616,39 +648,39 @@ input, select, textarea {
 [data-konva-floor-fill="#dbeafe"] { fill: rgba(59, 130, 246, 0.25) !important; }
 
 /* ============================================================
-   PHASE 8 — shadcn UI primitive nudges. Most shadcn components
+   PHASE 8 â€” shadcn UI primitive nudges. Most shadcn components
    read from --background / --card / --popover / --primary CSS
    variables (already flipped). A few outliers:
    ============================================================ */
 
-/* Dialog overlay — darken further so dialog content reads cleanly */
+/* Dialog overlay â€” darken further so dialog content reads cleanly */
 [data-radix-popper-content-wrapper] { z-index: 50; }
 
-/* Sonner toaster — uses its own theme tokens, override the light bg */
+/* Sonner toaster â€” uses its own theme tokens, override the light bg */
 .toaster, [data-sonner-toaster] {
     --normal-bg: rgba(20, 20, 23, 0.95) !important;
     --normal-text: rgb(244 244 245) !important;
     --normal-border: rgba(255, 255, 255, 0.10) !important;
 }
 
-/* Calendar / date picker — flip the day cells from white-on-light to
+/* Calendar / date picker â€” flip the day cells from white-on-light to
    white-on-dark */
 .rdp, .rdp-day, .rdp-table {
     color: rgb(228 228 231);
 }
 .rdp-day_selected, .rdp-day_selected:focus, .rdp-day_selected:hover {
-    background-color: #ef233c !important;
+    background-color: #10b981 !important;
     color: #fff !important;
 }
 
-/* Tooltip — uses popover bg by default, already dark. Add subtle
+/* Tooltip â€” uses popover bg by default, already dark. Add subtle
    border so it pops on dark. */
 [data-radix-tooltip-content] {
     border: 1px solid rgba(255, 255, 255, 0.10) !important;
 }
 
 /* ============================================================
-   PHASE 9 — HOVER / FOCUS / PLACEHOLDER STATE OVERRIDES
+   PHASE 9 â€” HOVER / FOCUS / PLACEHOLDER STATE OVERRIDES
    These selectors aren't covered by the base bg-* / text-* /
    border-* rules above because Tailwind compiles them as a
    different class (`.hover\:bg-slate-50:hover`).
@@ -661,14 +693,14 @@ input, select, textarea {
 .hover\:bg-slate-300:hover  { background-color: rgba(255, 255, 255, 0.14) !important; }
 .hover\:bg-slate-600:hover  { background-color: rgba(255, 255, 255, 0.10) !important; }
 .hover\:bg-slate-800:hover  { background-color: rgba(255, 255, 255, 0.06) !important; }
-.hover\:bg-blue-50:hover    { background-color: rgba(239, 35, 60, 0.12) !important; }
-.hover\:bg-blue-100:hover   { background-color: rgba(239, 35, 60, 0.18) !important; }
+.hover\:bg-blue-50:hover    { background-color: rgba(16, 185, 129, 0.12) !important; }
+.hover\:bg-blue-100:hover   { background-color: rgba(16, 185, 129, 0.18) !important; }
 .hover\:bg-amber-50:hover   { background-color: rgba(245, 158, 11, 0.15) !important; }
 .hover\:bg-amber-600:hover  { background-color: #d97706 !important; }
 .hover\:bg-amber-700:hover  { background-color: #b45309 !important; }
-.hover\:bg-rose-50:hover    { background-color: rgba(239, 35, 60, 0.10) !important; }
-.hover\:bg-rose-100:hover   { background-color: rgba(239, 35, 60, 0.16) !important; }
-.hover\:bg-rose-200:hover   { background-color: rgba(239, 35, 60, 0.22) !important; }
+.hover\:bg-rose-50:hover    { background-color: rgba(16, 185, 129, 0.10) !important; }
+.hover\:bg-rose-100:hover   { background-color: rgba(16, 185, 129, 0.16) !important; }
+.hover\:bg-rose-200:hover   { background-color: rgba(16, 185, 129, 0.22) !important; }
 .hover\:bg-emerald-50:hover { background-color: rgba(16, 185, 129, 0.14) !important; }
 
 /* Hover text */
@@ -689,8 +721,8 @@ input, select, textarea {
 /* Hover borders */
 .hover\:border-slate-300:hover { border-color: rgba(255,255,255,0.18) !important; }
 .hover\:border-slate-400:hover { border-color: rgba(255,255,255,0.22) !important; }
-.hover\:border-blue-400:hover  { border-color: rgba(239, 35, 60, 0.55) !important; }
-.hover\:border-blue-600:hover  { border-color: #ef233c !important; }
+.hover\:border-blue-400:hover  { border-color: rgba(16, 185, 129, 0.55) !important; }
+.hover\:border-blue-600:hover  { border-color: #10b981 !important; }
 
 /* Focus rings */
 .focus\:ring-red-400:focus { --tw-ring-color: rgba(239, 68, 68, 0.5) !important; }
@@ -728,30 +760,30 @@ table:not(.dense-table) tbody td {
 
 /* Card / panel default border (Tailwind `border` utility falls back
    to --border via @apply border-border in @layer base, so already
-   handled — but explicit safety net) */
+   handled â€” but explicit safety net) */
 .border:not([class*="border-"]) { border-color: rgba(255, 255, 255, 0.08); }
 
-/* Generic .divide-y default — used in compact lists */
+/* Generic .divide-y default â€” used in compact lists */
 .divide-y > * + *,
 .divide-y-2 > * + * { border-color: rgba(255, 255, 255, 0.05); }
 
 /* Generic .ring default */
 .ring-1, .ring-2 { --tw-ring-color: rgba(255, 255, 255, 0.10); }
 
-/* Radix data-state highlights — many shadcn components use these
+/* Radix data-state highlights â€” many shadcn components use these
    for active/selected/hover -- ensure they pop on dark */
 [data-state="active"]:not(button):not(a) {
-    background-color: rgba(239, 35, 60, 0.15);
+    background-color: rgba(16, 185, 129, 0.15);
     color: #ffffff;
 }
 [data-state="checked"] {
-    background-color: #ef233c;
-    border-color: #ef233c;
+    background-color: #10b981;
+    border-color: #10b981;
     color: #ffffff;
 }
 [data-state="open"][data-radix-collection-item],
 [data-highlighted] {
-    background-color: rgba(239, 35, 60, 0.15) !important;
+    background-color: rgba(16, 185, 129, 0.15) !important;
     color: #ffffff !important;
 }
 
@@ -779,15 +811,15 @@ pre {
 hr { border-color: rgba(255, 255, 255, 0.08); }
 
 /* ============================================================
-   PHASE 11 — RING color utilities + focus-within variants
+   PHASE 11 â€” RING color utilities + focus-within variants
    Used for validation rings (JigsawField status colors), form error
    states (DailyReports validation outline), selection indicators
    (DelayDetail chosen scenario), focus rings on inputs.
    ============================================================ */
-.ring-blue-200    { --tw-ring-color: rgba(239, 35, 60, 0.30) !important; }
-.ring-blue-300    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
-.ring-blue-400    { --tw-ring-color: rgba(239, 35, 60, 0.55) !important; }
-.ring-blue-500    { --tw-ring-color: rgba(239, 35, 60, 0.65) !important; }
+.ring-blue-200    { --tw-ring-color: rgba(16, 185, 129, 0.30) !important; }
+.ring-blue-300    { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
+.ring-blue-400    { --tw-ring-color: rgba(16, 185, 129, 0.55) !important; }
+.ring-blue-500    { --tw-ring-color: rgba(16, 185, 129, 0.65) !important; }
 .ring-emerald-100 { --tw-ring-color: rgba(16, 185, 129, 0.20) !important; }
 .ring-emerald-200 { --tw-ring-color: rgba(16, 185, 129, 0.30) !important; }
 .ring-emerald-300 { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
@@ -796,10 +828,10 @@ hr { border-color: rgba(255, 255, 255, 0.08); }
 .ring-amber-200   { --tw-ring-color: rgba(245, 158, 11, 0.30) !important; }
 .ring-amber-300   { --tw-ring-color: rgba(245, 158, 11, 0.45) !important; }
 .ring-amber-400   { --tw-ring-color: rgba(245, 158, 11, 0.60) !important; }
-.ring-rose-100    { --tw-ring-color: rgba(239, 35, 60, 0.20) !important; }
-.ring-rose-200    { --tw-ring-color: rgba(239, 35, 60, 0.30) !important; }
-.ring-rose-300    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
-.ring-rose-400    { --tw-ring-color: rgba(239, 35, 60, 0.60) !important; }
+.ring-rose-100    { --tw-ring-color: rgba(16, 185, 129, 0.20) !important; }
+.ring-rose-200    { --tw-ring-color: rgba(16, 185, 129, 0.30) !important; }
+.ring-rose-300    { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
+.ring-rose-400    { --tw-ring-color: rgba(16, 185, 129, 0.60) !important; }
 .ring-red-200     { --tw-ring-color: rgba(239, 68, 68, 0.30) !important; }
 .ring-red-300     { --tw-ring-color: rgba(239, 68, 68, 0.45) !important; }
 .ring-red-400     { --tw-ring-color: rgba(239, 68, 68, 0.60) !important; }
@@ -815,19 +847,19 @@ hr { border-color: rgba(255, 255, 255, 0.08); }
 .focus-within\:ring-emerald-400:focus-within { --tw-ring-color: rgba(16, 185, 129, 0.60) !important; }
 .focus-within\:ring-amber-300:focus-within   { --tw-ring-color: rgba(245, 158, 11, 0.45) !important; }
 .focus-within\:ring-amber-400:focus-within   { --tw-ring-color: rgba(245, 158, 11, 0.60) !important; }
-.focus-within\:ring-rose-300:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
-.focus-within\:ring-rose-400:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.60) !important; }
-.focus-within\:ring-blue-300:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
-.focus-within\:ring-blue-500:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.65) !important; }
+.focus-within\:ring-rose-300:focus-within    { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
+.focus-within\:ring-rose-400:focus-within    { --tw-ring-color: rgba(16, 185, 129, 0.60) !important; }
+.focus-within\:ring-blue-300:focus-within    { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
+.focus-within\:ring-blue-500:focus-within    { --tw-ring-color: rgba(16, 185, 129, 0.65) !important; }
 
 /* Validation outline (DR header `border-2 border-rose-400 ring-1
-   ring-rose-200`) — keep the rose border but add a brand-red outer
+   ring-rose-200`) â€” keep the rose border but add a brand-red outer
    glow so it pops on dark. */
 .border-2.border-rose-400 {
-    box-shadow: 0 0 0 1px rgba(239, 35, 60, 0.20), 0 0 12px -4px rgba(239, 35, 60, 0.35);
+    box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.20), 0 0 12px -4px rgba(16, 185, 129, 0.35);
 }
 
-/* Sonner error / destructive toast variant — group-[.destructive]
+/* Sonner error / destructive toast variant â€” group-[.destructive]
    in toast.jsx targets these via Radix slot variants */
 [data-sonner-toast][data-type="error"] {
     background-color: rgba(239, 68, 68, 0.15) !important;
@@ -860,7 +892,7 @@ input:-webkit-autofill:focus,
 input:-webkit-autofill:active {
     -webkit-box-shadow: 0 0 0 30px rgba(20, 20, 23, 0.95) inset !important;
     -webkit-text-fill-color: rgb(228 228 231) !important;
-    caret-color: #ef233c !important;
+    caret-color: #10b981 !important;
     transition: background-color 9999s ease-in-out 0s;
 }
 
@@ -868,13 +900,13 @@ input:-webkit-autofill:active {
 select { color-scheme: dark; }
 
 /* PDF viewer (react-pdf) wraps the rendered page in .react-pdf
-   classes — keep page bg light so PDF content is readable; the
+   classes â€” keep page bg light so PDF content is readable; the
    wrapper card around it is already dark-glass via .surface. */
 .react-pdf__Page,
 .react-pdf__Page__canvas { background: #ffffff !important; }
 .react-pdf__Page__textContent { color: #000 !important; }
 
-/* Tabs (shadcn) — Radix uses [data-state="active"] which we already
+/* Tabs (shadcn) â€” Radix uses [data-state="active"] which we already
    override above to brand-red. Explicit tab list border. */
 [role="tablist"] {
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -885,7 +917,7 @@ select { color-scheme: dark; }
 body[data-page="mobile-foreman"] { background: #000 !important; }
 
 /* ============================================================
-   PHASE 12 — preview QA fixes (2026-05-24)
+   PHASE 12 â€” preview QA fixes (2026-05-24)
    Bugs surfaced by clicking through the live Emergent preview.
    ============================================================ */
 
@@ -911,7 +943,7 @@ button { white-space: nowrap; }
     box-shadow: none;
 }
 
-/* Bug: brand text "ICE Schedule Ops" in the sidebar gets truncated
+/* Bug: brand text "SiteOps" in the sidebar gets truncated
    to "ICE Schedule O..." even though there's space. The truncate
    utility is applied unconditionally. Allow it to span 2 lines on
    the rail-expanded state so the full brand reads. */
@@ -923,7 +955,7 @@ button { white-space: nowrap; }
 }
 
 /* ============================================================
-   PHASE 13 — PREVIEW QA ROUND 2 (2026-05-24)
+   PHASE 13 â€” PREVIEW QA ROUND 2 (2026-05-24)
    ============================================================ */
 
 /* CRITICAL: <input> / <select> / <textarea> without an explicit bg-*
@@ -942,8 +974,8 @@ textarea {
 input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):focus,
 select:focus,
 textarea:focus {
-    border-color: rgba(239, 35, 60, 0.55);
-    outline-color: rgba(239, 35, 60, 0.30);
+    border-color: rgba(16, 185, 129, 0.55);
+    outline-color: rgba(16, 185, 129, 0.30);
 }
 
 /* Tailwind opacity-modifier classes (`bg-slate-100/80`, `bg-blue-50/30`,
@@ -961,11 +993,11 @@ textarea:focus {
 }
 .bg-blue-50\/30, .bg-blue-50\/40, .bg-blue-50\/60, .bg-blue-50\/80,
 .bg-blue-100\/30, .bg-blue-100\/60 {
-    background-color: rgba(239, 35, 60, 0.08) !important;
+    background-color: rgba(16, 185, 129, 0.08) !important;
 }
 .bg-rose-50\/30, .bg-rose-50\/40, .bg-rose-50\/60, .bg-rose-50\/80,
 .bg-rose-100\/30, .bg-rose-100\/60 {
-    background-color: rgba(239, 35, 60, 0.08) !important;
+    background-color: rgba(16, 185, 129, 0.08) !important;
 }
 .bg-amber-50\/30, .bg-amber-50\/40, .bg-amber-50\/60, .bg-amber-50\/80,
 .bg-amber-100\/30, .bg-amber-100\/60 {
@@ -1006,7 +1038,7 @@ tr.bg-slate-100 td {
     border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(239, 35, 60, 0.5);
+    background-color: rgba(16, 185, 129, 0.5);
 }
 ::-webkit-scrollbar-corner {
     background-color: rgba(255, 255, 255, 0.02);
@@ -1017,9 +1049,9 @@ tr.bg-slate-100 td {
     scrollbar-width: thin;
 }
 
-/* Sky color family — used by Resource Leveling for the "surplus" cell
+/* Sky color family â€” used by Resource Leveling for the "surplus" cell
    state (supply > demand) and other tertiary callouts. NOT in the
-   Phase 6 sweep — adding now. */
+   Phase 6 sweep â€” adding now. */
 .bg-sky-50    { background-color: rgba(14, 165, 233, 0.10) !important; }
 .bg-sky-100   { background-color: rgba(14, 165, 233, 0.18) !important; }
 .bg-sky-500   { background-color: #0ea5e9 !important; }
@@ -1056,7 +1088,7 @@ tr.bg-slate-100 td {
     padding-right: 1.75rem;
 }
 
-/* Tabs scrollbar artifact (small ▴▾ chevrons on Submittals + Weekly
+/* Tabs scrollbar artifact (small â–´â–¾ chevrons on Submittals + Weekly
    reports tabs container) -- the radix tabs root has an internal
    scrollarea that paints native scrollbar buttons. Hide them on the
    tab list. */

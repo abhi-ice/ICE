@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import api from "../lib/api";
 import { setAuth } from "../lib/auth";
-import { Layers, Building2 } from "lucide-react";
+import { Building2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast, Toaster } from "../components/ui/sonner";
+import SiteOpsLogo from "../components/SiteOpsLogo";
 
 // Signup redesign (2026-05-24) — mirrors Login.jsx structure exactly:
 // header with brand + back-to-home, single centered auth card,
@@ -24,7 +25,7 @@ export default function Signup() {
     try {
       const { data } = await api.post("/auth/register", form);
       setAuth(data);
-      toast.success(`Welcome, ${data.user.full_name} — organization "${data.tenant.display_name}" created.`);
+      toast.success(`Welcome, ${data.user.full_name} - organization "${data.tenant.display_name}" created.`);
       nav("/getting-started");
     } catch (ex) {
       const msg = ex.response?.data?.detail;
@@ -36,33 +37,27 @@ export default function Signup() {
     <div className="min-h-screen login-bg flex flex-col relative" data-testid="signup-page">
       <Toaster />
 
-      {/* Top-left logo lockup — same pattern as Login. Brand returns
-          user to /landing. */}
       <header className="relative z-10 px-6 py-5 lg:px-10 lg:py-6 flex items-center justify-between">
         <Link to="/landing" className="flex items-center gap-2 text-white" data-testid="signup-logo">
-          <div className="h-9 w-9 rounded grid place-items-center bg-[#ef233c]">
-            <Layers className="h-5 w-5" strokeWidth={1.6} />
-          </div>
-          <div className="font-semibold tracking-tight text-base">ICE Schedule Ops</div>
+          <SiteOpsLogo className="h-8 w-8" />
+          <div className="font-semibold tracking-tight text-base">SiteOps</div>
         </Link>
         <Link
           to="/landing"
           data-testid="signup-back-landing"
           className="text-xs text-white/70 hover:text-white"
         >
-          ← Back to home
+          &larr; Back to home
         </Link>
       </header>
 
-      {/* Centered card — same width + padding as the sign-in card so
-          the two pages feel like siblings. */}
       <main className="relative z-10 flex-1 flex items-center justify-center px-4 py-8">
         <div
           className="w-full max-w-lg surface p-8 sm:p-10 shadow-2xl"
           data-testid="signup-card"
         >
           <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            <Building2 className="h-6 w-6 text-[#ef233c]" /> Create organization
+            <Building2 className="h-6 w-6 text-[#10b981]" /> Create organization
           </h1>
           <p className="text-sm text-slate-500 mt-1.5 mb-6">
             You&apos;ll be the first admin of your tenant.
@@ -84,7 +79,7 @@ export default function Signup() {
               disabled={busy}
               className="w-full bg-blue-600 hover:bg-blue-700 h-11"
             >
-              {busy ? "Creating…" : "Create organization & sign in"}
+              {busy ? "Creating..." : "Create organization & sign in"}
             </Button>
           </form>
 
@@ -105,7 +100,7 @@ export default function Signup() {
         data-testid="signup-footer"
         className="relative z-10 px-6 pb-6 lg:px-10 text-center text-xs text-slate-300/80"
       >
-        © {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.
+        &copy; {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.
       </footer>
     </div>
   );

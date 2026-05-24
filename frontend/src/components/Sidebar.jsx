@@ -1,8 +1,9 @@
 import { NavLink } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_SECTIONS, APP_BRAND } from "../lib/sidebar";
 import api from "../lib/api";
+import SiteOpsLogo from "./SiteOpsLogo";
 
 const SECTION_COLLAPSE_KEY = "ice.sidebar.collapsed";
 // 2026-05-19 -- whole-sidebar collapse state. Default = collapsed
@@ -97,33 +98,40 @@ export default function Sidebar() {
     localStorage.setItem(RAIL_COLLAPSE_KEY, JSON.stringify(next));
   };
 
+  // Keep a CSS variable in sync with the current sidebar width so the
+  // fixed-position sidebar can offset the main column without relying
+  // on flexbox math. 56px in rail mode, 256px expanded.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--sidebar-w", rail ? "56px" : "256px");
+  }, [rail]);
+
   const Brand = APP_BRAND.icon;
   return (
     <aside
       data-testid="app-sidebar"
       data-collapsed={rail ? "true" : "false"}
-      className={`${rail ? "w-14" : "w-64"} shrink-0 app-sidebar h-screen sticky top-0 overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out`}
+      className={`${rail ? "w-14" : "w-64"} app-sidebar fixed left-0 top-0 bottom-0 h-screen overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out z-30`}
     >
-      <div className={`${rail ? "px-2" : "px-5"} py-4 border-b border-white/10 flex items-center ${rail ? "justify-center" : "gap-2.5"}`}>
+      <div className={`${rail ? "px-2" : "px-4"} py-4 border-b border-white/10 flex items-center ${rail ? "justify-center" : "gap-2.5"}`}>
         <button
           data-testid="sidebar-rail-toggle"
           onClick={toggleRail}
           title={rail ? "Expand sidebar" : "Collapse sidebar"}
-          className="h-8 w-8 grid place-items-center rounded bg-[#ef233c] hover:bg-[#b91c2c] shadow-[0_0_18px_-4px_rgba(239,35,60,0.6)] shrink-0 transition-colors"
+          className="h-9 w-9 grid place-items-center rounded-md hover:bg-white/5 shrink-0 transition-colors"
         >
-          <Brand className="h-4 w-4 text-white" strokeWidth={1.6} />
+          <SiteOpsLogo className="h-7 w-7" />
         </button>
         {!rail && (
           <>
             <div className="min-w-0 flex-1">
-              <div className="font-semibold text-xs tracking-tight text-white leading-tight truncate">{APP_BRAND.name}</div>
-              <div className="text-xs text-slate-500 leading-tight">Federal construction OS</div>
+              <div className="font-semibold text-sm tracking-tight text-white leading-tight truncate">{APP_BRAND.name}</div>
+              <div className="text-[10px] text-slate-500 leading-tight font-mono uppercase tracking-wider">Construction OS</div>
             </div>
             <button
               data-testid="sidebar-rail-collapse"
               onClick={toggleRail}
               title="Collapse sidebar"
-              className="h-7 w-7 grid place-items-center rounded text-slate-400 hover:text-white hover:bg-slate-800 shrink-0"
+              className="h-7 w-7 grid place-items-center rounded text-slate-400 hover:text-white hover:bg-white/5 shrink-0"
             >
               <PanelLeftClose className="h-4 w-4" strokeWidth={1.6} />
             </button>
@@ -191,7 +199,7 @@ export default function Sidebar() {
                           data-testid={item.testid}
                           title={item.label + (badge > 0 ? ` (${badge}${badgeMore ? "+" : ""} pending)` : "")}
                           className={({ isActive }) =>
-                            `relative h-10 grid place-items-center rounded-md mx-0 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors ${isActive ? "bg-blue-600 text-white hover:bg-blue-600" : ""}`
+                            `relative h-10 grid place-items-center rounded-md mx-0 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors ${isActive ? "bg-[#10b981] text-white hover:bg-[#10b981]" : ""}`
                           }
                         >
                           <Icon className="h-4 w-4" strokeWidth={1.6} />
@@ -246,7 +254,7 @@ export default function Sidebar() {
 
       {!rail && (
         <div className="px-4 py-3 mt-auto border-t border-white/10 text-xs text-slate-500">
-          v0.3 · Iter 3 · {new Date().getFullYear()}
+          v0.3 Â· Iter 3 Â· {new Date().getFullYear()}
         </div>
       )}
     </aside>
