@@ -429,6 +429,58 @@ worked at ~95% accuracy. Two follow-up issues:
    was updated to delete pre-existing rows on its target DR so it
    doesn't trip the new dedup logic.
 
+### Iter 13.3 — Live Voice polish + Q&A extraction (2026-05-25 late night)
+User reported live voice was choppy and final extraction produced "no
+fields" because the transcript was fragmented per-token. Root causes:
+
+1. **Choppy audio playback**: scheduling was using `Math.max(currentTime, nextAt)`
+   which falls back to currentTime on buffer underrun → gaps. Switched
+   to a 250ms pre-buffer; when the queue is exhausted, the next chunk
+   starts `currentTime + 0.25s` so network jitter doesn't cut the AI off.
+
+2. **AI's internal thinking text was captured**: native-audio model
+   streams chain-of-thought as `modelTurn.parts[].text` ("**Initiating
+   Daily Report**", "**Acknowledging the Delay**"). These got mixed
+   into the transcript. Frontend now ignores those entirely — only
+   `outputTranscription.text` (what the AI actually SPOKE) is shown.
+
+3. **Per-token transcript fragmentation**: input/output transcription
+   chunks arrived 1-3 chars at a time, each rendered as its own
+   "You:" or "AI:" line. Refactored into turn-based ref accumulators
+   (`userTurnRef`, `aiTurnRef`) that flush only on `turnComplete`.
+   Display now reads as a clean conversation.
+
+4. **Extract at end-of-session was being fed the fragmented mess**:
+   stopLive() now builds a clean `Q (AI): ... A (super): ...`
+   formatted transcript from the accumulated turns and sends THAT to
+   `/voice/extract`. Tested with user's actual conversation transcript:
+   weather + crew + activity 1.7 + delay (3-day impact, moderate) all
+   extracted correctly. Live Voice now works end-to-end.
+
+5. **Claude system prompt updated** to recognize the Q&A format and
+   handle partial answers like "yes", "skip", "no", "moderate" by
+   pairing them with the preceding AI question for context. Said "no"
+   to safety/QC questions now produces ZERO event records (no empty
+   placeholders).
+
+6. **Live Voice system instruction strengthened**: AI now asks ONE-
+   sentence questions, acknowledges in ≤3 words, asks ONE follow-up
+   for missing fields (severity, impact days), accepts "skip" to
+   move on, never repeats itself, and never speaks its internal
+   reasoning out loud.
+
+7. **Interruption support**: when Gemini sends `serverContent.interrupted`,
+   the audio playback queue is immediately stopped so the AI doesn't
+   keep talking over the user.
+
+8. **Voice live transcript UI** rewritten — Slack-style chat layout
+   with colored You/AI prefix and proper line breaks instead of one
+   line per token.
+
+9. **9/9 voice regression tests PASS** after all changes (added
+   `test_e2e_live_voice_qa_transcript_extraction` to guard the new
+   conversation-format extraction).
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

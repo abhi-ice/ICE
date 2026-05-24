@@ -349,19 +349,49 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   const liveAudioCtxRef = useRef(null);
   const livePlaybackCtxRef = useRef(null);
   const liveNextPlaybackAtRef = useRef(0);
+  // 2026-05-25 — turn-by-turn caption buffers. The native-audio model
+  // streams `inputTranscription.text` (what the super said) and
+  // `outputTranscription.text` (what the AI said) as tiny chunks
+  // (often 1-3 chars apiece). Concatenate them into per-turn lines
+  // instead of flooding the UI with one "You:"/"AI:" prefix per chunk.
+  const userTurnRef = useRef("");
+  const aiTurnRef = useRef("");
+  const userTurnsAllRef = useRef([]);   // all completed user utterances
+  const aiTurnsAllRef = useRef([]);     // all completed AI utterances
+
+  const _flushTurn = () => {
+    const u = userTurnRef.current.trim();
+    const a = aiTurnRef.current.trim();
+    if (u) userTurnsAllRef.current.push(u);
+    if (a) aiTurnsAllRef.current.push(a);
+    userTurnRef.current = "";
+    aiTurnRef.current = "";
+    // Rebuild the displayed transcript from completed turns + the
+    // current in-progress turn (if any).
+    const lines = [];
+    const userTurns = userTurnsAllRef.current;
+    const aiTurns = aiTurnsAllRef.current;
+    const max = Math.max(userTurns.length, aiTurns.length);
+    for (let i = 0; i < max; i++) {
+      if (aiTurns[i]) lines.push(`AI: ${aiTurns[i]}`);
+      if (userTurns[i]) lines.push(`You: ${userTurns[i]}`);
+    }
+    setLiveTranscript(lines.join("\n"));
+  };
 
   // Gemini Live returns AI audio as base64 PCM at 24 kHz, 16-bit signed,
   // mono. Decode each chunk and schedule it onto an AudioContext play
   // queue so chunks flow seamlessly into one voice line.
   const _playLiveAudioChunk = async (b64) => {
     try {
-      if (!livePlaybackCtxRef.current) {
+      if (!livePlaybackCtxRef.current || livePlaybackCtxRef.current.state === "closed") {
         livePlaybackCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
         liveNextPlaybackAtRef.current = 0;
       }
       const ctx = livePlaybackCtxRef.current;
       const bin = atob(b64);
       const len = bin.length / 2;
+      if (len === 0) return;
       const buffer = ctx.createBuffer(1, len, 24000);
       const channel = buffer.getChannelData(0);
       for (let i = 0; i < len; i++) {
@@ -374,7 +404,15 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       const src = ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(ctx.destination);
-      const startAt = Math.max(ctx.currentTime, liveNextPlaybackAtRef.current);
+      // Robust scheduling: prefetch ~250ms ahead of currentTime so
+      // network jitter between chunks doesn't cause gaps. If we ever
+      // fall behind (queue exhausted), restart the queue right now.
+      const PREBUFFER = 0.25;
+      let startAt = liveNextPlaybackAtRef.current;
+      if (startAt < ctx.currentTime + 0.02) {
+        // Queue is empty / we're catching up -- restart with prebuffer.
+        startAt = ctx.currentTime + PREBUFFER;
+      }
       src.start(startAt);
       liveNextPlaybackAtRef.current = startAt + buffer.duration;
     } catch (e) {
@@ -382,10 +420,22 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     }
   };
 
+  const _stopLivePlayback = () => {
+    // Called when the user interrupts or the session ends -- close the
+    // playback context so any queued chunks stop immediately.
+    try { livePlaybackCtxRef.current?.close(); } catch { /* ignore */ }
+    livePlaybackCtxRef.current = null;
+    liveNextPlaybackAtRef.current = 0;
+  };
+
   const startLive = async () => {
     if (liveStatus === "live" || liveStatus === "connecting") return;
     setLiveStatus("connecting");
     setLiveTranscript("");
+    userTurnRef.current = "";
+    aiTurnRef.current = "";
+    userTurnsAllRef.current = [];
+    aiTurnsAllRef.current = [];
     try {
       const tok = await api.post(`/daily-reports/${dailyReportId}/voice/live-token`);
       const apiKey = tok.data.token;
@@ -411,13 +461,27 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             output_audio_transcription: {},
             system_instruction: {
               parts: [{ text:
-                "You are guiding a construction superintendent through a daily report. "
-                + "Ask short questions in this order: 1) weather + temperatures, "
-                + "2) which trades are on site and headcounts, 3) activity-by-activity progress "
-                + "(use the activity_code numbers shown in the DR grid), 4) any delays today "
-                + "(if none say 'no delays' to skip), 5) safety / QC / deliveries / coordination "
-                + "events, 6) any general notes. Keep questions to one sentence. Acknowledge each "
-                + "answer briefly. When finished say 'Daily report complete'." }],
+                "You are a friendly, fast assistant guiding a construction "
+                + "superintendent through their daily report by voice. "
+                + "RULES OF ENGAGEMENT:\n"
+                + "• Keep every question to ONE short sentence (under 12 words).\n"
+                + "• Acknowledge each answer in 3 words or fewer ('Got it.' / 'Thanks.' / 'Noted.').\n"
+                + "• If the super gives partial info, ask ONE follow-up to fill the gap. "
+                + "Example: super says 'logged a delay because shaft broke' — you ask "
+                + "'How many days impact?' or 'Severity — minor, moderate, or major?'\n"
+                + "• If the super says 'skip' or 'no' or 'next' — accept it, do NOT push further, move on.\n"
+                + "• NEVER repeat yourself. If you already heard the answer, don't ask again.\n"
+                + "• DO NOT speak your internal reasoning out loud. Just ask the question.\n\n"
+                + "ORDER OF QUESTIONS:\n"
+                + "1. Weather: conditions + high + low temperatures.\n"
+                + "2. Crews on site: trade + company + headcount + hours per person.\n"
+                + "3. Activity progress: which activities advanced, percent complete.\n"
+                + "4. Delays: was there one? If yes, ask which activity, what happened, "
+                + "and impact in days.\n"
+                + "5. Safety, QC, deliveries, coordination — one combined question, "
+                + "skip silently if super says no.\n"
+                + "6. General notes.\n"
+                + "When all six are covered, say 'Daily report complete' and stop talking." }],
             },
           },
         }));
@@ -435,24 +499,51 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             return;
           }
           const sc = msg.serverContent;
-          if (sc?.modelTurn?.parts) {
+          if (!sc) return;
+
+          // Audio playback -- AI's spoken voice.
+          if (sc.modelTurn?.parts) {
             for (const part of sc.modelTurn.parts) {
-              if (part.text) setLiveTranscript((t) => t + part.text);
               if (part.inlineData?.data && part.inlineData?.mimeType?.startsWith("audio/")) {
-                // Play the AI's voice through the speakers.
                 void _playLiveAudioChunk(part.inlineData.data);
               }
+              // Note: part.text from modelTurn is the model's *internal
+              // chain-of-thought*. The native-audio model emits these
+              // (e.g. "**Initiating Daily Report**") as scratch reasoning.
+              // We deliberately ignore them — only outputTranscription
+              // below represents what the AI actually SAID OUT LOUD.
             }
           }
-          // Captions for what the AI said
-          if (sc?.outputTranscription?.text) {
-            setLiveTranscript((t) => t + sc.outputTranscription.text);
+
+          // Captions: aggregate input + output transcription chunks
+          // into per-turn lines so the display reads as conversation,
+          // not as one char per row.
+          if (sc.outputTranscription?.text) {
+            aiTurnRef.current += sc.outputTranscription.text;
+            _flushTurn();   // re-render (cheap; rebuilds from refs)
           }
-          // Captions for what the user said
-          if (sc?.inputTranscription?.text) {
-            setLiveTranscript((t) => t + `\nYou: ${sc.inputTranscription.text}\nAI: `);
+          if (sc.inputTranscription?.text) {
+            userTurnRef.current += sc.inputTranscription.text;
+            _flushTurn();
           }
-          if (sc?.turnComplete) setLiveTranscript((t) => t + "\n");
+
+          // Interruption -- user started talking while AI was speaking.
+          // Stop the audio queue immediately so the user isn't talking
+          // over a half-finished question.
+          if (sc.interrupted) {
+            _stopLivePlayback();
+          }
+
+          // Turn boundary -- finalize whichever buffer has content.
+          if (sc.turnComplete) {
+            _flushTurn();
+            // Push empty markers to advance the alignment counter so
+            // the next pair stays paired.
+            const u = userTurnsAllRef.current.length;
+            const a = aiTurnsAllRef.current.length;
+            if (u > a) aiTurnsAllRef.current.push("");
+            else if (a > u) userTurnsAllRef.current.push("");
+          }
         } catch (parseErr) {
           console.warn("Live WS parse error:", parseErr);
         }
@@ -521,6 +612,8 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     }
   };
   const stopLive = async () => {
+    // Flush any in-progress turn so the last spoken bits are captured.
+    _flushTurn();
     try { liveWsRef.current?.close(); } catch { /* ignore */ }
     try { liveAudioCtxRef.current?.close(); } catch { /* ignore */ }
     try { livePlaybackCtxRef.current?.close(); } catch { /* ignore */ }
@@ -529,23 +622,50 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     livePlaybackCtxRef.current = null;
     liveNextPlaybackAtRef.current = 0;
     setLiveStatus("ended");
-    // Send the accumulated transcript to the extract endpoint so the
-    // DR gets populated from the live conversation as well.
-    if (liveTranscript.trim()) {
-      setBusy(true);
-      try {
-        const r = await api.post(
-          `/daily-reports/${dailyReportId}/voice/extract`,
-          { transcript: liveTranscript },
-        );
-        setLastResult(r.data);
-        toast.success(`AI applied: ${summarizeApplied(r.data.applied)}. Review and submit.`,
-                      { duration: 6000 });
-        if (onApplied) onApplied();
-      } catch (e) {
-        toast.error(`Failed to apply live transcript: ${e?.response?.data?.detail || e.message}`);
-      } finally { setBusy(false); }
+    // Build a clean, Claude-friendly transcript from ONLY the user's
+    // utterances. The AI's questions are context; they don't carry
+    // DR data. We label each as "Q: ... A: ..." so Claude can pair
+    // them and infer fields from short answers like "yes" or "skip".
+    const userTurns = userTurnsAllRef.current.filter(Boolean);
+    const aiTurns = aiTurnsAllRef.current.filter(Boolean);
+    const max = Math.max(userTurns.length, aiTurns.length);
+    const lines = [];
+    for (let i = 0; i < max; i++) {
+      if (aiTurns[i]) lines.push(`Q (AI): ${aiTurns[i]}`);
+      if (userTurns[i]) lines.push(`A (super): ${userTurns[i]}`);
     }
+    const finalTranscript = lines.join("\n");
+    setFinalTranscript(finalTranscript);
+    if (!finalTranscript.trim()) {
+      toast.message("Live session ended -- nothing was transcribed.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.post(
+        `/daily-reports/${dailyReportId}/voice/extract`,
+        { transcript: finalTranscript, source_kind: "live_voice" },
+      );
+      setLastResult({ ...r.data, transcript: finalTranscript, transcript_source: "gemini_live" });
+      const s = summarizeApplied(r.data.applied);
+      const skipped = r.data.skipped_duplicates;
+      const totalSkipped = skipped
+        ? Object.values(skipped).reduce((sum, v) => sum + (v || 0), 0)
+        : 0;
+      const skipNote = totalSkipped > 0
+        ? ` (Skipped ${totalSkipped} duplicate.)`
+        : "";
+      if (s === "no fields") {
+        toast.error("Live session ended but AI couldn't extract any DR fields from the conversation.",
+                    { duration: 8000 });
+      } else {
+        toast.success(`AI applied from live session: ${s}.${skipNote} Review and submit.`,
+                      { duration: 7000 });
+      }
+      if (onApplied) onApplied();
+    } catch (e) {
+      toast.error(`Failed to apply live transcript: ${e?.response?.data?.detail || e.message}`);
+    } finally { setBusy(false); }
   };
 
   const currentMode = useMemo(() => MODES.find((m) => m.value === mode), [mode]);
@@ -677,9 +797,32 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
               {liveStatus === "error" && (<span className="text-rose-400">Connection error.</span>)}
             </span>
           </div>
-          {liveTranscript && (
-            <pre className="text-xs text-slate-300 bg-slate-900/60 p-2 rounded max-h-40 overflow-y-auto whitespace-pre-wrap">{liveTranscript}</pre>
-          )}
+          {liveTranscript ? (
+            <div className="rounded border border-emerald-700/40 bg-slate-950/60 p-3 max-h-72 overflow-y-auto" data-testid="voice-live-transcript">
+              <div className="text-[11px] uppercase tracking-wide text-emerald-300 mb-2">Conversation transcript</div>
+              <div className="text-sm leading-relaxed space-y-1.5">
+                {liveTranscript.split("\n").filter(Boolean).map((line, i) => {
+                  const isUser = line.startsWith("You:");
+                  const isAi = line.startsWith("AI:");
+                  const body = isUser ? line.slice(4).trim() : isAi ? line.slice(3).trim() : line;
+                  return (
+                    <div key={i} className="flex gap-2">
+                      <span className={`text-[10px] font-semibold uppercase shrink-0 w-10 pt-0.5 ${isUser ? "text-emerald-400" : "text-blue-300"}`}>
+                        {isUser ? "You" : isAi ? "AI" : ""}
+                      </span>
+                      <span className="text-slate-100">{body}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : liveStatus === "live" ? (
+            <div className="text-xs text-slate-500 italic">Listening… the AI will speak first.</div>
+          ) : null}
+          <div className="text-xs text-slate-500">
+            Speak naturally; the AI will guide you through weather, crews, activities,
+            delays, events, and notes. Say "skip" to move on. Click End session when done.
+          </div>
         </div>
       )}
 

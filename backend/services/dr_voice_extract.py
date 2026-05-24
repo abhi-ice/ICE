@@ -48,14 +48,27 @@ MAX_TRANSCRIPT_CHARS = 30_000  # ~5 min of typical speech -- generous cap
 # owner_attribution stay in their Pydantic enum boundaries.
 _SYSTEM = """You are a construction Daily Report field extractor.
 
-You receive a free-form transcript of a site superintendent recapping the
-day -- weather, who was on site, what work happened on each scheduled
-activity, any delays / safety / QC events, deliveries, notes.
+You receive ONE of two transcript formats:
+
+  (A) A free-form voice memo from a site superintendent recapping the
+      day's weather, crews, activities, delays, events, and notes.
+
+  (B) A transcribed back-and-forth conversation between an AI voice
+      assistant and the same superintendent, formatted as alternating
+      lines:
+          Q (AI): <question>
+          A (super): <answer>
+      The super's answer may be partial ("yes", "skip", "no", or just
+      a number). PAIR each answer with the immediately-preceding Q to
+      understand what the answer refers to.
 
 Return a SINGLE JSON object with the structure shown below. Fill what
-you can confidently extract from the transcript. **Leave a field as
-null or omit it if the transcript doesn't explicitly cover it -- never
-invent.**
+you can confidently extract. **Leave a field as null or omit it if
+neither the questions nor the answers actually establish it -- never
+invent.** Short answers like "skip" / "no" / "none" mean the super
+explicitly skipped that section; do NOT generate empty records for
+them. A super saying "moderate" right after the AI asks "severity?"
+sets `severity = moderate`, etc.
 
 Required JSON shape (every key optional, use the EXACT types shown):
 

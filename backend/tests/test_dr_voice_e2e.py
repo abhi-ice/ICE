@@ -211,3 +211,93 @@ def test_e2e_empty_upload_rejected(token, fresh_dr_id):
         headers=_h(token), files=files, timeout=10,
     )
     assert r.status_code == 400
+
+
+def test_e2e_live_voice_qa_transcript_extraction(token):
+    """Simulates the END of a Gemini Live session: feed Claude the
+    Q&A-formatted transcript that the frontend builds from
+    inputTranscription + outputTranscription chunks, and verify it
+    extracts structured fields even from short, fragmented answers
+    like 'three' / 'twenty percent' / 'moderate'.
+
+    This guards against the bug where the live conversation produced
+    a fragmented per-token transcript that Claude could not parse.
+    """
+    # Fresh DR on a date unlikely to collide with manual data.
+    from datetime import date, timedelta
+    import random
+    proj = requests.get(f"{API}/api/projects", headers=_h(token), timeout=10).json()[0]["id"]
+    pick = (date.today() - timedelta(days=random.randint(80, 200))).isoformat()
+    cr = requests.post(
+        f"{API}/api/daily-reports", headers=_h(token),
+        json={"project_id": proj, "report_date": pick}, timeout=15,
+    )
+    cr.raise_for_status()
+    dr_id = cr.json()["id"]
+
+    # Strip any pre-existing rows on this DR.
+    ctx0 = requests.get(f"{API}/api/daily-reports/{dr_id}/context",
+                        headers=_h(token), timeout=10).json()
+    for path, key in (("delays", "delays"), ("safety-events", "safety_events"),
+                      ("qc-issues", "qc_issues"), ("daily-presence", "presence")):
+        for row in ctx0.get(key, []) or []:
+            requests.delete(f"{API}/api/{path}/{row['id']}",
+                            headers=_h(token), timeout=10)
+
+    qa_transcript = (
+        "Q (AI): What were the weather conditions today?\n"
+        "A (super): Clear sky, high of 78 low of 60.\n"
+        "Q (AI): Which trades were on site and what were the headcounts?\n"
+        "A (super): Electrical trade, headcount three, company ICE, 8 hours each.\n"
+        "Q (AI): What progress was made today?\n"
+        "A (super): Electrical rough in is at 20 percent.\n"
+        "Q (AI): Were there any delays today?\n"
+        "A (super): Yes a delay linked to the electrical rough-in task, electrical shaft was not working.\n"
+        "Q (AI): How many days impact?\n"
+        "A (super): Three days.\n"
+        "Q (AI): Severity, minor moderate or major?\n"
+        "A (super): Moderate.\n"
+        "Q (AI): Any safety, QC, deliveries today?\n"
+        "A (super): No nothing skip.\n"
+        "Q (AI): General notes?\n"
+        "A (super): No, all good."
+    )
+    r = requests.post(
+        f"{API}/api/daily-reports/{dr_id}/voice/extract",
+        headers=_h(token),
+        json={"transcript": qa_transcript},
+        timeout=60,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    a = body["applied"]
+    print(f"\n[LIVE-QA] applied={a}")
+    # Hard requirements
+    assert a["weather"] is True, "Weather not extracted from Q&A"
+    assert a["crew_presence"] >= 1, "No crew presence row"
+    assert a["delays"] >= 1, "Delay not extracted from short answer"
+    # activity_updates requires a matching grid row, which the test DR
+    # may not have. We instead verify Claude PROPOSED an activity
+    # update in the draft -- the application step is grid-dependent.
+    proposed_acts = body.get("draft", {}).get("activity_updates") or []
+    assert any(
+        "electrical" in (au.get("activity_description_hint") or "").lower()
+        for au in proposed_acts
+    ), f"Claude didn't propose an electrical activity update: {proposed_acts}"
+
+    # The "no/skip" responses must NOT generate empty event records.
+    assert a["safety_events"] == 0, "Safety should be empty when super said 'no'"
+    assert a["qc_issues"] == 0, "QC should be empty when super said 'no'"
+    assert a["deliveries"] == 0, "Deliveries should be empty when super said 'no'"
+
+    # Verify delay has the impact days (3 days from the follow-up Q)
+    ctx = requests.get(f"{API}/api/daily-reports/{dr_id}/context",
+                       headers=_h(token), timeout=15).json()
+    delays = ctx.get("delays", [])
+    assert delays, "No delay row in DB"
+    d = delays[0]
+    assert d.get("delay_days") == 3 or any(
+        p.get("projected_impact_days") == 3 for p in (d.get("per_task_impacts") or [])
+    ), f"3-day impact not captured: {d}"
+    assert d.get("severity") == "moderate", f"Severity should be moderate: {d.get('severity')}"
