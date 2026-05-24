@@ -318,11 +318,29 @@ the backend (`/api/daily-reports/voice/config` probe).
 - DR detail page shows an offline status banner (amber when offline,
   blue when draining a non-empty queue with "Sync now" button).
 
-**Phase B (deferred)** — actual Gemini transcription / Live audio runs
-require `GEMINI_API_KEY` in `backend/.env`. The endpoints already
-return 503 with a friendly message until the key is provided; the UI
-gates the Voice Memo / Live Voice options accordingly. No code change
-needed once the key lands — just `sudo supervisorctl restart backend`.
+**Phase B (completed 2026-05-25 ~21:00 UTC)** — User provided
+`GEMINI_API_KEY` and billing is enabled on Google AI Studio. Voice
+endpoints are LIVE.
+
+- Transcription model: **`gemini-3.5-flash`** (GA; replaces the
+  deprecated `gemini-2.0-flash` and the soon-to-be deprecated
+  `gemini-2.5-flash`).
+- Live conversational model: **`gemini-3.1-flash-live-preview`**
+  (current Live-API recommendation; replaces the deprecated
+  `gemini-2.0-flash-exp`).
+- Transcription prompt hardened against hallucination on non-speech
+  audio (verified with a synthetic 440 Hz tone → returns `""`).
+- **Files API path added**: audio uploads <18 MB use inline bytes;
+  uploads 18 MB-100 MB are routed through Google's Files API
+  (`client.aio.files.upload`) so 60-minute high-quality memos work.
+  Best-effort cleanup deletes the uploaded file after extraction.
+- New endpoint cap raised from 25 MB → 100 MB.
+- **E2E test suite** (`tests/test_dr_voice_e2e.py`) uses gTTS to
+  synthesize a real construction-site voice memo, posts it to
+  `/voice/transcribe-and-extract`, and verifies the whole pipeline
+  populates weather, presence, and safety_event rows. **4/4 PASS**
+  (full run including audio synthesis + Gemini + Claude + DB
+  round-trip: 23s).
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash

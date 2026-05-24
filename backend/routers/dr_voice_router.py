@@ -47,7 +47,14 @@ router = APIRouter(prefix="/api/daily-reports", tags=["daily-reports-voice"])
 # Gemini transcription (Route 2)
 # ---------------------------------------------------------------------
 async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
-    """Send raw audio to Gemini 2.0 Flash for transcription.
+    """Send raw audio to Gemini for transcription.
+
+    Automatically routes between two paths based on size:
+      - Inline (<18 MB)   → bytes embedded directly in generate_content
+      - Files API (>=18MB) → upload separately, reference by file URI
+
+    The 18 MB threshold leaves headroom under Gemini's 20 MB inline
+    request cap (the request also includes the prompt text + headers).
 
     Returns the cleaned transcript string.
 
@@ -81,28 +88,75 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
 
     client = genai.Client(api_key=api_key)
 
-    # Use the current GA multimodal model with native audio understanding.
+    INLINE_LIMIT = 18 * 1024 * 1024   # 18 MB safe headroom under 20 MB cap
+    TRANSCRIPTION_PROMPT = (
+        "Transcribe this construction site daily-report voice memo "
+        "verbatim. Preserve every spoken word; do not summarize. "
+        "If the speaker mentions activity codes like 'one point seven', "
+        "write them as '1.7'. Return ONLY the transcript text -- no "
+        "preamble, no commentary, no formatting. CRITICAL: if the "
+        "audio contains NO clear human speech (silence, music, tones, "
+        "background noise only), respond with an empty string. Do "
+        "NOT fabricate, paraphrase, or invent content that wasn't "
+        "actually spoken."
+    )
+
     # Per Google's Feb-2026 deprecation schedule, `gemini-2.0-flash` is
     # 404'd for new users and `gemini-2.5-flash` is also slated for
     # replacement — `gemini-3.5-flash` is the current recommended GA
-    # model for audio-to-text. The new SDK accepts inline audio bytes
-    # via types.Part.from_bytes(...).
+    # model for audio-to-text.
     try:
-        resp = await client.aio.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=[
-                genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                "Transcribe this construction site daily-report voice memo "
-                "verbatim. Preserve every spoken word; do not summarize. "
-                "If the speaker mentions activity codes like 'one point seven', "
-                "write them as '1.7'. Return ONLY the transcript text -- no "
-                "preamble, no commentary, no formatting. CRITICAL: if the "
-                "audio contains NO clear human speech (silence, music, tones, "
-                "background noise only), respond with an empty string. Do "
-                "NOT fabricate, paraphrase, or invent content that wasn't "
-                "actually spoken.",
-            ],
-        )
+        if len(audio_bytes) <= INLINE_LIMIT:
+            # ---- Inline path ----
+            resp = await client.aio.models.generate_content(
+                model="gemini-3.5-flash",
+                contents=[
+                    genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    TRANSCRIPTION_PROMPT,
+                ],
+            )
+        else:
+            # ---- Files API path (large memos, >=18 MB) ----
+            # Upload the audio as a Gemini File resource, then reference
+            # it by URI in generate_content. Files API supports up to
+            # ~2 GB per file and 9.5 hours of total audio per request.
+            log.info(
+                "dr_voice: audio %.1f MB exceeds inline limit, using Files API",
+                len(audio_bytes) / (1024 * 1024),
+            )
+            import io
+            uploaded = await client.aio.files.upload(
+                file=io.BytesIO(audio_bytes),
+                config={"mime_type": mime_type},
+            )
+            # Some SDK versions return a File-pending state; wait until ACTIVE.
+            # (Audio is processed server-side before it's usable.)
+            import asyncio
+            for _ in range(30):  # up to 30 seconds
+                state = getattr(uploaded, "state", None)
+                state_name = getattr(state, "name", str(state))
+                if state_name in ("ACTIVE", None):
+                    break
+                if state_name == "FAILED":
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Gemini Files API rejected the audio (state=FAILED)",
+                    )
+                await asyncio.sleep(1)
+                uploaded = await client.aio.files.get(name=uploaded.name)
+
+            resp = await client.aio.models.generate_content(
+                model="gemini-3.5-flash",
+                contents=[uploaded, TRANSCRIPTION_PROMPT],
+            )
+            # Best-effort cleanup so we don't leave orphan files on Google's side.
+            try:
+                await client.aio.files.delete(name=uploaded.name)
+            except Exception as cleanup_exc:
+                log.warning("dr_voice: failed to delete uploaded file %s: %s",
+                            uploaded.name, cleanup_exc)
+    except HTTPException:
+        raise
     except Exception as exc:
         log.error("Gemini transcription failed: %s", exc)
         raise HTTPException(
@@ -127,9 +181,12 @@ async def voice_transcribe(
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio upload")
-    if len(raw) > 25 * 1024 * 1024:
+    # 100 MB hard cap. Anything between ~18 MB and 100 MB goes through
+    # the Files API path (see _gemini_transcribe_audio). 100 MB is
+    # enough for a 60-minute high-quality voice memo.
+    if len(raw) > 100 * 1024 * 1024:
         raise HTTPException(
-            status_code=413, detail="audio file too large (>25 MB)")
+            status_code=413, detail="audio file too large (>100 MB)")
 
     mime = audio.content_type or "audio/mp3"
     transcript = await _gemini_transcribe_audio(raw, mime)
@@ -423,8 +480,8 @@ async def voice_transcribe_and_extract(
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio upload")
-    if len(raw) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="audio file too large (>25 MB)")
+    if len(raw) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="audio file too large (>100 MB)")
 
     mime = audio.content_type or "audio/mp3"
     transcript = await _gemini_transcribe_audio(raw, mime)
