@@ -20,7 +20,35 @@
  * return 503 until then; UI shows a friendly disabled state).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Mic, Square, Wifi, WifiOff, Trash2, Upload, Loader2, AlertCircle, CheckCircle2, Radio, KeyboardIcon } from "lucide-react";
+import { Mic, Square, Wifi, WifiOff, Trash2, Upload, Loader2, AlertCircle, CheckCircle2, Radio, KeyboardIcon, Headphones } from "lucide-react";
+
+/**
+ * Live state pill -- shows whether the AI is currently speaking
+ * (mic muted, blue dot) or actively listening for the super
+ * (mic hot, green pulse). Re-renders on a 200ms tick so the user
+ * gets immediate visual feedback as the conversation alternates.
+ */
+function LiveStateIndicator({ isAiSpeaking }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => force((x) => x + 1), 200);
+    return () => clearInterval(t);
+  }, []);
+  if (isAiSpeaking) {
+    return (
+      <span className="text-blue-300 inline-flex items-center gap-1.5">
+        <span className="h-2 w-2 rounded-full bg-blue-400" />
+        AI speaking · mic muted
+      </span>
+    );
+  }
+  return (
+    <span className="text-emerald-300 inline-flex items-center gap-1.5">
+      <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+      Your turn · speak now
+    </span>
+  );
+}
 import { toast } from "sonner";
 import api from "../lib/api";
 import {
@@ -459,6 +487,19 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             },
             input_audio_transcription: {},
             output_audio_transcription: {},
+            // Robust voice-activity detection -- LOW start sensitivity
+            // so the server doesn't false-trigger on speaker bleed or
+            // background noise, HIGH end sensitivity so it knows when
+            // the super stopped talking and can respond quickly.
+            realtime_input_config: {
+              automatic_activity_detection: {
+                disabled: false,
+                start_of_speech_sensitivity: "START_SENSITIVITY_LOW",
+                end_of_speech_sensitivity: "END_SENSITIVITY_HIGH",
+                silence_duration_ms: 800,
+                prefix_padding_ms: 200,
+              },
+            },
             system_instruction: {
               parts: [{ text:
                 "You are a friendly, fast assistant guiding a construction "
@@ -578,8 +619,19 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     try {
       // Stream microphone audio to Gemini. 16 kHz PCM is what the Live
       // API expects. We resample inline with an AudioContext at 16k.
+      // IMPORTANT: echoCancellation + noiseSuppression MUST be on for
+      // Live Voice. Without them the laptop mic picks up the AI's own
+      // voice from the speakers and feeds it back as "user" speech,
+      // causing the AI to interrupt itself, fragment its replies, and
+      // even "respond" to its own words. This is the root cause of
+      // the choppy 3-word-per-chunk playback the super reported.
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, channelCount: 1 },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
       });
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       liveAudioCtxRef.current = audioCtx;
@@ -587,6 +639,14 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== 1) return;
+        // Suppress mic transmission while the AI is actively speaking.
+        // This is belt-and-suspenders over echoCancellation: if the
+        // user is on speakers (no headphones), the speaker output can
+        // still bleed into the mic. Skipping mic chunks during AI
+        // playback prevents the server from VAD-triggering on echo.
+        const ctxNow = livePlaybackCtxRef.current?.currentTime ?? 0;
+        const isAiSpeaking = liveNextPlaybackAtRef.current > ctxNow + 0.05;
+        if (isAiSpeaking) return;
         const input = e.inputBuffer.getChannelData(0);
         const pcm16 = new Int16Array(input.length);
         for (let i = 0; i < input.length; i++) {
@@ -792,9 +852,25 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             )}
             <span className="text-xs text-slate-400">
               {liveStatus === "connecting" && "Connecting…"}
-              {liveStatus === "live" && (<span className="text-emerald-400">● Live — AI is asking questions</span>)}
+              {liveStatus === "live" && (
+                <LiveStateIndicator
+                  isAiSpeaking={Boolean(livePlaybackCtxRef.current
+                    && liveNextPlaybackAtRef.current > (livePlaybackCtxRef.current.currentTime + 0.05))}
+                />
+              )}
               {liveStatus === "ended" && "Session ended. AI is filling DR."}
               {liveStatus === "error" && (<span className="text-rose-400">Connection error.</span>)}
+            </span>
+          </div>
+          {/* Critical UX hint -- echo will trash the conversation if
+              the user is on speakers. */}
+          <div className="rounded border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 flex items-start gap-2">
+            <Headphones className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              <strong>Use headphones for best results.</strong> If you're on laptop
+              speakers, the mic may pick up the AI's voice and confuse the conversation.
+              The system mutes the mic while the AI speaks, but headphones eliminate echo
+              entirely.
             </span>
           </div>
           {liveTranscript ? (
