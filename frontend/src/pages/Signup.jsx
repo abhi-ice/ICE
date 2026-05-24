@@ -6,6 +6,10 @@ import { Layers, Building2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast, Toaster } from "../components/ui/sonner";
 
+// Signup redesign (2026-05-24) — mirrors Login.jsx structure exactly:
+// header with brand + back-to-home, single centered auth card,
+// minimal footer. Removed the lg:grid-cols-2 split that left the
+// form card stranded in the corner at 100% zoom.
 export default function Signup() {
   const nav = useNavigate();
   const [form, setForm] = useState({ organization_name: "", full_name: "", email: "", password: "" });
@@ -20,7 +24,7 @@ export default function Signup() {
     try {
       const { data } = await api.post("/auth/register", form);
       setAuth(data);
-      toast.success(`Welcome, ${data.user.full_name} — organization “${data.tenant.display_name}” created.`);
+      toast.success(`Welcome, ${data.user.full_name} — organization "${data.tenant.display_name}" created.`);
       nav("/getting-started");
     } catch (ex) {
       const msg = ex.response?.data?.detail;
@@ -29,48 +33,80 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 login-bg">
+    <div className="min-h-screen login-bg flex flex-col relative" data-testid="signup-page">
       <Toaster />
-      <div className="hidden lg:flex flex-col justify-between p-10 relative z-10 text-white">
-        <div className="flex items-center gap-2">
-          <div className="h-9 w-9 rounded grid place-items-center bg-blue-600"><Layers className="h-5 w-5" strokeWidth={1.6} /></div>
+
+      {/* Top-left logo lockup — same pattern as Login. Brand returns
+          user to /landing. */}
+      <header className="relative z-10 px-6 py-5 lg:px-10 lg:py-6 flex items-center justify-between">
+        <Link to="/landing" className="flex items-center gap-2 text-white" data-testid="signup-logo">
+          <div className="h-9 w-9 rounded grid place-items-center bg-[#ef233c]">
+            <Layers className="h-5 w-5" strokeWidth={1.6} />
+          </div>
           <div className="font-semibold tracking-tight text-base">ICE Schedule Ops</div>
-        </div>
-        <div className="max-w-lg space-y-4">
-          <h2 className="text-3xl font-semibold tracking-tight leading-tight">
-            Create your organization in 30 seconds.
-          </h2>
-          <p className="text-sm text-slate-200 leading-relaxed">
-            Every signup gets its own isolated tenant — your projects, drawings, RFIs, daily reports, and AI sessions are walled off from every other contractor on the platform.
-            Invite teammates from the Team page once you&apos;re in.
-          </p>
-        </div>
-        <div className="text-xs text-slate-400">© {new Date().getFullYear()} ICE Construction.</div>
-      </div>
+        </Link>
+        <Link
+          to="/landing"
+          data-testid="signup-back-landing"
+          className="text-xs text-white/70 hover:text-white"
+        >
+          ← Back to home
+        </Link>
+      </header>
 
-      <div className="flex items-center justify-center p-6 lg:p-10 relative z-10">
-        <div className="w-full max-w-md surface p-7">
-          <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-            <Building2 className="h-5 w-5 text-blue-600" /> Create organization
+      {/* Centered card — same width + padding as the sign-in card so
+          the two pages feel like siblings. */}
+      <main className="relative z-10 flex-1 flex items-center justify-center px-4 py-8">
+        <div
+          className="w-full max-w-lg surface p-8 sm:p-10 shadow-2xl"
+          data-testid="signup-card"
+        >
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+            <Building2 className="h-6 w-6 text-[#ef233c]" /> Create organization
           </h1>
-          <p className="text-sm text-slate-500 mt-1 mb-5">You&apos;ll be the first admin of your tenant.</p>
+          <p className="text-sm text-slate-500 mt-1.5 mb-6">
+            You&apos;ll be the first admin of your tenant.
+          </p>
 
-          <form onSubmit={submit} className="space-y-3">
+          <form onSubmit={submit} className="space-y-4">
             <Field label="Organization name" testid="signup-org" value={form.organization_name} onChange={set("organization_name")} required minLength={2} />
             <Field label="Your name" testid="signup-name" value={form.full_name} onChange={set("full_name")} required />
             <Field label="Work email" testid="signup-email" type="email" value={form.email} onChange={set("email")} required autoComplete="email" />
             <Field label="Password (min 8 chars)" testid="signup-password" type="password" value={form.password} onChange={set("password")} required minLength={8} autoComplete="new-password" />
-            {err && <div data-testid="signup-error" className="text-sm text-red-600">{err}</div>}
-            <Button data-testid="signup-submit" type="submit" disabled={busy} className="w-full bg-blue-600 hover:bg-blue-700 h-10">
+            {err && (
+              <div data-testid="signup-error" className="text-sm text-red-600">
+                {err}
+              </div>
+            )}
+            <Button
+              data-testid="signup-submit"
+              type="submit"
+              disabled={busy}
+              className="w-full bg-blue-600 hover:bg-blue-700 h-11"
+            >
               {busy ? "Creating…" : "Create organization & sign in"}
             </Button>
           </form>
 
-          <div className="mt-5 text-sm text-slate-600 border-t pt-4">
-            Already have an account? <Link to="/login" className="text-blue-600 hover:underline">Sign in</Link>
+          <div className="mt-6 text-sm text-slate-600 border-t pt-5">
+            Already have an account?{" "}
+            <Link
+              data-testid="signin-link"
+              to="/login"
+              className="text-blue-600 hover:underline"
+            >
+              Sign in
+            </Link>
           </div>
         </div>
-      </div>
+      </main>
+
+      <footer
+        data-testid="signup-footer"
+        className="relative z-10 px-6 pb-6 lg:px-10 text-center text-xs text-slate-300/80"
+      >
+        © {new Date().getFullYear()} ICE Construction. CMMC Level 2 ready.
+      </footer>
     </div>
   );
 }
@@ -80,7 +116,7 @@ function Field({ label, testid, ...rest }) {
     <div>
       <label className="field-label">{label}</label>
       <input data-testid={testid} {...rest}
-        className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        className="w-full h-11 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
     </div>
   );
 }
