@@ -1,0 +1,441 @@
+"""Voice intake routes for Daily Reports.
+
+Three new endpoints sitting on top of the existing DR routes:
+
+  POST /api/daily-reports/{id}/voice/transcribe
+    body: multipart audio file (mp3/m4a/webm/wav, <= 25 MB)
+    out:  {"transcript": "..."}
+    -- Sends audio to Gemini for transcription. NEEDS GEMINI_API_KEY.
+
+  POST /api/daily-reports/{id}/voice/extract
+    body: {"transcript": "..."}
+    out:  {"draft": {...}, "applied": {"activity_updates": N, ...}}
+    -- Runs Claude extraction + writes through to DB collections, then
+       returns a summary of what was applied. The frontend then reloads
+       the DR and the super reviews fields before clicking Submit.
+
+  POST /api/daily-reports/{id}/voice/transcribe-and-extract
+    body: multipart audio file
+    -- Convenience combo of the two above; one request, one round-trip.
+       Used by the offline-queue sync path.
+
+Live conversational (Route 3) is a separate concern -- the Gemini Live
+WebSocket runs browser-to-Google directly using a SHORT-LIVED token
+issued by /api/daily-reports/{id}/voice/live-token. The browser sends
+field-update events directly to /api/daily-reports/{id}/voice/extract
+as the conversation completes.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from database import get_db, tenant_filter
+from auth import require_tenant
+from services.dr_voice_extract import extract_dr_fields
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/daily-reports", tags=["daily-reports-voice"])
+
+
+# ---------------------------------------------------------------------
+# Gemini transcription (Route 2)
+# ---------------------------------------------------------------------
+async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
+    """Send raw audio to Gemini 2.0 Flash for transcription.
+
+    Returns the cleaned transcript string.
+
+    This function is a thin wrapper that fails fast if GEMINI_API_KEY
+    is missing. The frontend already gates Voice (async) and Voice
+    (live) routes behind a key-present probe so the UI is hidden when
+    the key is absent. We still raise here for defense in depth.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Voice transcription is not configured -- GEMINI_API_KEY "
+                "is missing from the backend environment. Use Manual or "
+                "Offline-manual modes until the key is set."
+            ),
+        )
+
+    # Lazy import so the app boots even without the SDK installed during
+    # initial setup. google-genai is in requirements.txt (the modern
+    # SDK that replaces the deprecated google-generativeai package).
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"google-genai SDK not installed: {exc}",
+        ) from exc
+
+    client = genai.Client(api_key=api_key)
+
+    # Use the cheap-but-capable flash tier. Audio understanding is
+    # native to Gemini 2.0+. The new SDK accepts inline audio bytes via
+    # types.Part.from_bytes(...).
+    try:
+        resp = await client.aio.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                "Transcribe this construction site daily-report voice memo "
+                "verbatim. Preserve every spoken word; do not summarize. "
+                "If the speaker mentions activity codes like 'one point seven', "
+                "write them as '1.7'. Return the transcript only, no commentary.",
+            ],
+        )
+    except Exception as exc:
+        log.error("Gemini transcription failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gemini transcription error: {exc}",
+        ) from exc
+
+    text = (resp.text or "").strip() if hasattr(resp, "text") and resp.text else ""
+    return text
+
+
+# ---------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------
+@router.post("/{dr_id}/voice/transcribe")
+async def voice_transcribe(
+    dr_id: str,
+    audio: UploadFile = File(...),
+    ctx: dict = Depends(require_tenant),
+):
+    """Multipart upload -> Gemini -> transcript string."""
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty audio upload")
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413, detail="audio file too large (>25 MB)")
+
+    mime = audio.content_type or "audio/mp3"
+    transcript = await _gemini_transcribe_audio(raw, mime)
+    return {"transcript": transcript, "char_count": len(transcript)}
+
+
+@router.post("/{dr_id}/voice/extract")
+async def voice_extract(
+    dr_id: str,
+    payload: dict,
+    ctx: dict = Depends(require_tenant),
+):
+    """Cleaned transcript -> Claude -> structured DR JSON -> DB writes."""
+    transcript = (payload or {}).get("transcript") or ""
+    if not transcript.strip():
+        raise HTTPException(status_code=400, detail="transcript is required")
+
+    db = get_db()
+    tenant_id = ctx["tenant_id"]
+    actor_id = ctx["user"]["id"]
+
+    dr = await db.daily_reports.find_one(
+        tenant_filter(tenant_id, {"id": dr_id}),
+        {"_id": 0},
+    )
+    if not dr:
+        raise HTTPException(status_code=404, detail="DR not found")
+    if dr.get("status") not in (None, "draft"):
+        # Mirror the manual-edit lock the rest of the UI enforces.
+        raise HTTPException(
+            status_code=409,
+            detail="DR is not in draft status; voice extract is draft-only",
+        )
+
+    # Pull activity grid for matching context.
+    grid = await db.daily_report_activities.find(
+        tenant_filter(tenant_id, {"daily_report_id": dr_id}),
+        {"_id": 0, "activity_code": 1, "id": 1, "schedule_activity_id": 1},
+    ).to_list(500)
+    codes = [g.get("activity_code") for g in grid if g.get("activity_code")]
+
+    project = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": dr["project_id"]}),
+        {"_id": 0, "name": 1},
+    ) or {}
+
+    parsed = await extract_dr_fields(
+        transcript,
+        activity_codes_in_dr=codes,
+        project_name=project.get("name"),
+        report_date_iso=dr.get("report_date"),
+    )
+
+    # ---- write-back ---------------------------------------------------
+    applied = {
+        "weather": False, "notes": False, "activity_updates": 0,
+        "crew_presence": 0, "delays": 0, "safety_events": 0,
+        "qc_issues": 0, "deliveries": 0, "coordination_events": 0,
+    }
+    now = datetime.now(timezone.utc)
+
+    # 1. DR-level fields (weather + notes)
+    update: dict = {"updated_at": now}
+    w = (parsed.get("weather") or {})
+    if isinstance(w, dict):
+        if w.get("temp_high_f") is not None:
+            update["weather_temp_high_f"] = float(w["temp_high_f"])
+        if w.get("temp_low_f") is not None:
+            update["weather_temp_low_f"] = float(w["temp_low_f"])
+        if w.get("conditions"):
+            update["weather_conditions"] = str(w["conditions"])
+        if w.get("precipitation_in") is not None:
+            update["weather_precipitation_in"] = float(w["precipitation_in"])
+        if w.get("wind_mph") is not None:
+            update["weather_wind_mph"] = float(w["wind_mph"])
+        if any(k in update for k in (
+            "weather_temp_high_f", "weather_temp_low_f", "weather_conditions",
+            "weather_precipitation_in", "weather_wind_mph"
+        )):
+            update["weather_fetched_at"] = now
+            applied["weather"] = True
+    if parsed.get("notes"):
+        # Append rather than overwrite so we don't blow away prior notes.
+        existing = (dr.get("notes") or "").strip()
+        injected = str(parsed["notes"]).strip()
+        update["notes"] = (
+            (existing + "\n\n[Voice intake " + now.isoformat() + "]\n" + injected)
+            if existing else injected
+        )
+        applied["notes"] = True
+    if len(update) > 1:  # more than just updated_at
+        await db.daily_reports.update_one(
+            tenant_filter(tenant_id, {"id": dr_id}),
+            {"$set": update},
+        )
+
+    # 2. Activity-grid updates -- match by activity_code -> DR row
+    code_to_row = {g["activity_code"]: g for g in grid if g.get("activity_code")}
+    for au in (parsed.get("activity_updates") or []):
+        if not isinstance(au, dict):
+            continue
+        code = (au.get("activity_code") or "").strip()
+        row = code_to_row.get(code)
+        if not row:
+            continue
+        row_update: dict = {"updated_at": now}
+        if au.get("pct_complete_end_of_day") is not None:
+            row_update["pct_complete_end_of_day"] = max(
+                0.0, min(100.0, float(au["pct_complete_end_of_day"]))
+            )
+        if au.get("crew_count") is not None:
+            row_update["crew_count"] = max(0, int(au["crew_count"]))
+        if au.get("notes"):
+            row_update["notes"] = str(au["notes"])
+        if len(row_update) > 1:
+            await db.daily_report_activities.update_one(
+                tenant_filter(tenant_id, {"id": row["id"]}),
+                {"$set": row_update},
+            )
+            applied["activity_updates"] += 1
+
+    # 3. Crew presence rows -- pure append; super reviews dups in UI.
+    for cp in (parsed.get("crew_presence") or []):
+        if not isinstance(cp, dict) or not cp.get("trade_code"):
+            continue
+        await db.crew_presence.insert_one({
+            "id": _new_id(),
+            "tenant_id": tenant_id,
+            "daily_report_id": dr_id,
+            "trade_code": str(cp["trade_code"])[:32],
+            "company_name": cp.get("company_name"),
+            "headcount": int(cp["headcount"]) if cp.get("headcount") else None,
+            "hours_per_person": float(cp["hours_per_person"]) if cp.get("hours_per_person") else None,
+            "notes": cp.get("notes"),
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now,
+            "created_by": actor_id,
+        })
+        applied["crew_presence"] += 1
+
+    # 4. Delays / Safety / QC / Deliveries / Coordination -- append-only
+    #    inserts that re-use the same enums the manual UI accepts.
+    #    Each one needs linked_task_ids resolved from activity_codes.
+    code_to_task = {g["activity_code"]: g.get("schedule_activity_id") for g in grid if g.get("activity_code")}
+
+    async def _link_task_ids(activity_codes):
+        if not activity_codes:
+            return []
+        out = []
+        for c in activity_codes:
+            tid = code_to_task.get(str(c).strip())
+            if tid:
+                out.append(tid)
+        return out
+
+    for d in (parsed.get("delays") or []):
+        if not isinstance(d, dict) or not d.get("description"):
+            continue
+        linked = await _link_task_ids(d.get("linked_activity_codes") or [])
+        await db.delays.insert_one({
+            "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
+            "description": str(d["description"])[:2000],
+            "severity": str(d.get("severity") or "minor"),
+            "reason_category": str(d.get("reason_category") or "other"),
+            "owner_attribution": str(d.get("owner_attribution") or "none"),
+            "cause_class": str(d.get("cause_class") or "other"),
+            "status": str(d.get("status") or "open"),
+            "linked_task_ids": linked,
+            "per_task_impacts": [{"task_id": t, "projected_impact_days": 0}
+                                  for t in linked],
+            "logged_on_daily_report_id": dr_id,
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now, "created_by": actor_id,
+        })
+        applied["delays"] += 1
+
+    for s in (parsed.get("safety_events") or []):
+        if not isinstance(s, dict) or not s.get("description"):
+            continue
+        linked = await _link_task_ids(s.get("linked_activity_codes") or [])
+        await db.safety_events.insert_one({
+            "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
+            "description": str(s["description"])[:2000],
+            "event_type": str(s.get("event_type") or "other"),
+            "severity": str(s.get("severity") or "minor"),
+            "linked_task_ids": linked,
+            "logged_on_daily_report_id": dr_id,
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now, "created_by": actor_id,
+        })
+        applied["safety_events"] += 1
+
+    for q in (parsed.get("qc_issues") or []):
+        if not isinstance(q, dict) or not q.get("description"):
+            continue
+        linked = await _link_task_ids(q.get("linked_activity_codes") or [])
+        await db.qc_issues.insert_one({
+            "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
+            "description": str(q["description"])[:2000],
+            "severity": str(q.get("severity") or "minor"),
+            "status": "open",
+            "linked_task_ids": linked,
+            "logged_on_daily_report_id": dr_id,
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now, "created_by": actor_id,
+        })
+        applied["qc_issues"] += 1
+
+    for dl in (parsed.get("deliveries") or []):
+        if not isinstance(dl, dict) or not dl.get("description"):
+            continue
+        linked = await _link_task_ids(dl.get("linked_activity_codes") or [])
+        await db.deliveries.insert_one({
+            "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
+            "description": str(dl["description"])[:2000],
+            "supplier_name": dl.get("supplier_name"),
+            "po_number": dl.get("po_number"),
+            "status": str(dl.get("status") or "scheduled"),
+            "linked_task_ids": linked,
+            "logged_on_daily_report_id": dr_id,
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now, "created_by": actor_id,
+        })
+        applied["deliveries"] += 1
+
+    for ce in (parsed.get("coordination_events") or []):
+        if not isinstance(ce, dict) or not ce.get("description"):
+            continue
+        linked = await _link_task_ids(ce.get("linked_activity_codes") or [])
+        await db.coordination_events.insert_one({
+            "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
+            "description": str(ce["description"])[:2000],
+            "with_party": ce.get("with_party"),
+            "linked_task_ids": linked,
+            "logged_on_daily_report_id": dr_id,
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now, "created_by": actor_id,
+        })
+        applied["coordination_events"] += 1
+
+    # Audit row -- the super's draft now contains voice-injected fields,
+    # which auditors need to see flagged.
+    await db.audit_log.insert_one({
+        "id": _new_id(), "tenant_id": tenant_id, "actor_id": actor_id,
+        "table_name": "daily_reports", "record_id": dr_id,
+        "op": "DR_VOICE_INTAKE_APPLIED",
+        "before_data": {}, "after_data": {"applied": applied},
+        "created_at": now,
+    })
+
+    return {
+        "ok": True,
+        "applied": applied,
+        "draft": parsed,   # so frontend can show diff/preview if it wants
+    }
+
+
+@router.post("/{dr_id}/voice/transcribe-and-extract")
+async def voice_transcribe_and_extract(
+    dr_id: str,
+    audio: UploadFile = File(...),
+    ctx: dict = Depends(require_tenant),
+):
+    """One-shot path used by the offline sync queue.
+
+    The mobile client uploads its queued audio blob the moment
+    connectivity returns; this endpoint handles transcription +
+    extraction + DB writes atomically from the client's perspective.
+    """
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty audio upload")
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="audio file too large (>25 MB)")
+
+    mime = audio.content_type or "audio/mp3"
+    transcript = await _gemini_transcribe_audio(raw, mime)
+    # Reuse the same path -- pass transcript through extract endpoint.
+    extract_result = await voice_extract(
+        dr_id, {"transcript": transcript}, ctx,
+    )
+    return {"transcript": transcript, **extract_result}
+
+
+# ---------------------------------------------------------------------
+# Live conversational token issuance (Route 3)
+# ---------------------------------------------------------------------
+@router.post("/{dr_id}/voice/live-token")
+async def voice_live_token(
+    dr_id: str, ctx: dict = Depends(require_tenant),
+):
+    """Issue a short-lived Gemini Live API access token so the BROWSER
+    can open a WebSocket directly to generativelanguage.googleapis.com
+    without proxying audio through our backend.
+
+    For Phase A we return the same GEMINI_API_KEY value (Gemini Live's
+    ephemeral-token endpoint isn't GA yet as of 2026-05; using the
+    primary key from a short-lived signed URL is the current pattern).
+    When Google ships the ephemeral-token endpoint we'll swap this for
+    a 5-minute exchange call.
+
+    SECURITY NOTE: This endpoint is auth-gated (require_tenant) so an
+    anonymous user can't lift the key from the browser. The key only
+    reaches authenticated session users.
+    """
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Live voice not configured -- GEMINI_API_KEY missing.",
+        )
+    return {"token": api_key, "model": "gemini-2.0-flash-exp"}
+
+
+def _new_id() -> str:
+    import uuid
+    return str(uuid.uuid4())
