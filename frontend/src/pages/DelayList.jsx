@@ -100,7 +100,7 @@ export default function DelayList() {
         </div>
         <Button data-testid="delays-add" onClick={startCreate} disabled={routing}
           className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
-          <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+          <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "New on today's DR"}
         </Button>
       </div>
 

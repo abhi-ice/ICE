@@ -309,7 +309,7 @@ function PhotoNewButton({ projectId }) {
   return (
     <button data-testid="photos-add-via-dr" onClick={click} disabled={routing}
       className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
-      <Plus className="h-3.5 w-3.5" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+      <Plus className="h-3.5 w-3.5" /> {routing ? "Opening today's DR…" : "New on today's DR"}
     </button>
   );
 }
