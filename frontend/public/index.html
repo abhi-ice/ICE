@@ -9,10 +9,16 @@
         <!-- manifest.json provides PWA install metadata. -->
         <!-- Typography (2026-05-18): Inter is SELF-HOSTED — the woff2
              files live in src/fonts/inter/ and are @font-face'd in
-             src/index.css (webpack bundles them into the app). The
-             Google Fonts CDN <link> was removed: it could be blocked
-             by CSP / preview-env network and silently fall back to the
-             OS font. No web-font CDN dependency. -->
+             src/index.css (webpack bundles them into the app).
+             Red-Noir skin (2026-05-22): adds Atkinson Hyperlegible
+             (low-vision optimized, Braille Institute), Manrope
+             (display), and JetBrains Mono (data/codes) via Google
+             Fonts CDN. If CSP / preview-env blocks the CDN, the
+             stack falls back to the self-hosted Inter — body still
+             renders fine, just without the brand display font. -->
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=Manrope:wght@200;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
         <!--
         Notice the use of %PUBLIC_URL% in the tags above.
         It will be replaced with the URL of the `public` folder during the build.

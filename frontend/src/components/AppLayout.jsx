@@ -21,7 +21,7 @@ export default function AppLayout() {
       <button
         data-testid="copilot-fab"
         onClick={() => setCopilotOpen(true)}
-        className="fixed bottom-5 right-5 h-12 w-12 rounded-full bg-blue-600 text-white grid place-items-center shadow-lg hover:scale-105 hover:bg-blue-700 transition z-20"
+        className="fixed bottom-5 right-5 h-12 w-12 rounded-full bg-[#ef233c] text-white grid place-items-center shadow-[0_8px_28px_-6px_rgba(239,35,60,0.6)] hover:scale-105 hover:bg-[#b91c2c] transition z-20"
         title="AI Copilot"
       >
         <Bot className="h-5 w-5" strokeWidth={1.6} />
