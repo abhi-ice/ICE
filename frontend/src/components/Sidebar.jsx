@@ -104,12 +104,12 @@ export default function Sidebar() {
       data-collapsed={rail ? "true" : "false"}
       className={`${rail ? "w-14" : "w-64"} shrink-0 app-sidebar h-screen sticky top-0 overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out`}
     >
-      <div className={`${rail ? "px-2" : "px-5"} py-4 border-b border-slate-800 flex items-center ${rail ? "justify-center" : "gap-2.5"}`}>
+      <div className={`${rail ? "px-2" : "px-5"} py-4 border-b border-white/10 flex items-center ${rail ? "justify-center" : "gap-2.5"}`}>
         <button
           data-testid="sidebar-rail-toggle"
           onClick={toggleRail}
           title={rail ? "Expand sidebar" : "Collapse sidebar"}
-          className="h-8 w-8 grid place-items-center rounded bg-blue-600 hover:bg-blue-700 shrink-0"
+          className="h-8 w-8 grid place-items-center rounded bg-[#ef233c] hover:bg-[#b91c2c] shadow-[0_0_18px_-4px_rgba(239,35,60,0.6)] shrink-0 transition-colors"
         >
           <Brand className="h-4 w-4 text-white" strokeWidth={1.6} />
         </button>
@@ -169,7 +169,7 @@ export default function Sidebar() {
                 /* Hairline group separator in rail mode -- gives the
                    eye a visual break between OVERVIEW / DAILY OPS /
                    PLANNING etc. without consuming horizontal space. */
-                <div className="mx-2 mt-3 mb-1 border-t border-slate-800" />
+                <div className="mx-2 mt-3 mb-1 border-t border-white/10" />
               )}
               {showItems && (
                 <div className={`space-y-0.5 ${rail ? "px-2" : "pl-6"}`}>
@@ -245,7 +245,7 @@ export default function Sidebar() {
       </nav>
 
       {!rail && (
-        <div className="px-4 py-3 mt-auto border-t border-slate-800 text-xs text-slate-500">
+        <div className="px-4 py-3 mt-auto border-t border-white/10 text-xs text-slate-500">
           v0.3 · Iter 3 · {new Date().getFullYear()}
         </div>
       )}
