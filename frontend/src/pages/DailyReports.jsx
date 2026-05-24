@@ -250,7 +250,7 @@ export default function DailyReports() {
           <button data-testid="dr-new-button"
             onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
             className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm flex items-center gap-2">
-            <FilePlus2 className="h-4 w-4" /> + New daily report
+            <FilePlus2 className="h-4 w-4" /> New daily report
           </button>
         </div>
       </div>

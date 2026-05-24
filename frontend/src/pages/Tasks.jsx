@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import TopHorizontalScroll from "../components/TopHorizontalScroll";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -172,6 +173,10 @@ export default function Tasks() {
   // Bucket H Phase 4 -- per-task resource-leveling gap indicator.
   const gapByTaskId = useTaskGapIndicator(activeId);
   const project = projects.find((p) => p.id === activeId);
+  // Ref for the wide tasks table scroll container — wired to a sticky
+  // top horizontal scrollbar so users can drag the table sideways
+  // without scrolling to the bottom of the viewport first.
+  const tableScrollRef = useRef(null);
   // CPM Part F (2026-05-15) -- sort + filter affordances for the new
   // Impacted Start / Impacted Finish / Slip columns. Defaults preserve
   // the pre-Part-F behavior (no sort, no filter -- tasks render in
@@ -419,7 +424,13 @@ export default function Tasks() {
         </div>
       )}
 
-      <div className="surface overflow-auto scrollbar-soft max-h-[calc(100vh-200px)]" data-testid="tasks-table-scroll">
+      <div className="surface overflow-hidden">
+        <TopHorizontalScroll targetRef={tableScrollRef} />
+        <div
+          ref={tableScrollRef}
+          className="overflow-auto scrollbar-soft scrollbar-no-x max-h-[calc(100vh-220px)]"
+          data-testid="tasks-table-scroll"
+        >
         <table className="dense-table dense-table-frozen min-w-max">
           <thead>
             <tr>
@@ -627,6 +638,7 @@ export default function Tasks() {
             {!tasks.length && <tr><td colSpan="19" className="text-center py-8 text-sm text-slate-500">No activities. Use the &ldquo;New activity&rdquo; button or import a schedule.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* CP / Float legend */}

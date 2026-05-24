@@ -464,7 +464,7 @@ export default function ProjectScopedList({ kind }) {
         customAddButton={cfg.galleryEventKind && KIND_TO_CREATE_EVENT[kind] ? (
           <Button data-testid={`${kind}-add-via-dr`} onClick={routeToTodaysDr}
             disabled={routing} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
-            <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "+ New on today's DR"}
+            <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "New on today's DR"}
           </Button>
         ) : undefined}
       />

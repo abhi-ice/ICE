@@ -438,6 +438,17 @@ h4 { font-size: 1rem;     line-height: 1.4; }
     background: rgba(16, 185, 129, 0.5);
 }
 
+/* Hide ONLY the horizontal scrollbar — used on wide data tables
+   where a sticky top-mounted scrollbar (TopHorizontalScroll) controls
+   horizontal movement and we don't want a second scrollbar at the
+   bottom of the table. Vertical scrollbar still renders. */
+.scrollbar-no-x {
+    scrollbar-width: thin;
+}
+.scrollbar-no-x::-webkit-scrollbar:horizontal { height: 0; }
+.scrollbar-no-x::-webkit-scrollbar-track:horizontal { display: none; }
+.scrollbar-no-x::-webkit-scrollbar-thumb:horizontal { display: none; }
+
 /* ============================================================
    LOGIN BACKGROUND â€” keep the steel-construction overlay but darken
    the gradient stops so the form pops on the new dark theme
