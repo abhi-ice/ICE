@@ -107,10 +107,10 @@ function SectionSvg({ section }) {
   const H = Math.max(200, totalH * PX_PER_UNIT_Y + 2 * PADDING);
 
   return (
-    <svg width="100%" viewBox={`0 0 ${W} ${H}`} className="bg-white border border-slate-200 rounded">
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} className="bg-slate-950 border border-white/10 rounded">
       <defs>
         <pattern id="grid" width="40" height="20" patternUnits="userSpaceOnUse">
-          <path d="M 40 0 L 0 0 0 20" fill="none" stroke="#e2e8f0" strokeWidth="0.5" />
+          <path d="M 40 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="0.5" />
         </pattern>
       </defs>
       <rect width="100%" height="100%" fill="url(#grid)" />
@@ -121,8 +121,8 @@ function SectionSvg({ section }) {
         return (
           <g key={f.floor_id}>
             <rect x={PADDING} y={floorY} width={W - 2 * PADDING} height={floorH}
-                  fill="#dbeafe" stroke="#1e3a8a" strokeWidth="0.5" opacity={0.4} />
-            <text x={PADDING + 4} y={floorY + 12} fontSize="9" fill="#1e3a8a">
+                  fill="rgba(96, 165, 250, 0.18)" stroke="#60a5fa" strokeWidth="0.5" opacity={0.7} />
+            <text x={PADDING + 4} y={floorY + 12} fontSize="9" fill="#93c5fd">
               Floor {f.floor_number} {f.floor_name}
             </text>
             {/* Each room intersection becomes a vertical post */}
@@ -130,8 +130,8 @@ function SectionSvg({ section }) {
               const tx = PADDING + Math.max(0, Math.min(1, it.t)) * (W - 2 * PADDING);
               return (
                 <g key={i}>
-                  <line x1={tx} y1={floorY} x2={tx} y2={floorY + floorH} stroke="#1e40af" strokeWidth="1" />
-                  <circle cx={tx} cy={floorY} r="2" fill="#1e40af" />
+                  <line x1={tx} y1={floorY} x2={tx} y2={floorY + floorH} stroke="#93c5fd" strokeWidth="1" />
+                  <circle cx={tx} cy={floorY} r="2" fill="#93c5fd" />
                 </g>
               );
             })}
@@ -140,8 +140,8 @@ function SectionSvg({ section }) {
       })}
 
       {/* Ground line */}
-      <line x1={PADDING} y1={H - PADDING} x2={W - PADDING} y2={H - PADDING} stroke="#0f172a" strokeWidth="1.2" />
-      <text x={PADDING} y={H - PADDING + 14} fontSize="9" fill="#475569">Plan-cut length: {lineLen.toFixed(0)}px</text>
+      <line x1={PADDING} y1={H - PADDING} x2={W - PADDING} y2={H - PADDING} stroke="#e4e4e7" strokeWidth="1.2" />
+      <text x={PADDING} y={H - PADDING + 14} fontSize="9" fill="#a1a1aa">Plan-cut length: {lineLen.toFixed(0)}px</text>
     </svg>
   );
 }

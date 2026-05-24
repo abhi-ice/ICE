@@ -473,3 +473,163 @@ input, select, textarea {
 /* Status pill fills (pill-blue / pill-amber / pill-green / pill-red /
    pill-slate) all use composed selectors above, so the bg-blue-50 etc.
    utility overrides don't touch them. */
+
+/* ============================================================
+   PHASE 6 — EXTENDED UTILITY OVERRIDES (rose / amber / emerald
+   light-mode variants). These are heavily used across the codebase
+   for slip indicators (rose), draft / warning / banner UI (amber),
+   approved-status & success indicators (emerald). Re-skinned to
+   translucent fills with brighter foregrounds so they read on the
+   black noir background.
+   ============================================================ */
+
+/* Rose — slip / over-budget / behind-schedule indicators.
+   pages/Tasks.jsx, pages/Lookahead.jsx, pages/Aging.jsx,
+   pages/CascadeDashboard.jsx use these heavily on row tints &
+   warning callouts. */
+.bg-rose-50         { background-color: rgba(239, 35, 60, 0.07) !important; }
+.bg-rose-100        { background-color: rgba(239, 35, 60, 0.14) !important; }
+.bg-rose-600        { background-color: #ef233c !important; }       /* destructive button */
+.hover\:bg-rose-700:hover { background-color: #b91c2c !important; }
+.text-rose-300      { color: rgb(253 164 175) !important; }
+.text-rose-600      { color: #fb7185 !important; }
+.text-rose-700      { color: #fb7185 !important; }
+.text-rose-800      { color: #fca5a5 !important; }
+.text-rose-900      { color: #fecaca !important; }
+.border-rose-200    { border-color: rgba(239, 35, 60, 0.25) !important; }
+.border-rose-300    { border-color: rgba(239, 35, 60, 0.40) !important; }
+.border-rose-400    { border-color: rgba(239, 35, 60, 0.55) !important; }
+
+/* Amber — draft status, no-work-day pill, validation warnings,
+   permit / SLA banners. Heavily used in pages/DailyReports.jsx,
+   pages/Recovery.jsx, pages/CalendarReconciliation.jsx. */
+.bg-amber-50        { background-color: rgba(245, 158, 11, 0.10) !important; }
+.bg-amber-100       { background-color: rgba(245, 158, 11, 0.18) !important; }
+.bg-amber-500       { background-color: #f59e0b !important; }       /* badge bg (sidebar counters) — keep gold for visibility */
+.bg-amber-600       { background-color: #d97706 !important; }
+.text-amber-300     { color: rgb(252 211 77) !important; }
+.text-amber-700     { color: rgb(252 211 77) !important; }
+.text-amber-800     { color: rgb(253 224 71) !important; }
+.text-amber-900     { color: rgb(254 240 138) !important; }
+.border-amber-200   { border-color: rgba(245, 158, 11, 0.30) !important; }
+.border-amber-300   { border-color: rgba(245, 158, 11, 0.45) !important; }
+.border-amber-400   { border-color: rgba(245, 158, 11, 0.60) !important; }
+
+/* Emerald — approved status, completed activities, success buttons.
+   Heavily used in pages/Approvals.jsx, pages/Tasks.jsx,
+   pages/Recovery.jsx. Keep emerald saturated for semantic
+   success — buttons keep their solid bg, light tints become
+   translucent. */
+.bg-emerald-50      { background-color: rgba(16, 185, 129, 0.10) !important; }
+.bg-emerald-100     { background-color: rgba(16, 185, 129, 0.18) !important; }
+.bg-emerald-600     { background-color: #10b981 !important; }       /* success button — keep emerald */
+.hover\:bg-emerald-700:hover { background-color: #059669 !important; }
+.text-emerald-300   { color: rgb(110 231 183) !important; }
+.text-emerald-600   { color: rgb(52 211 153) !important; }
+.text-emerald-700   { color: rgb(52 211 153) !important; }
+.text-emerald-800   { color: rgb(110 231 183) !important; }
+.text-emerald-900   { color: rgb(167 243 208) !important; }
+.border-emerald-200 { border-color: rgba(16, 185, 129, 0.30) !important; }
+.border-emerald-300 { border-color: rgba(16, 185, 129, 0.45) !important; }
+.border-emerald-400 { border-color: rgba(16, 185, 129, 0.60) !important; }
+
+/* Red — destructive actions (delete, reject) — semantically danger,
+   different from brand red. Already partially in app via text-red-400
+   on trash icons; round out the family. */
+.bg-red-50          { background-color: rgba(239, 68, 68, 0.08) !important; }
+.bg-red-100         { background-color: rgba(239, 68, 68, 0.16) !important; }
+.bg-red-600         { background-color: #dc2626 !important; }
+.bg-red-700         { background-color: #b91c1c !important; }
+.hover\:bg-red-50:hover  { background-color: rgba(239, 68, 68, 0.14) !important; }
+.hover\:bg-red-700:hover { background-color: #b91c1c !important; }
+.text-red-300       { color: rgb(252 165 165) !important; }
+.text-red-400       { color: rgb(248 113 113) !important; }
+.text-red-500       { color: rgb(248 113 113) !important; }
+.text-red-600       { color: rgb(252 165 165) !important; }
+.text-red-700       { color: rgb(252 165 165) !important; }
+.border-red-200     { border-color: rgba(239, 68, 68, 0.30) !important; }
+.border-red-300     { border-color: rgba(239, 68, 68, 0.45) !important; }
+
+/* Blue (non-brand) — spec citations, RFI accents, links.
+   text-blue-900 wasn't in Phase 4. */
+.text-blue-300      { color: rgb(147 197 253) !important; }
+.text-blue-800      { color: rgb(147 197 253) !important; }
+.text-blue-900      { color: rgb(191 219 254) !important; }
+
+/* Slate — additional shades that escaped Phase 4 */
+.bg-slate-200       { background-color: rgba(255,255,255,0.10) !important; }
+.bg-slate-300       { background-color: rgba(255,255,255,0.14) !important; }
+.bg-slate-700       { background-color: rgba(255,255,255,0.06) !important; }
+.bg-slate-800       { background-color: rgba(255,255,255,0.04) !important; }
+.bg-slate-900       { background-color: #0a0a0c !important; }
+.bg-slate-950       { background-color: #000 !important; }
+.hover\:bg-slate-50:hover  { background-color: rgba(255,255,255,0.04) !important; }
+.hover\:bg-slate-100:hover { background-color: rgba(255,255,255,0.06) !important; }
+.hover\:bg-slate-200:hover { background-color: rgba(255,255,255,0.10) !important; }
+.text-slate-300     { color: rgb(212 212 216) !important; }
+.text-slate-200     { color: rgb(228 228 231) !important; }
+.text-slate-100     { color: rgb(244 244 245) !important; }
+.border-slate-400   { border-color: rgba(255,255,255,0.18) !important; }
+.border-slate-500   { border-color: rgba(255,255,255,0.22) !important; }
+.border-slate-700   { border-color: rgba(255,255,255,0.10) !important; }
+.border-slate-800   { border-color: rgba(255,255,255,0.08) !important; }
+.divide-slate-100 > * + * { border-color: rgba(255,255,255,0.05) !important; }
+.divide-slate-200 > * + * { border-color: rgba(255,255,255,0.08) !important; }
+
+/* Purple / violet (Spatial / Knowledge Base accents) */
+.bg-purple-50       { background-color: rgba(168, 85, 247, 0.08) !important; }
+.bg-violet-50       { background-color: rgba(139, 92, 246, 0.08) !important; }
+.text-purple-700    { color: rgb(216 180 254) !important; }
+.text-violet-700    { color: rgb(196 181 253) !important; }
+.border-purple-200  { border-color: rgba(168, 85, 247, 0.30) !important; }
+.border-violet-200  { border-color: rgba(139, 92, 246, 0.30) !important; }
+
+/* Yellow / orange edge cases */
+.bg-yellow-50       { background-color: rgba(234, 179, 8, 0.10) !important; }
+.text-yellow-700    { color: rgb(253 224 71) !important; }
+.bg-orange-50       { background-color: rgba(249, 115, 22, 0.10) !important; }
+.text-orange-700    { color: rgb(253 186 116) !important; }
+
+/* ============================================================
+   PHASE 7 — SVG visualization stroke / fill colors for spatial pages.
+   These are inline SVG colors in components/spatial/SectionViewDialog
+   and pages/PolygonEditor / Spatial3D — they don't go through Tailwind
+   so they need direct CSS-targeted overrides. Done by targeting
+   specific data-attributes / class hooks added to those components.
+   For now we rely on the JSX-level edits done separately. This block
+   adds a safety net for any SVG fills below 30% lightness.
+   ============================================================ */
+/* Override Konva/SVG floor-cut fills that are too light on dark */
+[data-konva-floor-fill="#dbeafe"] { fill: rgba(59, 130, 246, 0.25) !important; }
+
+/* ============================================================
+   PHASE 8 — shadcn UI primitive nudges. Most shadcn components
+   read from --background / --card / --popover / --primary CSS
+   variables (already flipped). A few outliers:
+   ============================================================ */
+
+/* Dialog overlay — darken further so dialog content reads cleanly */
+[data-radix-popper-content-wrapper] { z-index: 50; }
+
+/* Sonner toaster — uses its own theme tokens, override the light bg */
+.toaster, [data-sonner-toaster] {
+    --normal-bg: rgba(20, 20, 23, 0.95) !important;
+    --normal-text: rgb(244 244 245) !important;
+    --normal-border: rgba(255, 255, 255, 0.10) !important;
+}
+
+/* Calendar / date picker — flip the day cells from white-on-light to
+   white-on-dark */
+.rdp, .rdp-day, .rdp-table {
+    color: rgb(228 228 231);
+}
+.rdp-day_selected, .rdp-day_selected:focus, .rdp-day_selected:hover {
+    background-color: #ef233c !important;
+    color: #fff !important;
+}
+
+/* Tooltip — uses popover bg by default, already dark. Add subtle
+   border so it pops on dark. */
+[data-radix-tooltip-content] {
+    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+}
