@@ -380,31 +380,58 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   // 2026-05-25 — turn-by-turn caption buffers. The native-audio model
   // streams `inputTranscription.text` (what the super said) and
   // `outputTranscription.text` (what the AI said) as tiny chunks
-  // (often 1-3 chars apiece). Concatenate them into per-turn lines
-  // instead of flooding the UI with one "You:"/"AI:" prefix per chunk.
+  // (often 1-3 chars apiece). They are NOT individually complete turns
+  // — Gemini only sends `turnComplete` when the speaker fully finishes
+  // their turn. So we accumulate per-speaker into a buffer and only
+  // flush to the "completed turns" list when (a) the OTHER speaker
+  // starts talking, or (b) turnComplete fires.
   const userTurnRef = useRef("");
   const aiTurnRef = useRef("");
   const userTurnsAllRef = useRef([]);   // all completed user utterances
   const aiTurnsAllRef = useRef([]);     // all completed AI utterances
 
-  const _flushTurn = () => {
-    const u = userTurnRef.current.trim();
-    const a = aiTurnRef.current.trim();
-    if (u) userTurnsAllRef.current.push(u);
-    if (a) aiTurnsAllRef.current.push(a);
-    userTurnRef.current = "";
-    aiTurnRef.current = "";
-    // Rebuild the displayed transcript from completed turns + the
-    // current in-progress turn (if any).
-    const lines = [];
+  // Re-render the display from the accumulated turns + the active
+  // (in-progress) buffer. This is called frequently as chunks arrive.
+  const _redraw = () => {
     const userTurns = userTurnsAllRef.current;
     const aiTurns = aiTurnsAllRef.current;
+    const lines = [];
     const max = Math.max(userTurns.length, aiTurns.length);
     for (let i = 0; i < max; i++) {
       if (aiTurns[i]) lines.push(`AI: ${aiTurns[i]}`);
       if (userTurns[i]) lines.push(`You: ${userTurns[i]}`);
     }
+    // Append the in-progress buffer for whichever speaker is currently
+    // streaming. We don't push it to the completed list until the
+    // other speaker starts or turnComplete arrives.
+    if (aiTurnRef.current.trim()) lines.push(`AI: ${aiTurnRef.current.trim()}`);
+    if (userTurnRef.current.trim()) lines.push(`You: ${userTurnRef.current.trim()}`);
     setLiveTranscript(lines.join("\n"));
+  };
+
+  // Push whichever buffer (or both) has content into the completed
+  // list, then clear the buffers. Used on turnComplete.
+  const _commitTurns = () => {
+    const u = userTurnRef.current.trim();
+    const a = aiTurnRef.current.trim();
+    if (a) aiTurnsAllRef.current.push(a);
+    if (u) userTurnsAllRef.current.push(u);
+    userTurnRef.current = "";
+    aiTurnRef.current = "";
+    _redraw();
+  };
+
+  // Hand off mid-conversation: the OTHER speaker just started talking,
+  // so flush whichever buffer is currently active to the completed
+  // list. Mirrors a phone call's natural turn-taking.
+  const _handoffTo = (speaker /* "user" | "ai" */) => {
+    if (speaker === "user" && aiTurnRef.current.trim()) {
+      aiTurnsAllRef.current.push(aiTurnRef.current.trim());
+      aiTurnRef.current = "";
+    } else if (speaker === "ai" && userTurnRef.current.trim()) {
+      userTurnsAllRef.current.push(userTurnRef.current.trim());
+      userTurnRef.current = "";
+    }
   };
 
   // Gemini Live returns AI audio as base64 PCM at 24 kHz, 16-bit signed,
