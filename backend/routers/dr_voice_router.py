@@ -466,6 +466,13 @@ async def voice_extract(
         if d.get("description")]
     skipped_dupes = {"delays": 0, "safety_events": 0, "qc_issues": 0,
                      "deliveries": 0, "coordination_events": 0}
+    # Collect tasks whose status needs recompute after voice insert.
+    # Delays inserted by this call need to flow through to
+    # tasks.open_blocker_count + open_blocker_summary so the DR
+    # activity grid (and Tasks page) shows the blocker badge with a
+    # link to the new delay. Mirrors what the manual delay POST in
+    # field_events_router does after every create.
+    tasks_to_recompute: set[str] = set()
 
     async def _link_task_ids(activity_codes):
         if not activity_codes:
@@ -526,6 +533,8 @@ async def voice_extract(
             "created_at": now, "updated_at": now, "created_by": actor_id,
         })
         applied["delays"] += 1
+        # Track linked tasks for downstream blocker recompute.
+        tasks_to_recompute.update(linked)
 
     for s in (parsed.get("safety_events") or []):
         if not isinstance(s, dict) or not s.get("description"):
@@ -633,6 +642,26 @@ async def voice_extract(
         "before_data": {}, "after_data": {"applied": applied},
         "created_at": now,
     })
+
+    # Bug fix (2026-05-25 night) -- recompute task blocker counts for
+    # any task that a voice-inserted delay was linked to. Without this
+    # the DR activity grid and Tasks page would NOT show a blocker
+    # badge against the affected row, even though the delay row was
+    # written to the DB. Mirrors the recompute call that the manual
+    # delay POST endpoint runs in field_events_router.
+    if tasks_to_recompute:
+        from services.task_status import recompute_for_tasks
+        try:
+            await recompute_for_tasks(
+                db, tenant_id, list(tasks_to_recompute),
+                actor_id=actor_id, request_id=_new_id(),
+            )
+        except Exception as exc:
+            # Don't fail the whole voice intake if the recompute hits
+            # an edge case -- the delay is still recorded; the badge
+            # will refresh on the next manual reload.
+            log.warning("dr_voice: blocker recompute failed for %s: %s",
+                        list(tasks_to_recompute), exc)
 
     return {
         "ok": True,
