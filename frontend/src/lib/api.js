@@ -35,6 +35,12 @@ client.interceptors.response.use(
 
 export const asArray = (v) => (Array.isArray(v) ? v : []);
 
+// 5-Route DR Entry (2026-05-25) — install the offline request queue
+// so PATCH/POST mutations against /daily-reports/* and friends survive
+// connection loss. Drains automatically on the next 'online' event.
+import { installOfflineInterceptor } from "./drOfflineSync";
+installOfflineInterceptor(client);
+
 // Bug #25 fix (2026-05-13) -- shared API error message extractor.
 //
 // Backend returns structured error envelopes in several shapes

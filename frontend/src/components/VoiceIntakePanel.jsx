@@ -37,8 +37,8 @@ const MODES = [
   { value: "offline_voice",  label: "Voice offline (sync later)",  requiresOnline: false, requiresVoice: true  },
 ];
 
-export default function VoiceIntakePanel({ dailyReportId, onApplied, locked }) {
-  const [mode, setMode] = useState("manual");
+export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, initialMode }) {
+  const [mode, setMode] = useState(initialMode || "manual");
   const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [recording, setRecording] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);

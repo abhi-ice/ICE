@@ -247,17 +247,22 @@ async def voice_extract(
     for cp in (parsed.get("crew_presence") or []):
         if not isinstance(cp, dict) or not cp.get("trade_code"):
             continue
-        await db.crew_presence.insert_one({
+        headcount = int(cp["headcount"]) if cp.get("headcount") else 0
+        hours_per = float(cp["hours_per_person"]) if cp.get("hours_per_person") else 8.0
+        await db.daily_presence.insert_one({
             "id": _new_id(),
             "tenant_id": tenant_id,
             "daily_report_id": dr_id,
-            "trade_code": str(cp["trade_code"])[:32],
+            "project_id": dr.get("project_id"),
+            "trade": str(cp["trade_code"])[:32],
             "company_name": cp.get("company_name"),
-            "headcount": int(cp["headcount"]) if cp.get("headcount") else None,
-            "hours_per_person": float(cp["hours_per_person"]) if cp.get("hours_per_person") else None,
+            "headcount": headcount,
+            "hours_per_person": hours_per,
+            "total_hours": headcount * hours_per,
             "notes": cp.get("notes"),
+            "shift": "first",
             "source": "voice_intake",
-            "created_at": now, "updated_at": now,
+            "created_at": now,
             "created_by": actor_id,
         })
         applied["crew_presence"] += 1
@@ -292,7 +297,10 @@ async def voice_extract(
             "linked_task_ids": linked,
             "per_task_impacts": [{"task_id": t, "projected_impact_days": 0}
                                   for t in linked],
-            "logged_on_daily_report_id": dr_id,
+            "daily_report_id": dr_id,
+            "date": dr.get("report_date"),
+            "reported_at": now,
+            "reported_by": actor_id,
             "source": "voice_intake",
             "created_at": now, "updated_at": now, "created_by": actor_id,
         })
@@ -307,8 +315,12 @@ async def voice_extract(
             "description": str(s["description"])[:2000],
             "event_type": str(s.get("event_type") or "other"),
             "severity": str(s.get("severity") or "minor"),
+            "status": "open",
             "linked_task_ids": linked,
-            "logged_on_daily_report_id": dr_id,
+            "daily_report_id": dr_id,
+            "date": dr.get("report_date"),
+            "reported_at": now,
+            "reported_by": actor_id,
             "source": "voice_intake",
             "created_at": now, "updated_at": now, "created_by": actor_id,
         })
@@ -324,7 +336,10 @@ async def voice_extract(
             "severity": str(q.get("severity") or "minor"),
             "status": "open",
             "linked_task_ids": linked,
-            "logged_on_daily_report_id": dr_id,
+            "daily_report_id": dr_id,
+            "date": dr.get("report_date"),
+            "reported_at": now,
+            "reported_by": actor_id,
             "source": "voice_intake",
             "created_at": now, "updated_at": now, "created_by": actor_id,
         })
@@ -341,7 +356,10 @@ async def voice_extract(
             "po_number": dl.get("po_number"),
             "status": str(dl.get("status") or "scheduled"),
             "linked_task_ids": linked,
-            "logged_on_daily_report_id": dr_id,
+            "daily_report_id": dr_id,
+            "date": dr.get("report_date"),
+            "reported_at": now,
+            "reported_by": actor_id,
             "source": "voice_intake",
             "created_at": now, "updated_at": now, "created_by": actor_id,
         })
@@ -356,7 +374,10 @@ async def voice_extract(
             "description": str(ce["description"])[:2000],
             "with_party": ce.get("with_party"),
             "linked_task_ids": linked,
-            "logged_on_daily_report_id": dr_id,
+            "daily_report_id": dr_id,
+            "date": dr.get("report_date"),
+            "reported_at": now,
+            "reported_by": actor_id,
             "source": "voice_intake",
             "created_at": now, "updated_at": now, "created_by": actor_id,
         })
@@ -434,6 +455,21 @@ async def voice_live_token(
             detail="Live voice not configured -- GEMINI_API_KEY missing.",
         )
     return {"token": api_key, "model": "gemini-2.0-flash-exp"}
+
+
+# ---------------------------------------------------------------------
+# Capability probe -- frontend uses this to decide whether to show the
+# "Live Voice" / "Voice Memo" choices as enabled or grayed-out.
+# Auth-gated; no key value is leaked, only booleans.
+# ---------------------------------------------------------------------
+@router.get("/voice/config")
+async def voice_config(ctx: dict = Depends(require_tenant)):
+    gemini_present = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    return {
+        "gemini_configured": gemini_present,
+        "voice_memo_enabled": gemini_present,
+        "live_voice_enabled": gemini_present,
+    }
 
 
 def _new_id() -> str:

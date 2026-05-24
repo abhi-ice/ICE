@@ -48,6 +48,11 @@ import {
 import TagWizard from "../components/photos/TagWizard";
 // Bucket G Phase 3 -- Jigsaw pre-fill widget on the DR narrative.
 import JigsawField from "../components/forms/JigsawField";
+// 5-Route DR voice intake (Phase A 2026-05-25): renders the voice memo
+// recorder and live-conversational launcher when the user picked one
+// of the voice modes at New-DR time. Imported lazily-friendly default
+// from /components/VoiceIntakePanel.jsx.
+import VoiceIntakePanel from "../components/VoiceIntakePanel";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -141,12 +146,49 @@ const PHOTO_CLASS_BY_VALUE = Object.fromEntries(PHOTO_CLASSES.map((c) => [c.valu
 // ------------------------------------------------------------
 //  Top-level list — pick a date (any past/future), open or create
 // ------------------------------------------------------------
+// 5-Route DR Entry — three user-facing intake modes selected when
+// opening a new daily report. Standard, short names per Abhi:
+//   - manual      → fill the form by hand (default; always available)
+//   - voice_memo  → record a voice recap; AI transcribes + populates DR
+//   - live_voice  → Gemini Live conversational walkthrough
+//
+// Offline rules:
+//   - manual stays available (autosaves draft to localStorage)
+//   - voice_memo stays available (recording queues to IndexedDB, syncs
+//     when connection returns)
+//   - live_voice REQUIRES connection (Gemini Live WebSocket) → grayed
+//     out + tooltip when offline OR when GEMINI_API_KEY isn't configured.
+const DR_INTAKE_MODES = [
+  { value: "manual",     label: "Manual",     hint: "Type values into the form",                 requiresOnline: false, requiresGemini: false },
+  { value: "voice_memo", label: "Voice Memo", hint: "Record voice recap, AI fills DR",          requiresOnline: false, requiresGemini: true  },
+  { value: "live_voice", label: "Live Voice", hint: "AI guides you with questions in real time", requiresOnline: true,  requiresGemini: true  },
+];
+
 export default function DailyReports() {
   const { activeId } = useProjects();
   const [reports, setReports] = useState([]);
   const [openId, setOpenId] = useState(null);
+  const [openMode, setOpenMode] = useState("manual");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerDate, setPickerDate] = useState(localTodayISO());
+  const [pickerMode, setPickerMode] = useState("manual");
+  const [voiceConfig, setVoiceConfig] = useState({ gemini_configured: false, voice_memo_enabled: false, live_voice_enabled: false });
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  useEffect(() => {
+    const setOn = () => setOnline(true);
+    const setOff = () => setOnline(false);
+    window.addEventListener("online", setOn);
+    window.addEventListener("offline", setOff);
+    return () => {
+      window.removeEventListener("online", setOn);
+      window.removeEventListener("offline", setOff);
+    };
+  }, []);
+  useEffect(() => {
+    api.get("/daily-reports/voice/config")
+      .then(({ data }) => setVoiceConfig(data || {}))
+      .catch(() => setVoiceConfig({ gemini_configured: false, voice_memo_enabled: false, live_voice_enabled: false }));
+  }, []);
   // Feature Client DR Template Export (2026-05-20) -- the role gate
   // here is for the "Upload DR Template" button in the list header.
   // The per-DR "Client Format" export now lives on the DR detail view
@@ -205,6 +247,7 @@ export default function DailyReports() {
       toast.success(existed ? `Opened existing report for ${formatDateDisplay(data.report_date)}`
                             : `Daily report opened for ${formatDateDisplay(data.report_date)}`);
       setPickerOpen(false);
+      setOpenMode(pickerMode || "manual");
       setOpenId(data.id);
       load();
     } catch (e) {
@@ -225,7 +268,7 @@ export default function DailyReports() {
   };
 
   if (openId) {
-    return <DailyReportDetail id={openId} onBack={() => setOpenId(null)} />;
+    return <DailyReportDetail id={openId} intakeMode={openMode} onBack={() => { setOpenId(null); setOpenMode("manual"); }} />;
   }
 
   return (
@@ -268,6 +311,35 @@ export default function DailyReports() {
               <input data-testid="dr-new-date" type="date" value={pickerDate}
                 onChange={(e) => setPickerDate(e.target.value)}
                 className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm" />
+            </label>
+            <label className="text-xs">
+              <div className="text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+                Intake mode
+                {online ? null : <span className="text-amber-600 normal-case">(offline — Live Voice disabled)</span>}
+              </div>
+              <select
+                data-testid="dr-new-mode"
+                value={pickerMode}
+                onChange={(e) => setPickerMode(e.target.value)}
+                className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm bg-white min-w-[140px]"
+              >
+                {DR_INTAKE_MODES.map((m) => {
+                  const offlineBlocked = m.requiresOnline && !online;
+                  const geminiBlocked = m.requiresGemini && !voiceConfig.gemini_configured;
+                  const disabled = offlineBlocked || geminiBlocked;
+                  let suffix = "";
+                  if (offlineBlocked) suffix = " (offline)";
+                  else if (geminiBlocked) suffix = " (not configured)";
+                  return (
+                    <option key={m.value} value={m.value} disabled={disabled} data-testid={`dr-new-mode-${m.value}`}>
+                      {m.label}{suffix}
+                    </option>
+                  );
+                })}
+              </select>
+              <div className="mt-1 text-[10px] text-slate-400 max-w-[220px] leading-tight">
+                {DR_INTAKE_MODES.find((m) => m.value === pickerMode)?.hint}
+              </div>
             </label>
             <button data-testid="dr-new-confirm" onClick={createForDate}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">
@@ -320,7 +392,7 @@ export default function DailyReports() {
 // ------------------------------------------------------------
 //  Detail page (the heart of Phase 2)
 // ------------------------------------------------------------
-function DailyReportDetail({ id, onBack }) {
+function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
   // Feature Client DR Template Export (2026-05-20) -- the third export
@@ -342,6 +414,32 @@ function DailyReportDetail({ id, onBack }) {
   // a submit with error="empty_dr_requires_no_work_day". On confirm we
   // resubmit with is_no_work_day=true + the reason/note.
   const [noWorkModal, setNoWorkModal] = useState(null); // null | {reason, note}
+
+  // 5-Route DR Entry (2026-05-25) — online/offline status + pending
+  // offline-queue size for the banner shown at the top of the detail.
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [queueSize, setQueueSize] = useState(0);
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        // Lazy require to avoid a circular dep at module init.
+        // eslint-disable-next-line global-require
+        const { getQueueSize } = require("../lib/drOfflineSync");
+        setQueueSize(getQueueSize());
+      } catch { /* ignore */ }
+    };
+    refresh();
+    const setOn = () => { setOnline(true); refresh(); };
+    const setOff = () => { setOnline(false); refresh(); };
+    window.addEventListener("online", setOn);
+    window.addEventListener("offline", setOff);
+    const t = setInterval(refresh, 5000);
+    return () => {
+      window.removeEventListener("online", setOn);
+      window.removeEventListener("offline", setOff);
+      clearInterval(t);
+    };
+  }, []);
 
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
@@ -693,6 +791,44 @@ function DailyReportDetail({ id, onBack }) {
               onDownloadClientTemplate={downloadClientTemplate}
               onQuickLogCoordination={() => setCoordOpen(true)} />
 
+      {/* 5-Route DR Entry — offline banner. Shows when offline OR when
+          there are queued requests waiting to drain. Auto-hides when
+          online and queue is empty. */}
+      {(!online || queueSize > 0) && (
+        <div data-testid="dr-offline-banner"
+          className={`rounded-lg border px-3 py-2 text-sm flex items-center justify-between gap-3 ${
+            !online
+              ? "bg-amber-50 border-amber-300 text-amber-900"
+              : "bg-blue-50 border-blue-300 text-blue-900"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <div className={`h-2 w-2 rounded-full ${!online ? "bg-amber-500 animate-pulse" : "bg-blue-500"}`} />
+            {!online
+              ? <span><strong>You're offline.</strong> Edits save locally and sync automatically when you reconnect.</span>
+              : <span><strong>{queueSize}</strong> pending change{queueSize === 1 ? "" : "s"} syncing…</span>}
+          </div>
+          {online && queueSize > 0 && (
+            <button
+              data-testid="dr-offline-drain"
+              onClick={async () => {
+                try {
+                  // eslint-disable-next-line global-require
+                  const { drainOfflineQueue } = require("../lib/drOfflineSync");
+                  const r = await drainOfflineQueue(api);
+                  if (r.synced > 0) toast.success(`Synced ${r.synced} pending change${r.synced === 1 ? "" : "s"}.`);
+                  if (r.remaining > 0) toast.error(`${r.remaining} change${r.remaining === 1 ? "" : "s"} still pending — will retry.`);
+                  reload();
+                } catch (e) {
+                  toast.error(`Sync failed: ${e.message}`);
+                }
+              }}
+              className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700"
+            >Sync now</button>
+          )}
+        </div>
+      )}
+
       {/* Feature DR Header Auto-Population (2026-05-20) -- the formal
           contract / station / signature block shown on every Daily
           Report. Read-only, auto-populated from the project record and
@@ -700,6 +836,19 @@ function DailyReportDetail({ id, onBack }) {
           the project field is empty -- no error, no block on DR
           creation. Above the date/weather block per the spec. */}
       <DrAutoHeader project={project} currentUserName={currentUserName} />
+
+      {/* 5-Route DR voice intake (Phase A 2026-05-25). The "Voice Memo"
+          and "Live Voice" modes selected at New-DR time auto-expand
+          the matching panel; Manual mode hides it. Recording / live /
+          offline-queue logic lives inside VoiceIntakePanel. */}
+      {intakeMode && intakeMode !== "manual" && (
+        <VoiceIntakePanel
+          dailyReportId={id}
+          initialMode={intakeMode === "voice_memo" ? "voice_async" : "voice_live"}
+          locked={locked}
+          onApplied={reload}
+        />
+      )}
 
       {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.
           Pre-links the event to this daily report on save so it shows up

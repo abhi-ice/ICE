@@ -275,6 +275,54 @@ must be reviewed and approved before its rows touch the `tasks` collection
 | 11   | 27/27   | 100%     | Auth rebuild, Google removed, team invites, DR refresh, delay→days, demo wiped |
 | 12   | 18/18   | 100%     | Schedule diff + AI review + PM approval workflow |
 | 12.1 | smoke   | smoke    | Heading-row filter (FREE heuristic) + chat + manual toggles |
+| 13   | 4/4     | smoke    | 5-Route DR Voice Intake (Phase A: Manual/Voice Memo/Live Voice mode selector + Claude extraction + offline IndexedDB queue + offline request interceptor) |
+
+### Iter 13 — 5-Route DR Voice Intake (Phase A; 2026-05-25)
+The "New Daily Report" flow now exposes three intake modes (per Abhi's
+specification, standard short names):
+
+- **Manual** — type into the form (default, offline-capable).
+- **Voice Memo** — record on-device, server-side Gemini transcribes,
+  Claude extracts structured fields, DR collections auto-populate.
+- **Live Voice** — Gemini Live WebSocket directly from the browser;
+  AI guides the super through weather → trades → activity-by-activity
+  → events. Final transcript posted to /voice/extract for the same
+  Claude write-through.
+
+Offline behaviour: Manual and Voice Memo stay enabled (form drafts +
+audio blobs queue locally). Live Voice is grayed-out (label `(offline)`)
+when `navigator.onLine` is false OR when `GEMINI_API_KEY` is absent on
+the backend (`/api/daily-reports/voice/config` probe).
+
+**Backend**
+- `routers/dr_voice_router.py` — `/voice/transcribe`,
+  `/voice/extract`, `/voice/transcribe-and-extract`,
+  `/voice/live-token`, `/voice/config`.
+- `services/dr_voice_extract.py` — Claude Sonnet 4.5 with a strict
+  JSON schema covering weather, notes, activity_updates,
+  crew_presence, delays, safety, qc, deliveries, coordination.
+- Fixed: extract writes now use `db.daily_presence` (not
+  `crew_presence`) and `daily_report_id` (not
+  `logged_on_daily_report_id`) so rows appear in `/context`.
+- `tests/test_dr_voice_intake.py` — 4 regression tests; all PASS.
+
+**Frontend**
+- `pages/DailyReports.jsx` — three-mode dropdown next to date picker.
+- `components/VoiceIntakePanel.jsx` — async recorder + offline queue
+  UI + Gemini Live WebSocket client. Auto-mounted at the top of DR
+  detail when intake mode != "manual".
+- `lib/drVoiceQueue.js` — IndexedDB audio queue.
+- `lib/drOfflineSync.js` (NEW) — axios interceptor that captures
+  network-only failures on PATCH/POST against /daily-reports/* and
+  friends, queues to localStorage, drains on `online` event.
+- DR detail page shows an offline status banner (amber when offline,
+  blue when draining a non-empty queue with "Sync now" button).
+
+**Phase B (deferred)** — actual Gemini transcription / Live audio runs
+require `GEMINI_API_KEY` in `backend/.env`. The endpoints already
+return 503 with a friendly message until the key is provided; the UI
+gates the Voice Memo / Live Voice options accordingly. No code change
+needed once the key lands — just `sudo supervisorctl restart backend`.
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
