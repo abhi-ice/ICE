@@ -81,18 +81,26 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
 
     client = genai.Client(api_key=api_key)
 
-    # Use the cheap-but-capable flash tier. Audio understanding is
-    # native to Gemini 2.0+. The new SDK accepts inline audio bytes via
-    # types.Part.from_bytes(...).
+    # Use the current GA multimodal model with native audio understanding.
+    # Per Google's Feb-2026 deprecation schedule, `gemini-2.0-flash` is
+    # 404'd for new users and `gemini-2.5-flash` is also slated for
+    # replacement — `gemini-3.5-flash` is the current recommended GA
+    # model for audio-to-text. The new SDK accepts inline audio bytes
+    # via types.Part.from_bytes(...).
     try:
         resp = await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.5-flash",
             contents=[
                 genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 "Transcribe this construction site daily-report voice memo "
                 "verbatim. Preserve every spoken word; do not summarize. "
                 "If the speaker mentions activity codes like 'one point seven', "
-                "write them as '1.7'. Return the transcript only, no commentary.",
+                "write them as '1.7'. Return ONLY the transcript text -- no "
+                "preamble, no commentary, no formatting. CRITICAL: if the "
+                "audio contains NO clear human speech (silence, music, tones, "
+                "background noise only), respond with an empty string. Do "
+                "NOT fabricate, paraphrase, or invent content that wasn't "
+                "actually spoken.",
             ],
         )
     except Exception as exc:
@@ -454,7 +462,7 @@ async def voice_live_token(
             status_code=503,
             detail="Live voice not configured -- GEMINI_API_KEY missing.",
         )
-    return {"token": api_key, "model": "gemini-2.0-flash-exp"}
+    return {"token": api_key, "model": "gemini-3.1-flash-live-preview"}
 
 
 # ---------------------------------------------------------------------

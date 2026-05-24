@@ -204,7 +204,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     try {
       const tok = await api.post(`/daily-reports/${dailyReportId}/voice/live-token`);
       const apiKey = tok.data.token;
-      const model = tok.data.model || "gemini-2.0-flash-exp";
+      const model = tok.data.model || "gemini-3.1-flash-live-preview";
       // Open WS directly to Gemini Live. Browser side; the token /
       // key never proxies through our server for streaming audio.
       const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
