@@ -135,18 +135,23 @@ export default function Spatial3D() {
     scene.add(planeMesh);
     sceneRef.currentClipPlaneMesh = planeMesh;
 
-    scene.add(new THREE.HemisphereLight(0xe2e8f0, 0x94a3b8, 0.7));
+    // Red Noir: darker hemisphere lighting (zinc tones) so the scene
+    // doesn't get blown out by light-colored ambient bounce.
+    scene.add(new THREE.HemisphereLight(0x71717a, 0x18181b, 0.6));
     const dir = new THREE.DirectionalLight(0xffffff, 0.9);
     dir.position.set(80, 120, 80); dir.castShadow = true; scene.add(dir);
 
+    // Red Noir: dark ground plane (zinc-900) instead of slate-200 light.
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(600, 600),
-      new THREE.MeshStandardMaterial({ color: 0xe2e8f0 })
+      new THREE.MeshStandardMaterial({ color: 0x18181b })
     );
     ground.rotation.x = -Math.PI / 2; ground.position.y = -0.1; ground.receiveShadow = true;
     scene.add(ground);
 
-    const grid = new THREE.GridHelper(600, 60, 0xcbd5e1, 0xe2e8f0);
+    // Red Noir: subtle white-on-dark grid (zinc-700 / zinc-600) so the
+    // grid is visible on the dark ground but doesn't blow out the scene.
+    const grid = new THREE.GridHelper(600, 60, 0x52525b, 0x3f3f46);
     scene.add(grid);
 
     const buildingGroup = new THREE.Group();
