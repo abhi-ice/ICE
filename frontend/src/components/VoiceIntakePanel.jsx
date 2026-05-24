@@ -95,6 +95,8 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online, pendingClips.length]);
 
+  const liveFinalRef = useRef("");
+
   // Recording controls -- MediaRecorder w/ webm/opus by default
   // (Chromium); the server accepts mp3/m4a/wav/webm/ogg, Gemini takes
   // webm-opus natively. mp3 transcoding would need a wasm encoder we
@@ -102,21 +104,39 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   const startRecording = async () => {
     if (recording) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Disable echoCancellation + noiseSuppression. With these on,
+      // Chrome can mute the MediaRecorder stream when another mic
+      // consumer (Web Speech API) is active -- which leaves Gemini
+      // with near-silence and the super gets a 3-char transcript.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
       const mimeType =
         MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
           ? "audio/webm;codecs=opus"
           : MediaRecorder.isTypeSupported("audio/webm")
             ? "audio/webm" : "";
-      const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const mr = mimeType
+        ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128000 })
+        : new MediaRecorder(stream, { audioBitsPerSecond: 128000 });
       chunksRef.current = [];
       mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = async () => {
         try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
         const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
-        await handleRecordedBlob(blob, mr.mimeType || "audio/webm");
+        // Capture the live browser-STT transcript as a fallback so we
+        // can use it if Gemini transcription failed / returned empty.
+        const fallback = (liveFinalRef.current || "").trim();
+        await handleRecordedBlob(blob, mr.mimeType || "audio/webm", fallback);
       };
-      mr.start();
+      // Use a 1-second timeslice so dataavailable fires periodically.
+      // Helps catch corrupt blobs early and gives a smoother size meter.
+      mr.start(1000);
       mediaRecorderRef.current = mr;
       recordStartRef.current = Date.now();
       setElapsedMs(0);
@@ -124,6 +144,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       setFinalTranscript("");
       setExtractWarning(null);
       setLastResult(null);
+      liveFinalRef.current = "";
       tickRef.current = setInterval(() => {
         const el = Date.now() - recordStartRef.current;
         setElapsedMs(el);
@@ -132,11 +153,10 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       setRecording(true);
 
       // Start live transcription preview (Web Speech API). This runs
-      // entirely in the browser, free, real-time. It's a UX
-      // confidence signal only -- Gemini does the canonical
-      // transcription on the server. If the browser doesn't support
-      // it (Firefox without flag, Safari < 14.1), we silently skip
-      // and the user just sees a "Recording…" indicator instead.
+      // entirely in the browser, free, real-time. It's BOTH a UX
+      // confidence signal AND a fallback transcript if Gemini fails.
+      // If the browser doesn't support it (Firefox without flag,
+      // Safari < 14.1), we silently skip.
       try {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SR) {
@@ -146,20 +166,18 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           sr.lang = "en-US";
           sr.onresult = (event) => {
             let interim = "";
-            let final = "";
+            let finalChunk = "";
             for (let i = event.resultIndex; i < event.results.length; i++) {
               const t = event.results[i][0].transcript;
-              if (event.results[i].isFinal) final += t + " ";
+              if (event.results[i].isFinal) finalChunk += t + " ";
               else interim += t;
             }
-            setLivePreview((prev) => {
-              // The "final" portion accumulates; interim is appended
-              // ephemerally. We rebuild the string from scratch each
-              // tick to keep it monotonic from the user's perspective.
-              const base = prev.replace(/\s*\[…[^\]]*\]$/, "").trim();
-              const next = (base + " " + final).trim();
-              return interim ? `${next} [… ${interim}]` : next;
-            });
+            if (finalChunk) {
+              liveFinalRef.current = (liveFinalRef.current + " " + finalChunk).trim();
+            }
+            const merged = liveFinalRef.current
+              + (interim ? ` [… ${interim}]` : "");
+            setLivePreview(merged);
           };
           sr.onerror = () => { /* ignore browser STT errors -- not critical */ };
           sr.onend = () => {
@@ -187,7 +205,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     setRecording(false);
   };
 
-  const handleRecordedBlob = async (blob, mimeType) => {
+  const handleRecordedBlob = async (blob, mimeType, fallbackTranscript = "") => {
     if (!blob || blob.size === 0) {
       toast.error("Empty recording -- microphone may be muted.");
       return;
@@ -204,17 +222,57 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           fd,
           { headers: { "Content-Type": "multipart/form-data" }, timeout: 180000 },
         );
-        setLastResult(r.data);
-        setFinalTranscript(r.data.transcript || "");
-        setExtractWarning(r.data.warning || null);
-        if (r.data.warning === "no_speech_detected") {
+        let data = r.data;
+        const geminiTranscript = (data.transcript || "").trim();
+
+        // Fallback path -- Gemini returned little/no text but the
+        // browser's Web Speech API heard you. Send the browser
+        // transcript through the same /voice/extract path to get
+        // structured fields anyway.
+        const geminiUseless = geminiTranscript.length < 20;
+        if (geminiUseless && fallbackTranscript.length >= 20) {
+          console.info(
+            `Gemini transcript too short (${geminiTranscript.length} chars). `
+            + `Falling back to browser STT (${fallbackTranscript.length} chars).`
+          );
+          toast.message(
+            "AI couldn't make out the audio clearly. Using your browser's "
+            + "live transcript instead — quality may vary.",
+            { duration: 5000 },
+          );
+          try {
+            const r2 = await api.post(
+              `/daily-reports/${dailyReportId}/voice/extract`,
+              { transcript: fallbackTranscript },
+              { timeout: 60000 },
+            );
+            // Synthesize a unified response shape so downstream UI
+            // doesn't need to branch.
+            data = {
+              transcript: fallbackTranscript,
+              transcript_source: "browser_stt",
+              applied: r2.data.applied,
+              draft: r2.data.draft,
+              warning: null,
+            };
+          } catch (e2) {
+            console.error("Fallback extraction failed:", e2);
+          }
+        } else if (geminiTranscript) {
+          data.transcript_source = "gemini";
+        }
+
+        setLastResult(data);
+        setFinalTranscript(data.transcript || "");
+        setExtractWarning(data.warning || null);
+        if (data.warning === "no_speech_detected" && !fallbackTranscript) {
           toast.error(
             "AI couldn't hear any speech in the recording. Check your "
             + "mic, move closer, and try again.",
             { duration: 8000 },
           );
         } else {
-          const s = summarizeApplied(r.data.applied);
+          const s = summarizeApplied(data.applied);
           if (s === "no fields") {
             toast.error(
               "AI heard you but couldn't extract any DR fields. "
@@ -581,7 +639,15 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           ) : finalTranscript ? (
             <div className="rounded border border-slate-700 bg-slate-950/60 p-3">
               <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1.5 flex items-center justify-between">
-                <span>What the AI heard (final transcript)</span>
+                <span>
+                  What the AI heard (final transcript)
+                  {lastResult?.transcript_source === "browser_stt" && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 text-[10px] normal-case">browser fallback</span>
+                  )}
+                  {lastResult?.transcript_source === "gemini" && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 text-[10px] normal-case">Gemini</span>
+                  )}
+                </span>
                 <span className="text-slate-500 normal-case">{finalTranscript.length} chars</span>
               </div>
               <pre className="text-sm text-slate-100 whitespace-pre-wrap font-sans leading-relaxed max-h-48 overflow-y-auto">
