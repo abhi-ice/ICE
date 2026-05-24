@@ -765,4 +765,110 @@ pre {
 /* Generic <hr> */
 hr { border-color: rgba(255, 255, 255, 0.08); }
 
+/* ============================================================
+   PHASE 11 — RING color utilities + focus-within variants
+   Used for validation rings (JigsawField status colors), form error
+   states (DailyReports validation outline), selection indicators
+   (DelayDetail chosen scenario), focus rings on inputs.
+   ============================================================ */
+.ring-blue-200    { --tw-ring-color: rgba(239, 35, 60, 0.30) !important; }
+.ring-blue-300    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
+.ring-blue-400    { --tw-ring-color: rgba(239, 35, 60, 0.55) !important; }
+.ring-blue-500    { --tw-ring-color: rgba(239, 35, 60, 0.65) !important; }
+.ring-emerald-100 { --tw-ring-color: rgba(16, 185, 129, 0.20) !important; }
+.ring-emerald-200 { --tw-ring-color: rgba(16, 185, 129, 0.30) !important; }
+.ring-emerald-300 { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
+.ring-emerald-400 { --tw-ring-color: rgba(16, 185, 129, 0.60) !important; }
+.ring-amber-100   { --tw-ring-color: rgba(245, 158, 11, 0.20) !important; }
+.ring-amber-200   { --tw-ring-color: rgba(245, 158, 11, 0.30) !important; }
+.ring-amber-300   { --tw-ring-color: rgba(245, 158, 11, 0.45) !important; }
+.ring-amber-400   { --tw-ring-color: rgba(245, 158, 11, 0.60) !important; }
+.ring-rose-100    { --tw-ring-color: rgba(239, 35, 60, 0.20) !important; }
+.ring-rose-200    { --tw-ring-color: rgba(239, 35, 60, 0.30) !important; }
+.ring-rose-300    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
+.ring-rose-400    { --tw-ring-color: rgba(239, 35, 60, 0.60) !important; }
+.ring-red-200     { --tw-ring-color: rgba(239, 68, 68, 0.30) !important; }
+.ring-red-300     { --tw-ring-color: rgba(239, 68, 68, 0.45) !important; }
+.ring-red-400     { --tw-ring-color: rgba(239, 68, 68, 0.60) !important; }
+.ring-slate-200   { --tw-ring-color: rgba(255, 255, 255, 0.10) !important; }
+.ring-slate-300   { --tw-ring-color: rgba(255, 255, 255, 0.16) !important; }
+.ring-offset-red-600   { --tw-ring-offset-color: #dc2626 !important; }
+.ring-offset-white     { --tw-ring-offset-color: rgba(20, 20, 23, 0.95) !important; }
+.ring-offset-slate-50  { --tw-ring-offset-color: rgba(20, 20, 23, 0.95) !important; }
+
+/* focus-within: ring variants (JigsawField status-themed input
+   wrappers). */
+.focus-within\:ring-emerald-300:focus-within { --tw-ring-color: rgba(16, 185, 129, 0.45) !important; }
+.focus-within\:ring-emerald-400:focus-within { --tw-ring-color: rgba(16, 185, 129, 0.60) !important; }
+.focus-within\:ring-amber-300:focus-within   { --tw-ring-color: rgba(245, 158, 11, 0.45) !important; }
+.focus-within\:ring-amber-400:focus-within   { --tw-ring-color: rgba(245, 158, 11, 0.60) !important; }
+.focus-within\:ring-rose-300:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
+.focus-within\:ring-rose-400:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.60) !important; }
+.focus-within\:ring-blue-300:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.45) !important; }
+.focus-within\:ring-blue-500:focus-within    { --tw-ring-color: rgba(239, 35, 60, 0.65) !important; }
+
+/* Validation outline (DR header `border-2 border-rose-400 ring-1
+   ring-rose-200`) — keep the rose border but add a brand-red outer
+   glow so it pops on dark. */
+.border-2.border-rose-400 {
+    box-shadow: 0 0 0 1px rgba(239, 35, 60, 0.20), 0 0 12px -4px rgba(239, 35, 60, 0.35);
+}
+
+/* Sonner error / destructive toast variant — group-[.destructive]
+   in toast.jsx targets these via Radix slot variants */
+[data-sonner-toast][data-type="error"] {
+    background-color: rgba(239, 68, 68, 0.15) !important;
+    border-color: rgba(239, 68, 68, 0.45) !important;
+    color: rgb(252 165 165) !important;
+}
+[data-sonner-toast][data-type="success"] {
+    background-color: rgba(16, 185, 129, 0.12) !important;
+    border-color: rgba(16, 185, 129, 0.35) !important;
+    color: rgb(110 231 183) !important;
+}
+[data-sonner-toast][data-type="warning"] {
+    background-color: rgba(245, 158, 11, 0.12) !important;
+    border-color: rgba(245, 158, 11, 0.35) !important;
+    color: rgb(253 224 71) !important;
+}
+
+/* Animations from Tailwind `animate-pulse` already overridden bg.
+   `animate-spin` keeps default white/zinc color so spinners are
+   visible on dark. */
+.animate-spin {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+/* Browser autofill (Chrome's yellow on saved-password inputs).
+   Override to dark glass to keep visual consistency on Login. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px rgba(20, 20, 23, 0.95) inset !important;
+    -webkit-text-fill-color: rgb(228 228 231) !important;
+    caret-color: #ef233c !important;
+    transition: background-color 9999s ease-in-out 0s;
+}
+
+/* Native <select> dropdown arrow color (Firefox/Safari) */
+select { color-scheme: dark; }
+
+/* PDF viewer (react-pdf) wraps the rendered page in .react-pdf
+   classes — keep page bg light so PDF content is readable; the
+   wrapper card around it is already dark-glass via .surface. */
+.react-pdf__Page,
+.react-pdf__Page__canvas { background: #ffffff !important; }
+.react-pdf__Page__textContent { color: #000 !important; }
+
+/* Tabs (shadcn) — Radix uses [data-state="active"] which we already
+   override above to brand-red. Explicit tab list border. */
+[role="tablist"] {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Mobile foreman (separate /m/foreman layout) -- if it bypasses the
+   main page-shell, ensure its body bg is still dark */
+body[data-page="mobile-foreman"] { background: #000 !important; }
+
 /* Image rounded corners on photo cards stay; no theming needed */
