@@ -912,8 +912,19 @@ input:-webkit-autofill:active {
     transition: background-color 9999s ease-in-out 0s;
 }
 
-/* Native <select> dropdown arrow color (Firefox/Safari) */
+/* Native <select> dropdown arrow color (Firefox/Safari) and
+   forced-dark popup theming (2026-05-26). Some pages (Coordination
+   filters, RFI, Submittal forms) use plain native <select> elements
+   without explicit bg classes; without these rules Chrome on Windows
+   renders the OPENED dropdown popup white with black text, which is
+   jarring on the dark theme. Hint the browser AND seed the option
+   background so the popup matches the rest of the UI. */
+html { color-scheme: dark; }
 select { color-scheme: dark; }
+option, optgroup {
+    background-color: #1e293b;  /* slate-800 */
+    color: #e2e8f0;             /* slate-200 */
+}
 
 /* PDF viewer (react-pdf) wraps the rendered page in .react-pdf
    classes â€” keep page bg light so PDF content is readable; the
