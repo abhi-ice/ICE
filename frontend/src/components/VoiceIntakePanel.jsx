@@ -539,17 +539,18 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
                 + "'How many days impact?' or 'Severity — minor, moderate, or major?'\n"
                 + "• If the super says 'skip' or 'no' or 'next' — accept it, do NOT push further, move on.\n"
                 + "• NEVER repeat yourself. If you already heard the answer, don't ask again.\n"
-                + "• DO NOT speak your internal reasoning out loud. Just ask the question.\n\n"
-                + "ORDER OF QUESTIONS:\n"
-                + "1. Weather: conditions + high + low temperatures.\n"
-                + "2. Crews on site: trade + company + headcount + hours per person.\n"
-                + "3. Activity progress: which activities advanced, percent complete.\n"
-                + "4. Delays: was there one? If yes, ask which activity, what happened, "
+                + "• DO NOT speak your internal reasoning out loud. Just ask the question.\n"
+                + "• Weather is ALREADY pre-filled from the forecast. Do NOT ask weather questions. "
+                + "Only capture weather if the super volunteers a correction unprompted.\n\n"
+                + "ORDER OF QUESTIONS (start with #1, do NOT ask about weather first):\n"
+                + "1. Manpower log: which trades on site today, company, headcount, hours per person.\n"
+                + "2. Activity progress: which scheduled activities advanced, percent complete.\n"
+                + "3. Delays: was there one? If yes, ask which activity, what happened, "
                 + "and impact in days.\n"
-                + "5. Safety, QC, deliveries, coordination — one combined question, "
+                + "4. Safety, QC, deliveries, coordination — one combined question, "
                 + "skip silently if super says no.\n"
-                + "6. General notes.\n"
-                + "When all six are covered, say 'Daily report complete' and stop talking." }],
+                + "5. General notes.\n"
+                + "When all five are covered, say 'Daily report complete' and stop talking." }],
             },
           },
         }));
@@ -923,8 +924,9 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             <div className="text-xs text-slate-500 italic">Listening… the AI will speak first.</div>
           ) : null}
           <div className="text-xs text-slate-500">
-            Speak naturally; the AI will guide you through weather, crews, activities,
-            delays, events, and notes. Say "skip" to move on. Click End session when done.
+            Speak naturally; the AI will guide you through manpower, activities,
+            delays, events, and notes. Weather is already pre-filled — skip it.
+            Say "skip" to move on. Click End session when done.
           </div>
         </div>
       )}
