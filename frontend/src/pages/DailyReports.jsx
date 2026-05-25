@@ -1073,19 +1073,24 @@ function Header({ report, project, userLabels, ppc, totalHours,
           {/* Bucket C3b Phase 1 — quick-log a coordination event from
               the daily report. Pre-links to this DR; user can expand
               to full form on the Coordination page later. */}
+          {/* Action buttons (2026-05-26) — unified to the primary
+              "SiteOps green" (rendered from bg-blue-600 by the
+              Emerald palette override). Avoids the visual clash from
+              having mixed white-outline + filled-green buttons in the
+              same row. */}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
-              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
+              className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
               <MessageSquare className="h-4 w-4" />
               {locked ? "+ Coordination (post-submit)" : "+ Coordination"}
             </button>
           )}
           <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
-            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
+            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
             <Download className="h-4 w-4" /> Export for Internal
           </button>
           <button data-testid="dr-download-pdf-external" onClick={() => onDownload("external")} disabled={busy}
-            className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
+            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
             <Download className="h-4 w-4" /> Export for External
           </button>
           {/* Feature Client DR Template Export (2026-05-20) -- third
@@ -1100,7 +1105,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
               onClick={onDownloadClientTemplate}
               disabled={exportingClient || busy}
               title={`Export this DR using the project's client template (${templateMeta.file_name || "xlsx"})`}
-              className="h-9 px-3 rounded border border-emerald-300 bg-white text-emerald-700 text-sm flex items-center gap-1 hover:bg-emerald-50 disabled:opacity-50">
+              className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
               {exportingClient ? (
                 <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
               ) : (
