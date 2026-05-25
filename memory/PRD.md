@@ -510,6 +510,41 @@ Verified via screenshot tool: tab switching, "+" button, and the
 Activity Grid → cross-tab navigation all work; QC pre-link from grid
 correctly fires across tab boundaries.
 
+### Iter 13.5 — DR detail UX cleanup (2026-02-XX)
+Tightened the DR detail surface in response to Abhi's "saves N px every
+DR" review:
+
+1. **Project / Contract header** -- collapsed by default to a single-
+   line summary `Client · Station · #Contract · Contractor · Signature`
+   with a chevron. Full 6-field grid only renders when expanded; the
+   PDF/xlsx export pipeline is untouched (still renders the full
+   block for client deliverables). ~150px saved per DR open.
+2. **Activity Grid sections** -- sections with 0 scheduled rows for
+   the report date collapse by default. Section header (with count
+   chip + read-only label) stays visible so the super sees the
+   category exists; click the header to expand the body.
+3. **Weather auto-fill** -- "Auto-fill from forecast" button removed.
+   A new effect in `DailyReportDetail` fires the autofill endpoint
+   automatically the first time the DR is opened when every weather
+   field is blank AND `weather_fetched_at` is null, so a super who
+   manually edited values (without invoking autofill) never has them
+   overwritten on reopen. Badge now reads "auto-filled HH:MM:SS".
+4. **Hours column** removed from the Activity Grid (header + per-row
+   cell + section colspans). Activity hours are tracked via the
+   Manpower log → activity link instead; the locked-DR per-row edit
+   modal still keeps `hours_worked` as a back-compat field.
+5. **"Crew presence" → "Manpower log"** rename on the panel header.
+6. **Date format consistency** -- Activity Grid header date now uses
+   `formatDateDisplay` (MM/DD/YYYY) so it matches the DR list,
+   reminder cards, and toasts. SupplementBadge + photo supplement
+   tooltip also pass through `formatDateDisplay`.
+7. **Audit trail** -- collapses to `"N audit entries — click to
+   expand"` chip by default; expanded view shows the rolling 30-row
+   list with a "Collapse" link to fold it back.
+
+Verified via screenshot tool: all 7 changes render correctly on a
+freshly-opened DR. No regressions to the Events tabs card (13.4).
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

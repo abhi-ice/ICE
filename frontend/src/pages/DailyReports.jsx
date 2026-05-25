@@ -470,6 +470,31 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
 
+  // 2026-02-XX (Abhi) -- weather auto-fill on first open. Fires once
+  // per DR-detail mount IF every weather field is empty AND the
+  // backend has never recorded a fetched_at. The ref guard prevents
+  // re-firing if the bundle reloads (e.g. after another patch lands)
+  // and the fetched_at gate prevents overwriting a super's manual
+  // edits when they reopen a draft they already populated by hand.
+  const weatherAutofillTriedRef = useRef(false);
+  useEffect(() => {
+    if (!bundle || weatherAutofillTriedRef.current) return;
+    const r = bundle.report;
+    const locked = r.status === "submitted" || r.status === "approved";
+    if (locked) { weatherAutofillTriedRef.current = true; return; }
+    const isBlank = !r.weather_fetched_at
+      && !r.weather_conditions
+      && r.weather_temp_high_f == null
+      && r.weather_temp_low_f == null
+      && r.weather_precipitation_in == null
+      && r.weather_wind_mph == null;
+    weatherAutofillTriedRef.current = true;
+    if (!isBlank) return;
+    api.post(`/daily-reports/${id}/weather-autofill`)
+      .then(() => reload())
+      .catch(() => { /* silent -- super can type values manually */ });
+  }, [bundle, id, reload]);
+
   // Bucket D Fix F -- gallery click-through highlight. After the bundle
   // renders, find the matching event row by data-testid, scroll into
   // view, add the saffron pulse class. Strip the URL params so refresh
@@ -1170,9 +1195,17 @@ function Header({ report, project, userLabels, ppc, totalHours,
 // Feature DR Header Auto-Population (2026-05-20) -- read-only project
 // / contract / signature block. Six fields, all auto-populated, never
 // editable. Blank values render as em-dash; absent project fields do
-// NOT block DR creation. Shown on every Daily Report (creation flow +
-// detail view) above the date / weather block.
+// NOT block DR creation.
+//
+// 2026-02-XX collapse-by-default refactor (Abhi):
+// The full 6-field card is only really needed on the exported
+// PDF/xlsx -- on the live DR view, the super only checks these
+// values once per DR open. So the card now renders as a single-line
+// summary `Client · Station · #Contract · Contractor · Signature`
+// with a chevron to expand. Saves ~150px vertical space per DR open.
+// Backend export paths render the full block unchanged.
 function DrAutoHeader({ project, currentUserName }) {
+  const [expanded, setExpanded] = useState(false);
   const fields = [
     { label: "Client",          value: project.client_name,      testid: "dr-hdr-client" },
     { label: "Station",         value: project.station_id,       testid: "dr-hdr-station" },
@@ -1181,23 +1214,59 @@ function DrAutoHeader({ project, currentUserName }) {
     { label: "Contractor",      value: project.contractor_name,  testid: "dr-hdr-contractor" },
     { label: "Signature",       value: currentUserName,          testid: "dr-hdr-signature" },
   ];
+  // Compact summary line. Skip nulls so the row reads cleanly when
+  // a project record is partially populated. Contract number is
+  // prefixed with "#" only when the stored value doesn't already
+  // include one (some legacy records store "#1234" while newer ones
+  // store "1234").
+  const contractLabel = project.contract_number
+    ? (String(project.contract_number).trim().startsWith("#")
+        ? project.contract_number
+        : `#${project.contract_number}`)
+    : null;
+  const summaryParts = [
+    project.client_name,
+    project.station_id,
+    contractLabel,
+    project.contractor_name,
+    currentUserName,
+  ].filter(Boolean);
   return (
-    <div className="surface p-5" data-testid="dr-auto-header">
-      <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 mb-3 font-semibold">
-        Project / Contract Information
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-2">
-        {fields.map((f) => (
-          <div key={f.label} data-testid={f.testid}>
-            <div className="text-xs text-slate-500 uppercase tracking-wide">{f.label}</div>
-            <div className="text-sm text-slate-700">
-              {f.value
-                ? f.value
-                : <span className="text-slate-300" data-testid={`${f.testid}-empty`}>—</span>}
+    <div className="surface px-4 py-2.5" data-testid="dr-auto-header">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        data-testid="dr-auto-header-toggle"
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-3 text-left group"
+      >
+        <ChevronDown
+          className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+        />
+        <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0">
+          Project / Contract
+        </div>
+        <div className="text-sm text-slate-300 truncate flex-1" data-testid="dr-auto-header-summary">
+          {summaryParts.length
+            ? summaryParts.join("  ·  ")
+            : <span className="text-slate-500 italic">No project metadata yet — click to expand</span>}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 pt-3 border-t border-white/[0.06] grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-2"
+          data-testid="dr-auto-header-grid">
+          {fields.map((f) => (
+            <div key={f.label} data-testid={f.testid}>
+              <div className="text-xs text-slate-500 uppercase tracking-wide">{f.label}</div>
+              <div className="text-sm text-slate-300">
+                {f.value
+                  ? f.value
+                  : <span className="text-slate-500" data-testid={`${f.testid}-empty`}>—</span>}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1230,17 +1299,11 @@ function PanelShell({ icon: Icon, title, count, testid, children, badge }) {
 }
 
 function WeatherPanel({ report, dailyReportId, locked, reload }) {
-  const [busy, setBusy] = useState(false);
-  const autoFill = async () => {
-    setBusy(true);
-    try {
-      await api.post(`/daily-reports/${dailyReportId}/weather-autofill`);
-      toast.success("Weather pulled from forecast.");
-      reload();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Weather provider unreachable");
-    } finally { setBusy(false); }
-  };
+  // 2026-02-XX (Abhi) -- the "Auto-fill from forecast" button was
+  // removed; weather now auto-populates ONCE when the DR is first
+  // opened with all weather fields blank (see auto-trigger effect
+  // in DailyReportDetail). This component is purely render-and-edit
+  // so the super still tweaks values manually after autofill lands.
   const patch = async (fields) => {
     try { await api.patch(`/daily-reports/${dailyReportId}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
@@ -1249,7 +1312,7 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
     <PanelShell icon={Cloud} title="Weather" testid="dr-weather-panel"
-      badge={fetchedAt && <span className="text-xs text-slate-400 ml-auto">fetched {fetchedAt}</span>}>
+      badge={fetchedAt && <span className="text-xs text-slate-400 ml-auto">auto-filled {fetchedAt}</span>}>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
@@ -1257,12 +1320,6 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
         <Field label="Precip in" type="number" value={report.weather_precipitation_in ?? ""} onChange={(v) => patch({ weather_precipitation_in: v ? Number(v) : null })} disabled={locked} testid="weather-precip" />
         <Field label="Wind mph" type="number" value={report.weather_wind_mph ?? ""} onChange={(v) => patch({ weather_wind_mph: v ? Number(v) : null })} disabled={locked} testid="weather-wind" />
       </div>
-      {!locked && (
-        <button data-testid="weather-autofill" onClick={autoFill} disabled={busy}
-          className="mt-3 h-8 px-3 rounded bg-slate-900 text-white text-xs flex items-center gap-1 hover:bg-slate-800 disabled:opacity-50">
-          <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Auto-fill from forecast
-        </button>
-      )}
     </PanelShell>
   );
 }
@@ -1417,7 +1474,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   const totalRowCount = rows.length + drafts.length;
 
   return (
-    <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
+    <PanelShell icon={Users} title="Manpower log" testid="dr-presence-panel" count={rows.length}
       badge={
         <div className="ml-2 flex items-center gap-3">
           <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
@@ -1792,15 +1849,6 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
         {delta > 0 ? "+" : ""}{delta}
       </td>
-      <td>
-        {editable ? (
-          <input type="number" defaultValue={r.hours_worked}
-            onBlur={(e) => updateRow(r.id, { hours_worked: Number(e.target.value) })}
-            disabled={locked} className="w-14" />
-        ) : (
-          <span className="text-xs tabular-nums text-slate-500">{r.hours_worked || 0}</span>
-        )}
-      </td>
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
       <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
       <td>
@@ -1859,6 +1907,9 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
 function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
+  // 2026-02-XX (Abhi) -- empty sections collapse by default; the
+  // user can click any section header to flip the override.
+  const [sectionOpenOverride, setSectionOpenOverride] = useState({});
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture
   // for activity grid rows (both planned + unplanned). Reused across the
   // two add forms below so a single reason captures both kinds.
@@ -1958,7 +2009,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
     <PanelShell icon={ClipboardList} title="Activity grid" testid="dr-activity-grid" count={grid.length}
       badge={
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-slate-500">date: {reportDate}</span>
+          <span className="text-xs text-slate-500">date: {formatDateDisplay(reportDate)}</span>
           {!locked && (
             <button data-testid="dr-refresh-grid" onClick={refreshFromSchedule} disabled={refreshing}
               className="h-7 px-2 rounded border border-slate-200 bg-white text-xs hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
@@ -1973,7 +2024,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             <tr>
               <th>Code</th><th>Description</th><th>Loc</th>
               <th>SOD %</th><th>EOD %</th><th>Δ</th>
-              <th>Hours</th><th>Status</th>
+              <th>Status</th>
               <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
               <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
               <th></th>
@@ -1981,27 +2032,48 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
           </thead>
           {/* F2 -- the grid is split into 3 sections by work_category.
               Only the Field Work section is editable; Sections 1 & 3
-              are visible but read-only (no editable inputs). */}
+              are visible but read-only (no editable inputs).
+              2026-02-XX (Abhi) -- sections with zero rows for this DR
+              date collapse by default. Section header stays visible so
+              the super still sees the category exists; clicking the
+              header toggles the body. Non-empty sections stay
+              expanded by default. */}
           {GRID_SECTIONS.map((sec) => {
             const secRows = grid.filter((r) => gridSectionOf(r.work_category) === sec.n);
+            const isEmpty = secRows.length === 0;
+            const override = sectionOpenOverride[sec.n];
+            const isOpen = override !== undefined ? override : !isEmpty;
+            const toggle = () => setSectionOpenOverride((m) => ({ ...m, [sec.n]: !isOpen }));
             return (
               <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
-                <tr className="bg-slate-100/80 border-y border-slate-200">
-                  <td colSpan="11" className="px-2 py-1.5">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                      {sec.title}
-                    </span>
-                    <span className="ml-2 text-xs text-slate-400 tabular-nums">
-                      {secRows.length} {secRows.length === 1 ? "row" : "rows"}
-                    </span>
-                    {!sec.editable && (
-                      <span className="ml-2 text-xs uppercase tracking-wide text-slate-400">· read-only</span>
-                    )}
+                <tr className="bg-slate-100/80 border-y border-slate-200 cursor-pointer hover:bg-slate-200/60"
+                  onClick={toggle}
+                  data-testid={`dr-grid-section-${sec.n}-toggle`}>
+                  <td colSpan="10" className="px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 text-slate-500 transition-transform ${isOpen ? "" : "-rotate-90"}`}
+                      />
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        {sec.title}
+                      </span>
+                      <span className="text-xs text-slate-400 tabular-nums">
+                        {secRows.length} {secRows.length === 1 ? "row" : "rows"}
+                      </span>
+                      {!sec.editable && (
+                        <span className="text-xs uppercase tracking-wide text-slate-400">· read-only</span>
+                      )}
+                      {!isOpen && isEmpty && (
+                        <span className="text-xs italic text-slate-400 ml-auto">
+                          collapsed — click to expand
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
-                {secRows.length === 0 ? (
+                {isOpen && (isEmpty ? (
                   <tr>
-                    <td colSpan="11" data-testid={`dr-grid-section-${sec.n}-empty`}
+                    <td colSpan="10" data-testid={`dr-grid-section-${sec.n}-empty`}
                       className="text-center py-3 text-xs text-slate-400 italic">
                       {sec.empty}
                     </td>
@@ -2012,7 +2084,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                     submitRowErrors={submitRowErrors} presence={presence}
                     updateRow={updateRow} removeRow={removeRow}
                     dailyReportId={dailyReportId} reload={reload} />
-                ))}
+                )))}
               </tbody>
             );
           })}
@@ -3371,7 +3443,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
             photo card. Saffron pill matches SupplementBadge style. */}
         {photo.is_supplement && (
           <span data-testid={`photo-supplement-${photo.id}`}
-            title={`Supplement to DR ${photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || ""}`}
+            title={`Supplement to DR ${photo.parent_daily_report_date ? formatDateDisplay(photo.parent_daily_report_date) : (photo.parent_daily_report_id?.slice(0, 8) || "")}`}
             className="bg-amber-200 text-amber-900 rounded px-1 text-xs font-mono uppercase">
             SUPP
           </span>
@@ -3454,19 +3526,49 @@ function VoicePanel({ rows }) {
 }
 
 function AuditPanel({ rows, userLabels }) {
+  // 2026-02-XX (Abhi) -- audit trail collapses by default to a single
+  // count chip; the rolling 30-row list expands on click. For most
+  // DRs the trail is 95% empty rows of low-signal events, so the
+  // collapsed default reclaims footer real estate.
+  const [expanded, setExpanded] = useState(false);
+  const count = rows.length;
   return (
-    <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={rows.length}>
-      <div className="space-y-1 max-h-60 overflow-y-auto">
-        {rows.slice(0, 30).map((a) => (
-          <div key={a.id} data-testid={`audit-${a.id}`} className="text-xs text-slate-600 flex gap-2 border-b border-slate-100 py-1">
-            <span className="font-mono text-slate-400 w-32 shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
-            <span className="pill pill-slate">{a.op}</span>
-            <span className="font-mono">{a.table_name}</span>
-            <span className="text-slate-500">by {userLabels[a.actor_id] || (a.actor_id || "—").slice(0, 8)}</span>
+    <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={count}>
+      {!expanded ? (
+        <button
+          data-testid="dr-audit-expand"
+          onClick={() => setExpanded(true)}
+          className="w-full flex items-center justify-between gap-3 text-left px-3 py-2 rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] transition"
+        >
+          <span className="text-sm text-slate-300">
+            {count === 0
+              ? "No audit entries yet."
+              : <><strong className="tabular-nums">{count}</strong> audit {count === 1 ? "entry" : "entries"} — click to expand</>}
+          </span>
+          {count > 0 && <ChevronDown className="h-4 w-4 text-slate-400 -rotate-90 transition-transform" />}
+        </button>
+      ) : (
+        <>
+          <button
+            data-testid="dr-audit-collapse"
+            onClick={() => setExpanded(false)}
+            className="mb-2 text-xs text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"
+          >
+            <ChevronDown className="h-3.5 w-3.5" /> Collapse
+          </button>
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            {rows.slice(0, 30).map((a) => (
+              <div key={a.id} data-testid={`audit-${a.id}`} className="text-xs text-slate-600 flex gap-2 border-b border-slate-100 py-1">
+                <span className="font-mono text-slate-400 w-32 shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
+                <span className="pill pill-slate">{a.op}</span>
+                <span className="font-mono">{a.table_name}</span>
+                <span className="text-slate-500">by {userLabels[a.actor_id] || (a.actor_id || "—").slice(0, 8)}</span>
+              </div>
+            ))}
+            {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
           </div>
-        ))}
-        {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
-      </div>
+        </>
+      )}
     </PanelShell>
   );
 }
@@ -3599,7 +3701,9 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
 // ------------------------------------------------------------
 function SupplementBadge({ row }) {
   if (!row?.is_supplement) return null;
-  const parentDate = row.parent_daily_report_date || row.parent_daily_report_id?.slice(0, 8);
+  const parentDate = row.parent_daily_report_date
+    ? formatDateDisplay(row.parent_daily_report_date)
+    : row.parent_daily_report_id?.slice(0, 8);
   return (
     <span data-testid={`supplement-badge-${row.id}`}
       title="Filed after the parent daily report was submitted"
