@@ -37,6 +37,15 @@ import { BlockerPopover } from "../components/BlockerPopover";
 import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "../components/ui/dropdown-menu";
+import { ChevronDown } from "lucide-react";
+import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
   Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil, Sparkles, Loader2,
@@ -1073,11 +1082,10 @@ function Header({ report, project, userLabels, ppc, totalHours,
           {/* Bucket C3b Phase 1 — quick-log a coordination event from
               the daily report. Pre-links to this DR; user can expand
               to full form on the Coordination page later. */}
-          {/* Action buttons (2026-05-26) — unified to the primary
-              "SiteOps green" (rendered from bg-blue-600 by the
-              Emerald palette override). Avoids the visual clash from
-              having mixed white-outline + filled-green buttons in the
-              same row. */}
+          {/* Action buttons (2026-05-26) — three Export options
+              consolidated into a single "Export ▼" dropdown to keep
+              the header compact and leave room for future actions
+              (Email DR, Print, Compare-to-prior-day, etc.). */}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
@@ -1085,34 +1093,61 @@ function Header({ report, project, userLabels, ppc, totalHours,
               {locked ? "+ Coordination (post-submit)" : "+ Coordination"}
             </button>
           )}
-          <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
-            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
-            <Download className="h-4 w-4" /> Export for Internal
-          </button>
-          <button data-testid="dr-download-pdf-external" onClick={() => onDownload("external")} disabled={busy}
-            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
-            <Download className="h-4 w-4" /> Export for External
-          </button>
-          {/* Feature Client DR Template Export (2026-05-20) -- third
-              export option, sits next to Internal / External. Only
-              rendered when the project has a client xlsx template
-              uploaded; otherwise hidden entirely (no toast, no
-              disabled button -- the upload flow is on the list
-              header). */}
-          {templateMeta?.present && (
-            <button
-              data-testid="dr-download-client-template"
-              onClick={onDownloadClientTemplate}
-              disabled={exportingClient || busy}
-              title={`Export this DR using the project's client template (${templateMeta.file_name || "xlsx"})`}
-              className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
-              {exportingClient ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
-              ) : (
-                <><FileSpreadsheet className="h-4 w-4" /> Export: Client Format</>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button data-testid="dr-export-menu" disabled={busy}
+                className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
+                <Download className="h-4 w-4" /> Export
+                <ChevronDown className="h-3.5 w-3.5 -mr-1" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Export format</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem data-testid="dr-export-internal"
+                disabled={busy}
+                onClick={() => onDownload("internal")}
+                className="flex items-start gap-2 cursor-pointer">
+                <Download className="h-4 w-4 mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-medium">For Internal</div>
+                  <div className="text-xs text-slate-500">Full audit trail, all fields</div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="dr-export-external"
+                disabled={busy}
+                onClick={() => onDownload("external")}
+                className="flex items-start gap-2 cursor-pointer">
+                <Download className="h-4 w-4 mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-medium">For External</div>
+                  <div className="text-xs text-slate-500">Client-safe, redacted internals</div>
+                </div>
+              </DropdownMenuItem>
+              {templateMeta?.present && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem data-testid="dr-export-client-template"
+                    disabled={exportingClient || busy}
+                    onClick={onDownloadClientTemplate}
+                    title={`Export using the project's client template (${templateMeta.file_name || "xlsx"})`}
+                    className="flex items-start gap-2 cursor-pointer">
+                    {exportingClient ? (
+                      <Loader2 className="h-4 w-4 mt-0.5 shrink-0 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="h-4 w-4 mt-0.5 shrink-0" />
+                    )}
+                    <div>
+                      <div className="font-medium">{exportingClient ? "Exporting…" : "Client format (xlsx)"}</div>
+                      <div className="text-xs text-slate-500 truncate max-w-[180px]">
+                        {templateMeta.file_name || "Uses uploaded template"}
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                </>
               )}
-            </button>
-          )}
+            </DropdownMenuContent>
+          </DropdownMenu>
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
