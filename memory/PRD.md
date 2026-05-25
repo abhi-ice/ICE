@@ -481,6 +481,35 @@ fields" because the transcript was fragmented per-token. Root causes:
    `test_e2e_live_voice_qa_transcript_extraction` to guard the new
    conversation-format extraction).
 
+### Iter 13.4 — DR Events tabbed layout (2026-02-XX)
+Restructured the Daily Report detail view: the previous 6-card grid
+(Delays / Safety / QC / RFIs / Deliveries / Notes) is replaced with a
+single tabbed "Events" surface. Each panel keeps **all** of its
+fields, dropdowns, task-link pickers, severity selectors, form
+buttons, and audit behavior intact -- this is a structural change
+only, no data was removed.
+
+Implementation:
+1. New `EventsTabsCard` wrapper inside `DailyReports.jsx` that holds
+   the active tab + a `pendingDetail` state.
+2. Listens for the Activity Grid Issues dropdown's
+   `dr-open-event-form` window event. When the target tab is not
+   currently active, switches to it then re-dispatches the event with
+   `__replayed: true` so the freshly-mounted panel's existing
+   `useIssueDropdownListener` picks it up after React commits.
+3. A floating emerald "+" button on the tab strip dispatches the
+   same event so users can add an event from the tab header itself.
+   Notes tab special-cases this -- focuses the notes textarea.
+4. Empty-state text on every event tab updated to:
+   "Nothing logged today — say so by clicking + at right."
+5. Open delay reminders banner (`ReminderBanner`) was kept and moved
+   ABOVE the Events tabbed card per user request, so rolled-forward
+   delays remain the first thing the super sees.
+
+Verified via screenshot tool: tab switching, "+" button, and the
+Activity Grid → cross-tab navigation all work; QC pre-link from grid
+correctly fires across tab boundaries.
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

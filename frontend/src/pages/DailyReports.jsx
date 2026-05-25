@@ -36,6 +36,7 @@ import { BlockerPopover } from "../components/BlockerPopover";
 // CPM Part J-6 (2026-05-15) -- per-task RFI impact input.
 import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -991,26 +992,26 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         <RenovationPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       )}
 
-      {/* OPEN DELAY REMINDERS — only renders when reminders array non-empty */}
+      {/* OPEN DELAY REMINDERS — only renders when reminders array
+          non-empty. Placed strategically ABOVE the Events tabbed card
+          so rolled-forward delays are the FIRST thing the super sees
+          before navigating the per-event tabs. */}
       <ReminderBanner reminders={reminders} reload={reload} />
 
-      {/* INLINE EVENT PANELS */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <DelaysPanel rows={delays} dailyReportId={id} projectId={project.id}
-                     reportDate={report.report_date} locked={locked} reload={reload} />
-        <SafetyPanel rows={safety_events} dailyReportId={id} projectId={project.id}
-                     reportDate={report.report_date} locked={locked} reload={reload}
-                     grid={grid} />
-        <QcPanel rows={qc_issues} dailyReportId={id} projectId={project.id}
-                 reportDate={report.report_date} locked={locked} reload={reload}
-                 grid={grid} />
-        <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
-                   locked={locked} reload={reload} grid={grid} />
-        <DeliveriesPanel rows={deliveries} dailyReportId={id} projectId={project.id}
-                         reportDate={report.report_date} locked={locked} reload={reload}
-                         grid={grid} />
-        <NotesPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
-      </div>
+      {/* EVENTS — tabbed card (Delays · Safety · QC · RFIs ·
+          Deliveries · Notes). Each panel keeps its full form,
+          linking, and audit behavior intact; the tabs are purely a
+          structural / layout change so the super can land on the
+          right surface in one click instead of scrolling 1500px.
+          The "+ Add" button at the right of the tab strip dispatches
+          the same `dr-open-event-form` window event that the Activity
+          Grid Issues dropdown uses, so the panel-level scroll/focus
+          logic continues to work uniformly. */}
+      <EventsTabsCard
+        delays={delays} safetyEvents={safety_events} qcIssues={qc_issues}
+        rfis={rfis} deliveries={deliveries}
+        dailyReportId={id} projectId={project.id} reportDate={report.report_date}
+        locked={locked} reload={reload} grid={grid} report={report} />
 
       {/* PHOTOS (Voice Annotations card removed 2026-05-26 per spec --
           the AI voice intake at the top of the page supersedes the
@@ -2117,6 +2118,153 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
   );
 }
 
+// ------------------------------------------------------------
+//  Events tabbed card (2026-02-XX)
+//
+//  Consolidates Delays · Safety · QC · RFIs · Deliveries · Notes
+//  into a single tabbed surface so the super can land on the right
+//  event surface in one click instead of scrolling ~1500px. Each
+//  underlying panel keeps its full form / linking / audit behavior
+//  intact -- this is a STRUCTURAL change only, no data is removed.
+//
+//  Activity Grid "Issues" dropdown integration:
+//   - The grid emits `dr-open-event-form` with a `kind` (delay /
+//     safety / qc / rfi / delivery).
+//   - We intercept first; switch the active tab to the matching
+//     surface; then RE-DISPATCH the event with __replayed=true so
+//     the freshly-mounted panel's existing scroll/focus/prelink
+//     listener picks it up after React commits. Re-dispatch is
+//     filtered by __replayed so we don't loop.
+//
+//  Inline "+ Add" button on the tab strip:
+//   - Dispatches the same `dr-open-event-form` event so every panel
+//     reacts identically to the grid-driven flow. Notes is special-
+//     cased (no event) -- focuses the notes textarea instead.
+// ------------------------------------------------------------
+function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
+                          dailyReportId, projectId, reportDate, locked, reload, grid, report }) {
+  const [activeTab, setActiveTab] = useState("delays");
+  const [pendingDetail, setPendingDetail] = useState(null);
+
+  useEffect(() => {
+    const KIND_TO_TAB = {
+      delay: "delays", safety: "safety", qc: "qc",
+      rfi: "rfis", delivery: "deliveries",
+    };
+    const handler = (e) => {
+      const detail = e?.detail || {};
+      if (detail.__replayed) return;
+      const target = KIND_TO_TAB[detail.kind];
+      if (!target) return;
+      if (target !== activeTab) {
+        setActiveTab(target);
+        setPendingDetail(detail);
+      }
+    };
+    window.addEventListener("dr-open-event-form", handler);
+    return () => window.removeEventListener("dr-open-event-form", handler);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!pendingDetail) return;
+    // Wait one tick so the newly-active TabsContent mounts and the
+    // panel's useIssueDropdownListener is registered before we
+    // re-fire the event.
+    const t = setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("dr-open-event-form", {
+        detail: { ...pendingDetail, __replayed: true },
+      }));
+      setPendingDetail(null);
+    }, 30);
+    return () => clearTimeout(t);
+  }, [pendingDetail, activeTab]);
+
+  const addForActiveTab = () => {
+    const TAB_TO_KIND = {
+      delays: "delay", safety: "safety", qc: "qc",
+      rfis: "rfi", deliveries: "delivery",
+    };
+    const kind = TAB_TO_KIND[activeTab];
+    if (kind) {
+      window.dispatchEvent(new CustomEvent("dr-open-event-form", { detail: { kind } }));
+    } else if (activeTab === "notes") {
+      const ta = document.querySelector('[data-testid="dr-notes-textarea"]');
+      if (ta) { ta.scrollIntoView({ behavior: "smooth", block: "center" }); ta.focus(); }
+    }
+  };
+
+  const TABS = [
+    { value: "delays",     label: "Delays",     icon: AlertTriangle,  count: (delays || []).length },
+    { value: "safety",     label: "Safety",     icon: ShieldAlert,    count: (safetyEvents || []).length },
+    { value: "qc",         label: "QC",         icon: ClipboardCheck, count: (qcIssues || []).length },
+    { value: "rfis",       label: "RFIs",       icon: MessageSquare,  count: (rfis || []).length },
+    { value: "deliveries", label: "Deliveries", icon: Truck,          count: (deliveries || []).length },
+    { value: "notes",      label: "Notes",      icon: ClipboardList,  count: null },
+  ];
+
+  return (
+    <div data-testid="dr-events-tabs" className="space-y-3">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <div className="surface p-2 flex items-center gap-2 flex-wrap">
+          <TabsList className="bg-white/[0.04] flex flex-wrap h-auto p-1 gap-1">
+            {TABS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <TabsTrigger key={t.value} value={t.value}
+                  data-testid={`dr-events-tab-${t.value}`}
+                  className="gap-1.5 px-3 data-[state=active]:bg-[#34D399]/15 data-[state=active]:text-[#34D399] data-[state=active]:shadow-none">
+                  <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  <span>{t.label}</span>
+                  {typeof t.count === "number" && (
+                    <span className="ml-1 text-[10px] font-medium px-1.5 py-0.5 rounded bg-white/[0.08] text-white/70">
+                      {t.count}
+                    </span>
+                  )}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+          {!locked && (
+            <button
+              data-testid="dr-events-add"
+              onClick={addForActiveTab}
+              title={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
+              aria-label={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
+              className="ml-auto h-8 w-8 grid place-items-center rounded-full bg-emerald-600 text-white hover:bg-emerald-500 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        <TabsContent value="delays" className="mt-3" data-testid="dr-events-tab-content-delays">
+          <DelaysPanel rows={delays} dailyReportId={dailyReportId} projectId={projectId}
+                       reportDate={reportDate} locked={locked} reload={reload} />
+        </TabsContent>
+        <TabsContent value="safety" className="mt-3" data-testid="dr-events-tab-content-safety">
+          <SafetyPanel rows={safetyEvents} dailyReportId={dailyReportId} projectId={projectId}
+                       reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="qc" className="mt-3" data-testid="dr-events-tab-content-qc">
+          <QcPanel rows={qcIssues} dailyReportId={dailyReportId} projectId={projectId}
+                   reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="rfis" className="mt-3" data-testid="dr-events-tab-content-rfis">
+          <RfisPanel rows={rfis} dailyReportId={dailyReportId} projectId={projectId}
+                     locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="deliveries" className="mt-3" data-testid="dr-events-tab-content-deliveries">
+          <DeliveriesPanel rows={deliveries} dailyReportId={dailyReportId} projectId={projectId}
+                           reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="notes" className="mt-3" data-testid="dr-events-tab-content-notes">
+          <NotesPanel report={report} dailyReportId={dailyReportId} locked={locked} reload={reload} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
   const [showForm, setShowForm] = useState(false);
@@ -2135,7 +2283,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <DelayRowInline key={r.id} delay={r} reload={reload}
           locked={locked} dailyReportId={dailyReportId} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No delays today.</div>}
+      {!rows.length && <div data-testid="delays-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100">
         {!showForm ? (
           <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
@@ -2401,7 +2549,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <SafetyRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
+      {!rows.length && <div data-testid="safety-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a safety event" testid="safety-add-reason" />}
@@ -2573,7 +2721,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         <QcRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
+      {!rows.length && <div data-testid="qc-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a QC issue" testid="qc-add-reason" />}
@@ -2791,7 +2939,7 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         <RfiRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No RFIs raised today.</div>}
+      {!rows.length && <div data-testid="rfis-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="an RFI" testid="rfi-add-reason" />}
@@ -2949,7 +3097,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
         <DeliveryRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No deliveries scheduled for {reportDate}.</div>}
+      {!rows.length && <div data-testid="deliveries-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a delivery" testid="delivery-add-reason" />}
