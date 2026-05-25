@@ -1512,9 +1512,10 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
                       {isLastOverall && (
                         <button data-testid="presence-add-row" onClick={addAnotherRow}
-                          className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 inline-flex items-center gap-1"
-                          title="Add another trade">
-                          <Plus className="h-3 w-3" /> Add row
+                          className="shrink-0 h-8 w-8 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center justify-center"
+                          title="Add another trade"
+                          aria-label="Add another trade row">
+                          <Plus className="h-4 w-4" />
                         </button>
                       )}
                     </div>
@@ -1577,10 +1578,12 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       )}
                       {isLast && (
                         <button data-testid="presence-add-row" onClick={addAnotherRow} disabled={busySaveIdx === idx}
-                          className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1"
-                          title={d.trade ? "Save this row and add another" : "Add another empty row"}>
-                          <Plus className="h-3 w-3" />
-                          {busySaveIdx === idx ? "Saving…" : "Add row"}
+                          className="shrink-0 h-8 w-8 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center justify-center"
+                          title={d.trade ? "Save this row and add another" : "Add another empty row"}
+                          aria-label="Add another trade row">
+                          {busySaveIdx === idx
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <Plus className="h-4 w-4" />}
                         </button>
                       )}
                     </div>
