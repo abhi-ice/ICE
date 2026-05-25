@@ -375,6 +375,12 @@ async def voice_extract(
 
     # 3. Crew presence rows -- dedupe by (trade, company) so re-running
     # the same recording (or a paraphrase) doesn't double the headcount.
+    # Precompute activity-code → schedule_activity_id lookup so the
+    # crew_presence loop below can map the new `linked_activity_code`
+    # voice field onto the Task dropdown on the manpower row. (Also
+    # reused by the Delays/Safety/QC/etc. sections further down.)
+    code_to_task = {g["activity_code"]: g.get("schedule_activity_id") for g in grid if g.get("activity_code")}
+
     existing_presence = await db.daily_presence.find(
         {"daily_report_id": dr_id},
         {"_id": 0, "trade": 1, "company_name": 1, "id": 1},
@@ -397,6 +403,8 @@ async def voice_extract(
         presence_keys_seen.add(key)
         headcount = int(cp["headcount"]) if cp.get("headcount") else 0
         hours_per = float(cp["hours_per_person"]) if cp.get("hours_per_person") else 8.0
+        linked_code = (cp.get("linked_activity_code") or "").strip() or None
+        linked_task = code_to_task.get(linked_code) if linked_code else None
         await db.daily_presence.insert_one({
             "id": _new_id(),
             "tenant_id": tenant_id,
@@ -404,6 +412,7 @@ async def voice_extract(
             "project_id": dr.get("project_id"),
             "trade": str(cp["trade_code"])[:32],
             "company_name": cp.get("company_name"),
+            "schedule_activity_id": linked_task,
             "headcount": headcount,
             "hours_per_person": hours_per,
             "total_hours": headcount * hours_per,
@@ -418,7 +427,7 @@ async def voice_extract(
     # 4. Delays / Safety / QC / Deliveries / Coordination -- append-only
     #    inserts that re-use the same enums the manual UI accepts.
     #    Each one needs linked_task_ids resolved from activity_codes.
-    code_to_task = {g["activity_code"]: g.get("schedule_activity_id") for g in grid if g.get("activity_code")}
+    # code_to_task was already built above (used by crew_presence loop).
 
     # Pre-fetch existing event descriptions on this DR so we can dedupe
     # when the same recording is processed twice (network retry, user

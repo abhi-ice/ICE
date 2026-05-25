@@ -105,11 +105,15 @@ Required JSON shape (every key optional, use the EXACT types shown):
   ],
 
   "crew_presence": [
-    // ONE entry per trade/company on site. Headcount is required when
-    // present in transcript; everything else optional.
+    // ONE entry per trade/company on site (this is the "Manpower log"
+    // in the UI). Headcount is required when present in transcript;
+    // everything else optional. linked_activity_code maps to the
+    // "Task" dropdown in the manpower row -- use it when the super
+    // tied the crew to a specific scheduled activity.
     {
       "trade_code": "<e.g. ELEC, PLUMB, MECH, CARP>",
       "company_name": "<contractor name or null>",
+      "linked_activity_code": "<scheduled activity code the crew worked on, e.g. '1.9', or null>",
       "headcount": <integer or null>,
       "hours_per_person": <number or null>,
       "notes": "<crew-level notes or null>"
