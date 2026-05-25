@@ -85,7 +85,8 @@ const DELAY_STATUS_ONLY_FIELDS = new Set([
 
 export default function DelayForm({ projectId, reportDate, dailyReportId, initial,
                                      onSaved, onCancel,
-                                     isLocked = false, lockedAddReason = null }) {
+                                     isLocked = false, lockedAddReason = null,
+                                     prelinkedTaskId = null }) {
   const [tasks, setTasks] = useState([]);  // [{id, activity_code, description, total_float_days, is_critical_path}]
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [picker, setPicker] = useState("");
@@ -110,6 +111,22 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
   const [busy, setBusy] = useState(false);
+
+  // 2026-05-26 — when opened via the Activity Grid Issues dropdown,
+  // pre-link to the activity that the super flagged. We seed it
+  // through `impacts` so the rest of the form pipeline treats it like
+  // any other linked task.
+  useEffect(() => {
+    if (!prelinkedTaskId) return;
+    if (initial?.id) return;   // edit mode -- don't override existing
+    setForm((f) => {
+      if (f.impacts.some((i) => i.task_id === prelinkedTaskId)) return f;
+      return {
+        ...f,
+        impacts: [...f.impacts, { task_id: prelinkedTaskId, projected_impact_days: 0 }],
+      };
+    });
+  }, [prelinkedTaskId, initial?.id]);
 
   // Bug #54 (2026-05-13) -- edit_reason capture for field edits on
   // locked-DR delays. When the user opens this form from /delays or

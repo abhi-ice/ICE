@@ -9,7 +9,7 @@
  * Copilot is given the active daily_report_id when this page is open, so it can
  * call DR-only tools: record_presence, mark_activity_status, create_unplanned_activity.
  */
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -1003,11 +1003,12 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         <NotesPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       </div>
 
-      {/* PHOTOS + VOICE */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      {/* PHOTOS (Voice Annotations card removed 2026-05-26 per spec --
+          the AI voice intake at the top of the page supersedes the
+          legacy per-DR audio attachment workflow.) */}
+      <div className="grid grid-cols-1 gap-5">
         <PhotosPanel rows={photos} dailyReportId={id} projectId={project.id}
                      locked={locked} reload={reload} />
-        <VoicePanel rows={voice_annotations} dailyReportId={id} reload={reload} />
       </div>
 
       {/* Bucket D Phase 4 -- supplements appendix. Lists every event
@@ -1228,7 +1229,6 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
 const PRESENCE_SHIFTS = ["first", "second", "third", "weekend", "holiday", "off_hours"];
 
 function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [], reportDate }) {
-  const [draft, setDraft] = useState({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
   // Bucket H Phase 4 -- demand-vs-actual comparison. Fetch per-project
   // demand for this DR's date, group by trade, render alongside actual
   // headcount totals from presence rows.
@@ -1253,45 +1253,40 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     acc[t] = (acc[t] || 0) + (r.headcount || 0);
     return acc;
   }, {});
-  // Bucket C3b Phase 3 — detailed roster toggle. When on, the table
-  // shows zone / shift / activity columns and the add-row form gets the
-  // same fields. Remembered per session via localStorage so users who
-  // prefer the granular view don't have to flip it every time.
-  const [showDetailed, setShowDetailed] = useState(() => {
-    try { return localStorage.getItem("ice.presence.detailed") === "1"; } catch { return false; }
-  });
-  const [zones, setZones] = useState([]);
-
-  useEffect(() => {
-    if (!showDetailed || !projectId) return;
-    api.get(`/projects/${projectId}/locations`).then(({ data }) => {
-      setZones(Array.isArray(data) ? data : []);
-    }).catch(() => setZones([]));
-  }, [showDetailed, projectId]);
-
-  const toggleDetailed = () => {
-    const next = !showDetailed;
-    setShowDetailed(next);
-    try { localStorage.setItem("ice.presence.detailed", next ? "1" : "0"); } catch { /* ignore */ }
-  };
 
   const total = rows.reduce((s, r) => s + (r.headcount || 0), 0);
   const totalHours = rows.reduce((s, r) => s + (r.headcount || 0) * (r.hours_per_person || 0), 0);
 
-  // Bucket D Fix E -- double-click guard.
-  const [busy, setBusy] = useState(false);
-  const add = async () => {
-    if (busy) return;
-    if (!draft.trade) return toast.error("Trade is required");
-    setBusy(true);
-    try {
-      await api.post(`/daily-reports/${dailyReportId}/presence`, { ...draft, daily_report_id: dailyReportId });
-      setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "",
-                 zone_id: undefined, zone_name: undefined, shift: "first", schedule_activity_id: undefined });
-      reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
-    finally { setBusy(false); }
-  };
+  // 2026-05-26 inline-row redesign (Abhi).
+  // Old pattern: persisted rows + a separate "Add trade" form at the bottom.
+  // New pattern: persisted rows + one ALWAYS-VISIBLE blank draft row at
+  // the end. User types directly into the draft; clicking "+ Add more
+  // trade" on the last row's right edge saves the current draft AND
+  // appends a new blank draft below. Deleting a row keeps the
+  // always-visible blank draft on whichever row is now last.
+  const [draftsCount, setDraftsCount] = useState(1);
+  // Each draft has a stable local id so input components don't lose
+  // focus on every keystroke as the array re-mounts.
+  const draftIdsRef = useRef([]);
+  if (draftIdsRef.current.length < draftsCount) {
+    while (draftIdsRef.current.length < draftsCount) {
+      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    }
+  }
+  const [drafts, setDrafts] = useState(() => [
+    { trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" },
+  ]);
+  // Keep drafts array length in sync with draftsCount (additions only).
+  if (drafts.length < draftsCount) {
+    setDrafts((arr) => {
+      const out = [...arr];
+      while (out.length < draftsCount) {
+        out.push({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" });
+      }
+      return out;
+    });
+  }
+
   const patch = async (rid, fields) => {
     try { await api.patch(`/daily-presence/${rid}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
@@ -1300,26 +1295,94 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     if (!window.confirm("Remove this presence row?")) return;
     await api.delete(`/daily-presence/${rid}`); reload();
   };
+  // Save a single draft row. Returns true on success.
+  const [busySaveIdx, setBusySaveIdx] = useState(-1);
+  const saveDraft = async (idx) => {
+    const d = drafts[idx];
+    if (!d) return false;
+    if (!d.trade?.trim()) {
+      toast.error("Trade is required");
+      return false;
+    }
+    setBusySaveIdx(idx);
+    try {
+      await api.post(`/daily-reports/${dailyReportId}/presence`, {
+        trade: d.trade.trim(),
+        company_name: d.company_name?.trim() || "",
+        headcount: Number(d.headcount) || 0,
+        hours_per_person: Number(d.hours_per_person) || 0,
+        notes: d.notes || "",
+        schedule_activity_id: d.schedule_activity_id || null,
+        shift: "first",
+        daily_report_id: dailyReportId,
+      });
+      reload();
+      return true;
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Add failed");
+      return false;
+    } finally {
+      setBusySaveIdx(-1);
+    }
+  };
+  // "+ Add more trade" -- save the current LAST draft (if it has a
+  // trade) and append a fresh blank draft row below.
+  const addAnotherRow = async () => {
+    const lastIdx = drafts.length - 1;
+    const last = drafts[lastIdx];
+    if (last?.trade?.trim()) {
+      const ok = await saveDraft(lastIdx);
+      if (!ok) return;
+      // Clear the saved draft (the server row will appear on reload)
+      // and drop the saved draft so we only have a fresh blank below.
+      setDrafts((arr) => {
+        const out = arr.slice(0, lastIdx);
+        out.push({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" });
+        return out;
+      });
+      draftIdsRef.current = draftIdsRef.current.slice(0, lastIdx);
+      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    } else {
+      // Last draft is empty -- just add another empty one below it.
+      setDrafts((arr) => [...arr, { trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
+      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      setDraftsCount((n) => n + 1);
+    }
+  };
+  const removeDraft = (idx) => {
+    if (drafts.length <= 1) {
+      // Keep at least one blank draft always visible.
+      setDrafts([{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
+      draftIdsRef.current = [`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`];
+      return;
+    }
+    setDrafts((arr) => arr.filter((_, i) => i !== idx));
+    draftIdsRef.current = draftIdsRef.current.filter((_, i) => i !== idx);
+    setDraftsCount((n) => Math.max(1, n - 1));
+  };
+
+  const setDraftField = (idx, field, value) => {
+    setDrafts((arr) => arr.map((d, i) => i === idx ? { ...d, [field]: value } : d));
+  };
 
   const taskOptions = grid.map((g) => ({
     id: g.schedule_activity_id, code: g.activity_code, desc: g.activity_description,
   })).filter((t) => t.id);
+
+  // Total column count for empty-state rowspan calc -- header below has:
+  // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Notes, actions = 8
+  const COL_COUNT = 8;
+  // Last-row marker -- used by the "+ Add more trade" button placement.
+  const totalRowCount = rows.length + drafts.length;
 
   return (
     <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
       badge={
         <div className="ml-2 flex items-center gap-3">
           <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
-          <button data-testid="presence-toggle-detailed" onClick={toggleDetailed}
-            className="text-xs text-blue-600 hover:underline">
-            {showDetailed ? "Hide detailed roster" : "Show detailed roster"}
-          </button>
         </div>
       }>
-      {/* Bucket H Phase 4 -- demand-vs-actual comparison. Only rendered
-          when the project has declared trade demand on this DR's date.
-          Each row shows trade / demanded / actual / delta with color
-          tone. Clicking a row routes to Resource Leveling. */}
+      {/* Bucket H Phase 4 -- demand-vs-actual comparison. */}
       {demandByTrade && Object.keys(demandByTrade).length > 0 && (
         <div data-testid="dr-presence-demand-vs-actual"
           className="mb-2 p-2 rounded bg-slate-50 border border-slate-200 text-xs">
@@ -1369,117 +1432,128 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         <table className="dense-table">
           <thead>
             <tr>
-              <th>Trade</th>
               <th>Company</th>
+              <th>Trade</th>
+              <th title="Optional: link this crew to a scheduled activity on today's DR">Task</th>
               <th>Headcount</th>
               <th>Hrs/person</th>
               <th>Sub-total</th>
-              {showDetailed && <th title="C3b Phase 3 — granular layer">Zone</th>}
-              {showDetailed && <th>Shift</th>}
-              {showDetailed && <th>Activity</th>}
               <th>Notes</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
+            {/* Persisted rows (edit-in-place). */}
+            {rows.map((r, rIdx) => {
               const isAuto = (r.notes || "").startsWith("Auto-created");
+              const isLastOverall = !locked && (rIdx === rows.length - 1) && drafts.length === 0;
               return (
                 <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
+                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
                   <td>
                     <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
                       onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
                       className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
                   </td>
-                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td>
+                    <select data-testid={`presence-task-${r.id}`} defaultValue={r.schedule_activity_id || ""}
+                      onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
+                      className="h-7 px-1 border border-slate-200 rounded bg-white text-xs min-w-[140px]">
+                      <option value="">— none —</option>
+                      {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                    </select>
+                  </td>
                   <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
                   <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
                   <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
-                  {showDetailed && (
-                    <td>
-                      <select data-testid={`presence-zone-${r.id}`} defaultValue={r.zone_id || ""}
-                        onChange={(e) => {
-                          const z = zones.find((zz) => zz.id === e.target.value);
-                          patch(r.id, { zone_id: e.target.value || null, zone_name: z?.name || null });
-                        }} disabled={locked}
-                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[110px]">
-                        <option value="">— no zone —</option>
-                        {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
-                      </select>
-                    </td>
-                  )}
-                  {showDetailed && (
-                    <td>
-                      <select data-testid={`presence-shift-${r.id}`} defaultValue={r.shift || "first"}
-                        onChange={(e) => patch(r.id, { shift: e.target.value })} disabled={locked}
-                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white">
-                        {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
-                      </select>
-                    </td>
-                  )}
-                  {showDetailed && (
-                    <td>
-                      <select data-testid={`presence-activity-${r.id}`} defaultValue={r.schedule_activity_id || ""}
-                        onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
-                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[120px]">
-                        <option value="">— project-wide —</option>
-                        {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
-                      </select>
-                    </td>
-                  )}
                   <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
-                  <td>{!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded"><Trash2 className="h-3.5 w-3.5" /></button>}</td>
+                  <td>
+                    <div className="flex items-center gap-1">
+                      {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
+                      {isLastOverall && (
+                        <button data-testid="presence-add-row" onClick={addAnotherRow}
+                          className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 inline-flex items-center gap-1"
+                          title="Add another trade">
+                          <Plus className="h-3 w-3" /> Add row
+                        </button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               );
             })}
-            {!rows.length && <tr><td colSpan={showDetailed ? "10" : "7"} className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>}
+            {/* Always-visible blank draft row(s) at the end. */}
+            {!locked && drafts.map((d, idx) => {
+              const localId = draftIdsRef.current[idx] || `d_${idx}`;
+              const subtotal = (Number(d.headcount) || 0) * (Number(d.hours_per_person) || 0);
+              const isLast = idx === drafts.length - 1;
+              const isOnlyRowInPanel = totalRowCount === 1;
+              return (
+                <tr key={localId} data-testid={`presence-draft-${idx}`} className="bg-emerald-50/30">
+                  <td>
+                    <input data-testid={`presence-draft-company-${idx}`} value={d.company_name}
+                      onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
+                      placeholder="Company"
+                      className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                  </td>
+                  <td>
+                    <input data-testid={`presence-draft-trade-${idx}`} value={d.trade}
+                      onChange={(e) => setDraftField(idx, "trade", e.target.value)}
+                      placeholder="Trade *"
+                      className="w-32 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                  </td>
+                  <td>
+                    <select data-testid={`presence-draft-task-${idx}`} value={d.schedule_activity_id || ""}
+                      onChange={(e) => setDraftField(idx, "schedule_activity_id", e.target.value)}
+                      className="h-7 px-1 border border-emerald-200 rounded bg-white text-xs min-w-[140px]">
+                      <option value="">— none —</option>
+                      {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <input data-testid={`presence-draft-headcount-${idx}`} type="number" value={d.headcount}
+                      onChange={(e) => setDraftField(idx, "headcount", e.target.value)}
+                      className="w-20 px-2 py-1 border border-emerald-200 rounded text-sm tabular-nums" />
+                  </td>
+                  <td>
+                    <input data-testid={`presence-draft-hours-${idx}`} type="number" step="0.5" value={d.hours_per_person}
+                      onChange={(e) => setDraftField(idx, "hours_per_person", e.target.value)}
+                      className="w-20 px-2 py-1 border border-emerald-200 rounded text-sm tabular-nums" />
+                  </td>
+                  <td className="tabular-nums text-sm text-slate-500">{subtotal.toFixed(1)}</td>
+                  <td>
+                    <input data-testid={`presence-draft-notes-${idx}`} value={d.notes}
+                      onChange={(e) => setDraftField(idx, "notes", e.target.value)}
+                      placeholder="Notes"
+                      className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                  </td>
+                  <td>
+                    <div className="flex items-center gap-1">
+                      {!isOnlyRowInPanel && (
+                        <button data-testid={`presence-draft-delete-${idx}`} onClick={() => removeDraft(idx)}
+                          className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove this draft row">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {isLast && (
+                        <button data-testid="presence-add-row" onClick={addAnotherRow} disabled={busySaveIdx === idx}
+                          className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1"
+                          title={d.trade ? "Save this row and add another" : "Add another empty row"}>
+                          <Plus className="h-3 w-3" />
+                          {busySaveIdx === idx ? "Saving…" : "Add row"}
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {!rows.length && drafts.length === 0 && (
+              <tr><td colSpan={COL_COUNT} className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>
+            )}
           </tbody>
         </table>
       </div>
-      {!locked && (
-        <div className="mt-3 flex flex-wrap gap-2 items-end pt-3 border-t border-slate-100">
-          <Field label="Trade" value={draft.trade} onChange={(v) => setDraft({ ...draft, trade: v })} testid="presence-new-trade" />
-          <Field label="Company" value={draft.company_name} onChange={(v) => setDraft({ ...draft, company_name: v })} testid="presence-new-company" />
-          <Field label="Headcount" type="number" value={draft.headcount} onChange={(v) => setDraft({ ...draft, headcount: Number(v) })} testid="presence-new-headcount" />
-          <Field label="Hrs/person" type="number" value={draft.hours_per_person} onChange={(v) => setDraft({ ...draft, hours_per_person: Number(v) })} testid="presence-new-hours" />
-          {showDetailed && (
-            <>
-              <label className="text-xs flex flex-col gap-1">
-                <span className="text-slate-500">Zone</span>
-                <select value={draft.zone_id || ""}
-                  onChange={(e) => {
-                    const z = zones.find((zz) => zz.id === e.target.value);
-                    setDraft({ ...draft, zone_id: e.target.value || null, zone_name: z?.name || null });
-                  }}
-                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
-                  <option value="">— no zone —</option>
-                  {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
-                </select>
-              </label>
-              <label className="text-xs flex flex-col gap-1">
-                <span className="text-slate-500">Shift</span>
-                <select value={draft.shift || "first"}
-                  onChange={(e) => setDraft({ ...draft, shift: e.target.value })}
-                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
-                  {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
-                </select>
-              </label>
-              <label className="text-xs flex flex-col gap-1">
-                <span className="text-slate-500">Activity</span>
-                <select value={draft.schedule_activity_id || ""}
-                  onChange={(e) => setDraft({ ...draft, schedule_activity_id: e.target.value || null })}
-                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
-                  <option value="">— project-wide —</option>
-                  {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
-                </select>
-              </label>
-            </>
-          )}
-          <button data-testid="presence-add" onClick={add} disabled={busy} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
-            <Plus className="h-3.5 w-3.5" /> Add trade
-          </button>
-        </div>
-      )}
     </PanelShell>
   );
 }
@@ -1591,6 +1665,34 @@ function GridStatusPill({ status, testid }) {
 // Field Work section) decides whether the progress cells render as
 // inputs or as read-only text. Status is always a read-only pill
 // (F4 auto-status); the blocker badge (F3) is always shown.
+// Helper hook (2026-05-26) — listens for the Activity Grid Issues
+// dropdown event and, if the kind matches this panel, opens the
+// inline-add form, scrolls the panel into view, focuses the first
+// input, and pre-fills linked_task_ids with the activity that the
+// super flagged. Returns a `consumed` ref the panel can read after
+// mount to apply the prefill.
+function useIssueDropdownListener(kind, panelTestid, onOpen) {
+  useEffect(() => {
+    const handler = (e) => {
+      const d = e?.detail || {};
+      if (d.kind !== kind) return;
+      // Defer one frame so the form can mount before we scroll/focus.
+      requestAnimationFrame(() => {
+        const panel = document.querySelector(`[data-testid="${panelTestid}"]`);
+        if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        // Form may not be visible until onOpen() runs, so wait a tick.
+        setTimeout(() => {
+          const target = panel?.querySelector("input[data-issue-firstfield], textarea[data-issue-firstfield], select[data-issue-firstfield]");
+          (target || panel?.querySelector("input,textarea,select"))?.focus();
+        }, 60);
+      });
+      onOpen?.(d);
+    };
+    window.addEventListener("dr-open-event-form", handler);
+    return () => window.removeEventListener("dr-open-event-form", handler);
+  }, [kind, panelTestid, onOpen]);
+}
+
 function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
                    submitRowErrors, presence, updateRow, removeRow,
                    dailyReportId, reload }) {
@@ -1632,12 +1734,6 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       </td>
       <td className="truncate max-w-[260px]">{r.activity_description}</td>
       <td className="text-xs">{r.location_name || "—"}</td>
-      <td className="text-xs">{r.trade_code || "—"}</td>
-      <td>
-        {editable
-          ? <CrewSelector row={r} presence={presence} locked={locked} updateRow={updateRow} />
-          : <span className="text-xs text-slate-400">—</span>}
-      </td>
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td>
         {editable ? (
@@ -1664,12 +1760,43 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
       <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
       <td>
-        {editable ? (
-          <input type="text" defaultValue={r.notes || ""}
-            onBlur={(e) => updateRow(r.id, { notes: e.target.value })}
-            disabled={locked} placeholder="Notes…" className="w-44" />
+        {/* Issues dropdown (2026-05-26) -- lets the super flag a new
+            delay / safety / QC / RFI / delivery against THIS activity
+            without scrolling. Selection emits a global custom event
+            that the relevant Panel listens for: it opens the panel's
+            inline-add form, scrolls into view, focuses the first
+            input, and pre-fills linked_task_ids with this activity's
+            schedule_activity_id. */}
+        {editable && !locked && r.schedule_activity_id ? (
+          <select
+            data-testid={`dr-row-issue-${r.activity_code}`}
+            defaultValue=""
+            onChange={(e) => {
+              const kind = e.target.value;
+              if (!kind) return;
+              window.dispatchEvent(new CustomEvent("dr-open-event-form", {
+                detail: {
+                  kind,
+                  activityId: r.schedule_activity_id,
+                  activityCode: r.activity_code,
+                  activityDescription: r.activity_description,
+                },
+              }));
+              // Reset the dropdown so the same activity can flag
+              // multiple issues in a row.
+              e.target.value = "";
+            }}
+            className="text-xs px-1.5 py-0.5 border border-slate-200 rounded bg-white"
+          >
+            <option value="">Flag issue…</option>
+            <option value="delay">Log delay</option>
+            <option value="safety">Log safety event</option>
+            <option value="qc">Log QC issue</option>
+            <option value="delivery">Log delivery</option>
+            <option value="rfi">Log RFI</option>
+          </select>
         ) : (
-          <span className="text-xs text-slate-500">{r.notes || "—"}</span>
+          <span className="text-xs text-slate-300">—</span>
         )}
       </td>
       <td>
@@ -1800,11 +1927,12 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
         <table className="dense-table">
           <thead>
             <tr>
-              <th>Code</th><th>Description</th><th>Loc</th><th>Trade</th>
-              <th>Crew</th><th>SOD %</th><th>EOD %</th><th>Δ</th>
+              <th>Code</th><th>Description</th><th>Loc</th>
+              <th>SOD %</th><th>EOD %</th><th>Δ</th>
               <th>Hours</th><th>Status</th>
               <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
-              <th>Notes</th><th></th>
+              <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
+              <th></th>
             </tr>
           </thead>
           {/* F2 -- the grid is split into 3 sections by work_category.
@@ -1815,7 +1943,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             return (
               <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
                 <tr className="bg-slate-100/80 border-y border-slate-200">
-                  <td colSpan="13" className="px-2 py-1.5">
+                  <td colSpan="11" className="px-2 py-1.5">
                     <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                       {sec.title}
                     </span>
@@ -1829,7 +1957,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                 </tr>
                 {secRows.length === 0 ? (
                   <tr>
-                    <td colSpan="13" data-testid={`dr-grid-section-${sec.n}-empty`}
+                    <td colSpan="11" data-testid={`dr-grid-section-${sec.n}-empty`}
                       className="text-center py-3 text-xs text-slate-400 italic">
                       {sec.empty}
                     </td>
@@ -1951,6 +2079,12 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const [showForm, setShowForm] = useState(false);
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  const [prelinkedTaskId, setPrelinkedTaskId] = useState(null);
+  useIssueDropdownListener("delay", "dr-delays-panel", (detail) => {
+    setShowForm(true);
+    setPrelinkedTaskId(detail.activityId || null);
+  });
 
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
@@ -1975,13 +2109,15 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
               dailyReportId={dailyReportId}
               isLocked={locked}
               lockedAddReason={locked ? addReason : null}
+              prelinkedTaskId={prelinkedTaskId}
               onSaved={() => {
                 setShowForm(false);
                 setAddReason("");
+                setPrelinkedTaskId(null);
                 reload();
                 toast.success(locked ? "Delay logged (post-submit). Audit chain captured." : "Delay logged");
               }}
-              onCancel={() => { setShowForm(false); setAddReason(""); }}
+              onCancel={() => { setShowForm(false); setAddReason(""); setPrelinkedTaskId(null); }}
             />
           </div>
         )}
@@ -2174,6 +2310,15 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("safety", "dr-safety-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "safety" || !text) return;
@@ -2320,6 +2465,15 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   const isRework = draft.severity === "rework_required";
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("qc", "dr-qc-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
 
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
@@ -2543,6 +2697,15 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("rfi", "dr-rfis-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
   const create = async () => {
     if (busy) return;
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
@@ -2700,6 +2863,15 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
   const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("delivery", "dr-deliveries-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
   const create = async () => {
     if (busy) return;
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
