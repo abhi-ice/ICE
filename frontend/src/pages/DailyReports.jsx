@@ -889,35 +889,11 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               templateMeta={templateMeta}
               exportingClient={exportingClient}
               onDownloadClientTemplate={downloadClientTemplate}
-              onQuickLogCoordination={() => setCoordOpen(true)} />
-
-      {/* V4 DR Progress card — % done + clickable section pips colored by status */}
-      <div className="dr-progress-card" data-testid="dr-progress-card">
-        <div className="dr-progress-label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
-          </svg>
-          <span><span className="count">{completeCount} / {totalSections}</span> sections done</span>
-        </div>
-        <div className="dr-progress-bar"><div className="dr-progress-bar-fill" style={{ width: `${progressPct}%` }} /></div>
-        <div className="dr-pips" data-testid="dr-section-pips">
-          {drSections.map((s, i) => (
-            <button
-              key={s.id}
-              type="button"
-              data-testid={`dr-pip-${s.id}`}
-              className={`dr-pip ${s.status}`}
-              onClick={() => {
-                const el = document.getElementById(`dr-section-${s.id}`);
-                if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-              }}
-              title={`${s.label} — ${s.status}`}
-            >
-              {String(i + 1).padStart(2, "0")}<span className="pip-name">{s.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+              onQuickLogCoordination={() => setCoordOpen(true)}
+              drSections={drSections}
+              completeCount={completeCount}
+              totalSections={totalSections}
+              progressPct={progressPct} />
 
       {/* 5-Route DR Entry — offline banner. Shows when offline OR when
           there are queued requests waiting to drain. Auto-hides when
@@ -1240,7 +1216,9 @@ function Header({ report, project, userLabels, ppc, totalHours,
                   delaysCount = 0, rfisCount = 0, safetyCount = 0, qcCount = 0,
                   locked, onBack, onSubmit,
                   onApprove, onDownload, busy, validate, onQuickLogCoordination,
-                  templateMeta, exportingClient, onDownloadClientTemplate }) {
+                  templateMeta, exportingClient, onDownloadClientTemplate,
+                  /* v4 pt.19 — render progress card INSIDE header, ABOVE KPI band */
+                  drSections = [], completeCount = 0, totalSections = 7, progressPct = 0 }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
@@ -1334,9 +1312,45 @@ function Header({ report, project, userLabels, ppc, totalHours,
           )}
         </div>
       </div>
-      {/* KPI band — full width below the action row. Operational stats
-          (PPC / Headcount / Crew hours / Activity hrs) on the left;
-          event-count stats (Delays / RFIs / Safety / QC) on the right. */}
+      {/* v4 pt.19 (2026-05-26): Progress card moved INTO header, above
+          the KPI band so the workflow read order is:
+          [Back  ...  Coord | Export | Submit]
+          [N/7 sections done  ===bar===  01 Project ... 07 Audit]
+          [PPC | Headcount | Crew hours | ... | QC]
+          User feedback: "2/4 sections done thing should above that ppc
+          and other panels like in v4 mockup". */}
+      {drSections.length > 0 && (
+        <div className="dr-progress-card mb-3" data-testid="dr-progress-card" style={{ marginBottom: 12 }}>
+          <div className="dr-progress-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
+            </svg>
+            <span><span className="count">{completeCount} / {totalSections}</span> sections done</span>
+          </div>
+          <div className="dr-progress-bar"><div className="dr-progress-bar-fill" style={{ width: `${progressPct}%` }} /></div>
+          <div className="dr-pips" data-testid="dr-section-pips">
+            {drSections.map((s, i) => (
+              <button
+                key={s.id}
+                type="button"
+                data-testid={`dr-pip-${s.id}`}
+                className={`dr-pip ${s.status}`}
+                onClick={() => {
+                  const el = document.getElementById(`dr-section-${s.id}`);
+                  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+                title={`${s.label} — ${s.status}`}
+              >
+                {String(i + 1).padStart(2, "0")}<span className="pip-name">{s.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* KPI band — full width below the progress card. Operational
+          stats (PPC / Headcount / Crew hours / Activity hrs) on the
+          left; event-count stats (Delays / RFIs / Safety / QC) on the
+          right. */}
       <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
         <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
         <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />

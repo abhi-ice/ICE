@@ -149,7 +149,7 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
             : `Polling every ${POLL_INTERVAL_MS / 1000}s (${pollCount}/${POLL_MAX_ITERATIONS}).`}
         </div>
         {stopped && (
-          <button onClick={load} className="h-7 px-2 rounded bg-sky-600 text-white text-xs hover:bg-sky-700">
+          <button onClick={load} className="h-7 px-2 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 transition">
             Refresh now
           </button>
         )}

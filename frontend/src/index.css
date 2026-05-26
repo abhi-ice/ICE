@@ -1588,32 +1588,31 @@ body.has-sticky-submit .copilot-fab { bottom: 70px; }
     padding-left: 42px;
     min-width: 0;
 }
+/* v4 pt.19 (2026-05-26): single CONTINUOUS rail spanning the entire
+   spine column. Was per-step ::after segments with fixed bottom: -32px
+   offset, which broke whenever content sat BETWEEN steps (the "Create
+   unplanned activity" callout + "Open delay reminders" between step 4
+   and step 5) — the segments couldn't reach the next node so the line
+   visibly split into 2-3 pieces. Continuous rail solves it
+   structurally. Per-step status is conveyed by node color/icon only. */
+.dr-spine::before {
+    content: "";
+    position: absolute;
+    left: 19px;          /* aligned to node center (42 padding - 23) */
+    top: 25px;           /* start below the first node center */
+    bottom: 25px;        /* end above the last node center */
+    width: 0;
+    border-left: 1.5px dashed var(--v4-border-strong);
+    opacity: 0.45;
+    pointer-events: none;
+    z-index: 1;
+}
 .dr-spine .step {
     position: relative;
     margin-bottom: 24px;
     scroll-margin-top: 70px;
 }
 .dr-spine .step:last-child { margin-bottom: 0; }
-
-/* Connecting rail segment that extends DOWN from this node into the
-   gap before the next step. Colored by this step's status so the
-   spine reads as a timeline of progress. */
-.dr-spine .step::after {
-    content: "";
-    position: absolute;
-    left: -23px;        /* aligned to node center */
-    top: 30px;          /* below the node */
-    bottom: -32px;      /* extends into the next-step margin */
-    width: 0;
-    border-left: 1.5px dashed var(--v4-border-strong);
-    opacity: 0.55;
-    transition: border-color 200ms, opacity 200ms;
-    pointer-events: none;
-}
-.dr-spine .step.complete::after    { border-left: 1.5px solid  var(--brand-primary);          opacity: 0.8; }
-.dr-spine .step.in-progress::after { border-left: 1.5px dashed var(--brand-primary);          opacity: 0.9; }
-.dr-spine .step.blocked::after     { border-left: 1.5px dashed var(--v4-status-blocker-fg);   opacity: 0.9; }
-.dr-spine .step:last-child::after  { display: none; }
 
 /* Numbered round badge on the rail. Absolutely positioned to the
    LEFT of the panel so the rail flows past it. */
@@ -1664,8 +1663,8 @@ body.has-sticky-submit .copilot-fab { bottom: 70px; }
    readable. The numbered nodes shrink slightly too. */
 @media (max-width: 760px) {
     .dr-spine { padding-left: 32px; }
+    .dr-spine::before { left: 14px; }
     .dr-spine .step-node { left: -28px; width: 22px; height: 22px; font-size: 10px; }
-    .dr-spine .step::after { left: -18px; }
 }
 
 /* =========================================================================
