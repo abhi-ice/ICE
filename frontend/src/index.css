@@ -668,20 +668,27 @@ html[data-theme="dark"] :where(.border-slate-200, .border-slate-100, .border-sla
     border-color: rgba(255,255,255,0.08) !important;
 }
 
-/* Blue brand fills â†’ red brand. The pill-blue / spec-citation selectors
-   above don't reach this branch because they use composed class chains. */
-html[data-theme="dark"] .bg-blue-600 { background-color: #10b981 !important; }
-html[data-theme="dark"] .bg-blue-700 { background-color: #059669 !important; }
-html[data-theme="dark"] .bg-blue-500 { background-color: #10b981 !important; }
+/* Blue brand fills -> emerald brand. APPLIES IN BOTH THEMES because
+   the brand is the same color in light and dark. The pill-blue /
+   spec-citation selectors above don't reach this branch because they
+   use composed class chains. */
+.bg-blue-600 { background-color: #10b981 !important; }
+.bg-blue-700 { background-color: #059669 !important; }
+.bg-blue-500 { background-color: #10b981 !important; }
+.text-blue-600 { color: #10b981 !important; }
+.text-blue-700 { color: #059669 !important; }
+.text-blue-500 { color: #10b981 !important; }
+.border-blue-600 { border-color: #10b981 !important; }
+.border-blue-500 { border-color: #10b981 !important; }
+.border-blue-200 { border-color: rgba(16, 185, 129, 0.30) !important; }
+.hover\:bg-blue-700:hover { background-color: #059669 !important; }
+.hover\:bg-blue-600:hover { background-color: #059669 !important; }
+.hover\:bg-blue-800:hover { background-color: #047857 !important; }
+/* Light/dark only divergence — pale brand wash bgs */
 html[data-theme="dark"] .bg-blue-50  { background-color: rgba(16, 185, 129, 0.10) !important; }
 html[data-theme="dark"] .bg-blue-100 { background-color: rgba(16, 185, 129, 0.18) !important; }
-html[data-theme="dark"] .text-blue-600 { color: #ef4255 !important; }
-html[data-theme="dark"] .text-blue-700 { color: #ef4255 !important; }
-html[data-theme="dark"] .text-blue-500 { color: #ef4255 !important; }
-html[data-theme="dark"] .border-blue-600 { border-color: #10b981 !important; }
-html[data-theme="dark"] .border-blue-500 { border-color: #10b981 !important; }
-html[data-theme="dark"] .border-blue-200 { border-color: rgba(16, 185, 129, 0.30) !important; }
-html[data-theme="dark"] .hover\:bg-blue-700:hover { background-color: #059669 !important; }
+html[data-theme="light"] .bg-blue-50  { background-color: rgba(16, 185, 129, 0.06) !important; }
+html[data-theme="light"] .bg-blue-100 { background-color: rgba(16, 185, 129, 0.12) !important; }
 html[data-theme="dark"] .hover\:bg-blue-50:hover  { background-color: rgba(16, 185, 129, 0.12) !important; }
 html[data-theme="dark"] .focus\:ring-blue-500:focus { --tw-ring-color: rgba(16, 185, 129, 0.5) !important; }
 html[data-theme="dark"] .focus\:border-blue-500:focus { border-color: #10b981 !important; }
