@@ -1824,14 +1824,17 @@ html[data-theme="light"] .bg-neutral-800 {
 html[data-theme="light"] .bg-slate-950,
 html[data-theme="light"] .bg-zinc-950,
 html[data-theme="light"] .bg-neutral-950,
-html[data-theme="light"] .bg-black,
-html[data-theme="light"] .bg-black\/80,
-html[data-theme="light"] .bg-black\/60,
-html[data-theme="light"] .bg-black\/50,
-html[data-theme="light"] .bg-black\/40 {
+html[data-theme="light"] .bg-black {
     background-color: var(--v4-bg-page) !important;
     color: var(--v4-fg-primary) !important;
 }
+/* bg-black/X with opacity is used by Radix Dialog as the modal
+   backdrop dim — preserve translucent dark scrim instead of
+   mapping to opaque page color. */
+html[data-theme="light"] .bg-black\/80 { background-color: rgba(15, 23, 42, 0.50) !important; }
+html[data-theme="light"] .bg-black\/60 { background-color: rgba(15, 23, 42, 0.40) !important; }
+html[data-theme="light"] .bg-black\/50 { background-color: rgba(15, 23, 42, 0.35) !important; }
+html[data-theme="light"] .bg-black\/40 { background-color: rgba(15, 23, 42, 0.30) !important; }
 
 /* --- soft emerald-tinted backgrounds (voice button, AI badge) ----- */
 html[data-theme="light"] .bg-emerald-500\/5,
