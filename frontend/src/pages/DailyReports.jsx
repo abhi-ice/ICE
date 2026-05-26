@@ -49,7 +49,7 @@ import { ChevronDown } from "lucide-react";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
-  Lock, CheckCircle2, ChevronLeft, Trash2, Wand2, Pencil, Sparkles, Loader2,
+  Lock, CheckCircle2, ChevronLeft, ChevronRight, Trash2, Wand2, Pencil, Sparkles, Loader2,
   Upload, FileSpreadsheet,
 } from "lucide-react";
 // Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
@@ -840,8 +840,41 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const totalSections = drSections.length;
   const progressPct = Math.round((completeCount / totalSections) * 100);
 
+  // V4: tiny date-stepper navigation — flip yesterday/tomorrow without
+  // returning to the list view. Stops at boundaries the API will allow.
+  const dateStep = (delta) => {
+    const d = new Date(report.report_date);
+    d.setDate(d.getDate() + delta);
+    // Caller: parent passes in onBack which knows how to switch DRs.
+    // For now we fire a window event the list page listens to.
+    window.dispatchEvent(new CustomEvent("dr-jump-to-date", { detail: { iso: d.toISOString().slice(0, 10) } }));
+  };
+
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
+      {/* V4 title block — H1 with date + breadcrumb pill, plus date stepper */}
+      <div className="flex items-baseline gap-3 flex-wrap">
+        <h1 className="text-xl font-semibold tracking-tight m-0">
+          Daily Report &middot;{" "}
+          <span className="font-mono">{formatDateDisplay(report.report_date)}</span>
+        </h1>
+        <span className="date-stepper" data-testid="dr-date-stepper">
+          <button onClick={() => dateStep(-1)} title="Previous day" aria-label="Previous day">
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={() => dateStep(+1)} title="Next day" aria-label="Next day">
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </span>
+        <span className={`v4-pill v4-pill-${
+          report.status === "approved" ? "closed" :
+          report.status === "submitted" ? "submitted" : "draft"
+        }`}>
+          {report.status === "approved" ? "Approved" :
+           report.status === "submitted" ? "Submitted" : "Draft"}
+        </span>
+      </div>
+
       {/* HEADER */}
       <Header report={report} project={project} userLabels={user_labels}
               ppc={ppc} totalHours={totalHours}
