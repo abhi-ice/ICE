@@ -2034,3 +2034,218 @@ html[data-theme="light"] .phase-ref {
 
 /* --- KPI band labels: faint text on glass bg readable now --------- */
 html[data-theme="light"] .kpi-delta.flat { color: var(--v4-fg-muted) !important; }
+
+/* =========================================================================
+   V4 RESKIN PT.13 (2026-05-26) — comprehensive reading-mode polish.
+   Addresses: topbar invisible in light, dropdowns blend with topbar bg
+   in dark, Manpower log inputs invisible, Events tabs pale-green
+   "looks like a defect", Vendors tabs same issue, Dialog modal in
+   light theme reads as a fogged white card with no separation, plain
+   <input>s without explicit type fall outside the pt.12 form selector.
+   ========================================================================= */
+
+/* --- TopBar: dark in BOTH themes (matches v4 mockup: dark rail) --- */
+.v4-topbar {
+    background-color: var(--v4-bg-topbar);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.92);
+}
+/* Tenant + Project pickers — visible surface against the dark topbar.
+   User flagged: in dark theme dropdowns look "full grey" indistinct
+   from the topbar. Add a slightly lighter inset surface + a hover
+   lift so they read as interactive. */
+.v4-topbar-select {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+    color: rgba(255, 255, 255, 0.92) !important;
+}
+.v4-topbar-select:hover {
+    background-color: rgba(255, 255, 255, 0.10) !important;
+    border-color: rgba(255, 255, 255, 0.16) !important;
+}
+.v4-topbar-select[data-state="open"] {
+    background-color: rgba(16, 185, 129, 0.14) !important;
+    border-color: rgba(16, 185, 129, 0.45) !important;
+    color: white !important;
+}
+.v4-topbar-select svg { color: rgba(255, 255, 255, 0.55) !important; }
+/* Search bar inside topbar — globalsearch — match select surface */
+.v4-topbar [data-testid="global-search-input"],
+.v4-topbar input[type="text"],
+.v4-topbar input[type="search"] {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+    color: rgba(255, 255, 255, 0.92) !important;
+}
+.v4-topbar input::placeholder { color: rgba(255, 255, 255, 0.40) !important; }
+
+/* Topbar avatar button hover */
+.v4-topbar-avatar-btn:hover { background-color: rgba(255, 255, 255, 0.06); }
+
+/* Override pt.12 light-theme rules inside the v4-topbar — keep dark */
+html[data-theme="light"] .v4-topbar { color: rgba(255, 255, 255, 0.92) !important; }
+html[data-theme="light"] .v4-topbar * { color: inherit; }
+html[data-theme="light"] .v4-topbar .v4-topbar-select { color: rgba(255,255,255,0.92) !important; }
+html[data-theme="light"] .v4-topbar .v4-save-state { color: rgba(255,255,255,0.7) !important; }
+html[data-theme="light"] .v4-topbar .v4-theme-toggle { color: rgba(255,255,255,0.92) !important; }
+html[data-theme="light"] .v4-topbar input,
+html[data-theme="light"] .v4-topbar input::placeholder,
+html[data-theme="light"] .v4-topbar input[type="text"],
+html[data-theme="light"] .v4-topbar input[type="search"] {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    color: rgba(255, 255, 255, 0.92) !important;
+    border-color: rgba(255, 255, 255, 0.10) !important;
+}
+html[data-theme="light"] .v4-topbar input::placeholder { color: rgba(255,255,255,0.40) !important; }
+
+/* --- Dropdown surface elevation: SelectContent + DropdownMenu in
+       dark theme were blending with topbar. Lift them with stronger
+       background + ring. Light theme already reads OK. --------------- */
+html[data-theme="dark"] [data-radix-popper-content-wrapper] > * {
+    background-color: var(--v4-bg-surface) !important;
+    border: 1px solid var(--v4-border-strong) !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255,255,255,0.04) !important;
+}
+html[data-theme="light"] [data-radix-popper-content-wrapper] > * {
+    background-color: var(--v4-bg-surface) !important;
+    border: 1px solid var(--v4-border) !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0,0,0,0.04) !important;
+}
+
+/* --- Manpower log inputs (.dr-mp-input) ---
+   Replaces the old "border border-slate-200" patterns that were
+   invisible on both themes. Distinct from draft-row variant. */
+.dr-mp-input {
+    padding: 4px 8px;
+    background-color: var(--v4-bg-surface) !important;
+    border: 1px solid var(--v4-border) !important;
+    color: var(--v4-fg-primary) !important;
+    line-height: 1.3;
+    width: 100%;
+    min-height: 30px;
+}
+.dr-mp-input:focus {
+    outline: none !important;
+    border-color: var(--brand-primary) !important;
+    box-shadow: 0 0 0 2px var(--brand-pale-bg) !important;
+}
+.dr-mp-input::placeholder { color: var(--v4-fg-faint); }
+.dr-mp-input:disabled { background-color: var(--v4-bg-surface-2) !important; color: var(--v4-fg-muted) !important; }
+.dr-mp-input--draft {
+    background-color: var(--v4-bg-surface) !important;
+    border-color: rgba(16, 185, 129, 0.40) !important;
+    box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.12);
+}
+.dr-mp-input--draft::placeholder { color: rgba(16, 185, 129, 0.55); }
+
+/* --- Events tabs strip — replaces pale-emerald that "looked like a
+   defect". Active tab now has a stronger emerald fill + white text
+   so it reads as a real selection in both themes. ----------------- */
+.dr-events-tabs {
+    background-color: var(--v4-bg-surface-2);
+    border: 1px solid var(--v4-border);
+}
+.dr-events-tab {
+    color: var(--v4-fg-secondary) !important;
+    background: transparent !important;
+    transition: background 120ms ease, color 120ms ease;
+}
+.dr-events-tab:hover {
+    color: var(--v4-fg-primary) !important;
+    background: var(--v4-bg-hover) !important;
+}
+.dr-events-tab[data-state="active"] {
+    background-color: var(--brand-primary) !important;
+    color: white !important;
+    box-shadow: 0 2px 6px -2px rgba(16, 185, 129, 0.45);
+}
+.dr-events-tab[data-state="active"] .dr-events-tab-count {
+    background-color: rgba(255, 255, 255, 0.22) !important;
+    color: white !important;
+}
+.dr-events-tab-count {
+    background-color: var(--v4-bg-surface) !important;
+    color: var(--v4-fg-secondary) !important;
+    border: 1px solid var(--v4-border);
+}
+
+/* --- Generic v4 tabs strip (Vendors page, future pages) --- */
+.v4-tabs-strip {
+    background-color: var(--v4-bg-surface-2);
+    border: 1px solid var(--v4-border);
+    padding: 4px;
+    display: inline-flex;
+    gap: 2px;
+}
+.v4-tab {
+    color: var(--v4-fg-secondary) !important;
+    background: transparent !important;
+    transition: background 120ms ease, color 120ms ease;
+}
+.v4-tab:hover {
+    color: var(--v4-fg-primary) !important;
+    background: var(--v4-bg-hover) !important;
+}
+.v4-tab[data-state="active"] {
+    background-color: var(--brand-primary) !important;
+    color: white !important;
+    box-shadow: 0 2px 6px -2px rgba(16, 185, 129, 0.45);
+}
+
+/* --- Dialog modal: in light theme it read as a foggy white card.
+   Add visible border, shadow, and rounded ring so it lifts off the
+   overlay. Also override the default radix bg-background which maps
+   to white in light. ---------------------------------------------- */
+html[data-theme="light"] [role="dialog"][data-state="open"] {
+    background-color: var(--v4-bg-surface) !important;
+    border: 1px solid var(--v4-border-strong) !important;
+    box-shadow: 0 32px 64px -16px rgba(0, 0, 0, 0.30),
+                0 0 0 1px rgba(0, 0, 0, 0.04) !important;
+    color: var(--v4-fg-primary) !important;
+}
+html[data-theme="dark"] [role="dialog"][data-state="open"] {
+    background-color: var(--v4-bg-surface) !important;
+    border: 1px solid var(--v4-border-strong) !important;
+    box-shadow: 0 32px 64px -16px rgba(0, 0, 0, 0.65),
+                0 0 0 1px rgba(255, 255, 255, 0.05) !important;
+    color: var(--v4-fg-primary) !important;
+}
+/* Dialog overlay (backdrop dim) — light theme uses softer dim
+   than the default bg-black/80 so it doesn't crush. */
+html[data-theme="light"] [data-radix-dialog-overlay] {
+    background-color: rgba(15, 23, 42, 0.45) !important;
+    backdrop-filter: blur(2px);
+}
+
+/* --- pt.12 form selector missed plain <input> with no type attr.
+   Default-typeless inputs are still `text` semantically but the
+   attribute selector input[type="text"] doesn't match them. Add a
+   catch-all for safety. -------------------------------------------- */
+html[data-theme="light"] input:not([type]),
+html[data-theme="light"] input[type=""]  {
+    background-color: var(--v4-bg-input) !important;
+    color: var(--v4-fg-primary) !important;
+    border-color: var(--v4-border) !important;
+}
+
+/* --- Row tints for Manpower log: replace bg-emerald-50/30 + bg-blue-50/30
+   with proper translucent versions that survive both themes. ------ */
+html[data-theme="light"] .bg-emerald-50\/30 {
+    background-color: rgba(16, 185, 129, 0.05) !important;
+}
+html[data-theme="dark"] .bg-emerald-50\/30 {
+    background-color: rgba(16, 185, 129, 0.10) !important;
+}
+html[data-theme="light"] .bg-blue-50\/30 {
+    background-color: rgba(16, 185, 129, 0.04) !important;
+}
+html[data-theme="dark"] .bg-blue-50\/30 {
+    background-color: rgba(16, 185, 129, 0.08) !important;
+}
+
+/* --- Approve button uses bg-green-600 in source; reskin to emerald
+   for brand consistency. ----------------------------------------- */
+.bg-green-600 { background-color: var(--brand-primary) !important; }
+.hover\:bg-green-700:hover { background-color: var(--brand-hover) !important; }
+.bg-green-500 { background-color: var(--brand-light) !important; }
+.hover\:bg-green-500:hover { background-color: var(--brand-light) !important; }

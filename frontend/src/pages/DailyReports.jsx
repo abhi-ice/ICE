@@ -320,7 +320,7 @@ export default function DailyReports() {
               <div className="text-slate-500">Date</div>
               <input data-testid="dr-new-date" type="date" value={pickerDate}
                 onChange={(e) => setPickerDate(e.target.value)}
-                className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm" />
+                className="mt-1 h-9 px-2 dr-mp-input rounded text-sm" />
             </label>
             <label className="text-xs">
               <div className="text-slate-500 flex items-center gap-1.5">
@@ -331,7 +331,7 @@ export default function DailyReports() {
                 data-testid="dr-new-mode"
                 value={pickerMode}
                 onChange={(e) => setPickerMode(e.target.value)}
-                className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm bg-white min-w-[140px]"
+                className="mt-1 h-9 px-2 dr-mp-input rounded text-sm bg-white min-w-[140px]"
               >
                 {DR_INTAKE_MODES.map((m) => {
                   const offlineBlocked = m.requiresOnline && !online;
@@ -990,7 +990,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         <div className="flex justify-end -mt-2">
           <button data-testid="dr-open-voice-intake"
             onClick={() => setActiveIntakeMode("voice_memo")}
-            className="h-8 px-3 rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 text-xs inline-flex items-center gap-1.5 hover:bg-emerald-900/40"
+            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs font-medium inline-flex items-center gap-1.5 hover:bg-emerald-500 transition"
           >
             <Mic className="h-3 w-3" /> Add via voice
           </button>
@@ -1244,45 +1244,23 @@ function Header({ report, project, userLabels, ppc, totalHours,
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
-      <div className="flex flex-wrap items-center gap-3">
-        <button onClick={onBack} className="text-sm text-blue-600 hover:underline flex items-center gap-1 shrink-0">
+      {/* v4 (2026-05-26): action buttons (Coordination / Export / Submit)
+          moved ABOVE the KPI band to match the v4 mockup. Header now
+          reads: [Back] [actions on right] above [KPI band 8-wide]. */}
+      <div className="flex flex-wrap items-center gap-3 mb-3">
+        <button onClick={onBack} className="text-sm text-emerald-600 hover:underline flex items-center gap-1 shrink-0">
           <ChevronLeft className="h-4 w-4" /> Back
         </button>
-        {/* 2026-05-21 -- KPI row now spans the full width via a grid
-            (4 cols mobile, 8 cols md+). Operational stats on the left
-            (PPC / Headcount / Crew hours / Activity hrs); event-count
-            stats on the right (Delays / RFIs / Safety / QC). Same KPI
-            tile so the row reads as a single stat band. */}
-        <div className="flex-1 min-w-0 grid grid-cols-4 md:grid-cols-8 gap-2">
-          <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
-          <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
-          <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
-          <KPI label="Activity hrs" value={totalHours.toFixed(1)} testid="kpi-activity-hours" />
-          <KPI label="Delays" value={delaysCount} testid="kpi-delays" />
-          <KPI label="RFIs" value={rfisCount} testid="kpi-rfis" />
-          <KPI label="Safety" value={safetyCount} testid="kpi-safety" />
-          <KPI label="QC" value={qcCount} testid="kpi-qc" />
-        </div>
-      </div>
-
-      <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-2 items-center">
-        {!v.ok && !locked && (
-          <div data-testid="dr-validation-warning" className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center gap-1">
-            <AlertTriangle className="h-3.5 w-3.5" />
-            {v.errors.length} item{v.errors.length === 1 ? "" : "s"} blocking submit: {v.errors[0]}
-          </div>
-        )}
-        <div className="ml-auto flex gap-2">
-          {/* Bucket C3b Phase 1 — quick-log a coordination event from
-              the daily report. Pre-links to this DR; user can expand
-              to full form on the Coordination page later. */}
-          {/* Action buttons (2026-05-26) — three Export options
-              consolidated into a single "Export ▼" dropdown to keep
-              the header compact and leave room for future actions
-              (Email DR, Print, Compare-to-prior-day, etc.). */}
+        <div className="ml-auto flex gap-2 items-center">
+          {!v.ok && !locked && (
+            <div data-testid="dr-validation-warning" className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center gap-1 mr-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {v.errors.length} item{v.errors.length === 1 ? "" : "s"} blocking submit: {v.errors[0]}
+            </div>
+          )}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
-              className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
+              className="h-9 px-3 rounded bg-emerald-600 text-white text-sm flex items-center gap-1.5 hover:bg-emerald-500 transition">
               <MessageSquare className="h-4 w-4" />
               {locked ? "+ Coordination (post-submit)" : "+ Coordination"}
             </button>
@@ -1290,7 +1268,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button data-testid="dr-export-menu" disabled={busy}
-                className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
+                className="h-9 px-3 rounded bg-emerald-600 text-white text-sm flex items-center gap-1.5 hover:bg-emerald-500 transition disabled:opacity-50">
                 <Download className="h-4 w-4" /> Export
                 <ChevronDown className="h-3.5 w-3.5 -mr-1" />
               </button>
@@ -1344,17 +1322,30 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </DropdownMenu>
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
-              className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+              className="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition disabled:opacity-50">
               Submit
             </button>
           )}
           {report.status === "submitted" && (
             <button data-testid="dr-approve" onClick={onApprove} disabled={busy}
-              className="h-9 px-3 rounded bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50 flex items-center gap-1">
+              className="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition disabled:opacity-50 flex items-center gap-1.5">
               <CheckCircle2 className="h-4 w-4" /> Approve
             </button>
           )}
         </div>
+      </div>
+      {/* KPI band — full width below the action row. Operational stats
+          (PPC / Headcount / Crew hours / Activity hrs) on the left;
+          event-count stats (Delays / RFIs / Safety / QC) on the right. */}
+      <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+        <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
+        <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
+        <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
+        <KPI label="Activity hrs" value={totalHours.toFixed(1)} testid="kpi-activity-hours" />
+        <KPI label="Delays" value={delaysCount} testid="kpi-delays" />
+        <KPI label="RFIs" value={rfisCount} testid="kpi-rfis" />
+        <KPI label="Safety" value={safetyCount} testid="kpi-safety" />
+        <KPI label="QC" value={qcCount} testid="kpi-qc" />
       </div>
     </div>
   );
@@ -1730,24 +1721,24 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               const isAuto = (r.notes || "").startsWith("Auto-created");
               return (
                 <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
-                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 dr-mp-input rounded text-sm" /></td>
                   <td>
                     <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
                       onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
-                      className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
+                      className="w-32 px-2 py-1 dr-mp-input rounded text-sm" />
                   </td>
                   <td>
                     <select data-testid={`presence-task-${r.id}`} defaultValue={r.schedule_activity_id || ""}
                       onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
-                      className="h-7 px-1 border border-slate-200 rounded bg-white text-xs min-w-[140px]">
+                      className="h-7 px-1 dr-mp-input rounded text-xs min-w-[140px]">
                       <option value="">— none —</option>
                       {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
                     </select>
                   </td>
-                  <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
-                  <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
+                  <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
+                  <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
                   <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
-                  <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 dr-mp-input rounded text-sm" /></td>
                   <td>
                     {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
                   </td>
@@ -1766,7 +1757,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
                       placeholder={subs.length ? "Company (type to pick)" : "Company"}
                       list={subs.length ? `subs-datalist-${idx}` : undefined}
-                      className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                      className="w-44 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
                     {subs.length > 0 && (
                       <datalist id={`subs-datalist-${idx}`}>
                         {subs.map((s) => <option key={s.id} value={s.name} />)}
@@ -1784,12 +1775,12 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                     <input data-testid={`presence-draft-trade-${idx}`} value={d.trade}
                       onChange={(e) => setDraftField(idx, "trade", e.target.value)}
                       placeholder="Trade *"
-                      className="w-32 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                      className="w-32 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
                   </td>
                   <td>
                     <select data-testid={`presence-draft-task-${idx}`} value={d.schedule_activity_id || ""}
                       onChange={(e) => setDraftField(idx, "schedule_activity_id", e.target.value)}
-                      className="h-7 px-1 border border-emerald-200 rounded bg-white text-xs min-w-[140px]">
+                      className="h-7 px-1 dr-mp-input dr-mp-input--draft rounded text-xs min-w-[140px]">
                       <option value="">— none —</option>
                       {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
                     </select>
@@ -1797,19 +1788,19 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   <td>
                     <input data-testid={`presence-draft-headcount-${idx}`} type="number" value={d.headcount}
                       onChange={(e) => setDraftField(idx, "headcount", e.target.value)}
-                      className="w-20 px-2 py-1 border border-emerald-200 rounded text-sm tabular-nums" />
+                      className="w-20 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm tabular-nums" />
                   </td>
                   <td>
                     <input data-testid={`presence-draft-hours-${idx}`} type="number" step="0.5" value={d.hours_per_person}
                       onChange={(e) => setDraftField(idx, "hours_per_person", e.target.value)}
-                      className="w-20 px-2 py-1 border border-emerald-200 rounded text-sm tabular-nums" />
+                      className="w-20 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm tabular-nums" />
                   </td>
                   <td className="tabular-nums text-sm text-slate-500">{subtotal.toFixed(1)}</td>
                   <td>
                     <input data-testid={`presence-draft-notes-${idx}`} value={d.notes}
                       onChange={(e) => setDraftField(idx, "notes", e.target.value)}
                       placeholder="Notes"
-                      className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                      className="w-44 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
                   </td>
                   <td>
                     <div className="flex items-center gap-1">
@@ -2082,7 +2073,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
               const v = e.target.value === "" ? null : Number(e.target.value);
               if (v !== (r.hours_worked ?? null)) updateRow(r.id, { hours_worked: v });
             }}
-            className="w-14 text-xs tabular-nums text-right px-1.5 py-0.5 rounded border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="dr-mp-input w-14 text-xs tabular-nums text-right rounded"
           />
         ) : (
           <span className="text-xs tabular-nums text-slate-500">{r.hours_worked ?? "—"}</span>
@@ -2532,21 +2523,22 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
 
   return (
     <div data-testid="dr-events-tabs" className="space-y-3 dr-section">
-      <div className="flex items-center gap-2 -mb-1 px-1"><div className="text-[11px] uppercase tracking-[0.14em] text-slate-400 font-semibold">Events</div>
+      <div className="flex items-center gap-2 -mb-1 px-1">
+        <div className="text-xs tracking-tight font-semibold" style={{ color: "var(--v4-fg-secondary)" }}>Events</div>
       </div>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
-          <TabsList className="bg-white/[0.04] flex flex-wrap h-auto p-1 gap-1">
+          <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1">
             {TABS.map((t) => {
               const Icon = t.icon;
               return (
                 <TabsTrigger key={t.value} value={t.value}
                   data-testid={`dr-events-tab-${t.value}`}
-                  className="gap-1.5 px-3 data-[state=active]:bg-[#34D399]/15 data-[state=active]:text-[#34D399] data-[state=active]:shadow-none">
+                  className="dr-events-tab gap-1.5 px-3">
                   <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
                   <span>{t.label}</span>
                   {typeof t.count === "number" && (
-                    <span className="ml-1 text-[10px] font-medium px-1.5 py-0.5 rounded bg-white/[0.08] text-white/70">
+                    <span className="dr-events-tab-count ml-1 text-[10px] font-medium px-1.5 py-0.5 rounded">
                       {t.count}
                     </span>
                   )}

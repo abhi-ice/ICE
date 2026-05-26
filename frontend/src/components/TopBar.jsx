@@ -39,10 +39,10 @@ export default function TopBar() {
   return (
     <header
       data-testid="app-topbar"
-      className="h-14 border-b border-border bg-card flex items-center gap-2 px-4 sticky top-0 z-10"
+      className="v4-topbar h-14 flex items-center gap-2 px-4 sticky top-0 z-10"
     >
       <Select value={tenant?.id} onValueChange={() => {}}>
-        <SelectTrigger className="h-9 w-[160px] text-sm" data-testid="tenant-switcher">
+        <SelectTrigger className="v4-topbar-select h-9 w-[160px] text-sm" data-testid="tenant-switcher">
           <SelectValue placeholder="Tenant" />
         </SelectTrigger>
         <SelectContent>
@@ -53,7 +53,7 @@ export default function TopBar() {
       </Select>
 
       <Select value={activeId || ""} onValueChange={(v) => setActiveId(v)}>
-        <SelectTrigger className="h-9 w-[260px] text-sm" data-testid="project-switcher">
+        <SelectTrigger className="v4-topbar-select h-9 w-[260px] text-sm" data-testid="project-switcher">
           <SelectValue placeholder="Project" />
         </SelectTrigger>
         <SelectContent>
@@ -94,13 +94,13 @@ export default function TopBar() {
           <DropdownMenuTrigger asChild>
             <button
               data-testid="topbar-user-menu"
-              className="flex items-center gap-2 h-10 pl-1.5 pr-2.5 rounded-md hover:bg-white/[0.06] transition-colors"
+              className="v4-topbar-avatar-btn flex items-center gap-2 h-10 pl-1.5 pr-2.5 rounded-md transition-colors"
               title={user?.full_name}
             >
               <div className="h-8 w-8 rounded-full bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30 grid place-items-center text-xs font-semibold tracking-wide">
                 {initials}
               </div>
-              <ChevronDown className="h-3.5 w-3.5 text-white/50" strokeWidth={2} />
+              <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} style={{ color: "rgba(255,255,255,0.6)" }} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-72 p-0">

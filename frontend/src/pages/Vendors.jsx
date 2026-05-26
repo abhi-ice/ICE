@@ -82,13 +82,13 @@ function VendorTable({ kind }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm text-slate-400">
+        <div className="text-sm" style={{ color: "var(--v4-fg-secondary)" }}>
           {rows.length} {kind === "subcontractor" ? "subcontractor" : "supplier"}{rows.length === 1 ? "" : "s"} in this organization
         </div>
         <button
           data-testid={`vendors-add-${kind}`}
           onClick={openNew}
-          className="h-8 px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1.5 hover:bg-emerald-500"
+          className="h-8 px-3 rounded bg-emerald-600 text-white text-xs font-medium inline-flex items-center gap-1.5 hover:bg-emerald-500 transition"
         >
           <Plus className="h-3.5 w-3.5" /> Add {titleSingular}
         </button>
@@ -189,11 +189,11 @@ export default function Vendors() {
         </p>
       </div>
       <Tabs defaultValue="subs">
-        <TabsList className="bg-white/[0.04] mb-4">
-          <TabsTrigger value="subs" data-testid="vendors-tab-subs" className="gap-1.5 px-3 data-[state=active]:bg-[#34D399]/15 data-[state=active]:text-[#34D399]">
+        <TabsList className="v4-tabs-strip mb-4">
+          <TabsTrigger value="subs" data-testid="vendors-tab-subs" className="v4-tab gap-1.5 px-3">
             <Briefcase className="h-3.5 w-3.5" /> Subcontractors
           </TabsTrigger>
-          <TabsTrigger value="suppliers" data-testid="vendors-tab-suppliers" className="gap-1.5 px-3 data-[state=active]:bg-[#34D399]/15 data-[state=active]:text-[#34D399]">
+          <TabsTrigger value="suppliers" data-testid="vendors-tab-suppliers" className="v4-tab gap-1.5 px-3">
             <Truck className="h-3.5 w-3.5" /> Suppliers
           </TabsTrigger>
         </TabsList>
