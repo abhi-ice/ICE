@@ -672,22 +672,26 @@ html[data-theme="dark"] .focus\:border-blue-500:focus { border-color: #10b981 !i
    black noir background.
    ============================================================ */
 
-/* Rose â€” slip / over-budget / behind-schedule indicators.
-   pages/Tasks.jsx, pages/Lookahead.jsx, pages/Aging.jsx,
-   pages/CascadeDashboard.jsx use these heavily on row tints &
-   warning callouts. */
-html[data-theme="dark"] .bg-rose-50         { background-color: rgba(16, 185, 129, 0.07) !important; }
-html[data-theme="dark"] .bg-rose-100        { background-color: rgba(16, 185, 129, 0.14) !important; }
-html[data-theme="dark"] .bg-rose-600        { background-color: #10b981 !important; }       /* destructive button */
-html[data-theme="dark"] .hover\:bg-rose-700:hover { background-color: #059669 !important; }
+/* Rose / Red — slip / over-budget / behind-schedule / SLA breach /
+   delete / blocker. v4 pt.16 (2026-05-26): the original noir skin
+   remapped rose→brand (when brand was crimson) so "Breached" /
+   "Slipping" / delete buttons all rendered crimson. The v4 reskin
+   switched brand to emerald but these rose→brand mappings stuck —
+   result was "Breached" rendering as EMERALD on Submittals, which
+   destroys the red-means-bad semantic. RESTORED to proper rose so
+   the user's read of red/amber/green for status stays intact. */
+html[data-theme="dark"] .bg-rose-50         { background-color: rgba(239, 68, 68, 0.08) !important; }
+html[data-theme="dark"] .bg-rose-100        { background-color: rgba(239, 68, 68, 0.16) !important; }
+html[data-theme="dark"] .bg-rose-600        { background-color: #e11d48 !important; }
+html[data-theme="dark"] .hover\:bg-rose-700:hover { background-color: #be123c !important; }
 html[data-theme="dark"] .text-rose-300      { color: rgb(253 164 175) !important; }
 html[data-theme="dark"] .text-rose-600      { color: #fb7185 !important; }
 html[data-theme="dark"] .text-rose-700      { color: #fb7185 !important; }
 html[data-theme="dark"] .text-rose-800      { color: #fca5a5 !important; }
 html[data-theme="dark"] .text-rose-900      { color: #fecaca !important; }
-html[data-theme="dark"] .border-rose-200    { border-color: rgba(16, 185, 129, 0.25) !important; }
-html[data-theme="dark"] .border-rose-300    { border-color: rgba(16, 185, 129, 0.40) !important; }
-html[data-theme="dark"] .border-rose-400    { border-color: rgba(16, 185, 129, 0.55) !important; }
+html[data-theme="dark"] .border-rose-200    { border-color: rgba(239, 68, 68, 0.30) !important; }
+html[data-theme="dark"] .border-rose-300    { border-color: rgba(239, 68, 68, 0.45) !important; }
+html[data-theme="dark"] .border-rose-400    { border-color: rgba(239, 68, 68, 0.60) !important; }
 
 /* Amber â€” draft status, no-work-day pill, validation warnings,
    permit / SLA banners. Heavily used in pages/DailyReports.jsx,
@@ -843,7 +847,7 @@ html[data-theme="dark"] .hover\:bg-amber-50:hover   { background-color: rgba(245
 html[data-theme="dark"] .hover\:bg-amber-600:hover  { background-color: #d97706 !important; }
 html[data-theme="dark"] .hover\:bg-amber-700:hover  { background-color: #b45309 !important; }
 html[data-theme="dark"] .hover\:bg-rose-50:hover    { background-color: rgba(16, 185, 129, 0.10) !important; }
-html[data-theme="dark"] .hover\:bg-rose-100:hover   { background-color: rgba(16, 185, 129, 0.16) !important; }
+html[data-theme="dark"] .hover\:bg-rose-100:hover   { background-color: rgba(239, 68, 68, 0.18) !important; }
 html[data-theme="dark"] .hover\:bg-rose-200:hover   { background-color: rgba(16, 185, 129, 0.22) !important; }
 html[data-theme="dark"] .hover\:bg-emerald-50:hover { background-color: rgba(16, 185, 129, 0.14) !important; }
 
@@ -1168,7 +1172,7 @@ html[data-theme="dark"] .bg-blue-100\/30, .bg-blue-100\/60 {
 }
 html[data-theme="dark"] .bg-rose-50\/30, .bg-rose-50\/40, .bg-rose-50\/60, .bg-rose-50\/80,
 html[data-theme="dark"] .bg-rose-100\/30, .bg-rose-100\/60 {
-    background-color: rgba(16, 185, 129, 0.08) !important;
+    background-color: rgba(239, 68, 68, 0.10) !important;
 }
 html[data-theme="dark"] .bg-amber-50\/30, .bg-amber-50\/40, .bg-amber-50\/60, .bg-amber-50\/80,
 html[data-theme="dark"] .bg-amber-100\/30, .bg-amber-100\/60 {
