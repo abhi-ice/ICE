@@ -3,7 +3,7 @@
 // status filter; click a photo to open the tagging wizard.
 import { useEffect, useState, useCallback, useMemo } from "react";
 import {
-  Camera, Upload, Filter, Archive, Check, MapPin, Clock, FileImage,
+  Camera, Upload, Filter, Archive, Check, MapPin, Clock, FileImage, Trash2,
   Sparkles, X as XIcon, AlertTriangle, HelpCircle,
 } from "lucide-react";
 import api from "../lib/api";
@@ -100,6 +100,23 @@ export default function PhotoTray() {
       await api.post(`/photo-tray/${id}/archive`);
       load();
     } catch (e) { toast.error(e.response?.data?.detail || "Archive failed"); }
+  };
+
+  // pt.31: delete from tray. Hard-delete is intentional here because tray
+  // entries that haven't been tagged to a DR are not yet part of the
+  // audit trail — these are "uploaded by mistake" / "wrong photo" cases.
+  // Once a photo IS tagged to a DR, the lifecycle handover happens and
+  // it leaves the tray automatically (planned in the photo-lifecycle
+  // rewrite). Backend endpoint will need to error if the photo is
+  // already tagged → in that case the user must delete from DR/Photos.
+  const remove = async (id) => {
+    if (!window.confirm("Delete this photo? This cannot be undone. (If it's already tagged to a daily report, delete it from the DR instead so the audit chain stays intact.)")) return;
+    try {
+      await api.delete(`/photo-tray/${id}`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
+    }
   };
 
   // Bucket F Phase 5 -- show a budget-paused banner whenever any
@@ -219,7 +236,8 @@ export default function PhotoTray() {
           <DialogHeader><DialogTitle>Tray photo</DialogTitle></DialogHeader>
           {openDetail && <DetailContent row={openDetail}
             onTagClick={() => setOpenWizard(true)}
-            onArchive={() => { archive(openDetail.id); setOpenDetail(null); }} />}
+            onArchive={() => { archive(openDetail.id); setOpenDetail(null); }}
+            onDelete={() => { remove(openDetail.id); setOpenDetail(null); }} />}
         </DialogContent>
       </Dialog>
 
@@ -295,7 +313,7 @@ function TrayCard({ row, onClick }) {
   );
 }
 
-function DetailContent({ row, onTagClick, onArchive }) {
+function DetailContent({ row, onTagClick, onArchive, onDelete }) {
   const [src, setSrc] = useState(null);
   const [tags, setTags] = useState([]);
   // Bucket F Phase 3 -- first-run tooltip state. Read once on mount;
@@ -373,12 +391,24 @@ function DetailContent({ row, onTagClick, onArchive }) {
       )}
 
       <div className="flex justify-between gap-2 pt-3 border-t border-slate-100">
-        <button data-testid="tray-detail-archive" onClick={onArchive}
-          className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300 inline-flex items-center gap-1">
-          <Archive className="h-3.5 w-3.5" /> Archive
-        </button>
+        <div className="flex gap-2">
+          {/* Delete = hard remove (mistake uploads). Only allowed while
+              the tray entry is still untagged; backend rejects with 409
+              if already linked to a DR — UI surfaces that toast. */}
+          <button data-testid="tray-detail-delete" onClick={onDelete}
+            className="h-9 px-3 rounded text-sm inline-flex items-center gap-1 transition"
+            style={{ background: "rgba(239,68,68,0.10)", color: "#b91c1c", border: "1px solid rgba(239,68,68,0.35)" }}>
+            <Trash2 className="h-3.5 w-3.5" /> Delete
+          </button>
+          {/* Archive = soft hide (already-processed, no longer relevant). */}
+          <button data-testid="tray-detail-archive" onClick={onArchive}
+            className="h-9 px-3 rounded text-sm inline-flex items-center gap-1 transition"
+            style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)", border: "1px solid var(--v4-border)" }}>
+            <Archive className="h-3.5 w-3.5" /> Archive
+          </button>
+        </div>
         <button data-testid="tray-detail-tag" onClick={onTagClick}
-          className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center gap-1">
+          className="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition inline-flex items-center gap-1">
           <Check className="h-3.5 w-3.5" /> Tag to event
         </button>
       </div>

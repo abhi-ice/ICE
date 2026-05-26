@@ -332,8 +332,11 @@ html[data-theme="dark"] .page-shell::after { display: none; }
     color: #ffffff;
 }
 .sidebar-link-nested {
-    @apply ml-5 pl-3;
-    border-left: 1px solid rgba(255,255,255,0.08);
+    /* pt.31: dropped the per-link border-left — when six nested items
+       stacked it visually rendered as a fragmented "||||" left rail.
+       Indent alone (pl-7) signals nesting just as clearly without the
+       choppy vertical bars. */
+    @apply pl-7;
 }
 .sidebar-link.active {
     background: rgba(16, 185, 129, 0.18);

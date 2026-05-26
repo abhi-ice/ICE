@@ -365,6 +365,56 @@ async def archive_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
+# pt.31 — Hard delete of a tray entry. Allowed ONLY while the photo is
+# still untagged (no rows in the photos collection pointing at this tray
+# row). Once tagged, deletion must happen from inside the DR / Photos
+# page so the audit chain captures the reason. Returns 409 + a clear
+# message if any tag links exist.
+@router.delete("/photo-tray/{tray_id}")
+async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    before = await db.photo_tray.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}), {"_id": 0},
+    )
+    if not before:
+        raise HTTPException(404, "Tray entry not found")
+    # Tagged check — photos collection holds the (tray_id → event) links
+    tag_count = await db.photos.count_documents(
+        tenant_filter(ctx["tenant_id"], {"tray_id": tray_id}),
+    )
+    if tag_count > 0:
+        raise HTTPException(
+            409,
+            f"Photo already tagged to {tag_count} event{'s' if tag_count != 1 else ''}. "
+            f"Delete it from the daily report or Photos page instead so the audit chain "
+            f"captures the reason.",
+        )
+    # Remove the storage object best-effort; tray-row delete is the
+    # authoritative action even if blob cleanup misfires.
+    sp = before.get("storage_path")
+    if sp:
+        try:
+            from services.storage import delete_object as _del_obj
+            try:
+                _del_obj(sp)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    await db.photo_tray.delete_one(
+        tenant_filter(ctx["tenant_id"], {"id": tray_id}),
+    )
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="photo_tray",
+        op="PHOTO_TRAY_DELETE",
+        record_id=tray_id,
+        before={"status": before.get("status"), "filename": before.get("filename")},
+        after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True, "deleted": True}
+
+
 # ============================================================
 # Tagging (tray -> event via Photo row)
 # ============================================================

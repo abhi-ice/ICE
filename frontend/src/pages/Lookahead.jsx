@@ -165,7 +165,11 @@ export default function Lookahead() {
                 // projected-slip-rose > behind-amber > clean. Rose for
                 // Part F slip > 0 matches the Tasks page tint so the
                 // two surfaces look consistent.
-                const tint = blocked ? "bg-red-50/50"
+                // pt.31: blocked rows now use a stronger red tint
+                // (bg-red-100) so they read as MORE critical than at-risk
+                // (which stays rose-50). Was bg-red-50/50 which looked
+                // almost identical to at-risk and confused the eye.
+                const tint = blocked ? "bg-red-100"
                   : projShifted ? "bg-rose-50"
                   : cs === "behind" ? "bg-amber-50/50"
                   : "";
