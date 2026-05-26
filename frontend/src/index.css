@@ -266,17 +266,20 @@ html[data-theme="dark"] .page-shell {
    on .page-shell already gives the surface dimensional interest. */
 .page-shell::before { display: none; }
 html[data-theme="dark"] .page-shell::before { display: none; }
-/* CRITICAL: do NOT set position:relative here -- it was overriding
-   position:fixed on the AI Copilot FAB and VoiceCaptureButton, which
-   are immediate children of .page-shell. They were getting yanked
-   into document flow at the top of the page. Just set the stacking
-   context via z-index on the pseudo-elements (they're at z-index: 0
-   already) -- siblings naturally render above them. */
-.page-shell > aside,
-.page-shell > div,
-.page-shell > main,
-.page-shell > header,
-.page-shell > nav {
+/* CRITICAL: do NOT set position:relative on a child that ALREADY has
+   .fixed (Tailwind) — the FAB, the CopilotPanel slide-over, modal
+   backdrops, etc. all depend on position:fixed to escape document
+   flow. Earlier version of this rule didn't exclude `.fixed` and
+   silently broke the CopilotPanel: panel rendered at position:relative
+   inside .page-shell, ended up at y=747 (below viewport) with
+   z-index:1 instead of z-30. FAB was clickable but the panel that
+   opened was invisible. pt.22 (2026-05-26) fix: skip any direct
+   child carrying Tailwind's .fixed (or `data-skip-page-stacking`). */
+.page-shell > aside:not(.fixed):not([data-skip-page-stacking]),
+.page-shell > div:not(.fixed):not([data-skip-page-stacking]),
+.page-shell > main:not(.fixed):not([data-skip-page-stacking]),
+.page-shell > header:not(.fixed):not([data-skip-page-stacking]),
+.page-shell > nav:not(.fixed):not([data-skip-page-stacking]) {
     position: relative;
     z-index: 1;
 }
