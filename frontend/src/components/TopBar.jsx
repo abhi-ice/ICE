@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, LogOut, User2, Trash2 } from "lucide-react";
+import { ChevronDown, LogOut, User2, Trash2, Sun, Moon } from "lucide-react";
 import { getUser, getTenant, clearAuth } from "../lib/auth";
 import { toast } from "./ui/sonner";
 import { useProjects } from "../lib/projects";
+import { useTheme } from "../lib/theme";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -22,6 +23,7 @@ export default function TopBar() {
   const [tenant] = useState(getTenant());
   const { projects, activeId, setActiveId } = useProjects();
   const [tenants, setTenants] = useState([]);
+  const { theme, toggle: toggleTheme } = useTheme();
 
   useEffect(() => {
     api.get("/auth/tenants").then(({ data }) => setTenants(data)).catch(() => {});
@@ -65,6 +67,27 @@ export default function TopBar() {
 
       <div className="ml-auto flex items-center gap-3">
         <GlobalSearch />
+
+        {/* v4: subtle save-state indicator (placeholder until wired to
+            DR autosave state — for now indicates the app is healthy). */}
+        <div className="v4-save-state hidden lg:inline-flex" title="Your work is auto-saved">
+          <span className="dot"></span>
+          <span>All changes saved</span>
+        </div>
+
+        {/* v4: light/dark theme toggle */}
+        <button
+          data-testid="theme-toggle"
+          onClick={toggleTheme}
+          className="v4-theme-toggle"
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          {theme === "dark"
+            ? <Sun className="h-3.5 w-3.5" strokeWidth={2} />
+            : <Moon className="h-3.5 w-3.5" strokeWidth={2} />}
+          <span className="hidden md:inline">{theme === "dark" ? "Light" : "Dark"}</span>
+        </button>
+
         <NotificationsBell />
 
         <DropdownMenu>

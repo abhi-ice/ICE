@@ -813,6 +813,33 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     }
   };
 
+  // V4 (2026-05-26): compute per-section "phase" status for the
+  // progress bar + jump pips. Each pip = one DR section. Status
+  // drives color: complete (emerald), in-progress (emerald hollow),
+  // blocked (red), empty (gray). Clicking a pip scrolls the page
+  // to the matching section anchor.
+  const drSections = [
+    { id: "project",  label: "Project",  status: project ? "complete" : "empty" },
+    { id: "weather",  label: "Weather",  status: report?.weather_conditions ? "complete" : "empty" },
+    { id: "manpower", label: "Manpower", status: (presence || []).length > 0 ? "complete" : "empty" },
+    { id: "activity", label: "Activity", status: (() => {
+        const rows = grid || [];
+        if (rows.length === 0) return "empty";
+        const fieldRows = rows.filter((r) => gridSectionOf(r.work_category) === 2);
+        if (fieldRows.length === 0) return "empty";
+        const withProgress = fieldRows.filter((r) => (r.pct_complete_end_of_day || 0) > 0).length;
+        if (withProgress === 0) return "blocked";
+        if (withProgress < fieldRows.length) return "in-progress";
+        return "complete";
+      })() },
+    { id: "events",   label: "Events",   status: ((delays || []).length + (safety_events || []).length + (qc_issues || []).length + (rfis || []).length) > 0 ? "in-progress" : "empty" },
+    { id: "photos",   label: "Photos",   status: (report?.photo_count ?? 0) > 0 ? "complete" : "empty" },
+    { id: "audit",    label: "Audit",    status: "empty" },
+  ];
+  const completeCount = drSections.filter((s) => s.status === "complete").length;
+  const totalSections = drSections.length;
+  const progressPct = Math.round((completeCount / totalSections) * 100);
+
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
       {/* HEADER */}
@@ -830,6 +857,34 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               exportingClient={exportingClient}
               onDownloadClientTemplate={downloadClientTemplate}
               onQuickLogCoordination={() => setCoordOpen(true)} />
+
+      {/* V4 DR Progress card — % done + clickable section pips colored by status */}
+      <div className="dr-progress-card" data-testid="dr-progress-card">
+        <div className="dr-progress-label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
+          </svg>
+          <span><span className="count">{completeCount} / {totalSections}</span> sections done</span>
+        </div>
+        <div className="dr-progress-bar"><div className="dr-progress-bar-fill" style={{ width: `${progressPct}%` }} /></div>
+        <div className="dr-pips" data-testid="dr-section-pips">
+          {drSections.map((s, i) => (
+            <button
+              key={s.id}
+              type="button"
+              data-testid={`dr-pip-${s.id}`}
+              className={`dr-pip ${s.status}`}
+              onClick={() => {
+                const el = document.getElementById(`dr-section-${s.id}`);
+                if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+              title={`${s.label} — ${s.status}`}
+            >
+              {String(i + 1).padStart(2, "0")}<span className="pip-name">{s.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* 5-Route DR Entry — offline banner. Shows when offline OR when
           there are queued requests waiting to drain. Auto-hides when
@@ -875,7 +930,9 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           the current logged-in user. Blank cells render as em-dash if
           the project field is empty -- no error, no block on DR
           creation. Above the date/weather block per the spec. */}
-      <DrAutoHeader project={project} currentUserName={currentUserName} />
+      <div id="dr-section-project" style={{ scrollMarginTop: 70 }}>
+        <DrAutoHeader project={project} currentUserName={currentUserName} />
+      </div>
 
       {/* 5-Route DR voice intake (Phase A 2026-05-25). The "Voice Memo"
           and "Live Voice" modes selected at New-DR time auto-expand
@@ -1000,17 +1057,23 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         </DialogContent>
       </Dialog>
 
-      {/* WEATHER */}
-      <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
+      {/* WEATHER — section pip jump anchor */}
+      <div id="dr-section-weather" style={{ scrollMarginTop: 70 }}>
+        <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
+      </div>
 
-      {/* CREW SUMMARY (presence) */}
-      <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
-        projectId={project.id} grid={grid} reportDate={report.report_date} />
+      {/* CREW SUMMARY (presence) — section pip jump anchor */}
+      <div id="dr-section-manpower" style={{ scrollMarginTop: 70 }}>
+        <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
+          projectId={project.id} grid={grid} reportDate={report.report_date} />
+      </div>
 
-      {/* ACTIVITY GRID */}
-      <ActivityGridPanel grid={grid} reload={reload}
-        dailyReportId={id} locked={locked} reportDate={report.report_date}
-        presence={presence} submitRowErrors={submitRowErrors} />
+      {/* ACTIVITY GRID — section pip jump anchor */}
+      <div id="dr-section-activity" style={{ scrollMarginTop: 70 }}>
+        <ActivityGridPanel grid={grid} reload={reload}
+          dailyReportId={id} locked={locked} reportDate={report.report_date}
+          presence={presence} submitRowErrors={submitRowErrors} />
+      </div>
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
       {isRenovation && (
@@ -1032,16 +1095,18 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           the same `dr-open-event-form` window event that the Activity
           Grid Issues dropdown uses, so the panel-level scroll/focus
           logic continues to work uniformly. */}
-      <EventsTabsCard
-        delays={delays} safetyEvents={safety_events} qcIssues={qc_issues}
-        rfis={rfis} deliveries={deliveries}
-        dailyReportId={id} projectId={project.id} reportDate={report.report_date}
-        locked={locked} reload={reload} grid={grid} report={report} />
+      <div id="dr-section-events" style={{ scrollMarginTop: 70 }}>
+        <EventsTabsCard
+          delays={delays} safetyEvents={safety_events} qcIssues={qc_issues}
+          rfis={rfis} deliveries={deliveries}
+          dailyReportId={id} projectId={project.id} reportDate={report.report_date}
+          locked={locked} reload={reload} grid={grid} report={report} />
+      </div>
 
       {/* PHOTOS (Voice Annotations card removed 2026-05-26 per spec --
           the AI voice intake at the top of the page supersedes the
           legacy per-DR audio attachment workflow.) */}
-      <div className="grid grid-cols-1 gap-5">
+      <div id="dr-section-photos" style={{ scrollMarginTop: 70 }} className="grid grid-cols-1 gap-5">
         <PhotosPanel rows={photos} dailyReportId={id} projectId={project.id}
                      locked={locked} reload={reload} />
       </div>
@@ -1051,8 +1116,60 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           whose parent_daily_report_id == this DR's id). */}
       <SupplementsAppendix dailyReportId={id} projectId={project.id} />
 
-      {/* AUDIT LOG */}
-      <AuditPanel rows={audit_log} userLabels={user_labels} />
+      {/* AUDIT LOG — section pip jump anchor */}
+      <div id="dr-section-audit" style={{ scrollMarginTop: 70 }}>
+        <AuditPanel rows={audit_log} userLabels={user_labels} />
+      </div>
+
+      {/* V4 sticky bottom submit bar — travels with the user as they
+          scroll. Shows progress + persistent Submit button. Hides on
+          locked / submitted reports. */}
+      {!locked && (
+        <StickySubmitBar
+          completeCount={completeCount}
+          total={totalSections}
+          progressPct={progressPct}
+          remainingLabels={drSections.filter((s) => s.status !== "complete").slice(0, 4).map((s) => s.label)}
+          onSubmit={submit}
+          busy={busy}
+        />
+      )}
+    </div>
+  );
+}
+
+// V4 Sticky Submit Bar — adds bottom padding to body so content
+// doesn't sit underneath. Auto-cleans up the class on unmount.
+function StickySubmitBar({ completeCount, total, progressPct, remainingLabels, onSubmit, busy }) {
+  useEffect(() => {
+    document.body.classList.add("has-sticky-submit");
+    return () => document.body.classList.remove("has-sticky-submit");
+  }, []);
+  return (
+    <div className="sticky-submit" data-testid="dr-sticky-submit">
+      <div className="sticky-submit-meta">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
+        </svg>
+        <span><span className="num">{completeCount} / {total}</span> sections complete</span>
+      </div>
+      <div className="sticky-submit-fill"><div style={{ width: `${progressPct}%` }} /></div>
+      {remainingLabels.length > 0 && (
+        <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>
+          {remainingLabels.length === 1 ? "1 to go — " : `${remainingLabels.length} to go — `}
+          {remainingLabels.join(", ")}
+        </div>
+      )}
+      <div style={{ flex: 1 }} />
+      <button
+        data-testid="dr-sticky-submit-btn"
+        onClick={onSubmit}
+        disabled={busy}
+        className="h-8 px-4 rounded text-sm font-semibold bg-[#10b981] text-white hover:bg-[#059669] disabled:opacity-50 inline-flex items-center gap-2"
+      >
+        Submit Report
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
     </div>
   );
 }
@@ -1897,6 +2014,29 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
         {delta > 0 ? "+" : ""}{delta}
       </td>
+      {/* Hours column — V4 (2026-05-26): editable when row is editable
+          (Field Work section + not locked). Renders the row's
+          hours_worked; on blur, patches the row. Read-only for
+          paperwork sections + locked DRs. */}
+      <td>
+        {editable && !locked ? (
+          <input
+            type="number"
+            step="0.5"
+            min="0"
+            data-testid={`dr-hours-${r.activity_code}`}
+            defaultValue={r.hours_worked ?? ""}
+            placeholder="0"
+            onBlur={(e) => {
+              const v = e.target.value === "" ? null : Number(e.target.value);
+              if (v !== (r.hours_worked ?? null)) updateRow(r.id, { hours_worked: v });
+            }}
+            className="w-14 text-xs tabular-nums text-right px-1.5 py-0.5 rounded border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        ) : (
+          <span className="text-xs tabular-nums text-slate-500">{r.hours_worked ?? "—"}</span>
+        )}
+      </td>
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
       <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
       <td>
@@ -2072,6 +2212,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             <tr>
               <th>Code</th><th>Description</th><th>Loc</th>
               <th>SOD %</th><th>EOD %</th><th>Δ</th>
+              <th title="Hours worked by the crew on this activity today. Free-text — defaults to crew-headcount × hours/person from the Manpower Log if not overridden.">Hours</th>
               <th>Status</th>
               <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
               <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
@@ -2094,26 +2235,42 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             const toggle = () => setSectionOpenOverride((m) => ({ ...m, [sec.n]: !isOpen }));
             return (
               <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
-                <tr className="bg-slate-100/80 border-y border-slate-200 cursor-pointer hover:bg-slate-200/60"
+                {/* V4 Lifecycle Track section header (2026-05-26):
+                    - Editable (Today's Planned Activity) → emerald rail + "Action Required" badge
+                    - Read-only (Preconstruction / Closeout) → muted gray + "Reference" tag
+                    The eye should jump straight to the editable section. */}
+                <tr
+                  className={`cursor-pointer ${sec.editable
+                    ? "bg-[rgba(16,185,129,0.06)] hover:bg-[rgba(16,185,129,0.10)] border-y border-[rgba(16,185,129,0.30)]"
+                    : "bg-slate-100/80 hover:bg-slate-200/60 border-y border-slate-200 opacity-90"
+                  }`}
                   onClick={toggle}
-                  data-testid={`dr-grid-section-${sec.n}-toggle`}>
-                  <td colSpan="10" className="px-2 py-1.5">
+                  data-testid={`dr-grid-section-${sec.n}-toggle`}
+                >
+                  <td colSpan="11" className={`px-3 py-2 ${sec.editable ? "border-l-2 border-l-[#10b981]" : ""}`}>
                     <div className="flex items-center gap-2">
                       <ChevronDown
-                        className={`h-3.5 w-3.5 text-slate-500 transition-transform ${isOpen ? "" : "-rotate-90"}`}
+                        className={`h-3.5 w-3.5 ${sec.editable ? "text-[#10b981]" : "text-slate-500"} transition-transform ${isOpen ? "" : "-rotate-90"}`}
                       />
-                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      {sec.editable && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#10b981] text-white text-[9px] font-bold uppercase tracking-wider">
+                          Today · Action Required
+                        </span>
+                      )}
+                      <span className={`text-sm font-semibold tracking-tight ${sec.editable ? "text-[#10b981]" : "text-slate-600"}`}>
                         {sec.title}
                       </span>
                       <span className="text-xs text-slate-400 tabular-nums">
-                        {secRows.length} {secRows.length === 1 ? "row" : "rows"}
+                        · {secRows.length} {secRows.length === 1 ? "row" : "rows"}
                       </span>
                       {!sec.editable && (
-                        <span className="text-xs uppercase tracking-wide text-slate-400">· read-only</span>
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 bg-white border border-slate-200 rounded px-1.5 py-0.5">
+                          Reference · Read-Only
+                        </span>
                       )}
                       {!isOpen && isEmpty && (
                         <span className="text-xs italic text-slate-400 ml-auto">
-                          collapsed — click to expand
+                          click to expand
                         </span>
                       )}
                     </div>
@@ -2121,7 +2278,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                 </tr>
                 {isOpen && (isEmpty ? (
                   <tr>
-                    <td colSpan="10" data-testid={`dr-grid-section-${sec.n}-empty`}
+                    <td colSpan="11" data-testid={`dr-grid-section-${sec.n}-empty`}
                       className="text-center py-3 text-xs text-slate-400 italic">
                       {sec.empty}
                     </td>

@@ -10,7 +10,7 @@ import {
 
 export const SIDEBAR_SECTIONS = [
   {
-    title: "OVERVIEW",
+    title: "Overview",
     items: [
       { label: "Dashboard", path: "/", icon: LayoutDashboard, testid: "sidebar-dashboard" },
       { label: "Getting started", path: "/getting-started", icon: BookOpen, testid: "sidebar-getting-started" },
@@ -25,7 +25,7 @@ export const SIDEBAR_SECTIONS = [
     ],
   },
   {
-    title: "DAILY OPERATIONS",
+    title: "Daily Operations",
     items: [
       { label: "Daily reports", path: "/daily-reports", icon: ClipboardList, testid: "sidebar-daily-reports" },
       // 2026-05-18 -- Photos, Photo tray, Delays, Safety, QC issues,
@@ -42,7 +42,7 @@ export const SIDEBAR_SECTIONS = [
     ],
   },
   {
-    title: "PLANNING & TRACKING",
+    title: "Planning & Tracking",
     items: [
       { label: "Tasks", path: "/tasks", icon: ListChecks, testid: "sidebar-tasks" },
       { label: "Look ahead", path: "/lookahead", icon: CalendarRange, testid: "sidebar-lookahead" },
@@ -62,7 +62,7 @@ export const SIDEBAR_SECTIONS = [
     ],
   },
   {
-    title: "PROCUREMENT & DOCUMENTS",
+    title: "Procurement & Documents",
     items: [
       { label: "RFIs", path: "/rfis", icon: MessagesSquare, badgeKey: "rfis", testid: "sidebar-rfis" },
       { label: "Deliveries", path: "/deliveries", icon: Truck, testid: "sidebar-deliveries" },
@@ -74,7 +74,7 @@ export const SIDEBAR_SECTIONS = [
     ],
   },
   {
-    title: "REVIEW & ACTIONS",
+    title: "Review & Actions",
     items: [
       { label: "Approvals", path: "/approvals", icon: BadgeCheck, badgeKey: "approvals", testid: "sidebar-approvals" },
       { label: "Field issues", path: "/work-items", icon: Wrench, badgeKey: "work_items", testid: "sidebar-work-items" },
@@ -86,7 +86,7 @@ export const SIDEBAR_SECTIONS = [
     ],
   },
   {
-    title: "RESOURCES",
+    title: "Resources",
     items: [
       { label: "Crews", path: "/resources/crews", icon: Users, testid: "sidebar-crews" },
       { label: "Equipment", path: "/resources/equipment", icon: Wrench, testid: "sidebar-equipment" },
@@ -96,7 +96,7 @@ export const SIDEBAR_SECTIONS = [
     ],
   },
   {
-    title: "SYSTEM",
+    title: "System",
     items: [
       { label: "Team", path: "/team", icon: Users, testid: "sidebar-team" },
       { label: "Imports", path: "/imports", icon: FileUp, testid: "sidebar-imports" },

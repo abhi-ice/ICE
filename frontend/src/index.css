@@ -13,6 +13,98 @@
 @tailwind components;
 @tailwind utilities;
 
+/* =========================================================================
+   V4 THEME SYSTEM (2026-05-26) — locked from design-mockup/dr-procore-polish-v4.html
+   ─────────────────────────────────────────────────────────────────────────
+   Two themes, single source of truth. Toggle via <html data-theme="light|dark">.
+   All v4 components reference these tokens — never hard-code colors below.
+   Existing components stay backwards-compatible: the legacy --background /
+   --primary etc. tokens further down still drive Tailwind utility classes
+   like bg-card / text-foreground; we just keep the two systems in sync.
+   ========================================================================= */
+:root {
+  /* Brand — identical in both themes */
+  --brand-primary:   #10b981;
+  --brand-hover:     #059669;
+  --brand-light:     #34d399;
+  --brand-pale-bg:   rgba(16, 185, 129, 0.10);
+  --brand-pale-bd:   rgba(16, 185, 129, 0.32);
+
+  /* LIGHT theme defaults */
+  --v4-bg-page:         #f5f6f8;
+  --v4-bg-surface:      #ffffff;
+  --v4-bg-surface-2:    #eef0f3;
+  --v4-bg-input:        #ffffff;
+  --v4-bg-hover:        #eef0f3;
+  --v4-bg-topbar:       #2f3437;
+  --v4-bg-sidebar:      #232729;
+
+  --v4-fg-primary:      #181d1f;
+  --v4-fg-secondary:    #4a5256;
+  --v4-fg-muted:        #6b7280;
+  --v4-fg-faint:        #9aa1a8;
+  --v4-fg-on-dark:      #e3e6e8;
+
+  --v4-border:          #d8dce0;
+  --v4-border-strong:   #b8bec3;
+  --v4-card-ring:       0 0 0 1px rgba(0, 0, 0, 0.04);
+
+  --v4-status-closed-bg:    #e8f7e9;
+  --v4-status-closed-fg:    #26732d;
+  --v4-status-open-bg:      #fff5e6;
+  --v4-status-open-fg:      #8a5500;
+  --v4-status-draft-bg:     #eef0f2;
+  --v4-status-draft-fg:     #4a5256;
+  --v4-status-submitted-bg: #e3f0ff;
+  --v4-status-submitted-fg: #1a55a3;
+  --v4-status-blocker-bg:   #fde8e8;
+  --v4-status-blocker-fg:   #a3261a;
+
+  --v4-radius-card:  6px;
+  --v4-radius-btn:   4px;
+  --v4-radius-pill:  999px;
+
+  --v4-shadow-card:        0 1px 2px rgba(0,0,0,0.04);
+  --v4-shadow-card-hover:  0 4px 14px rgba(0,0,0,0.06);
+  --v4-shadow-sticky:      0 -4px 12px rgba(0,0,0,0.06);
+}
+
+html[data-theme="dark"],
+[data-theme="dark"] {
+  --v4-bg-page:         #26262b;
+  --v4-bg-surface:      #2f2f35;
+  --v4-bg-surface-2:    #38383f;
+  --v4-bg-input:        #2a2a30;
+  --v4-bg-hover:        #3d3d45;
+  --v4-bg-topbar:       #1f1f24;
+  --v4-bg-sidebar:      #1f1f24;
+
+  --v4-fg-primary:      #ececf0;
+  --v4-fg-secondary:    #c0c0c8;
+  --v4-fg-muted:        #8e8e98;
+  --v4-fg-faint:        #5e5e68;
+  --v4-fg-on-dark:      #ececf0;
+
+  --v4-border:          #404048;
+  --v4-border-strong:   #525260;
+  --v4-card-ring:       0 0 0 1px rgba(255, 255, 255, 0.03);
+
+  --v4-status-closed-bg:    rgba(38, 115, 45, 0.18);
+  --v4-status-closed-fg:    #4fc960;
+  --v4-status-open-bg:      rgba(138, 85, 0, 0.22);
+  --v4-status-open-fg:      #f5b54a;
+  --v4-status-draft-bg:     rgba(120, 130, 140, 0.18);
+  --v4-status-draft-fg:     #c0c0c8;
+  --v4-status-submitted-bg: rgba(26, 85, 163, 0.25);
+  --v4-status-submitted-fg: #6ba2f0;
+  --v4-status-blocker-bg:   rgba(163, 38, 26, 0.22);
+  --v4-status-blocker-fg:   #f06a5d;
+
+  --v4-shadow-card:        0 1px 0 rgba(255,255,255,0.02) inset;
+  --v4-shadow-card-hover:  0 0 0 1px rgba(52, 211, 153, 0.18), 0 6px 18px rgba(0,0,0,0.35);
+  --v4-shadow-sticky:      0 -4px 14px rgba(0,0,0,0.4);
+}
+
 /* Self-hosted Inter (kept as fallback when the Google Fonts CDN is
    blocked by CSP / preview-env). Atkinson Hyperlegible + Manrope +
    JetBrains Mono are loaded from Google Fonts via <link> in
@@ -48,21 +140,16 @@
 
 body {
     margin: 0;
-    /* Inter primary (modern SaaS standard — high-quality grotesque
-       sans, designed by Rasmus Andersson for UI). Atkinson Hyperlegible
-       moves to a fallback role here — it's still available via the
-       accessibility toolbar's "Low-vision font" toggle for users who
-       prefer the Braille Institute glyph distinctness. Sizes 15px /
-       1.55 for a denser, less "Word-document" feel. */
     font-family: 'Inter', 'Atkinson Hyperlegible', -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
-    font-size: 15px;
-    line-height: 1.55;
+    font-size: 14px;
+    line-height: 1.5;
     letter-spacing: -0.005em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background: #000000;
-    color: rgb(228 228 231);              /* zinc-200 */
+    background: var(--v4-bg-page);
+    color: var(--v4-fg-primary);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+    transition: background-color 200ms ease, color 200ms ease;
 }
 /* When the accessibility toolbar adds .low-vision-font to <html>,
    switch the body to Atkinson Hyperlegible for low-vision users. */
@@ -88,33 +175,61 @@ h4 { font-size: 1rem;     line-height: 1.4; }
 
 @layer base {
     :root {
-        /* PREMIUM EMERALD theme tokens â€” black base + crimson brand. Tailwind
-           reads these via hsl(var(--*)) â€” see tailwind.config.js. */
-        --background: 0 0% 0%;             /* pure black page */
-        --foreground: 0 0% 96%;            /* near-white text */
-        --card: 240 5% 8%;                 /* zinc-950-ish surface */
-        --card-foreground: 0 0% 96%;
-        --popover: 240 5% 8%;
-        --popover-foreground: 0 0% 96%;
-        --primary: 160 84% 39%;            /* brand red #10b981 */
+        /* LIGHT theme — Tailwind shadcn-style HSL tokens. */
+        --background: 0 0% 100%;           /* white page */
+        --foreground: 200 10% 12%;         /* near-black text */
+        --card: 0 0% 100%;                 /* white surface */
+        --card-foreground: 200 10% 12%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 200 10% 12%;
+        --primary: 160 84% 39%;            /* brand emerald */
         --primary-foreground: 0 0% 100%;
-        --secondary: 240 5% 13%;           /* zinc-800 */
-        --secondary-foreground: 0 0% 96%;
-        --muted: 240 5% 11%;
-        --muted-foreground: 240 5% 65%;    /* zinc-400 */
-        --accent: 240 5% 14%;
-        --accent-foreground: 0 0% 96%;
-        --destructive: 0 72% 51%;          /* red-600 â€” distinct from brand for danger UI */
+        --secondary: 210 14% 95%;          /* zinc-100 */
+        --secondary-foreground: 200 10% 12%;
+        --muted: 210 14% 95%;
+        --muted-foreground: 215 14% 47%;
+        --accent: 210 14% 95%;
+        --accent-foreground: 200 10% 12%;
+        --destructive: 0 72% 51%;
         --destructive-foreground: 0 0% 100%;
-        --border: 240 5% 18%;              /* subtle dark border */
-        --input: 240 5% 14%;
-        --ring: 160 84% 39%;               /* brand red for focus rings */
-        --chart-1: 160 84% 39%;            /* brand */
-        --chart-2: 173 58% 49%;            /* teal */
-        --chart-3: 35 90% 60%;             /* amber */
-        --chart-4: 0 72% 51%;              /* red */
-        --chart-5: 142 71% 45%;            /* emerald */
-        --radius: 0.5rem;                  /* slightly rounder for the noir feel */
+        --border: 210 11% 86%;             /* slick gray */
+        --input: 0 0% 100%;
+        --ring: 160 84% 39%;
+        --chart-1: 160 84% 39%;
+        --chart-2: 173 58% 49%;
+        --chart-3: 35 90% 60%;
+        --chart-4: 0 72% 51%;
+        --chart-5: 142 71% 45%;
+        --radius: 0.375rem;
+    }
+
+    html[data-theme="dark"] {
+        /* DARK theme — warm gray (Linear / Claude Code feel), NOT pure black. */
+        --background: 240 7% 16%;          /* #26262b */
+        --foreground: 240 10% 92%;         /* #ececf0 */
+        --card: 240 7% 20%;                /* #2f2f35 */
+        --card-foreground: 240 10% 92%;
+        --popover: 240 7% 20%;
+        --popover-foreground: 240 10% 92%;
+        --primary: 160 84% 39%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 240 7% 24%;
+        --secondary-foreground: 240 10% 92%;
+        --muted: 240 7% 24%;
+        --muted-foreground: 240 6% 60%;
+        --accent: 240 7% 24%;
+        --accent-foreground: 240 10% 92%;
+        --destructive: 0 72% 51%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 240 7% 27%;              /* #404048 */
+        --input: 240 7% 18%;
+        --ring: 160 84% 39%;
+        --chart-1: 160 84% 39%;
+        --chart-2: 173 58% 49%;
+        --chart-3: 35 90% 60%;
+        --chart-4: 0 72% 51%;
+        --chart-5: 142 71% 45%;
+        --radius: 0.375rem;
     }
 }
 
@@ -122,7 +237,9 @@ h4 { font-size: 1rem;     line-height: 1.4; }
     * { @apply border-border; }
     body { @apply bg-background text-foreground; }
     h1, h2, h3, h4 {
-        @apply tracking-tight text-white;
+        /* V4: theme-aware heading color via var(--v4-fg-primary). */
+        @apply tracking-tight;
+        color: var(--v4-fg-primary);
         font-family: 'Inter', 'Manrope', sans-serif;
         font-weight: 600;
     }
@@ -132,23 +249,28 @@ h4 { font-size: 1rem;     line-height: 1.4; }
    PAGE CHROME â€” Red Noir surface system
    ============================================================ */
 
-/* Page shell â€” black base + bottom-right crimson glow + faint grid */
+/* Page shell — theme-aware. Light = clean off-white, no glow, no grid.
+   Dark = warm gray with subtle emerald accent gradients. */
 .page-shell {
-    background:
-        radial-gradient(900px 700px at 100% 0%, rgba(16, 185, 129, 0.10), transparent 60%),
-        radial-gradient(700px 500px at 0% 100%, rgba(16, 185, 129, 0.04), transparent 60%),
-        #000000;
+    background: var(--v4-bg-page);
     position: relative;
 }
-.page-shell::before {
-    /* Faint 40-px grid overlay, masked from center */
+html[data-theme="dark"] .page-shell {
+    background:
+        radial-gradient(900px 700px at 100% 0%, rgba(16, 185, 129, 0.06), transparent 60%),
+        radial-gradient(700px 500px at 0% 100%, rgba(16, 185, 129, 0.025), transparent 60%),
+        var(--v4-bg-page);
+}
+.page-shell::before { display: none; }
+html[data-theme="dark"] .page-shell::before {
+    display: block;
     content: "";
     position: fixed;
     inset: 0;
     pointer-events: none;
     background:
-        linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
     background-size: 40px 40px;
     -webkit-mask-image: radial-gradient(circle at center, black 35%, transparent 80%);
             mask-image: radial-gradient(circle at center, black 35%, transparent 80%);
@@ -191,10 +313,10 @@ h4 { font-size: 1rem;     line-height: 1.4; }
     position: fixed !important;
 }
 
-/* Parallax starfield â€” two layers of pinprick stars drifting up.
-   Pure box-shadow technique, no JS, GPU-friendly. The dots are 1-2px
-   so they read as ambience, not noise. */
-.page-shell::after {
+/* Parallax starfield — dark theme only, hidden in light. */
+.page-shell::after { display: none; }
+html[data-theme="dark"] .page-shell::after {
+    display: block;
     content: "";
     position: fixed;
     inset: -100% 0 0 0;     /* tall enough that the upward drift never reveals a gap */
@@ -345,10 +467,12 @@ h4 { font-size: 1rem;     line-height: 1.4; }
 /* Dense data table â€” same density rhythm, dark palette */
 .dense-table { width: 100%; }
 .dense-table th {
-    @apply text-xs font-semibold uppercase tracking-wider px-3 py-2 text-left align-middle;
-    color: rgba(255,255,255,0.55);
-    background: rgba(255,255,255,0.02);
-    border-bottom: 1px solid rgba(255,255,255,0.08);
+    /* V4 (2026-05-26): Title Case (NOT uppercase), 12px / 700, slick muted bg. */
+    @apply text-xs font-bold px-3 py-2 text-left align-middle;
+    color: var(--v4-fg-primary);
+    background: var(--v4-bg-surface-2);
+    border-bottom: 1px solid var(--v4-border);
+    letter-spacing: 0.01em;
 }
 .dense-table td {
     @apply text-sm px-3 py-2 align-middle;
@@ -411,10 +535,11 @@ h4 { font-size: 1rem;     line-height: 1.4; }
     box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
 }
 
-/* Compact form label */
+/* Compact form label — Title Case (NOT uppercase), 11px / 600. */
 .field-label {
-    @apply text-xs font-medium mb-1 block;
-    color: rgba(255,255,255,0.55);
+    @apply text-xs font-semibold mb-1 block;
+    color: var(--v4-fg-muted);
+    letter-spacing: 0.005em;
 }
 
 /* Spec citation chip */
@@ -1162,3 +1287,302 @@ tr.bg-slate-100 td {
 }
 
 /* Image rounded corners on photo cards stay; no theming needed */
+
+/* =========================================================================
+   V4 COMPONENT CSS (2026-05-26) — locked from design-mockup/dr-procore-polish-v4
+   Switching themes via html[data-theme="light|dark"]; everything below
+   references --v4-* tokens so it themes automatically.
+   ========================================================================= */
+
+/* ----- TOPBAR: save-state indicator + theme toggle ----- */
+.v4-save-state {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11.5px;
+    color: rgba(255,255,255,0.6);
+    padding: 0 8px;
+}
+.v4-save-state .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--brand-light);
+    box-shadow: 0 0 6px var(--brand-light);
+}
+.v4-theme-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: var(--v4-radius-btn);
+    padding: 0 11px;
+    height: 32px;
+    font-size: 12.5px; font-weight: 500;
+    color: rgba(255,255,255,0.85);
+    font-family: inherit;
+    cursor: pointer;
+}
+.v4-theme-toggle:hover {
+    background: rgba(255,255,255,0.14);
+    color: white;
+}
+
+/* ----- DR Progress bar + section pips ----- */
+.dr-progress-card {
+    background: var(--v4-bg-surface);
+    border: 1px solid var(--v4-border);
+    border-radius: var(--v4-radius-card);
+    box-shadow: var(--v4-card-ring);
+    padding: 12px 14px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.dr-progress-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--v4-fg-secondary);
+    display: inline-flex; align-items: center; gap: 6px;
+    white-space: nowrap;
+}
+.dr-progress-label .count {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--brand-primary);
+}
+.dr-progress-bar {
+    flex: 1 1 200px;
+    height: 6px;
+    background: var(--v4-bg-surface-2);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 120px;
+}
+.dr-progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--brand-primary), var(--brand-light));
+    border-radius: 3px;
+    transition: width 200ms ease-out;
+}
+.dr-pips {
+    display: flex; gap: 6px; flex-wrap: wrap;
+}
+.dr-pip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 600;
+    padding: 3px 9px;
+    border-radius: var(--v4-radius-pill);
+    border: 1px solid var(--v4-border);
+    color: var(--v4-fg-muted);
+    background: var(--v4-bg-surface);
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: all 120ms;
+}
+.dr-pip:hover { border-color: var(--v4-border-strong); color: var(--v4-fg-primary); }
+.dr-pip .pip-name { font-family: 'Inter', sans-serif; font-weight: 500; }
+.dr-pip.complete {
+    background: var(--brand-pale-bg);
+    border-color: var(--brand-pale-bd);
+    color: var(--brand-primary);
+}
+.dr-pip.in-progress {
+    background: var(--brand-pale-bg);
+    border-color: var(--brand-primary);
+    color: var(--brand-primary);
+}
+.dr-pip.blocked {
+    background: var(--v4-status-blocker-bg);
+    border-color: var(--v4-status-blocker-fg);
+    color: var(--v4-status-blocker-fg);
+}
+
+/* ----- KPI trend delta chip ----- */
+.kpi-delta {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    margin-left: 6px;
+    vertical-align: 0.15em;
+}
+.kpi-delta.up   { background: var(--v4-status-blocker-bg); color: var(--v4-status-blocker-fg); }
+.kpi-delta.down { background: var(--v4-status-closed-bg);  color: var(--v4-status-closed-fg); }
+.kpi-delta.flat { background: var(--v4-bg-surface-2);      color: var(--v4-fg-muted); }
+
+/* ----- Voice match badge ----- */
+.voice-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--brand-primary);
+    background: var(--brand-pale-bg);
+    border: 1px solid var(--brand-pale-bd);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+/* ----- Date stepper ----- */
+.date-stepper {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-left: 10px;
+    vertical-align: middle;
+}
+.date-stepper button {
+    width: 26px; height: 26px;
+    background: transparent;
+    border: 1px solid var(--v4-border);
+    border-radius: var(--v4-radius-btn);
+    color: var(--v4-fg-muted);
+    display: grid; place-items: center;
+    cursor: pointer;
+}
+.date-stepper button:hover {
+    background: var(--v4-bg-hover);
+    border-color: var(--v4-border-strong);
+    color: var(--v4-fg-primary);
+}
+
+/* ----- Lifecycle Track (BEFORE / TODAY / AFTER) ----- */
+.lifecycle { padding: 12px 14px 0; }
+.phase-divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 6px 0 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px; font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--v4-fg-faint);
+}
+.phase-divider::before,
+.phase-divider::after {
+    content: ""; flex: 1; height: 0;
+    border-top: 1px dashed var(--v4-border);
+}
+.phase-divider.now { color: var(--brand-primary); }
+.phase-divider.now::before,
+.phase-divider.now::after { border-top: 1px solid var(--brand-pale-bd); }
+
+.phase-ref {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px;
+    background: var(--v4-bg-surface-2);
+    border: 1px dashed var(--v4-border);
+    border-radius: var(--v4-radius-btn);
+    font-size: 12.5px;
+    color: var(--v4-fg-muted);
+    opacity: 0.78;
+    transition: opacity 150ms, background 150ms;
+    margin-bottom: 4px;
+}
+.phase-ref:hover { background: var(--v4-bg-hover); opacity: 1; cursor: pointer; }
+.phase-ref .lock-icon { width: 13px; height: 13px; flex: 0 0 auto; color: var(--v4-fg-faint); }
+.phase-ref .title { font-weight: 600; color: var(--v4-fg-secondary); }
+.phase-ref .count { color: var(--v4-fg-muted); font-weight: 400; font-feature-settings: "tnum"; }
+.phase-ref .ref-tag {
+    font-size: 9.5px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--v4-fg-faint);
+    background: var(--v4-bg-surface);
+    border: 1px solid var(--v4-border);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+.phase-ref .meta { margin-left: auto; font-size: 11.5px; font-style: italic; color: var(--v4-fg-faint); }
+
+.phase-now {
+    position: relative;
+    margin: 6px 0 12px;
+    background: var(--v4-bg-surface);
+    border: 1px solid var(--brand-pale-bd);
+    border-left: 3px solid var(--brand-primary);
+    border-radius: var(--v4-radius-btn);
+    box-shadow: 0 0 0 4px var(--brand-pale-bg), var(--v4-card-ring);
+    overflow: hidden;
+}
+.phase-now-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px 6px;
+    flex-wrap: wrap;
+}
+.phase-now-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: var(--brand-primary);
+    color: white;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    border-radius: var(--v4-radius-pill);
+    padding: 3px 9px;
+}
+.phase-now-title { font-size: 14.5px; font-weight: 700; color: var(--v4-fg-primary); }
+.phase-now-count {
+    margin-left: auto; font-size: 11.5px;
+    color: var(--v4-fg-muted);
+    font-feature-settings: "tnum";
+}
+.phase-now-helper { padding: 0 14px 10px; font-size: 12px; color: var(--v4-fg-muted); }
+.phase-now-body { background: var(--v4-bg-input); border-top: 1px solid var(--v4-border); }
+
+/* ----- Sticky bottom submit bar ----- */
+.sticky-submit {
+    position: fixed;
+    left: var(--sidebar-w, 56px);
+    right: 0; bottom: 0;
+    background: var(--v4-bg-surface);
+    border-top: 1px solid var(--v4-border);
+    box-shadow: var(--v4-shadow-sticky);
+    padding: 10px 28px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    z-index: 15;
+    transition: left 150ms ease-out;
+}
+.sticky-submit-meta {
+    font-size: 12px;
+    color: var(--v4-fg-secondary);
+    display: inline-flex; align-items: center; gap: 6px;
+}
+.sticky-submit-meta .num {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--brand-primary);
+    font-weight: 700;
+}
+.sticky-submit-fill {
+    flex: 1;
+    height: 4px;
+    background: var(--v4-bg-surface-2);
+    border-radius: 2px;
+    overflow: hidden;
+    max-width: 320px;
+}
+.sticky-submit-fill > div {
+    height: 100%;
+    background: var(--brand-primary);
+    transition: width 200ms ease-out;
+}
+
+/* ----- Procore-style pills (light pale bg + saturated text) ----- */
+.v4-pill {
+    display: inline-flex; align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--v4-radius-pill);
+    border: 1px solid transparent;
+}
+.v4-pill-closed     { background: var(--v4-status-closed-bg);    color: var(--v4-status-closed-fg); }
+.v4-pill-open       { background: var(--v4-status-open-bg);      color: var(--v4-status-open-fg); }
+.v4-pill-draft      { background: var(--v4-status-draft-bg);     color: var(--v4-status-draft-fg); }
+.v4-pill-submitted  { background: var(--v4-status-submitted-bg); color: var(--v4-status-submitted-fg); }
+.v4-pill-blocker    { background: var(--v4-status-blocker-bg);   color: var(--v4-status-blocker-fg); }
+
+/* Body padding so sticky-submit doesn't cover content on DR page */
+body.has-sticky-submit { padding-bottom: 60px; }

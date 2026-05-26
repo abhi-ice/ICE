@@ -1,6 +1,7 @@
 import { Routes, Route, BrowserRouter, Navigate } from "react-router-dom";
 import { Toaster } from "./components/ui/sonner";
 import { isAuthenticated } from "./lib/auth";
+import { ThemeProvider } from "./lib/theme";
 import AppLayout from "./components/AppLayout";
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
@@ -65,6 +66,7 @@ function Guard({ children }) {
 
 export default function App() {
   return (
+    <ThemeProvider>
     <div className="App">
       <Toaster />
       <BrowserRouter>
@@ -158,5 +160,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </div>
+    </ThemeProvider>
   );
 }

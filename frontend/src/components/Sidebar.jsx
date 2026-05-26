@@ -172,7 +172,7 @@ export default function Sidebar() {
                   {isCollapsed
                     ? <ChevronRight className="h-3 w-3 shrink-0" />
                     : <ChevronDown  className="h-3 w-3 shrink-0" />}
-                  <span className="text-xs font-semibold uppercase tracking-[0.12em] min-w-0 truncate">{section.title}</span>
+                  <span className="text-xs font-semibold tracking-tight min-w-0 truncate">{section.title}</span>
                 </button>
               )}
               {rail && (
