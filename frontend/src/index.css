@@ -1706,8 +1706,14 @@ html[data-theme="light"] .text-gray-50 {
     color: var(--v4-fg-primary) !important;
 }
 
-/* --- text-white and white/X opacity text → theme fg --------------- */
-html[data-theme="light"] .text-white,
+/* --- text-white and white/X opacity text → theme fg ---------------
+   v4 pt.20 (2026-05-26): scoped EXCEPT inside buttons/links — they
+   have colored bgs and white text must stay white.
+   User flagged: emerald CTAs rendering with BLACK text because the
+   pt.12 .text-white remap was global. */
+html[data-theme="light"] .text-white {
+    color: var(--v4-fg-primary) !important;
+}
 html[data-theme="light"] .text-white\/95,
 html[data-theme="light"] .text-white\/90,
 html[data-theme="light"] .text-white\/85,
@@ -1715,6 +1721,78 @@ html[data-theme="light"] .text-white\/80,
 html[data-theme="light"] .text-white\/75,
 html[data-theme="light"] .text-white\/70 {
     color: var(--v4-fg-primary) !important;
+}
+/* Override BACK to white when text-white is on a button/link/badge
+   (these always sit on colored backgrounds — green, red, etc — so
+   white text must remain readable). */
+html[data-theme="light"] button.text-white,
+html[data-theme="light"] a.text-white,
+html[data-theme="light"] [role="button"].text-white,
+html[data-theme="light"] [data-radix-collection-item].text-white,
+html[data-theme="light"] button .text-white,
+html[data-theme="light"] a .text-white,
+html[data-theme="light"] .pill-green.text-white,
+html[data-theme="light"] .bg-emerald-600 .text-white,
+html[data-theme="light"] .bg-emerald-500 .text-white,
+html[data-theme="light"] .bg-emerald-700 .text-white,
+html[data-theme="light"] .bg-rose-600 .text-white,
+html[data-theme="light"] .bg-red-600 .text-white,
+html[data-theme="light"] .bg-amber-500 .text-white,
+html[data-theme="light"] .bg-amber-600 .text-white,
+html[data-theme="light"] .v4-topbar .text-white,
+html[data-theme="light"] .app-sidebar .text-white,
+html[data-theme="light"] .sticky-submit .text-white {
+    color: white !important;
+}
+
+/* v4 pt.20: Catch-all — any button with a brand/semantic colored
+   background gets white text in light theme. Covers buttons that
+   forgot to add text-white explicitly (those inherit body color =
+   fg-primary = black, which is unreadable on emerald/red/amber). */
+html[data-theme="light"] button[class*="bg-emerald-5"],
+html[data-theme="light"] button[class*="bg-emerald-6"],
+html[data-theme="light"] button[class*="bg-emerald-7"],
+html[data-theme="light"] a[class*="bg-emerald-5"],
+html[data-theme="light"] a[class*="bg-emerald-6"],
+html[data-theme="light"] a[class*="bg-emerald-7"],
+html[data-theme="light"] button.bg-emerald-600,
+html[data-theme="light"] button.bg-emerald-500,
+html[data-theme="light"] button.bg-emerald-700,
+html[data-theme="light"] button[class*="bg-rose-6"],
+html[data-theme="light"] button[class*="bg-rose-7"],
+html[data-theme="light"] button[class*="bg-red-6"],
+html[data-theme="light"] button[class*="bg-red-7"],
+html[data-theme="light"] button[class*="bg-amber-5"],
+html[data-theme="light"] button[class*="bg-amber-6"],
+html[data-theme="light"] button[class*="bg-amber-7"],
+html[data-theme="light"] button[class*="bg-blue-6"],
+html[data-theme="light"] button[class*="bg-blue-7"] {
+    color: white !important;
+}
+html[data-theme="light"] button[class*="bg-emerald-5"] *,
+html[data-theme="light"] button[class*="bg-emerald-6"] *,
+html[data-theme="light"] button[class*="bg-emerald-7"] *,
+html[data-theme="light"] a[class*="bg-emerald-6"] *,
+html[data-theme="light"] button.bg-emerald-600 *,
+html[data-theme="light"] button[class*="bg-rose-6"] *,
+html[data-theme="light"] button[class*="bg-red-6"] *,
+html[data-theme="light"] button[class*="bg-amber-5"] *,
+html[data-theme="light"] button[class*="bg-amber-6"] *,
+html[data-theme="light"] button[class*="bg-blue-6"] * {
+    color: inherit !important;
+}
+/* Same catch-all for DARK theme — emerald buttons should always have
+   white text regardless of any other override. */
+html[data-theme="dark"] button[class*="bg-emerald-5"],
+html[data-theme="dark"] button[class*="bg-emerald-6"],
+html[data-theme="dark"] button[class*="bg-emerald-7"],
+html[data-theme="dark"] a[class*="bg-emerald-6"],
+html[data-theme="dark"] button.bg-emerald-600,
+html[data-theme="dark"] button[class*="bg-rose-6"],
+html[data-theme="dark"] button[class*="bg-red-6"],
+html[data-theme="dark"] button[class*="bg-amber-5"],
+html[data-theme="dark"] button[class*="bg-amber-6"] {
+    color: white !important;
 }
 html[data-theme="light"] .text-white\/65,
 html[data-theme="light"] .text-white\/60,
