@@ -957,13 +957,18 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         </div>
       )}
 
+      {/* V4 SPINE — vertical rail with numbered status nodes on the
+          LEFT of every DR section. Status (.complete / .in-progress
+          / .blocked / empty) drives the node color + the connecting
+          line segment to the next step. */}
+      <div className="dr-spine" data-testid="dr-spine">
+
       {/* Feature DR Header Auto-Population (2026-05-20) -- the formal
           contract / station / signature block shown on every Daily
-          Report. Read-only, auto-populated from the project record and
-          the current logged-in user. Blank cells render as em-dash if
-          the project field is empty -- no error, no block on DR
-          creation. Above the date/weather block per the spec. */}
-      <div id="dr-section-project" style={{ scrollMarginTop: 70 }}>
+          Report. */}
+      <div id="dr-section-project" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[0].status === "complete" ? "complete" : drSections[0].status === "in-progress" ? "in-progress" : drSections[0].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">1</span></div>
         <DrAutoHeader project={project} currentUserName={currentUserName} />
       </div>
 
@@ -1090,19 +1095,25 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         </DialogContent>
       </Dialog>
 
-      {/* WEATHER — section pip jump anchor */}
-      <div id="dr-section-weather" style={{ scrollMarginTop: 70 }}>
+      {/* WEATHER — section pip jump anchor + spine step 2 */}
+      <div id="dr-section-weather" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[1].status === "complete" ? "complete" : drSections[1].status === "in-progress" ? "in-progress" : drSections[1].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">2</span></div>
         <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       </div>
 
-      {/* CREW SUMMARY (presence) — section pip jump anchor */}
-      <div id="dr-section-manpower" style={{ scrollMarginTop: 70 }}>
+      {/* CREW SUMMARY (presence) — section pip jump anchor + spine step 3 */}
+      <div id="dr-section-manpower" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[2].status === "complete" ? "complete" : drSections[2].status === "in-progress" ? "in-progress" : drSections[2].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">3</span></div>
         <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
           projectId={project.id} grid={grid} reportDate={report.report_date} />
       </div>
 
-      {/* ACTIVITY GRID — section pip jump anchor */}
-      <div id="dr-section-activity" style={{ scrollMarginTop: 70 }}>
+      {/* ACTIVITY GRID — section pip jump anchor + spine step 4 */}
+      <div id="dr-section-activity" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[3].status === "complete" ? "complete" : drSections[3].status === "in-progress" ? "in-progress" : drSections[3].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">4</span></div>
         <ActivityGridPanel grid={grid} reload={reload}
           dailyReportId={id} locked={locked} reportDate={report.report_date}
           presence={presence} submitRowErrors={submitRowErrors} />
@@ -1128,7 +1139,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           the same `dr-open-event-form` window event that the Activity
           Grid Issues dropdown uses, so the panel-level scroll/focus
           logic continues to work uniformly. */}
-      <div id="dr-section-events" style={{ scrollMarginTop: 70 }}>
+      {/* EVENTS — section pip jump anchor + spine step 5 */}
+      <div id="dr-section-events" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[4].status === "complete" ? "complete" : drSections[4].status === "in-progress" ? "in-progress" : drSections[4].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">5</span></div>
         <EventsTabsCard
           delays={delays} safetyEvents={safety_events} qcIssues={qc_issues}
           rfis={rfis} deliveries={deliveries}
@@ -1136,10 +1150,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           locked={locked} reload={reload} grid={grid} report={report} />
       </div>
 
-      {/* PHOTOS (Voice Annotations card removed 2026-05-26 per spec --
-          the AI voice intake at the top of the page supersedes the
-          legacy per-DR audio attachment workflow.) */}
-      <div id="dr-section-photos" style={{ scrollMarginTop: 70 }} className="grid grid-cols-1 gap-5">
+      {/* PHOTOS — section pip jump anchor + spine step 6 */}
+      <div id="dr-section-photos" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[5].status === "complete" ? "complete" : drSections[5].status === "in-progress" ? "in-progress" : drSections[5].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">6</span></div>
         <PhotosPanel rows={photos} dailyReportId={id} projectId={project.id}
                      locked={locked} reload={reload} />
       </div>
@@ -1149,10 +1163,14 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           whose parent_daily_report_id == this DR's id). */}
       <SupplementsAppendix dailyReportId={id} projectId={project.id} />
 
-      {/* AUDIT LOG — section pip jump anchor */}
-      <div id="dr-section-audit" style={{ scrollMarginTop: 70 }}>
+      {/* AUDIT LOG — section pip jump anchor + spine step 7 (last) */}
+      <div id="dr-section-audit" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[6].status === "complete" ? "complete" : drSections[6].status === "in-progress" ? "in-progress" : drSections[6].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">7</span></div>
         <AuditPanel rows={audit_log} userLabels={user_labels} />
       </div>
+
+      </div>{/* /.dr-spine */}
 
       {/* V4 sticky bottom submit bar — travels with the user as they
           scroll. Shows progress + persistent Submit button. Hides on

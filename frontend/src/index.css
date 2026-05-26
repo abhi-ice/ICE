@@ -1606,3 +1606,94 @@ body.has-sticky-submit { padding-bottom: 60px; }
 
 /* Lift the Copilot FAB above the sticky submit bar on DR detail */
 body.has-sticky-submit .copilot-fab { bottom: 70px; }
+
+/* =========================================================================
+   V4 SPINE — vertical rail with numbered status nodes on DR detail
+   (2026-05-26). The big visual missing piece from the v4 mockup.
+   Sections wrap in <div className="dr-spine">; each panel goes inside
+   <div className="step ..."> with a <div className="step-node"> child.
+   ========================================================================= */
+.dr-spine {
+    position: relative;
+    padding-left: 42px;
+    min-width: 0;
+}
+.dr-spine .step {
+    position: relative;
+    margin-bottom: 24px;
+    scroll-margin-top: 70px;
+}
+.dr-spine .step:last-child { margin-bottom: 0; }
+
+/* Connecting rail segment that extends DOWN from this node into the
+   gap before the next step. Colored by this step's status so the
+   spine reads as a timeline of progress. */
+.dr-spine .step::after {
+    content: "";
+    position: absolute;
+    left: -23px;        /* aligned to node center */
+    top: 30px;          /* below the node */
+    bottom: -32px;      /* extends into the next-step margin */
+    width: 0;
+    border-left: 1.5px dashed var(--v4-border-strong);
+    opacity: 0.55;
+    transition: border-color 200ms, opacity 200ms;
+    pointer-events: none;
+}
+.dr-spine .step.complete::after    { border-left: 1.5px solid  var(--brand-primary);          opacity: 0.8; }
+.dr-spine .step.in-progress::after { border-left: 1.5px dashed var(--brand-primary);          opacity: 0.9; }
+.dr-spine .step.blocked::after     { border-left: 1.5px dashed var(--v4-status-blocker-fg);   opacity: 0.9; }
+.dr-spine .step:last-child::after  { display: none; }
+
+/* Numbered round badge on the rail. Absolutely positioned to the
+   LEFT of the panel so the rail flows past it. */
+.dr-spine .step-node {
+    position: absolute;
+    left: -36px;
+    top: 11px;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: var(--v4-bg-surface);
+    border: 1.5px solid var(--v4-border-strong);
+    color: var(--v4-fg-muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+    z-index: 2;
+    transition: all 200ms;
+}
+.dr-spine .step.complete .step-node {
+    background: var(--brand-primary);
+    border-color: var(--brand-primary);
+    color: white;
+}
+.dr-spine .step.complete .step-node::before {
+    content: "✓";
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+}
+.dr-spine .step.complete .step-node .num { display: none; }
+.dr-spine .step.in-progress .step-node {
+    background: var(--brand-pale-bg);
+    border-color: var(--brand-primary);
+    color: var(--brand-primary);
+    box-shadow: 0 0 0 4px var(--brand-pale-bg);
+}
+.dr-spine .step.blocked .step-node {
+    background: var(--v4-status-blocker-bg);
+    border-color: var(--v4-status-blocker-fg);
+    color: var(--v4-status-blocker-fg);
+    box-shadow: 0 0 0 4px var(--v4-status-blocker-bg);
+}
+
+/* On narrow viewports collapse the spine padding so cards stay
+   readable. The numbered nodes shrink slightly too. */
+@media (max-width: 760px) {
+    .dr-spine { padding-left: 32px; }
+    .dr-spine .step-node { left: -28px; width: 22px; height: 22px; font-size: 10px; }
+    .dr-spine .step::after { left: -18px; }
+}
