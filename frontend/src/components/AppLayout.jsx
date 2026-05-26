@@ -33,7 +33,9 @@ export default function AppLayout() {
       <button
         data-testid="copilot-fab"
         onClick={() => setCopilotOpen(true)}
-        className="fixed bottom-5 right-5 h-12 w-12 rounded-full bg-[#10b981] text-white grid place-items-center shadow-[0_8px_28px_-6px_rgba(16,185,129,0.55)] hover:scale-105 hover:bg-[#059669] transition z-20"
+        /* V4: a CSS rule in index.css lifts the FAB up when
+           body.has-sticky-submit is set (DR detail page). */
+        className="copilot-fab fixed bottom-5 right-5 h-12 w-12 rounded-full bg-[#10b981] text-white grid place-items-center shadow-[0_8px_28px_-6px_rgba(16,185,129,0.55)] hover:scale-105 hover:bg-[#059669] transition z-20"
         title="AI Copilot"
       >
         <Bot className="h-5 w-5" strokeWidth={1.6} />

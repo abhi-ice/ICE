@@ -1586,3 +1586,6 @@ tr.bg-slate-100 td {
 
 /* Body padding so sticky-submit doesn't cover content on DR page */
 body.has-sticky-submit { padding-bottom: 60px; }
+
+/* Lift the Copilot FAB above the sticky submit bar on DR detail */
+body.has-sticky-submit .copilot-fab { bottom: 70px; }
