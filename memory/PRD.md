@@ -624,6 +624,34 @@ freshly-opened DR. No regressions to the Events tabs card (13.4).
 Smoke-tested via screenshot: Vendors page renders, DR detail still
 mounts with all 4 numbered section badges visible, no console errors.
 
+### Iter 13.7 — Dialog viewport fit + project vendor links (2026-02-XX)
+
+**Dialog scroll fix** — `components/ui/dialog.jsx` DialogContent base
+class went from `grid` to `flex flex-col` with `max-h-[90vh]
+overflow-y-auto overscroll-contain`. Every dialog in the app
+(AiAnalysisCard preview, TagWizard, project create/edit, vendor
+create/edit) now respects the viewport: top X close button is always
+reachable, scrolling happens inside the modal, bottom action buttons
+never get clipped. Verified at 1280×720.
+
+**Project ↔ Vendor linking** —
+- Backend: `Project`, `ProjectCreate`, `ProjectUpdate` now carry
+  `subcontractor_ids: list[str]` and `supplier_ids: list[str]`
+  (default `[]`).
+- Frontend: new `VendorPicker` chip-grid component on the project
+  create + edit dialog. Subs and suppliers are loaded from
+  `/api/subcontractors` and `/api/suppliers`; selecting a chip
+  toggles the ID in `form.subcontractor_ids` / `form.supplier_ids`.
+  Empty-state surfaces a "Manage repo ↗" link + an "Add some →"
+  link straight to /vendors so the user can populate the repo
+  without leaving the project flow.
+- Voice AI now narrows its `known_subcontractors` list to the
+  project's selected subs when populated; falls back to the full
+  tenant list otherwise (so legacy projects without explicit
+  vendor linkage continue to work).
+- The submit() function preserves empty arrays in payload so
+  un-selecting all subs / suppliers actually clears the linkage.
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

@@ -31,7 +31,64 @@ const EMPTY_FORM = {
   current_substantial_completion: "",
   contract_days: "",
   calendar_basis: "calendar_days",
+  // 2026-02-XX (Abhi) -- subs / suppliers linked to this project,
+  // selected from the tenant-wide vendor central repo.
+  subcontractor_ids: [],
+  supplier_ids: [],
 };
+
+// 2026-02-XX (Abhi) -- compact vendor multi-select for the Project
+// form. Shows a chip grid for picking subs / suppliers out of the
+// tenant-wide central repo; empty state surfaces a link to the
+// Vendors page so the user can add the first record without leaving
+// the project flow.
+function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
+  const isSub = kind === "sub";
+  const title = isSub ? "Subcontractors on this project" : "Suppliers on this project";
+  const empty = isSub
+    ? "No subcontractors in the repo yet."
+    : "No suppliers in the repo yet.";
+  return (
+    <div className="border-t border-border pt-3 mt-3">
+      <div className="flex items-center justify-between mb-2">
+        <label className="field-label">{title}</label>
+        <a href="/vendors" target="_blank" rel="noreferrer"
+           className="text-xs text-emerald-600 hover:underline">
+          Manage repo ↗
+        </a>
+      </div>
+      {vendors.length === 0 ? (
+        <div className="text-xs text-muted-foreground rounded border border-dashed border-border px-3 py-2">
+          {empty}{" "}
+          <a href="/vendors" target="_blank" rel="noreferrer"
+             className="text-emerald-600 hover:underline">
+            Add some →
+          </a>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {vendors.map((v) => {
+            const selected = selectedIds?.includes(v.id);
+            return (
+              <button
+                type="button"
+                key={v.id}
+                data-testid={`np-${kind}-chip-${v.id}`}
+                onClick={() => onToggle(v.id)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition ${selected
+                  ? "bg-emerald-600/20 border-emerald-500 text-emerald-300"
+                  : "border-border text-muted-foreground hover:border-emerald-600/60 hover:text-foreground"}`}
+              >
+                {v.name}
+                {v.trades?.length ? ` · ${v.trades.join(", ")}` : ""}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Projects() {
   const [projects, setProjects] = useState([]);
@@ -40,6 +97,23 @@ export default function Projects() {
   const [form, setForm] = useState(EMPTY_FORM);
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-02-XX (Abhi) -- subs + suppliers from central repo, loaded
+  // once and reused across new + edit dialogs.
+  const [subs, setSubs] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  useEffect(() => {
+    api.get("/subcontractors").then(({ data }) => setSubs(data || [])).catch(() => {});
+    api.get("/suppliers").then(({ data }) => setSuppliers(data || [])).catch(() => {});
+  }, []);
+
+  const toggleVendor = (kind, vid) => {
+    const key = kind === "sub" ? "subcontractor_ids" : "supplier_ids";
+    setForm((f) => {
+      const cur = new Set(f[key] || []);
+      if (cur.has(vid)) cur.delete(vid); else cur.add(vid);
+      return { ...f, [key]: Array.from(cur) };
+    });
+  };
 
   const load = () => api.get("/projects").then(({ data }) => setProjects(data));
   useEffect(() => { load(); }, []);
@@ -95,6 +169,8 @@ export default function Projects() {
       current_substantial_completion: p.current_substantial_completion || "",
       contract_days: p.contract_days != null ? String(p.contract_days) : "",
       calendar_basis: p.calendar_basis || "calendar_days",
+      subcontractor_ids: p.subcontractor_ids || [],
+      supplier_ids: p.supplier_ids || [],
     });
     setOpen(true);
   };
@@ -107,7 +183,13 @@ export default function Projects() {
         contract_value_usd: form.contract_value_usd ? Number(form.contract_value_usd) : null,
         contract_days: form.contract_days ? Number(form.contract_days) : null,
       };
-      Object.keys(payload).forEach((k) => { if (payload[k] === "" || payload[k] === null) delete payload[k]; });
+      // Preserve subcontractor_ids / supplier_ids even when empty so
+      // a user un-selecting everything actually clears the linkage.
+      const ARRAY_KEEP = new Set(["subcontractor_ids", "supplier_ids"]);
+      Object.keys(payload).forEach((k) => {
+        if (ARRAY_KEEP.has(k)) return;
+        if (payload[k] === "" || payload[k] === null) delete payload[k];
+      });
       if (editId) {
         await api.patch(`/projects/${editId}`, payload);
         toast.success("Project updated");
@@ -189,6 +271,24 @@ export default function Projects() {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">City and state are required for the daily-report weather auto-fill.</p>
+
+              {/* 2026-02-XX (Abhi) -- subs / suppliers from central
+                  repo. Picking these on the project makes them
+                  available in the DR Manpower log Company autocomplete
+                  AND in the voice AI's trade→company matching for
+                  this project specifically. */}
+              <VendorPicker
+                kind="sub"
+                vendors={subs}
+                selectedIds={form.subcontractor_ids}
+                onToggle={(id) => toggleVendor("sub", id)}
+              />
+              <VendorPicker
+                kind="supplier"
+                vendors={suppliers}
+                selectedIds={form.supplier_ids}
+                onToggle={(id) => toggleVendor("supplier", id)}
+              />
 
               {/* Followup-fix 6 (2026-05-07): TIA header fields. Optional --
                   TIA Section 1 falls back to nulls until populated. */}

@@ -309,10 +309,22 @@ async def voice_extract(
                 {"_id": 0, "trade": 1, "company_name": 1, "headcount": 1},
             ).to_list(60)
         ],
-        known_subcontractors=await db.subcontractors.find(
-            {"tenant_id": tenant_id},
-            {"_id": 0, "name": 1, "trades": 1},
-        ).to_list(100),
+        known_subcontractors=await (
+            # Prefer the project's linked subs when the admin has
+            # populated them; fall back to all tenant-wide subs so
+            # voice still works on legacy projects without explicit
+            # vendor linkage.
+            db.subcontractors.find(
+                {"tenant_id": tenant_id,
+                 "id": {"$in": project.get("subcontractor_ids") or []}},
+                {"_id": 0, "name": 1, "trades": 1},
+            ).to_list(100)
+            if (project.get("subcontractor_ids") or [])
+            else db.subcontractors.find(
+                {"tenant_id": tenant_id},
+                {"_id": 0, "name": 1, "trades": 1},
+            ).to_list(100)
+        ),
     )
     log.info("dr_voice: extract dr=%s parsed_keys=%s "
              "activity_updates=%d crew=%d delays=%d safety=%d",

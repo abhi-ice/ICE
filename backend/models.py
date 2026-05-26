@@ -231,6 +231,12 @@ class ProjectCreate(StrictModel):
     # "admin override" knob from the scope clarification). When
     # false (default), working days are used.
     submittal_sla_uses_calendar_days: bool = False
+    # 2026-02-XX (Abhi) -- per-project vendor links. Project-creator
+    # picks which subcontractors / suppliers are on this job out of
+    # the tenant-wide central repo. Voice AI uses these to narrow
+    # company-name matches when the super mentions a trade.
+    subcontractor_ids: list[str] = Field(default_factory=list)
+    supplier_ids: list[str] = Field(default_factory=list)
 
 
 class ProjectUpdate(StrictModel):
@@ -262,6 +268,9 @@ class ProjectUpdate(StrictModel):
     # Bucket E Phase 1 (2026-05-11) -- editable SLA settings.
     submittal_review_sla_days: Optional[int] = Field(default=None, ge=1, le=365)
     submittal_sla_uses_calendar_days: Optional[bool] = None
+    # 2026-02-XX (Abhi) -- editable subs / suppliers on the project.
+    subcontractor_ids: Optional[list[str]] = None
+    supplier_ids: Optional[list[str]] = None
 
 
 class Project(ReadModel):
@@ -308,6 +317,9 @@ class Project(ReadModel):
     # into this template via openpyxl and streams the filled xlsx.
     dr_template_file_url: Optional[str] = None
     dr_template_file_name: Optional[str] = None
+    # 2026-02-XX (Abhi) -- subs / suppliers attached to this project.
+    subcontractor_ids: list[str] = Field(default_factory=list)
+    supplier_ids: list[str] = Field(default_factory=list)
     dr_template_uploaded_at: Optional[datetime] = None
     dr_template_uploaded_by: Optional[str] = None
 
