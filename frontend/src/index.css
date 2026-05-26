@@ -2450,12 +2450,18 @@ html[data-theme="dark"] .bg-blue-50\/30 {
    footer. Backend integration unchanged — only the visual layer.
    ========================================================================= */
 .copilot-panel {
-    position: fixed;
+    /* pt.24: !important on position + z-index so the .page-shell > div
+       cascade rule can NEVER demote the panel back to position:relative
+       (which broke it in pt.23 — same bug as pt.22). Belt-and-
+       suspenders: the JSX also adds Tailwind's .fixed class and
+       [data-skip-page-stacking] attribute as additional escape
+       hatches recognized by the page-shell rule. */
+    position: fixed !important;
     right: 0; top: 0;
     height: 100vh;
     width: 100%;
     max-width: 440px;
-    z-index: 30;
+    z-index: 30 !important;
     display: flex;
     flex-direction: column;
     background: var(--v4-bg-surface);

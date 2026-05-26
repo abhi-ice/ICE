@@ -102,7 +102,7 @@ export default function CopilotPanel({ open, onClose }) {
   const isFresh = thread.length === 1 && thread[0]?.role === "ai";
 
   return (
-    <div data-testid="copilot-panel" className="copilot-panel">
+    <div data-testid="copilot-panel" data-skip-page-stacking className="copilot-panel fixed">
       {/* ---- HEADER ---- */}
       <header className="copilot-panel-header">
         <div className="copilot-panel-icon">
