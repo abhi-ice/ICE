@@ -1,21 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Bot, Send, X, CheckCircle2, FileSpreadsheet, ClipboardCheck,
   ShieldAlert, Sparkles, MessageSquare, ListChecks, BookOpen, AlertCircle,
+  Download, FileText, Copy, Loader2, RotateCcw, Wrench, FileDown,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { useProjects } from "../../lib/projects";
 import { subscribeDailyReportId, emitDescriptionInsert } from "../../lib/copilotContext";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 
-// v4 pt.25 (2026-05-26) — Frosted-glass redesign + AI rename.
-// Design picked from /design-mockup/copilot-panel-designs.html Option C:
-// translucent panel with backdrop blur + brand-emerald radial wash, semi-
-// transparent AI bubbles so the page peeks through, gradient-emerald user
-// bubbles. AI renamed from generic "Copilot" → "Mason" (Federal
-// construction term for the on-site coordinator who knows everything).
-// Backend integration unchanged from pt.23 — same /ai/copilot POST, same
-// state shape, every testid preserved.
+// v4 pt.26 (2026-05-26) — Mason robustness pass:
+//   1) Conversation memory: thread persisted to localStorage AND last 8
+//      turns prepended to each outgoing message as context, so even if
+//      the backend's LlmChat session breaks, Mason still has continuity.
+//   2) Better tool-execution UX: bare tool-name replies (e.g. the
+//      raw "get_status" text shown previously) render as a "Mason ran
+//      tool: X" chip with a Retry button, not as a confused message.
+//   3) Document generation: every AI response gets a Download menu —
+//      Markdown / PDF (jsPDF) / Word (docx) / Excel (xlsx, when tabular
+//      data is detected). All client-side, zero backend changes.
+//   4) Timeout + retry: 60s timeout on the POST. On error or timeout
+//      the user message gets a "Retry" button instead of vanishing.
+//   5) Clear-conversation button so the user can start fresh anytime.
 const CAPABILITIES = [
   { icon: ListChecks,      label: "Schedule",       hint: "Add tasks, check dependencies, recompute CPM" },
   { icon: MessageSquare,   label: "RFIs",           hint: "Draft, send, link to tasks, track aging" },
@@ -27,23 +34,73 @@ const SAMPLE_PROMPTS = [
   "Add task install conference room AV, duration 4 days",
   "Record presence electrical 4 workers 8 hours each",
   "Draft RFI about the wall vent conflict on level 2",
-  "What's blocking my critical path this week?",
+  "Summarize what was logged in the last daily report",
 ];
+
+const GREETING = "Hi — I'm Mason. Think of me as the craftsman on your project: I can read your schedule, RFIs, and knowledge base, and I can build for you — draft RFIs, log daily reports, file work items, write KB lessons, prep submittals. With a Daily Report open I can also record presence, mark activity progress, and create unplanned activities for PM review.";
+
+// Stable session id per browser so server-side LlmChat memory persists
+// across panel open/close. Stored in localStorage so a page reload reuses it.
+function getOrMakeSessionId() {
+  if (typeof window === "undefined") return `mason-${Date.now()}`;
+  try {
+    const k = "mason.session_id";
+    let s = window.localStorage.getItem(k);
+    if (!s) {
+      s = `mason-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      window.localStorage.setItem(k, s);
+    }
+    return s;
+  } catch {
+    return `mason-${Date.now()}`;
+  }
+}
+
+// Heuristic: backend sometimes returns just the tool name as the reply text
+// instead of a follow-up summary. Detect those so we render them as a chip
+// (and offer Retry) instead of as a confusing one-word "AI" message.
+const BARE_TOOL_PATTERN = /^[a-z][a-z0-9_]{2,40}$/;
+function looksLikeBareToolName(text) {
+  if (!text) return false;
+  const trimmed = String(text).trim();
+  return BARE_TOOL_PATTERN.test(trimmed);
+}
+
+// Heuristic for when the reply has tabular data we can export as a sheet.
+function looksTabular(text) {
+  if (!text) return false;
+  const lines = String(text).split("\n").filter(Boolean);
+  if (lines.length < 3) return false;
+  const tableHits = lines.filter((l) => l.includes("|") || /\t/.test(l) || /:\s*\S+\s+[·•]\s+\S+/.test(l));
+  return tableHits.length >= 2;
+}
 
 export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
-  const [sessionId] = useState(`copilot-${Date.now()}`);
+  const [sessionId] = useState(getOrMakeSessionId);
   const [activeDrId, setActiveDrId] = useState(null);
-  const [thread, setThread] = useState([
-    {
-      role: "ai",
-      text: "Hi — I'm Mason. Think of me as the craftsman on your project: I can read your schedule, RFIs, and knowledge base, and I can build for you — draft RFIs, log daily reports, file work items, write KB lessons, prep submittals. With a Daily Report open I can also record presence, mark activity progress, and create unplanned activities for PM review.",
-    },
-  ]);
+  const [thread, setThread] = useState(() => {
+    // Restore prior conversation so closing/reopening doesn't lose context.
+    try {
+      const raw = window.localStorage.getItem(`mason.thread.${getOrMakeSessionId()}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) return parsed;
+      }
+    } catch {}
+    return [{ role: "ai", text: GREETING }];
+  });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const endRef = useRef(null);
   const inputRef = useRef(null);
+
+  // Persist thread on every change so panel close/reload keeps history.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(`mason.thread.${sessionId}`, JSON.stringify(thread.slice(-50)));
+    } catch {}
+  }, [thread, sessionId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -59,19 +116,34 @@ export default function CopilotPanel({ open, onClose }) {
     ta.style.height = Math.min(140, ta.scrollHeight) + "px";
   }, [input]);
 
-  const send = async (overrideText) => {
+  const send = useCallback(async (overrideText) => {
     const msg = (overrideText ?? input).trim();
     if (!msg || busy) return;
     setThread((t) => [...t, { role: "user", text: msg }]);
     setInput("");
     setBusy(true);
+    // Build a context string of the last 8 turns so the LLM has memory
+    // even if the server-side session library drops state. The format
+    // looks like a conversation transcript, which Claude handles well.
+    const recent = thread.slice(-8)
+      .filter((m) => m.text && !m.tools_only)
+      .map((m) => `${m.role === "user" ? "User" : "Mason"}: ${m.text}`)
+      .join("\n\n");
+    const messageWithContext = recent
+      ? `=== Prior conversation (for context) ===\n${recent}\n\n=== New message ===\n${msg}\n\nReply directly to the new message; use the prior conversation as context only.`
+      : msg;
+    // 60-second client-side timeout so the user gets a clear "try again"
+    // affordance instead of an indefinite spinner.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
     try {
       const { data } = await api.post("/ai/copilot", {
         project_id: activeId,
         daily_report_id: activeDrId || undefined,
-        message: msg,
+        message: messageWithContext,
         session_id: sessionId,
-      });
+      }, { signal: controller.signal });
+      clearTimeout(timeoutId);
       const tools = (data.usage?.tool_results || []).map((r) => {
         if (r.error) return `error · ${r.tool}: ${r.error}`;
         const result = r.result || {};
@@ -86,12 +158,123 @@ export default function CopilotPanel({ open, onClose }) {
         }
         return `${r.tool}`;
       });
-      setThread((t) => [...t, { role: "ai", text: data.response || "(no response)", tools }]);
+      const replyText = data.response || "";
+      const isBareTool = looksLikeBareToolName(replyText);
+      setThread((t) => [...t, {
+        role: "ai",
+        text: isBareTool ? `I ran ${replyText}, but the follow-up summary didn't come back. Try asking again or click Retry.` : replyText,
+        tools,
+        tools_only: isBareTool && !replyText,
+        bare_tool: isBareTool ? replyText : null,
+        retry_payload: isBareTool ? msg : null,
+      }]);
     } catch (e) {
-      setThread((t) => [...t, { role: "ai", text: "Mason error: " + (e.response?.data?.detail || e.message) }]);
+      clearTimeout(timeoutId);
+      const timedOut = e.name === "AbortError" || e.message?.includes("aborted");
+      const detail = timedOut
+        ? "Mason timed out after 60 seconds. The server may be slow or the tool call may have hung."
+        : "Mason error: " + (e.response?.data?.detail || e.message);
+      setThread((t) => [...t, { role: "ai", text: detail, error: true, retry_payload: msg }]);
     } finally {
       setBusy(false);
     }
+  }, [activeDrId, activeId, busy, input, sessionId, thread]);
+
+  // ---- Document downloads (all client-side) ----
+  const downloadFile = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 500);
+  };
+
+  const downloadMarkdown = (text) => {
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+    downloadFile(new Blob([text], { type: "text/markdown;charset=utf-8" }), `mason-${stamp}.md`);
+    toast.success("Downloaded Markdown");
+  };
+
+  const downloadPdf = async (text) => {
+    const { jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ unit: "mm", format: "letter" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    const margin = 18;
+    const maxWidth = 215.9 - margin * 2; // letter width - margins
+    doc.setFontSize(13).setFont("helvetica", "bold");
+    doc.text("Mason — AI craftsman", margin, margin);
+    doc.setFontSize(8).setFont("helvetica", "normal").setTextColor(120);
+    doc.text(`Generated ${new Date().toLocaleString()}`, margin, margin + 5);
+    doc.setTextColor(20).setFontSize(10);
+    const lines = doc.splitTextToSize(text, maxWidth);
+    let y = margin + 14;
+    const lineHeight = 4.4;
+    for (const line of lines) {
+      if (y > 270) { doc.addPage(); y = margin; }
+      doc.text(line, margin, y);
+      y += lineHeight;
+    }
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+    doc.save(`mason-${stamp}.pdf`);
+    toast.success("Downloaded PDF");
+  };
+
+  const downloadDocx = (text) => {
+    // Word handles HTML files saved with .doc extension natively — much
+    // lighter than pulling in the full docx-js library (which broke the
+    // older Babel config). Output is escaped, paragraph-wrapped HTML
+    // with a thin header. Opens cleanly in Word, Google Docs, Pages.
+    const esc = (s) => String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    const paras = text.split("\n").map((l) => l.trim() ? `<p>${esc(l)}</p>` : "<p>&nbsp;</p>").join("");
+    const html = `<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"><title>Mason</title>
+<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#111;max-width:7in;margin:0.75in;}
+h1{font-size:18pt;color:#0f172a;margin:0 0 4px;}.meta{color:#888;font-style:italic;font-size:9pt;margin:0 0 18px;}
+p{margin:0 0 8px;line-height:1.45;}</style></head>
+<body><h1>Mason — AI craftsman</h1><div class="meta">Generated ${esc(new Date().toLocaleString())}</div>${paras}</body></html>`;
+    const blob = new Blob(["﻿", html], { type: "application/msword" });
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+    downloadFile(blob, `mason-${stamp}.doc`);
+    toast.success("Downloaded Word doc");
+  };
+
+  const downloadXlsx = (text) => {
+    // Convert lines that look tabular into rows. Pipe and tab are the
+    // standard separators; falls back to splitting on 2+ spaces.
+    const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+    const rows = lines.map((l) => {
+      if (l.includes("|")) return l.split("|").map((c) => c.trim()).filter(Boolean);
+      if (l.includes("\t")) return l.split("\t").map((c) => c.trim());
+      return l.split(/\s{2,}/).map((c) => c.trim());
+    });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Mason");
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
+    XLSX.writeFile(wb, `mason-${stamp}.xlsx`);
+    toast.success("Downloaded Excel");
+  };
+
+  const copyToClipboard = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied");
+    } catch {
+      toast.error("Couldn't copy");
+    }
+  };
+
+  const clearConversation = () => {
+    if (thread.length <= 1) return;
+    if (!window.confirm("Clear this conversation with Mason? Cannot be undone.")) return;
+    setThread([{ role: "ai", text: GREETING }]);
+    try { window.localStorage.removeItem(`mason.thread.${sessionId}`); } catch {}
   };
 
   if (!open) return null;
@@ -115,6 +298,17 @@ export default function CopilotPanel({ open, onClose }) {
           <span data-testid="copilot-dr-scope" className="copilot-scope-pill" title="Active Daily Report in scope">
             <FileSpreadsheet className="h-3 w-3" /> DR scope
           </span>
+        )}
+        {thread.length > 1 && (
+          <button
+            data-testid="copilot-clear"
+            onClick={clearConversation}
+            className="copilot-panel-close"
+            aria-label="Clear conversation"
+            title="Clear conversation"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </button>
         )}
         <button
           data-testid="copilot-close"
@@ -158,47 +352,96 @@ export default function CopilotPanel({ open, onClose }) {
           </div>
         ) : (
           <>
-            {thread.map((m, i) => (
-              <div key={i} className={`copilot-msg copilot-msg--${m.role}`}>
-                {m.role === "ai" && (
-                  <div className="copilot-msg-badge">
-                    <Bot className="h-2.5 w-2.5" /> Mason
-                  </div>
-                )}
-                <div className="copilot-msg-bubble">{m.text}</div>
-                {m.tools && m.tools.length > 0 && (
-                  <div data-testid={`copilot-tools-${i}`} className="copilot-tools">
-                    {m.tools.map((tt, j) => {
-                      const isErr = tt.startsWith("error");
-                      return (
-                        <span key={j} className={`copilot-tool ${isErr ? "copilot-tool--err" : "copilot-tool--ok"}`}>
-                          {isErr ? <AlertCircle className="h-2.5 w-2.5" /> : <CheckCircle2 className="h-2.5 w-2.5" />}
-                          <span className="copilot-tool-text">{tt}</span>
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-                {m.role === "ai" && activeDrId && i > 0 && m.text && (
-                  <div className="copilot-send-to">
-                    <button
-                      data-testid={`copilot-send-qc-${i}`}
-                      onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
-                      className="copilot-send-to-btn copilot-send-to-btn--qc"
-                    >
-                      <ClipboardCheck className="h-3 w-3" /> Send to QC
-                    </button>
-                    <button
-                      data-testid={`copilot-send-safety-${i}`}
-                      onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
-                      className="copilot-send-to-btn copilot-send-to-btn--safety"
-                    >
-                      <ShieldAlert className="h-3 w-3" /> Send to Safety
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+            {thread.map((m, i) => {
+              const isSubstantial = m.role === "ai" && m.text && m.text.length > 60 && !m.error && !m.bare_tool;
+              return (
+                <div key={i} className={`copilot-msg copilot-msg--${m.role}`}>
+                  {m.role === "ai" && (
+                    <div className="copilot-msg-badge">
+                      <Bot className="h-2.5 w-2.5" /> Mason
+                    </div>
+                  )}
+                  {m.bare_tool && (
+                    <div className="copilot-tool-execution">
+                      <Wrench className="h-3 w-3" />
+                      <span>Ran tool: <code>{m.bare_tool}</code></span>
+                    </div>
+                  )}
+                  <div className={`copilot-msg-bubble ${m.error ? "copilot-msg-bubble--error" : ""}`}>{m.text}</div>
+                  {m.tools && m.tools.length > 0 && (
+                    <div data-testid={`copilot-tools-${i}`} className="copilot-tools">
+                      {m.tools.map((tt, j) => {
+                        const isErr = tt.startsWith("error");
+                        return (
+                          <span key={j} className={`copilot-tool ${isErr ? "copilot-tool--err" : "copilot-tool--ok"}`}>
+                            {isErr ? <AlertCircle className="h-2.5 w-2.5" /> : <CheckCircle2 className="h-2.5 w-2.5" />}
+                            <span className="copilot-tool-text">{tt}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Action row under AI replies — copy / download / send-to-form / retry */}
+                  {m.role === "ai" && m.text && (
+                    <div className="copilot-actions">
+                      <button
+                        onClick={() => copyToClipboard(m.text)}
+                        className="copilot-action-btn"
+                        title="Copy text"
+                      >
+                        <Copy className="h-3 w-3" /> Copy
+                      </button>
+                      {isSubstantial && (
+                        <>
+                          <button onClick={() => downloadMarkdown(m.text)} className="copilot-action-btn" title="Download as Markdown">
+                            <FileText className="h-3 w-3" /> .md
+                          </button>
+                          <button onClick={() => downloadPdf(m.text)} className="copilot-action-btn" title="Download as PDF">
+                            <FileDown className="h-3 w-3" /> .pdf
+                          </button>
+                          <button onClick={() => downloadDocx(m.text)} className="copilot-action-btn" title="Download as Word">
+                            <FileDown className="h-3 w-3" /> .doc
+                          </button>
+                          {looksTabular(m.text) && (
+                            <button onClick={() => downloadXlsx(m.text)} className="copilot-action-btn" title="Download as Excel">
+                              <FileSpreadsheet className="h-3 w-3" /> .xlsx
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {m.retry_payload && (
+                        <button
+                          onClick={() => send(m.retry_payload)}
+                          className="copilot-action-btn copilot-action-btn--retry"
+                          title="Retry the request"
+                          disabled={busy}
+                        >
+                          <RotateCcw className="h-3 w-3" /> Retry
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {m.role === "ai" && activeDrId && i > 0 && m.text && !m.error && (
+                    <div className="copilot-send-to">
+                      <button
+                        data-testid={`copilot-send-qc-${i}`}
+                        onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
+                        className="copilot-send-to-btn copilot-send-to-btn--qc"
+                      >
+                        <ClipboardCheck className="h-3 w-3" /> Send to QC
+                      </button>
+                      <button
+                        data-testid={`copilot-send-safety-${i}`}
+                        onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
+                        className="copilot-send-to-btn copilot-send-to-btn--safety"
+                      >
+                        <ShieldAlert className="h-3 w-3" /> Send to Safety
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </>
         )}
         {busy && (
@@ -241,7 +484,7 @@ export default function CopilotPanel({ open, onClose }) {
             aria-label="Send"
             title="Send (Enter)"
           >
-            <Send className="h-3.5 w-3.5" />
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>
         </div>
         <div className="copilot-input-hint">

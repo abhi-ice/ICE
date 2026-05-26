@@ -2965,3 +2965,79 @@ html[data-theme="dark"] .copilot-input-wrap {
 @media (max-width: 480px) {
     .copilot-panel { max-width: 100%; }
 }
+
+/* =========================================================================
+   PT.26 — Mason robustness: tool-execution chip, action row (Copy /
+   Download), error bubble, clear button.
+   ========================================================================= */
+.copilot-tool-execution {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.30);
+    color: #b45309;
+    font-size: 11px;
+    font-weight: 500;
+    width: fit-content;
+    margin-bottom: 4px;
+}
+.copilot-tool-execution code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    color: inherit;
+}
+html[data-theme="dark"] .copilot-tool-execution { color: #fbbf24; }
+
+.copilot-msg-bubble--error {
+    background: rgba(239, 68, 68, 0.10) !important;
+    border-color: rgba(239, 68, 68, 0.30) !important;
+    color: #b91c1c !important;
+}
+html[data-theme="dark"] .copilot-msg-bubble--error { color: #fca5a5 !important; }
+
+.copilot-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+.copilot-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid rgba(15, 23, 42, 0.10);
+    color: var(--v4-fg-secondary);
+    font-size: 10.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 120ms;
+}
+.copilot-action-btn:hover:not(:disabled) {
+    border-color: var(--brand-primary);
+    color: var(--brand-primary);
+    background: rgba(16, 185, 129, 0.06);
+}
+.copilot-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+html[data-theme="dark"] .copilot-action-btn {
+    background: rgba(30, 41, 59, 0.45);
+    border-color: rgba(255, 255, 255, 0.10);
+    color: var(--v4-fg-secondary);
+}
+.copilot-action-btn--retry {
+    border-color: rgba(239, 68, 68, 0.30) !important;
+    color: #b91c1c !important;
+}
+.copilot-action-btn--retry:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.08) !important;
+    border-color: rgba(239, 68, 68, 0.55) !important;
+    color: #b91c1c !important;
+}
+html[data-theme="dark"] .copilot-action-btn--retry { color: #fca5a5 !important; }
