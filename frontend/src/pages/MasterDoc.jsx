@@ -77,13 +77,14 @@ export default function MasterDoc() {
               key={t.id}
               data-testid={`md-type-${t.id}`}
               onClick={() => update("construction_type", t.id)}
-              className={`text-left p-3 rounded-md border transition ${doc.construction_type === t.id ? "border-blue-600 bg-blue-50" : "border-slate-200 hover:border-slate-300"}`}
+              className={`allow-wrap text-left p-3 rounded-md border transition ${doc.construction_type === t.id ? "border-[var(--brand-primary)] bg-[rgba(16,185,129,0.06)] shadow-[0_0_0_3px_rgba(16,185,129,0.10)]" : "border-[var(--v4-border)] hover:border-[var(--v4-border-strong)]"}`}
+              style={{ backgroundColor: doc.construction_type === t.id ? "rgba(16,185,129,0.06)" : "var(--v4-bg-surface)" }}
             >
-              <div className="font-medium text-sm flex items-center gap-2">
-                {doc.construction_type === t.id && <span className="h-2 w-2 rounded-full bg-blue-600" />}
+              <div className="font-medium text-sm flex items-center gap-2" style={{ color: "var(--v4-fg-primary)" }}>
+                {doc.construction_type === t.id && <span className="h-2 w-2 rounded-full" style={{ background: "var(--brand-primary)" }} />}
                 {t.label}
               </div>
-              <div className="text-xs text-slate-500 mt-1">{t.desc}</div>
+              <div className="text-xs mt-1 leading-snug" style={{ color: "var(--v4-fg-secondary)" }}>{t.desc}</div>
             </button>
           ))}
         </div>

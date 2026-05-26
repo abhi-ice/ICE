@@ -261,21 +261,11 @@ html[data-theme="dark"] .page-shell {
         radial-gradient(700px 500px at 0% 100%, rgba(16, 185, 129, 0.025), transparent 60%),
         var(--v4-bg-page);
 }
+/* v4 pt.14 (2026-05-26): grid pattern was visually distracting in dark
+   theme ("the grey lines"). Disabled in both themes — the radial wash
+   on .page-shell already gives the surface dimensional interest. */
 .page-shell::before { display: none; }
-html[data-theme="dark"] .page-shell::before {
-    display: block;
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    background:
-        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
-    background-size: 40px 40px;
-    -webkit-mask-image: radial-gradient(circle at center, black 35%, transparent 80%);
-            mask-image: radial-gradient(circle at center, black 35%, transparent 80%);
-    z-index: 0;
-}
+html[data-theme="dark"] .page-shell::before { display: none; }
 /* CRITICAL: do NOT set position:relative here -- it was overriding
    position:fixed on the AI Copilot FAB and VoiceCaptureButton, which
    are immediate children of .page-shell. They were getting yanked
@@ -313,47 +303,12 @@ html[data-theme="dark"] .page-shell::before {
     position: fixed !important;
 }
 
-/* Parallax starfield — dark theme only, hidden in light. */
+/* v4 pt.14 (2026-05-26): starfield parallax was a noir Red Noir
+   holdover. Killed — it reads as noise under the v4 reading-mode
+   surfaces. Brand emerald radial wash on .page-shell carries the
+   visual weight without distracting from content. */
 .page-shell::after { display: none; }
-html[data-theme="dark"] .page-shell::after {
-    display: block;
-    content: "";
-    position: fixed;
-    inset: -100% 0 0 0;     /* tall enough that the upward drift never reveals a gap */
-    pointer-events: none;
-    z-index: 0;
-    background-image:
-        radial-gradient(1px 1px at 12% 8%,  rgba(255,255,255,0.85), transparent 60%),
-        radial-gradient(1px 1px at 27% 22%, rgba(255,255,255,0.55), transparent 60%),
-        radial-gradient(1px 1px at 41% 13%, rgba(255,255,255,0.75), transparent 60%),
-        radial-gradient(1px 1px at 58% 31%, rgba(255,255,255,0.50), transparent 60%),
-        radial-gradient(1px 1px at 72% 19%, rgba(255,255,255,0.80), transparent 60%),
-        radial-gradient(1px 1px at 88% 28%, rgba(255,255,255,0.60), transparent 60%),
-        radial-gradient(2px 2px at 18% 47%, rgba(255,255,255,0.40), transparent 60%),
-        radial-gradient(1px 1px at 35% 53%, rgba(255,255,255,0.70), transparent 60%),
-        radial-gradient(1px 1px at 49% 61%, rgba(255,255,255,0.45), transparent 60%),
-        radial-gradient(1px 1px at 64% 56%, rgba(255,255,255,0.55), transparent 60%),
-        radial-gradient(2px 2px at 78% 67%, rgba(255,255,255,0.35), transparent 60%),
-        radial-gradient(1px 1px at 91% 49%, rgba(255,255,255,0.70), transparent 60%),
-        radial-gradient(1px 1px at  8% 78%, rgba(255,255,255,0.55), transparent 60%),
-        radial-gradient(1px 1px at 23% 86%, rgba(255,255,255,0.65), transparent 60%),
-        radial-gradient(1px 1px at 44% 91%, rgba(255,255,255,0.45), transparent 60%),
-        radial-gradient(1px 1px at 67% 84%, rgba(255,255,255,0.70), transparent 60%),
-        radial-gradient(2px 2px at 81% 96%, rgba(255,255,255,0.40), transparent 60%),
-        radial-gradient(1px 1px at 95% 73%, rgba(255,255,255,0.55), transparent 60%);
-    background-size: 100% 50vh;
-    background-repeat: repeat-y;
-    animation: rn-stars 90s linear infinite;
-    opacity: 0.65;
-}
-@keyframes rn-stars {
-    from { transform: translateY(0); }
-    to   { transform: translateY(-50vh); }
-}
-/* Respect prefers-reduced-motion -- accessibility */
-@media (prefers-reduced-motion: reduce) {
-    .page-shell::after { animation: none; }
-}
+html[data-theme="dark"] .page-shell::after { display: none; }
 
 /* Sidebar (dark) â€” kept dark but border + tones recalibrated for noir */
 .app-sidebar {
@@ -1128,8 +1083,12 @@ body[data-page="mobile-foreman"] { background: #000 !important; }
    report) wrap to 2 lines because at 18px body font-size + h-9
    (36px) container, "Upload DR Template" exceeds inline width and
    wraps. Default white-space: normal on buttons. Force nowrap on
-   all buttons globally so button labels never wrap their content. */
-button { white-space: nowrap; }
+   single-line label buttons.
+   pt.14 (2026-05-26): scoped to buttons WITHOUT the .allow-wrap
+   escape hatch so multi-line card-style buttons (Master doc
+   construction type, project type chips, etc.) wrap normally. */
+button:not(.allow-wrap):not([data-allow-wrap]) { white-space: nowrap; }
+button.allow-wrap, button[data-allow-wrap] { white-space: normal; }
 
 /* Bug: table-cell text on .dense-table rows appears to have a
    horizontal artifact through it (the submitted-time cell shows
@@ -2034,6 +1993,116 @@ html[data-theme="light"] .phase-ref {
 
 /* --- KPI band labels: faint text on glass bg readable now --------- */
 html[data-theme="light"] .kpi-delta.flat { color: var(--v4-fg-muted) !important; }
+
+/* --- border-slate-X (Tailwind slate borders are too pale on white) - */
+html[data-theme="light"] .border-slate-100,
+html[data-theme="light"] .border-slate-200,
+html[data-theme="light"] .border-slate-300 {
+    border-color: var(--v4-border) !important;
+}
+html[data-theme="light"] .hover\:border-slate-300:hover,
+html[data-theme="light"] .hover\:border-slate-400:hover {
+    border-color: var(--v4-border-strong) !important;
+}
+/* Same for dark — slate-200 was meant for dark surfaces; remap to
+   dark theme border for visibility. */
+html[data-theme="dark"] .border-slate-100,
+html[data-theme="dark"] .border-slate-200,
+html[data-theme="dark"] .border-slate-300 {
+    border-color: var(--v4-border) !important;
+}
+html[data-theme="dark"] .hover\:border-slate-300:hover,
+html[data-theme="dark"] .hover\:border-slate-400:hover {
+    border-color: var(--v4-border-strong) !important;
+}
+
+/* --- bg-white opacity on cards — solid white on white-bg pages
+   makes cards bleed. Map to surface so cards have a subtle lift. */
+html[data-theme="light"] .bg-white {
+    background-color: var(--v4-bg-surface) !important;
+}
+html[data-theme="dark"] .bg-white {
+    background-color: var(--v4-bg-surface) !important;
+}
+
+/* --- amber callout cards (.bg-amber-50 + .border-amber-200) used in
+   reminders / warnings throughout. In light theme they're fine; in
+   dark the bg is invisible. Add a translucent amber wash. */
+html[data-theme="dark"] .bg-amber-50,
+html[data-theme="dark"] .bg-amber-50\/30,
+html[data-theme="dark"] .bg-amber-50\/40 {
+    background-color: rgba(245, 158, 11, 0.12) !important;
+    color: #fbbf24 !important;
+}
+html[data-theme="dark"] .border-amber-200,
+html[data-theme="dark"] .border-amber-300 {
+    border-color: rgba(245, 158, 11, 0.35) !important;
+}
+html[data-theme="dark"] .text-amber-700,
+html[data-theme="dark"] .text-amber-800,
+html[data-theme="dark"] .text-amber-900 {
+    color: #fbbf24 !important;
+}
+html[data-theme="dark"] .text-amber-600 { color: #f59e0b !important; }
+
+/* --- red/rose semantic callouts in dark theme ------------------- */
+html[data-theme="dark"] .bg-red-50,
+html[data-theme="dark"] .bg-red-50\/40,
+html[data-theme="dark"] .bg-rose-50,
+html[data-theme="dark"] .bg-rose-50\/40 {
+    background-color: rgba(239, 68, 68, 0.12) !important;
+}
+html[data-theme="dark"] .border-red-200,
+html[data-theme="dark"] .border-red-300,
+html[data-theme="dark"] .border-rose-200,
+html[data-theme="dark"] .border-rose-300 {
+    border-color: rgba(239, 68, 68, 0.35) !important;
+}
+html[data-theme="dark"] .text-red-700,
+html[data-theme="dark"] .text-red-800,
+html[data-theme="dark"] .text-red-900,
+html[data-theme="dark"] .text-rose-700,
+html[data-theme="dark"] .text-rose-800,
+html[data-theme="dark"] .text-rose-900 {
+    color: #fca5a5 !important;
+}
+
+/* --- emerald solid background (when card is selected, like Master doc) -- */
+html[data-theme="dark"] .bg-emerald-50,
+html[data-theme="dark"] .bg-emerald-100 {
+    background-color: rgba(16, 185, 129, 0.12) !important;
+}
+html[data-theme="dark"] .text-emerald-700,
+html[data-theme="dark"] .text-emerald-800,
+html[data-theme="dark"] .text-emerald-900 {
+    color: var(--brand-light) !important;
+}
+
+/* --- bg-slate-100 / bg-slate-200 (used for muted/disabled rows) -- */
+html[data-theme="dark"] .bg-slate-50,
+html[data-theme="dark"] .bg-slate-50\/40,
+html[data-theme="dark"] .bg-slate-100,
+html[data-theme="dark"] .bg-slate-100\/80,
+html[data-theme="dark"] .bg-slate-200,
+html[data-theme="dark"] .bg-slate-200\/60 {
+    background-color: var(--v4-bg-surface-2) !important;
+}
+html[data-theme="dark"] .text-slate-600,
+html[data-theme="dark"] .text-slate-700,
+html[data-theme="dark"] .text-slate-800,
+html[data-theme="dark"] .text-slate-900 {
+    color: var(--v4-fg-primary) !important;
+}
+
+/* --- ".field-label" used in MasterDoc + other forms ------------- */
+.field-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--v4-fg-secondary);
+    margin-bottom: 4px;
+    letter-spacing: 0.01em;
+}
 
 /* =========================================================================
    V4 RESKIN PT.13 (2026-05-26) — comprehensive reading-mode polish.
