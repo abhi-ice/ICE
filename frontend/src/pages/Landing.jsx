@@ -242,7 +242,7 @@ export default function Landing() {
                 <div className="ml-3 text-[11px] text-white/50 font-mono">copilot &middot; delay #DLY-118</div>
               </div>
               <div className="space-y-3 text-sm">
-                <div className="text-white/60 text-[11px] uppercase tracking-wider">Draft TIA narrative</div>
+                <div className="text-white/60 text-[11px]">Draft TIA narrative</div>
                 <div className="rounded-md bg-black/40 border border-white/10 p-3 text-white/85 leading-relaxed font-mono text-[12.5px]">
                   Activity 1.4.2 (Mech roughing &mdash; L3 East) impacted by 03/14 ConEd shutdown.
                   CP slip = 6 wd. Recommend resequencing 1.4.3 to float window 03/22&ndash;03/28.

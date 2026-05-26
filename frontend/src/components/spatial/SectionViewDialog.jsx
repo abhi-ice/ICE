@@ -84,7 +84,7 @@ export default function SectionViewDialog({ projectId, planRevisionId, onClose }
             )}
           </div>
           <div className="border-l border-slate-200 p-4 overflow-y-auto bg-slate-50 scrollbar-soft">
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Vertical slice</div>
+            <div className="text-xs font-semibold text-slate-500 mb-3">Vertical slice</div>
             {section ? <SectionSvg section={section} /> : (
               <div className="text-sm text-slate-500">No slice computed yet.</div>
             )}

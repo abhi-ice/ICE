@@ -317,13 +317,13 @@ export default function DailyReports() {
           </div>
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs">
-              <div className="text-slate-500 uppercase tracking-wide">Date</div>
+              <div className="text-slate-500">Date</div>
               <input data-testid="dr-new-date" type="date" value={pickerDate}
                 onChange={(e) => setPickerDate(e.target.value)}
                 className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm" />
             </label>
             <label className="text-xs">
-              <div className="text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+              <div className="text-slate-500 flex items-center gap-1.5">
                 Intake mode
                 {online ? null : <span className="text-amber-600 normal-case">(offline — Live Voice disabled)</span>}
               </div>
@@ -1375,7 +1375,7 @@ function DrAutoHeader({ project, currentUserName }) {
           data-testid="dr-auto-header-grid">
           {fields.map((f) => (
             <div key={f.label} data-testid={f.testid}>
-              <div className="text-xs text-slate-500 uppercase tracking-wide">{f.label}</div>
+              <div className="text-xs text-slate-500">{f.label}</div>
               <div className="text-sm text-slate-300">
                 {f.value
                   ? f.value
@@ -1392,7 +1392,7 @@ function DrAutoHeader({ project, currentUserName }) {
 function KPI({ label, value, testid }) {
   return (
     <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded text-center w-full" data-testid={testid}>
-      <div className="text-[11px] text-slate-500 uppercase tracking-wide truncate">{label}</div>
+      <div className="text-[11px] text-slate-500 truncate">{label}</div>
       <div className="font-semibold tabular-nums text-base leading-tight">{value}</div>
     </div>
   );
@@ -1891,7 +1891,7 @@ function GridStatusPill({ status, testid }) {
   const s = status || "not_started";
   return (
     <span data-testid={testid}
-      className={`inline-block px-1.5 py-0.5 rounded border text-xs uppercase tracking-wide ${STATUS_PILL_CLASS[s] || STATUS_PILL_CLASS.not_started}`}>
+      className={`inline-block px-1.5 py-0.5 rounded border text-xs ${STATUS_PILL_CLASS[s] || STATUS_PILL_CLASS.not_started}`}>
       {s.replace(/_/g, " ")}
     </span>
   );
@@ -2253,7 +2253,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                         className={`h-3.5 w-3.5 ${sec.editable ? "text-[#10b981]" : "text-slate-500"} transition-transform ${isOpen ? "" : "-rotate-90"}`}
                       />
                       {sec.editable && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#10b981] text-white text-[9px] font-bold uppercase tracking-wider">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#10b981] text-white text-[9px] font-bold">
                           Today · Action Required
                         </span>
                       )}
@@ -2264,7 +2264,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                         · {secRows.length} {secRows.length === 1 ? "row" : "rows"}
                       </span>
                       {!sec.editable && (
-                        <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 bg-white border border-slate-200 rounded px-1.5 py-0.5">
+                        <span className="text-[9px] font-bold text-slate-400 bg-white border border-slate-200 rounded px-1.5 py-0.5">
                           Reference · Read-Only
                         </span>
                       )}
@@ -3916,7 +3916,7 @@ function SupplementBadge({ row }) {
   return (
     <span data-testid={`supplement-badge-${row.id}`}
       title="Filed after the parent daily report was submitted"
-      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-xs font-mono uppercase tracking-wide">
+      className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-xs font-mono">
       SUPP→{parentDate || "?"}
     </span>
   );
@@ -3954,7 +3954,7 @@ function SupplementsAppendix(_props) {
 function Field({ label, value, onChange, type = "text", disabled, testid }) {
   return (
     <label className="text-xs flex flex-col gap-1">
-      <span className="text-slate-500 uppercase tracking-wide">{label}</span>
+      <span className="text-slate-500">{label}</span>
       <input data-testid={testid} type={type} defaultValue={value} disabled={disabled}
         onBlur={(e) => onChange(e.target.value)}
         className="h-8 px-2 rounded border border-slate-200 bg-white text-sm" />

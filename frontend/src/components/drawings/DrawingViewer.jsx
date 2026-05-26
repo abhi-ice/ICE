@@ -287,7 +287,7 @@ export default function DrawingViewer({ revisionId, onClose }) {
 
           {/* Markup list panel */}
           <div className="w-72 border-l border-slate-200 overflow-y-auto p-3 space-y-2 scrollbar-soft">
-            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Page markups</div>
+            <div className="text-xs font-semibold text-slate-500 mb-1">Page markups</div>
             {markups.filter((m) => !m._temp).length === 0 && <div className="text-xs text-slate-400">None on this page yet.</div>}
             {markups.filter((m) => !m._temp).map((m) => (
               <div key={m.id} data-testid={`markup-${m.id}`} className="border border-slate-200 rounded p-2 text-xs">

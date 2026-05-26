@@ -865,7 +865,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           {recording && (
             <div data-testid="voice-live-preview"
               className="rounded border border-emerald-700/40 bg-emerald-950/30 p-3">
-              <div className="text-[11px] uppercase tracking-wide text-emerald-300 mb-1.5 flex items-center gap-1.5">
+              <div className="text-[11px] text-emerald-300 mb-1.5 flex items-center gap-1.5">
                 <Radio className="h-3 w-3" /> Live transcript preview
                 <span className="text-slate-500 normal-case">(browser-only; AI uses the final recording)</span>
               </div>
@@ -923,7 +923,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           </div>
           {liveTranscript ? (
             <div className="rounded border border-emerald-700/40 bg-slate-950/60 p-3 max-h-72 overflow-y-auto" data-testid="voice-live-transcript">
-              <div className="text-[11px] uppercase tracking-wide text-emerald-300 mb-2">Conversation transcript</div>
+              <div className="text-[11px] text-emerald-300 mb-2">Conversation transcript</div>
               <div className="text-sm leading-relaxed space-y-1.5">
                 {liveTranscript.split("\n").filter(Boolean).map((line, i) => {
                   const isUser = line.startsWith("You:");
@@ -989,7 +989,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
         <div className="mt-4 pt-3 border-t border-slate-800 space-y-3" data-testid="voice-result-panel">
           {lastRecordingUrl && (
             <div className="rounded border border-slate-700 bg-slate-950/60 p-3" data-testid="voice-playback">
-              <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1.5">
+              <div className="text-[11px] text-slate-400 mb-1.5">
                 Playback (your last recording)
               </div>
               <audio src={lastRecordingUrl} controls
@@ -1015,7 +1015,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
             </div>
           ) : finalTranscript ? (
             <div className="rounded border border-slate-700 bg-slate-950/60 p-3">
-              <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1.5 flex items-center justify-between">
+              <div className="text-[11px] text-slate-400 mb-1.5 flex items-center justify-between">
                 <span>
                   What the AI heard (final transcript)
                   {lastResult?.transcript_source === "browser_stt" && (

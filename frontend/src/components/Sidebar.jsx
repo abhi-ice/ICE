@@ -125,7 +125,7 @@ export default function Sidebar() {
           <>
             <div className="min-w-0 flex-1">
               <div className="font-semibold text-sm tracking-tight text-white leading-tight truncate">{APP_BRAND.name}</div>
-              <div className="text-[10px] text-slate-500 leading-tight font-mono uppercase tracking-wider">Construction OS</div>
+              <div className="text-[10px] text-slate-500 leading-tight font-mono">Construction OS</div>
             </div>
             <button
               data-testid="sidebar-rail-collapse"

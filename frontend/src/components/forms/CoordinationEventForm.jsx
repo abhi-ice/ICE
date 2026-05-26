@@ -250,14 +250,14 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
     <div data-testid="coordination-event-form" className="space-y-3 text-sm">
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Occurred at *</label>
+          <label className="text-xs text-slate-500">Occurred at *</label>
           <input data-testid="coord-occurred-at" type="datetime-local"
             value={form.occurred_at}
             onChange={(e) => set("occurred_at", e.target.value)}
             className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Channel</label>
+          <label className="text-xs text-slate-500">Channel</label>
           <JigsawField entityType="coordination_event" entityId={entityId}
             fieldPath="channel" userRole={userRole} fieldLabel="channel"
             onConfirm={(v) => set("channel", String(v ?? form.channel))}>
@@ -269,7 +269,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
           </JigsawField>
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Direction</label>
+          <label className="text-xs text-slate-500">Direction</label>
           <select data-testid="coord-direction" value={form.direction}
             onChange={(e) => set("direction", e.target.value)}
             className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
@@ -280,14 +280,14 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Other party name *</label>
+          <label className="text-xs text-slate-500">Other party name *</label>
           <input data-testid="coord-other-name" value={form.other_party_name}
             onChange={(e) => set("other_party_name", e.target.value)}
             placeholder="Name of person you spoke with"
             className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Other party org</label>
+          <label className="text-xs text-slate-500">Other party org</label>
           <input data-testid="coord-other-org" value={form.other_party_org}
             onChange={(e) => set("other_party_org", e.target.value)}
             placeholder="e.g. FCC Tenant Office, GSA, A/E firm"
@@ -298,19 +298,19 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       {!abbreviated && (
         <div className="grid grid-cols-3 gap-3">
           <div>
-            <label className="text-xs text-slate-500 uppercase tracking-wide">Other party role</label>
+            <label className="text-xs text-slate-500">Other party role</label>
             <input value={form.other_party_role}
               onChange={(e) => set("other_party_role", e.target.value)}
               className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
           </div>
           <div>
-            <label className="text-xs text-slate-500 uppercase tracking-wide">Email</label>
+            <label className="text-xs text-slate-500">Email</label>
             <input value={form.other_party_email}
               onChange={(e) => set("other_party_email", e.target.value)}
               className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
           </div>
           <div>
-            <label className="text-xs text-slate-500 uppercase tracking-wide">Phone</label>
+            <label className="text-xs text-slate-500">Phone</label>
             <input value={form.other_party_phone}
               onChange={(e) => set("other_party_phone", e.target.value)}
               className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm" />
@@ -320,7 +320,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Topic</label>
+          <label className="text-xs text-slate-500">Topic</label>
           <JigsawField entityType="coordination_event" entityId={entityId}
             fieldPath="topic" userRole={userRole} fieldLabel="topic"
             onConfirm={(v) => set("topic", String(v ?? form.topic))}>
@@ -332,7 +332,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
           </JigsawField>
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Outcome</label>
+          <label className="text-xs text-slate-500">Outcome</label>
           <select data-testid="coord-outcome" value={form.outcome}
             onChange={(e) => set("outcome", e.target.value)}
             className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
@@ -344,7 +344,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             trade_code suggestions on coordination_event) can pre-fill
             this from a photo. Empty string == not set. */}
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Trade (optional)</label>
+          <label className="text-xs text-slate-500">Trade (optional)</label>
           <JigsawField entityType="coordination_event" entityId={entityId}
             fieldPath="trade_code" userRole={userRole} fieldLabel="trade"
             onConfirm={(v) => set("trade_code", String(v ?? form.trade_code ?? ""))}>
@@ -360,7 +360,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       {form.topic === "other" && (
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Describe the topic *</label>
+          <label className="text-xs text-slate-500">Describe the topic *</label>
           <input data-testid="coord-topic-other"
             value={form.topic_other_description}
             onChange={(e) => set("topic_other_description", e.target.value)}
@@ -369,7 +369,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       )}
 
       <div>
-        <label className="text-xs text-slate-500 uppercase tracking-wide">Summary *</label>
+        <label className="text-xs text-slate-500">Summary *</label>
         <JigsawField entityType="coordination_event" entityId={entityId}
           fieldPath="summary" userRole={userRole} fieldLabel="summary"
           onConfirm={(v) => set("summary", String(v ?? form.summary))}>
@@ -382,7 +382,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       {!abbreviated && (
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Detail (optional)</label>
+          <label className="text-xs text-slate-500">Detail (optional)</label>
           <textarea data-testid="coord-detail" rows={4}
             value={form.detail_text}
             onChange={(e) => set("detail_text", e.target.value)}
@@ -393,7 +393,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       {!abbreviated && (
         <div>
-          <label className="text-xs text-slate-500 uppercase tracking-wide">Outcome notes (optional)</label>
+          <label className="text-xs text-slate-500">Outcome notes (optional)</label>
           <textarea rows={2}
             value={form.outcome_notes}
             onChange={(e) => set("outcome_notes", e.target.value)}
@@ -420,7 +420,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
           still available for user-supplied intent. */}
       {initial?.id && editLockedDr && (
         <div className="pt-2 border-t border-slate-100">
-          <label className="text-xs uppercase tracking-wide text-slate-500">
+          <label className="text-xs text-slate-500">
             Edit reason{isFieldEdit ? " *" : " (optional for outcome-only)"}
           </label>
           <textarea

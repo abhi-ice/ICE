@@ -344,7 +344,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   return (
     <div data-testid="delay-form" className="space-y-3">
       <div>
-        <label className="text-xs uppercase tracking-wide text-slate-500">What happened? *</label>
+        <label className="text-xs text-slate-500">What happened? *</label>
         <JigsawField entityType="delay" entityId={entityId}
           fieldPath="description" userRole={userRole}
           fieldLabel="description"
@@ -362,7 +362,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs uppercase tracking-wide text-slate-500">Severity</label>
+          <label className="text-xs text-slate-500">Severity</label>
           <JigsawField entityType="delay" entityId={entityId}
             fieldPath="severity" userRole={userRole}
             fieldLabel="severity"
@@ -376,7 +376,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           </JigsawField>
         </div>
         <div>
-          <label className="text-xs uppercase tracking-wide text-slate-500">Category</label>
+          <label className="text-xs text-slate-500">Category</label>
           <JigsawField entityType="delay" entityId={entityId}
             fieldPath="reason_category" userRole={userRole}
             fieldLabel="category"
@@ -397,7 +397,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           surfaces "no attribution" when left at default. */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs uppercase tracking-wide text-slate-500" title="Who is responsible for the delay event">
+          <label className="text-xs text-slate-500" title="Who is responsible for the delay event">
             Owner attribution
           </label>
           <JigsawField entityType="delay" entityId={entityId}
@@ -415,7 +415,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           </JigsawField>
         </div>
         <div>
-          <label className="text-xs uppercase tracking-wide text-slate-500" title="Why the delay occurred (matches gating-entity vocabulary)">
+          <label className="text-xs text-slate-500" title="Why the delay occurred (matches gating-entity vocabulary)">
             Cause class
           </label>
           <JigsawField entityType="delay" entityId={entityId}
@@ -435,7 +435,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       </div>
 
       <div>
-        <label className="text-xs uppercase tracking-wide text-slate-500">Linked tasks *</label>
+        <label className="text-xs text-slate-500">Linked tasks *</label>
         <div className="mt-1 space-y-2">
           {form.impacts.map((imp) => {
             const t = taskById[imp.task_id];
@@ -517,7 +517,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           build duplicate that confused the form. */}
 
       <div>
-        <label className="text-xs uppercase tracking-wide text-slate-500">Status</label>
+        <label className="text-xs text-slate-500">Status</label>
         <select data-testid="delay-form-status" value={form.status}
           onChange={(e) => setForm({ ...form, status: e.target.value })}
           className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
@@ -529,14 +529,14 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       {form.status === "resolved" && (
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs uppercase tracking-wide text-slate-500">Resolved date</label>
+            <label className="text-xs text-slate-500">Resolved date</label>
             <input data-testid="delay-form-resolved-date" type="date"
               value={form.resolved_date || ""}
               onChange={(e) => setForm({ ...form, resolved_date: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm" />
           </div>
           <div>
-            <label className="text-xs uppercase tracking-wide text-slate-500">Resolution note</label>
+            <label className="text-xs text-slate-500">Resolution note</label>
             <input data-testid="delay-form-resolved-note" type="text"
               value={form.resolved_note || ""}
               onChange={(e) => setForm({ ...form, resolved_note: e.target.value })}
@@ -558,7 +558,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           isFieldEdit is true. */}
       {initial?.id && editLockedDr && (
         <div className="pt-2 border-t border-slate-100">
-          <label className="text-xs uppercase tracking-wide text-slate-500">
+          <label className="text-xs text-slate-500">
             Edit reason{isFieldEdit ? " *" : " (optional for status-only)"}
           </label>
           <textarea

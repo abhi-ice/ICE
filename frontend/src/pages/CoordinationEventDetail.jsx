@@ -99,7 +99,7 @@ export default function CoordinationEventDetail() {
       <div className="surface p-4">
         <div className="flex items-start gap-3">
           <div className="flex-1">
-            <div className="text-xs text-slate-500 uppercase tracking-wide">
+            <div className="text-xs text-slate-500">
               {TOPIC_LABELS[ev.topic] || ev.topic} · {ev.channel.replace(/_/g, " ")} · {ev.direction}
             </div>
             <div className="text-base font-semibold mt-1">{ev.summary}</div>
@@ -153,14 +153,14 @@ export default function CoordinationEventDetail() {
 
         {ev.detail_text && (
           <div className="mt-3 pt-3 border-t border-slate-100">
-            <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Detail</div>
+            <div className="text-xs text-slate-500 mb-1">Detail</div>
             <div className="text-sm whitespace-pre-wrap text-slate-800">{ev.detail_text}</div>
           </div>
         )}
 
         {ev.outcome_notes && (
           <div className="mt-3 pt-3 border-t border-slate-100">
-            <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Outcome notes</div>
+            <div className="text-xs text-slate-500 mb-1">Outcome notes</div>
             <div className="text-sm whitespace-pre-wrap text-slate-800">{ev.outcome_notes}</div>
           </div>
         )}

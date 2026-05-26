@@ -96,7 +96,7 @@ function VendorTable({ kind }) {
       <div className="surface p-0 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-white/[0.03] border-b border-white/[0.06]">
-            <tr className="text-xs uppercase tracking-wider text-slate-400">
+            <tr className="text-xs text-slate-400">
               <th className="text-left px-3 py-2 font-semibold">Name</th>
               <th className="text-left px-3 py-2 font-semibold">Trades</th>
               <th className="text-left px-3 py-2 font-semibold">Contact</th>

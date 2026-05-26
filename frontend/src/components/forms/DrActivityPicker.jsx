@@ -59,7 +59,7 @@ export default function DrActivityPicker({
   return (
     <div data-testid={testidPrefix} className="space-y-1">
       <div className="flex items-center justify-between">
-        <label className="text-xs uppercase tracking-wide text-slate-500">
+        <label className="text-xs text-slate-500">
           {label || "Affected activities"} {required && <span className="text-rose-600">*</span>}
         </label>
         <span className="text-xs text-slate-400">{valArr.length} picked</span>

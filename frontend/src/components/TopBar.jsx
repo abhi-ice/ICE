@@ -113,7 +113,7 @@ export default function TopBar() {
                 <div className="text-sm font-semibold text-foreground truncate">{user?.full_name}</div>
                 <div className="text-xs text-muted-foreground truncate mt-0.5">{user?.email}</div>
                 {user?.role && (
-                  <span className="inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30">
+                  <span className="inline-flex items-center mt-2 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30">
                     {user.role}
                   </span>
                 )}

@@ -69,7 +69,7 @@ export default function GatingEntityDetail() {
         <div className="flex items-start gap-3">
           <FileText className="h-5 w-5 text-slate-500 mt-1" />
           <div className="flex-1">
-            <div className="text-xs text-slate-500 uppercase tracking-wide">{typeLabel}{ge.entity_number ? ` · ${ge.entity_number}` : ""}</div>
+            <div className="text-xs text-slate-500">{typeLabel}{ge.entity_number ? ` · ${ge.entity_number}` : ""}</div>
             <div className="font-semibold text-base mt-1">{subject}</div>
             {u?.description && (
               <div className="text-sm text-slate-700 mt-2 whitespace-pre-wrap">{u.description}</div>
@@ -185,7 +185,7 @@ export default function GatingEntityDetail() {
 function Metric({ label, value }) {
   return (
     <div className="bg-slate-50 rounded px-2 py-1.5 border border-slate-100">
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500">{label}</div>
       <div className="text-sm tabular-nums">{value ?? "—"}</div>
     </div>
   );

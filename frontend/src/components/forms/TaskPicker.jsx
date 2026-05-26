@@ -72,7 +72,7 @@ export default function TaskPicker({
 
   return (
     <div data-testid={`${testidPrefix}-root`}>
-      <label className="text-xs uppercase tracking-wide text-slate-500">
+      <label className="text-xs text-slate-500">
         {label}{required && " *"}
       </label>
       <div className="mt-1 space-y-1">

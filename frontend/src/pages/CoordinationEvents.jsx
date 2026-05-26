@@ -87,7 +87,7 @@ export default function CoordinationEvents() {
       <div className="surface p-3">
         <div className="flex items-center gap-2 mb-2">
           <Filter className="h-3.5 w-3.5 text-slate-500" />
-          <div className="text-xs text-slate-500 uppercase tracking-wide">Filters</div>
+          <div className="text-xs text-slate-500">Filters</div>
           {(filters.topic || filters.channel || filters.direction || filters.date_from || filters.date_to) && (
             <button onClick={() => setFilters({ topic: "", channel: "", direction: "", date_from: "", date_to: "" })}
               className="ml-auto text-xs text-blue-600 hover:underline">Clear</button>

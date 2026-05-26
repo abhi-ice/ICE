@@ -227,7 +227,7 @@ export default function Projects() {
               {/* Feature DR Header Auto-Population (2026-05-20) -- the
                   four contract / client fields are surfaced (read-only)
                   in every Daily Report header. All optional. */}
-              <div className="pt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <div className="pt-1 text-xs font-semibold text-slate-500">
                 Project / Contract Information
               </div>
               <div>

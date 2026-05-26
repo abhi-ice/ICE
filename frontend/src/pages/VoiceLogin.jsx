@@ -39,7 +39,7 @@ export default function VoiceLogin() {
         </div>
 
         <div>
-          <label className="text-xs text-slate-400 uppercase tracking-wide">Tenant</label>
+          <label className="text-xs text-slate-400">Tenant</label>
           <input data-testid="vl-tenant" value={tenantSlug} onChange={(e) => setTenantSlug(e.target.value)} className="w-full mt-1 h-10 px-3 rounded bg-slate-800 border border-slate-700 text-sm" />
         </div>
 

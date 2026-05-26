@@ -89,7 +89,7 @@ export default function DelayDetail() {
       <div className="surface p-4">
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex-1 min-w-[280px]">
-            <div className="text-xs text-slate-500 uppercase tracking-wide">Delay logged {formatDateDisplay(delay.date)}</div>
+            <div className="text-xs text-slate-500">Delay logged {formatDateDisplay(delay.date)}</div>
             <div className="text-base mt-1 whitespace-pre-wrap">{delay.description}</div>
           </div>
           <div className="flex flex-col gap-1">
@@ -110,7 +110,7 @@ export default function DelayDetail() {
         </div>
         {delay.resolved_note && (
           <div className="mt-2 text-xs text-slate-600">
-            <span className="text-slate-400 uppercase tracking-wide mr-1">Resolution note:</span>
+            <span className="text-slate-400 mr-1">Resolution note:</span>
             {delay.resolved_note}
           </div>
         )}
@@ -136,21 +136,21 @@ export default function DelayDetail() {
                   <span className="ml-2">{t.description}</span>
                 </div>
                 <div>
-                  <div className="text-slate-400 uppercase tracking-wide text-xs">Now</div>
+                  <div className="text-slate-400 text-xs">Now</div>
                   <div>pct {t.pct_complete ?? 0}% · float {t.total_float_days ?? "—"}d{t.is_critical_path ? " · CP" : ""}</div>
                   {t.projected_finish_date && t.projected_finish_date > (t.planned_finish || "") && (
                     <div className="text-amber-700 mt-0.5">proj. finish {t.projected_finish_date}</div>
                   )}
                 </div>
                 <div>
-                  <div className="text-slate-400 uppercase tracking-wide text-xs">At logging</div>
+                  <div className="text-slate-400 text-xs">At logging</div>
                   <div>impact {impact.projected_impact_days ?? 0}d · float {impact.float_at_logging_days ?? "—"}d</div>
                   <span className={`pill ${flagColor} mt-1 inline-block`}>
                     {impact.pushes_critical_path ? "pushes CP" : impact.consumes_float_only ? "within float" : "exceeds non-CP float"}
                   </span>
                 </div>
                 <div>
-                  <div className="text-slate-400 uppercase tracking-wide text-xs">At resolution</div>
+                  <div className="text-slate-400 text-xs">At resolution</div>
                   {outcome ? (
                     <div>
                       <div>actual {outcome.actual_days_open}d · absorbed {outcome.absorbed_days}d</div>
@@ -507,7 +507,7 @@ function ScenariosSection({ delayId, delayStatus }) {
                 and reflow downstream projected finish dates.
               </div>
               <div>
-                <label className="text-xs text-slate-500 uppercase tracking-wide">Rationale (optional)</label>
+                <label className="text-xs text-slate-500">Rationale (optional)</label>
                 <textarea data-testid="scenario-choose-rationale"
                   value={rationale} onChange={(e) => setRationale(e.target.value)}
                   placeholder="Why is the team picking this one over the alternatives?"
@@ -545,14 +545,14 @@ function ScenariosSection({ delayId, delayStatus }) {
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs text-slate-500 uppercase tracking-wide">Actual cost (USD)</label>
+                  <label className="text-xs text-slate-500">Actual cost (USD)</label>
                   <input data-testid="outcome-cost" type="number" step="0.01"
                     value={outcome.actual_cost_usd}
                     onChange={(e) => setOutcome({ ...outcome, actual_cost_usd: e.target.value })}
                     className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm tabular-nums" />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-500 uppercase tracking-wide">Time recovered (days)</label>
+                  <label className="text-xs text-slate-500">Time recovered (days)</label>
                   <input data-testid="outcome-days" type="number" step="0.5"
                     value={outcome.actual_time_recovered_days}
                     onChange={(e) => setOutcome({ ...outcome, actual_time_recovered_days: e.target.value })}
@@ -560,7 +560,7 @@ function ScenariosSection({ delayId, delayStatus }) {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-slate-500 uppercase tracking-wide">Notes</label>
+                <label className="text-xs text-slate-500">Notes</label>
                 <textarea data-testid="outcome-notes"
                   value={outcome.outcome_notes}
                   onChange={(e) => setOutcome({ ...outcome, outcome_notes: e.target.value })}
@@ -614,16 +614,16 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
       </div>
       <div className="p-3 text-xs space-y-2 flex-1">
         <div>
-          <div className="text-slate-400 uppercase tracking-wide text-xs">Assumption</div>
+          <div className="text-slate-400 text-xs">Assumption</div>
           <div className="text-slate-700">{s.assumption}</div>
         </div>
         <div>
-          <div className="text-slate-400 uppercase tracking-wide text-xs">Action</div>
+          <div className="text-slate-400 text-xs">Action</div>
           <div className="text-slate-700">{s.proposed_action_description}</div>
         </div>
         {s.prerequisites && s.prerequisites.length > 0 && (
           <div>
-            <div className="text-slate-400 uppercase tracking-wide text-xs">Prerequisites</div>
+            <div className="text-slate-400 text-xs">Prerequisites</div>
             <ul className="list-disc list-inside text-slate-600">
               {s.prerequisites.map((p, i) => <li key={i}>{p}</li>)}
             </ul>
@@ -633,11 +633,11 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
           <Metric label="Schedule" value={`${scheduleSign}${s.estimated_schedule_impact_days}d`} />
           <Metric label="Cost" value={`$${(s.estimated_cost_impact_usd || 0).toLocaleString()}`} />
           <div>
-            <div className="text-xs text-slate-500 uppercase tracking-wide">Risk</div>
+            <div className="text-xs text-slate-500">Risk</div>
             <span className={`pill ${riskColor} mt-1 inline-block capitalize`}>{s.estimated_risk_level}</span>
           </div>
           <div>
-            <div className="text-xs text-slate-500 uppercase tracking-wide">Confidence</div>
+            <div className="text-xs text-slate-500">Confidence</div>
             <div className="text-sm tabular-nums">{confPct}%</div>
           </div>
         </div>
@@ -697,7 +697,7 @@ function ScenarioCard({ scenario: s, chosenId, onChoose, onRecordActuals }) {
 function Metric({ label, value }) {
   return (
     <div className="bg-slate-50 rounded px-2 py-1.5 border border-slate-100">
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500">{label}</div>
       <div className="text-sm tabular-nums">{value}</div>
     </div>
   );

@@ -722,7 +722,7 @@ function DrillDown({ cell, onReallocate }) {
                     : "bg-slate-50 border-slate-200"
                 }`}>
                 <div className="font-medium mb-0.5">
-                  <span className="text-xs uppercase tracking-wide mr-1 px-1 py-0.5 rounded bg-slate-200 text-slate-700">
+                  <span className="text-xs mr-1 px-1 py-0.5 rounded bg-slate-200 text-slate-700">
                     {s.action_type.replace(/_/g, " ")}
                   </span>
                   {s.title}
@@ -1022,7 +1022,7 @@ function Metric({ label, value, tone = "slate" }) {
   };
   return (
     <div className={`p-2 rounded border ${tones[tone]} text-center`}>
-      <div className="text-xs uppercase tracking-wide opacity-75">{label}</div>
+      <div className="text-xs opacity-75">{label}</div>
       <div className="text-lg font-semibold tabular-nums">{value}</div>
     </div>
   );

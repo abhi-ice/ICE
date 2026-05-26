@@ -8,12 +8,20 @@ import { useProjects } from "../lib/projects";
 // the lib/dateUtil chokepoint.
 import { formatDateDisplay } from "../lib/dateUtil";
 
-const Tile = ({ label, value, icon: Icon, tone = "slate", testid }) => (
+// V4 (2026-05-26): Tile now supports an optional `delta` chip
+// ({ value: '+1' | '-2' | '·', direction: 'up' | 'down' | 'flat' })
+// rendered next to the headline value to surface trend vs. prior period.
+const Tile = ({ label, value, icon: Icon, tone = "slate", testid, delta }) => (
   <div data-testid={testid} className="bg-card border border-border rounded-lg p-4">
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
       <Icon className="h-4 w-4" /> {label}
     </div>
-    <div className={`mt-2 text-3xl font-semibold tracking-tight tabular-nums text-${tone}-700`}>{value}</div>
+    <div className="mt-2 flex items-baseline gap-2">
+      <div className={`text-3xl font-semibold tracking-tight tabular-nums text-${tone}-700`}>{value}</div>
+      {delta && (
+        <span className={`kpi-delta ${delta.direction || "flat"}`}>{delta.value}</span>
+      )}
+    </div>
   </div>
 );
 

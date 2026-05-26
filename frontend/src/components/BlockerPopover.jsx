@@ -98,7 +98,7 @@ export function BlockerPopover({ count, summary, testid }) {
                   <div className="flex items-start gap-1.5 py-1 border-b border-slate-100 last:border-0">
                     <Icon className={`h-3 w-3 mt-0.5 ${sevColor} shrink-0`} />
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs uppercase tracking-wide text-slate-500">
+                      <div className="text-xs text-slate-500">
                         {(s.entity_type || "").replace(/_/g, " ")}
                         {" · "}
                         {s.severity || "—"}

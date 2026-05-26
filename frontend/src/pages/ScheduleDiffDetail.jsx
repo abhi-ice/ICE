@@ -220,7 +220,7 @@ function Stat({ n, label }) {
   return (
     <div className="bg-white border border-slate-200 rounded p-3">
       <div className="text-2xl font-semibold text-slate-800">{n}</div>
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500">{label}</div>
     </div>
   );
 }
