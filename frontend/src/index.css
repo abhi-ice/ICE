@@ -2450,12 +2450,13 @@ html[data-theme="dark"] .bg-blue-50\/30 {
    footer. Backend integration unchanged — only the visual layer.
    ========================================================================= */
 .copilot-panel {
-    /* pt.24: !important on position + z-index so the .page-shell > div
-       cascade rule can NEVER demote the panel back to position:relative
-       (which broke it in pt.23 — same bug as pt.22). Belt-and-
-       suspenders: the JSX also adds Tailwind's .fixed class and
-       [data-skip-page-stacking] attribute as additional escape
-       hatches recognized by the page-shell rule. */
+    /* pt.25 (2026-05-26): FROSTED GLASS — Option C from
+       /design-mockup/copilot-panel-designs.html. Translucent panel
+       w/ backdrop blur + brand-emerald radial wash. Page peeks
+       through, so Foreman feels like a polite overlay not a wall.
+       pt.24 lock-down preserved: position:fixed !important +
+       z-index:30 !important so the .page-shell cascade can never
+       demote the panel back to relative + below viewport. */
     position: fixed !important;
     right: 0; top: 0;
     height: 100vh;
@@ -2464,22 +2465,47 @@ html[data-theme="dark"] .bg-blue-50\/30 {
     z-index: 30 !important;
     display: flex;
     flex-direction: column;
-    background: var(--v4-bg-surface);
-    border-left: 1px solid var(--v4-border);
-    box-shadow: -16px 0 48px -16px rgba(0, 0, 0, 0.25),
-                -1px 0 0 0 rgba(0, 0, 0, 0.04);
+    background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.82) 0%, rgba(248, 250, 252, 0.88) 100%);
+    backdrop-filter: blur(22px) saturate(180%);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    border-left: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: -24px 0 56px -16px rgba(15, 23, 42, 0.18),
+                -1px 0 0 0 rgba(15, 23, 42, 0.04);
     animation: copilotSlideIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
+    overflow: hidden;
 }
+/* Brand-emerald radial wash painted onto the panel itself
+   (pseudo-element so the body content can layer on top with z:1). */
+.copilot-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(520px 320px at 100% 0%, rgba(16, 185, 129, 0.10), transparent 70%),
+        radial-gradient(400px 280px at 0% 100%, rgba(16, 185, 129, 0.06), transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+}
+.copilot-panel > * { position: relative; z-index: 1; }
 html[data-theme="dark"] .copilot-panel {
-    box-shadow: -16px 0 48px -16px rgba(0, 0, 0, 0.6),
+    background:
+        linear-gradient(135deg, rgba(15, 23, 42, 0.78) 0%, rgba(30, 41, 59, 0.86) 100%);
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: -24px 0 56px -16px rgba(0, 0, 0, 0.65),
                 -1px 0 0 0 rgba(255, 255, 255, 0.04);
+}
+html[data-theme="dark"] .copilot-panel::before {
+    background:
+        radial-gradient(520px 320px at 100% 0%, rgba(16, 185, 129, 0.14), transparent 70%),
+        radial-gradient(400px 280px at 0% 100%, rgba(16, 185, 129, 0.08), transparent 70%);
 }
 @keyframes copilotSlideIn {
     from { transform: translateX(40px); opacity: 0; }
     to   { transform: translateX(0);    opacity: 1; }
 }
 
-/* ---- Header ---- */
+/* ---- Header (frosted glass) ---- */
 .copilot-panel-header {
     flex: 0 0 auto;
     height: 60px;
@@ -2487,11 +2513,10 @@ html[data-theme="dark"] .copilot-panel {
     display: flex;
     align-items: center;
     gap: 10px;
-    border-bottom: 1px solid var(--v4-border);
-    background:
-        linear-gradient(180deg, rgba(16, 185, 129, 0.04) 0%, transparent 100%),
-        var(--v4-bg-surface);
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    background: transparent;
 }
+html[data-theme="dark"] .copilot-panel-header { border-bottom-color: rgba(255, 255, 255, 0.08); }
 .copilot-panel-icon {
     width: 32px; height: 32px;
     flex: 0 0 auto;
@@ -2571,13 +2596,21 @@ html[data-theme="dark"] .copilot-panel {
 }
 .copilot-greeting-bubble {
     padding: 14px 16px;
-    border-radius: 12px;
-    background: var(--v4-bg-surface-2);
-    border: 1px solid var(--v4-border);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(15, 23, 42, 0.06);
     border-left: 3px solid var(--brand-primary);
     font-size: 13px;
     line-height: 1.55;
     color: var(--v4-fg-primary);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+html[data-theme="dark"] .copilot-greeting-bubble {
+    background: rgba(30, 41, 59, 0.55);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 .copilot-cap-label {
     font-size: 10.5px;
@@ -2597,14 +2630,20 @@ html[data-theme="dark"] .copilot-panel {
     align-items: center;
     gap: 6px;
     padding: 8px 10px;
-    border-radius: 8px;
-    background: var(--v4-bg-surface);
-    border: 1px solid var(--v4-border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.65);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid rgba(15, 23, 42, 0.06);
     font-size: 12px;
     font-weight: 600;
     color: var(--v4-fg-secondary);
     cursor: default;
     transition: border-color 120ms, color 120ms, transform 120ms;
+}
+html[data-theme="dark"] .copilot-cap-chip {
+    background: rgba(30, 41, 59, 0.5);
+    border-color: rgba(255, 255, 255, 0.08);
 }
 .copilot-cap-chip:hover {
     border-color: var(--brand-primary);
@@ -2620,9 +2659,11 @@ html[data-theme="dark"] .copilot-panel {
 .copilot-prompt-btn {
     text-align: left;
     padding: 9px 12px;
-    border-radius: 8px;
-    background: var(--v4-bg-surface);
-    border: 1px solid var(--v4-border);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.65);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid rgba(15, 23, 42, 0.06);
     color: var(--v4-fg-secondary);
     font-size: 12px;
     line-height: 1.4;
@@ -2631,6 +2672,10 @@ html[data-theme="dark"] .copilot-panel {
     display: inline-flex;
     align-items: flex-start;
     gap: 8px;
+}
+html[data-theme="dark"] .copilot-prompt-btn {
+    background: rgba(30, 41, 59, 0.5);
+    border-color: rgba(255, 255, 255, 0.08);
 }
 .copilot-prompt-btn svg {
     flex: 0 0 auto;
@@ -2680,16 +2725,24 @@ html[data-theme="dark"] .copilot-panel {
     word-wrap: break-word;
 }
 .copilot-msg--ai .copilot-msg-bubble {
-    background: var(--v4-bg-surface-2);
-    border: 1px solid var(--v4-border);
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(15, 23, 42, 0.06);
     border-top-left-radius: 4px;
     color: var(--v4-fg-primary);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+html[data-theme="dark"] .copilot-msg--ai .copilot-msg-bubble {
+    background: rgba(30, 41, 59, 0.58);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .copilot-msg--user .copilot-msg-bubble {
     background: linear-gradient(135deg, var(--brand-primary), var(--brand-hover));
     color: white !important;
     border-top-right-radius: 4px;
-    box-shadow: 0 4px 12px -4px rgba(16, 185, 129, 0.4);
+    box-shadow: 0 4px 14px -3px rgba(16, 185, 129, 0.45);
 }
 
 /* ---- Tool result chips ---- */
@@ -2779,8 +2832,14 @@ html[data-theme="dark"] .copilot-send-to-btn--safety { color: #fbbf24; }
     padding: 12px 14px;
     border-radius: 12px;
     border-top-left-radius: 4px;
-    background: var(--v4-bg-surface-2);
-    border: 1px solid var(--v4-border);
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(15, 23, 42, 0.06);
+}
+html[data-theme="dark"] .copilot-thinking-dots {
+    background: rgba(30, 41, 59, 0.55);
+    border-color: rgba(255, 255, 255, 0.08);
 }
 .copilot-thinking-dots span {
     width: 6px; height: 6px;
@@ -2796,24 +2855,29 @@ html[data-theme="dark"] .copilot-send-to-btn--safety { color: #fbbf24; }
     40%           { opacity: 1;   transform: translateY(-3px); }
 }
 
-/* ---- Composer (input area) ---- */
+/* ---- Composer (input area, frosted glass) ---- */
 .copilot-panel-input {
     flex: 0 0 auto;
     padding: 12px 16px 14px;
-    border-top: 1px solid var(--v4-border);
-    background:
-        linear-gradient(0deg, rgba(16, 185, 129, 0.025) 0%, transparent 100%),
-        var(--v4-bg-surface);
+    border-top: 1px solid rgba(15, 23, 42, 0.08);
+    background: transparent;
 }
+html[data-theme="dark"] .copilot-panel-input { border-top-color: rgba(255, 255, 255, 0.08); }
 .copilot-input-wrap {
     display: flex;
     align-items: flex-end;
     gap: 8px;
     padding: 6px 6px 6px 12px;
-    background: var(--v4-bg-input);
-    border: 1px solid var(--v4-border);
+    background: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(15, 23, 42, 0.08);
     border-radius: 12px;
-    transition: border-color 150ms, box-shadow 150ms;
+    transition: border-color 150ms, box-shadow 150ms, background 150ms;
+}
+html[data-theme="dark"] .copilot-input-wrap {
+    background: rgba(15, 23, 42, 0.6);
+    border-color: rgba(255, 255, 255, 0.10);
 }
 .copilot-input-wrap:focus-within {
     border-color: var(--brand-primary);

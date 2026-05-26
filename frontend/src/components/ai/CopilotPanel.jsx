@@ -8,18 +8,19 @@ import { subscribeDailyReportId, emitDescriptionInsert } from "../../lib/copilot
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 
-// v4 pt.23 (2026-05-26) — enterprise reskin of the Copilot panel.
-// Backend integration is unchanged: same state, same /ai/copilot POST,
-// same emitDescriptionInsert callbacks, same test-ids on every clickable
-// element. Only the visual layer was redone — capability chips, sample
-// prompts on the empty state, bubbles styled by role, tool-result chips
-// colored by success/error, animated thinking dots, and a textarea-style
-// composer with keyboard hint footer.
+// v4 pt.25 (2026-05-26) — Frosted-glass redesign + AI rename.
+// Design picked from /design-mockup/copilot-panel-designs.html Option C:
+// translucent panel with backdrop blur + brand-emerald radial wash, semi-
+// transparent AI bubbles so the page peeks through, gradient-emerald user
+// bubbles. AI renamed from generic "Copilot" → "Mason" (Federal
+// construction term for the on-site coordinator who knows everything).
+// Backend integration unchanged from pt.23 — same /ai/copilot POST, same
+// state shape, every testid preserved.
 const CAPABILITIES = [
-  { icon: ListChecks,     label: "Schedule",        hint: "Add tasks, check dependencies, recompute CPM" },
-  { icon: MessageSquare,  label: "RFIs",            hint: "Draft, send, link to tasks, track aging" },
-  { icon: FileSpreadsheet,label: "Daily Reports",   hint: "Record presence, mark activity progress, create unplanned" },
-  { icon: BookOpen,       label: "Knowledge Base",  hint: "Cite lessons from past projects" },
+  { icon: ListChecks,      label: "Schedule",       hint: "Add tasks, check dependencies, recompute CPM" },
+  { icon: MessageSquare,   label: "RFIs",           hint: "Draft, send, link to tasks, track aging" },
+  { icon: FileSpreadsheet, label: "Daily Reports",  hint: "Record presence, mark progress, create unplanned" },
+  { icon: BookOpen,        label: "Knowledge Base", hint: "Cite lessons from past projects" },
 ];
 
 const SAMPLE_PROMPTS = [
@@ -36,7 +37,7 @@ export default function CopilotPanel({ open, onClose }) {
   const [thread, setThread] = useState([
     {
       role: "ai",
-      text: "I'm the ICE Copilot. I can read your schedule, RFIs, and KB, and take action across tasks, RFIs, daily reports, work items, KB lessons, and submittals. With a Daily Report open I can also record presence, mark progress, and create unplanned activities for PM review.",
+      text: "Hi — I'm Mason. Think of me as the craftsman on your project: I can read your schedule, RFIs, and knowledge base, and I can build for you — draft RFIs, log daily reports, file work items, write KB lessons, prep submittals. With a Daily Report open I can also record presence, mark activity progress, and create unplanned activities for PM review.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -48,7 +49,6 @@ export default function CopilotPanel({ open, onClose }) {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [thread]);
 
-  // Track which DR (if any) is open so we ship daily_report_id with each turn
   useEffect(() => subscribeDailyReportId(setActiveDrId), []);
 
   // Auto-grow the composer textarea as the user types
@@ -72,7 +72,6 @@ export default function CopilotPanel({ open, onClose }) {
         message: msg,
         session_id: sessionId,
       });
-      // Tool results are surfaced as small "actions" badges below the AI reply
       const tools = (data.usage?.tool_results || []).map((r) => {
         if (r.error) return `error · ${r.tool}: ${r.error}`;
         const result = r.result || {};
@@ -89,30 +88,27 @@ export default function CopilotPanel({ open, onClose }) {
       });
       setThread((t) => [...t, { role: "ai", text: data.response || "(no response)", tools }]);
     } catch (e) {
-      setThread((t) => [...t, { role: "ai", text: "Copilot error: " + (e.response?.data?.detail || e.message) }]);
+      setThread((t) => [...t, { role: "ai", text: "Mason error: " + (e.response?.data?.detail || e.message) }]);
     } finally {
       setBusy(false);
     }
   };
 
   if (!open) return null;
-  // The greeting card + capability chips + sample prompts only render
-  // until the user sends their first message. Past that the conversation
-  // takes over the body.
   const isFresh = thread.length === 1 && thread[0]?.role === "ai";
 
   return (
     <div data-testid="copilot-panel" data-skip-page-stacking className="copilot-panel fixed">
       {/* ---- HEADER ---- */}
       <header className="copilot-panel-header">
-        <div className="copilot-panel-icon">
+        <div className="copilot-panel-icon" aria-hidden>
           <Bot className="h-4 w-4" strokeWidth={2} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="copilot-panel-title">AI Copilot</div>
+          <div className="copilot-panel-title">Mason</div>
           <div className="copilot-panel-tagline">
             <Sparkles className="h-2.5 w-2.5" />
-            <span>Schedule · RFIs · KB · Reports</span>
+            <span>Your AI craftsman · drafts · reports · schedule · KB</span>
           </div>
         </div>
         {activeDrId && (
@@ -124,7 +120,7 @@ export default function CopilotPanel({ open, onClose }) {
           data-testid="copilot-close"
           onClick={onClose}
           className="copilot-panel-close"
-          aria-label="Close copilot"
+          aria-label="Close Mason"
           title="Close"
         >
           <X className="h-4 w-4" />
@@ -133,11 +129,10 @@ export default function CopilotPanel({ open, onClose }) {
 
       {/* ---- BODY ---- */}
       <div className="copilot-panel-body">
-        {/* Greeting + capabilities + sample prompts (only on fresh thread) */}
         {isFresh ? (
           <div className="copilot-greeting" data-testid="copilot-greeting">
             <div className="copilot-greeting-bubble">{thread[0].text}</div>
-            <div className="copilot-cap-label">What I can do</div>
+            <div className="copilot-cap-label">What Mason can do</div>
             <div className="copilot-cap-grid">
               {CAPABILITIES.map((c) => (
                 <div key={c.label} className="copilot-cap-chip" title={c.hint}>
@@ -163,12 +158,11 @@ export default function CopilotPanel({ open, onClose }) {
           </div>
         ) : (
           <>
-            {/* Conversation — greeting becomes the first AI bubble */}
             {thread.map((m, i) => (
               <div key={i} className={`copilot-msg copilot-msg--${m.role}`}>
                 {m.role === "ai" && (
                   <div className="copilot-msg-badge">
-                    <Bot className="h-2.5 w-2.5" /> AI
+                    <Bot className="h-2.5 w-2.5" /> Mason
                   </div>
                 )}
                 <div className="copilot-msg-bubble">{m.text}</div>
@@ -185,9 +179,6 @@ export default function CopilotPanel({ open, onClose }) {
                     })}
                   </div>
                 )}
-                {/* Phase D — when a daily report is open, every AI reply gets two
-                    send-to-form buttons. They emit a context event the QC and
-                    Safety panels listen for to insert text into their drafts. */}
                 {m.role === "ai" && activeDrId && i > 0 && m.text && (
                   <div className="copilot-send-to">
                     <button
@@ -213,7 +204,7 @@ export default function CopilotPanel({ open, onClose }) {
         {busy && (
           <div className="copilot-thinking" data-testid="copilot-thinking">
             <div className="copilot-msg-badge">
-              <Bot className="h-2.5 w-2.5" /> AI
+              <Bot className="h-2.5 w-2.5" /> Mason
             </div>
             <div className="copilot-thinking-dots">
               <span /> <span /> <span />
@@ -237,7 +228,7 @@ export default function CopilotPanel({ open, onClose }) {
                 send();
               }
             }}
-            placeholder={busy ? "Working…" : "Ask the copilot…"}
+            placeholder={busy ? "Mason is thinking…" : "Ask Mason…"}
             className="copilot-input"
             rows={1}
             disabled={busy}
