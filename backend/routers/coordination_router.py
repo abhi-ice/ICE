@@ -156,7 +156,39 @@ async def list_coordination_events(
     docs = await db.coordination_events.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("occurred_at", -1).to_list(500)
-    return [CoordinationEvent(**d).model_dump(mode="json") for d in docs]
+    # 2026-02-XX (Abhi pull) -- back-fill legacy/voice-intake coord
+    # events that pre-date the 6-field-required schema. Without this
+    # the entire list endpoint 500s on a single malformed legacy row.
+    enriched: list[dict] = []
+    VALID_CHANNELS = {"email", "phone", "in_person", "formal_letter",
+                      "text_message", "meeting", "system_notification"}
+    VALID_TOPICS = {"tenant_access", "building_coordination", "a_e_clarification",
+                    "owner_direction", "sub_coordination", "regulatory",
+                    "safety", "quality", "scope", "payment", "other"}
+    for d in docs:
+        if not d.get("occurred_at"):
+            d["occurred_at"] = d.get("created_at") or d.get("date") or utc_now().isoformat()
+        if d.get("channel") not in VALID_CHANNELS:
+            d["channel"] = "meeting"
+        if not d.get("direction"):
+            d["direction"] = "internal"
+        if not d.get("other_party_name"):
+            d["other_party_name"] = d.get("with_party") or "—"
+        # Topic is a Literal enum -- if a legacy / voice-intake row
+        # stored free-text in the topic field, push the original
+        # text into `summary` (if summary is blank) and set topic to
+        # the safe "other" bucket.
+        if d.get("topic") not in VALID_TOPICS:
+            original_topic_text = d.get("topic")
+            if original_topic_text and not d.get("summary"):
+                d["summary"] = original_topic_text
+            d["topic"] = "other"
+        if not d.get("topic"):
+            d["topic"] = "other"
+        if not d.get("summary"):
+            d["summary"] = d.get("description") or "—"
+        enriched.append(d)
+    return [CoordinationEvent(**d).model_dump(mode="json") for d in enriched]
 
 
 @router.get("/coordination-events/{event_id}", response_model=CoordinationEvent)

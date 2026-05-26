@@ -371,6 +371,28 @@ def _enrich_delay_for_read(d: dict) -> dict:
             d["date"] = _date.today().isoformat()
     if not d.get("reported_at"):
         d["reported_at"] = d.get("created_at") or d.get("logged_date") or _date.today().isoformat()
+    # 2026-02-XX (Abhi pull) -- back-fill legacy status enums. Voice-
+    # intake delays inserted before the schema tightened sometimes
+    # land with status='investigating' (mapped to in_progress here)
+    # or other legacy strings. Pydantic only accepts open / in_progress
+    # / resolved, so coerce anything else to the closest neighbour.
+    LEGACY_STATUS_MAP = {
+        "investigating": "in_progress",
+        "pending": "open",
+        "review": "in_progress",
+        "active": "open",
+        "closed": "resolved",
+        "complete": "resolved",
+        "completed": "resolved",
+        "cancelled": "resolved",
+        "canceled": "resolved",
+    }
+    st = d.get("status")
+    if st in LEGACY_STATUS_MAP:
+        d["status"] = LEGACY_STATUS_MAP[st]
+    elif st not in (None, "open", "in_progress", "resolved"):
+        # Unknown future status — default to open so the list still loads.
+        d["status"] = "open"
     return d
 
 
