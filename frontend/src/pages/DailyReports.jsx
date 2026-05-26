@@ -1410,9 +1410,7 @@ function DrAutoHeader({ project, currentUserName }) {
       >
         <ChevronDown
           className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
-        />
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums shrink-0">1</span>
-        <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0">
+        /><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0">
           Project / Contract
         </div>
         <div className="text-sm text-slate-300 truncate flex-1" data-testid="dr-auto-header-summary">
@@ -1456,11 +1454,9 @@ function PanelShell({ icon: Icon, title, count, testid, children, badge, step })
         className="flex items-center gap-2 mb-4 pb-3"
         style={{ borderBottom: "1px solid var(--v4-border)" }}
       >
-        {typeof step === "number" && (
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">
-            {step}
-          </span>
-        )}
+        {/* Inline step badge removed — the .dr-spine wrapper renders
+            the numbered nodes on the LEFT rail now. `step` prop kept
+            for backwards-compatibility but no longer rendered here. */}
         <Icon className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">{title}</div>
         {typeof count === "number" && (
@@ -1492,9 +1488,7 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
     <div data-testid="dr-weather-panel" className="surface px-4 py-3 dr-section">
-      <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">2</span>
-        <Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
+      <div className="flex items-center gap-2 mb-2 flex-wrap"><Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">Weather</div>
         {fetchedAt && <span className="text-xs text-slate-400 ml-auto">auto-filled {fetchedAt}</span>}
       </div>
@@ -2538,9 +2532,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
 
   return (
     <div data-testid="dr-events-tabs" className="space-y-3 dr-section">
-      <div className="flex items-center gap-2 -mb-1 px-1">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">5</span>
-        <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400 font-semibold">Events</div>
+      <div className="flex items-center gap-2 -mb-1 px-1"><div className="text-[11px] uppercase tracking-[0.14em] text-slate-400 font-semibold">Events</div>
       </div>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
