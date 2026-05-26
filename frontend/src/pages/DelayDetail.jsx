@@ -422,7 +422,7 @@ function ScenariosSection({ delayId, delayStatus }) {
               must Change choice first. */}
           <Button data-testid="scenarios-generate" onClick={generate} disabled={generating || !!chosenId}
             title={chosenId ? "Click 'Change choice' on the executing scenario before regenerating" : ""}
-            className="gap-1 bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50">
+            className="gap-1 bg-emerald-600 hover:bg-emerald-500 text-white font-medium disabled:opacity-50">
             <RefreshCw className={`h-3.5 w-3.5 ${generating ? "animate-spin" : ""}`} />
             {hasActive ? "Regenerate scenarios" : "Generate 3 mitigation scenarios"}
           </Button>

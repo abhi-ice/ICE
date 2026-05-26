@@ -176,7 +176,7 @@ export default function TIAGenerator() {
         </div>
         <div>
           <button data-testid="tia-generate" onClick={generate} disabled={generating}
-            className="h-10 px-4 rounded bg-amber-500 text-white text-sm hover:bg-amber-600 disabled:opacity-50 inline-flex items-center gap-2">
+            className="h-10 px-4 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition disabled:opacity-50 inline-flex items-center gap-2">
             <Sparkles className="h-4 w-4" />
             {generating ? "Generating (this can take a minute)…" : "Generate TIA"}
           </button>

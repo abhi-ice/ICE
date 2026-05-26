@@ -2359,7 +2359,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             title={locked && !isAddReasonValid(addReason)
               ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
               : undefined}
-            className="h-7 px-3 rounded bg-amber-700 text-white text-xs hover:bg-amber-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
+            className="h-7 px-3 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
             <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
           </button>
         </div>
