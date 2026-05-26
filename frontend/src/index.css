@@ -450,13 +450,18 @@ html[data-theme="dark"] .page-shell::after {
     box-shadow: 0 0 24px -8px rgba(16, 185, 129, 0.30);
 }
 
-/* Surface card — glassmorphic, slightly larger radius for a more
-   modern feel. Cards look discrete and structured rather than melting
-   into the page. */
+/* Surface card — theme-aware via v4 tokens. Slick border + soft outer
+   ring give cards discrete separation without melting into the bg.
+   Dark theme keeps the subtle inset highlight + drop shadow; light
+   theme uses a clean solid card with a tiny shadow. */
 .surface {
     @apply rounded-lg;
-    background: rgba(24, 24, 27, 0.65);
-    border: 1px solid rgba(255,255,255,0.08);
+    background: var(--v4-bg-surface);
+    border: 1px solid var(--v4-border);
+    box-shadow: var(--v4-shadow-card), var(--v4-card-ring);
+}
+html[data-theme="dark"] .surface {
+    background: rgba(47, 47, 53, 0.85);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     box-shadow:
