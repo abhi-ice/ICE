@@ -2283,7 +2283,10 @@ html[data-theme="dark"] .text-slate-900 {
     outline: none !important;
     box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15) !important;
 }
-.v4-topbar-search-icon { color: rgba(255, 255, 255, 0.45); }
+.v4-topbar-search-icon {
+    color: rgba(255, 255, 255, 0.65) !important;
+    z-index: 1;
+}
 .v4-topbar-search-kbd {
     font-family: 'JetBrains Mono', monospace;
     font-size: 9.5px;

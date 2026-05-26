@@ -45,7 +45,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "../components/ui/dropdown-menu";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
@@ -955,12 +955,30 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           User can toggle the panel on any open DR via the header
           "Voice intake" button below. */}
       {activeIntakeMode && activeIntakeMode !== "manual" && (
-        <VoiceIntakePanel
-          dailyReportId={id}
-          initialMode={activeIntakeMode === "voice_memo" ? "voice_async" : "voice_live"}
-          locked={locked}
-          onApplied={reload}
-        />
+        <div className="relative">
+          {/* pt.30: collapse button so the user can close the voice intake
+              panel without leaving the DR. Was: only way to make it
+              disappear was to navigate away. Now: ✕ button in the top-
+              right of the panel container that flips back to manual mode. */}
+          {!locked && (
+            <button
+              data-testid="dr-voice-collapse"
+              onClick={() => setActiveIntakeMode("manual")}
+              title="Collapse voice intake"
+              aria-label="Collapse voice intake"
+              className="absolute top-2 right-2 z-10 h-7 w-7 grid place-items-center rounded transition"
+              style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)", border: "1px solid var(--v4-border)" }}
+            >
+              <ChevronUp className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <VoiceIntakePanel
+            dailyReportId={id}
+            initialMode={activeIntakeMode === "voice_memo" ? "voice_async" : "voice_live"}
+            locked={locked}
+            onApplied={reload}
+          />
+        </div>
       )}
       {activeIntakeMode === "manual" && !locked && (
         <div className="flex justify-end -mt-2">

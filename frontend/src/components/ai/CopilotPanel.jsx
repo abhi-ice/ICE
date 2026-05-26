@@ -75,6 +75,28 @@ function looksTabular(text) {
   return tableHits.length >= 2;
 }
 
+// Detect when the user explicitly asked Mason to DRAFT a QC issue
+// description or a Safety event description (often from photos). Only
+// then do we show the "Send to QC / Send to Safety" buttons under the
+// AI reply — they autofill the relevant section's text field. Before
+// pt.30 these buttons appeared on every reply on the DR page, which
+// was noise. Pattern: detect intent in the USER message.
+function detectFormInsertIntent(userMessage) {
+  if (!userMessage) return null;
+  const t = String(userMessage).toLowerCase();
+  // QC drafting cues
+  if (/\b(qc|quality control|quality)\b.*(issue|finding|defect|description|write|draft|note)/.test(t)) return "qc";
+  if (/\b(draft|write|describe|generate).*\bqc\b/.test(t)) return "qc";
+  // Safety drafting cues
+  if (/\b(safety|near[\s-]?miss|incident|hazard|osha)\b.*(event|description|write|draft|note|report)/.test(t)) return "safety";
+  if (/\b(draft|write|describe|generate).*\b(safety|incident|hazard)\b/.test(t)) return "safety";
+  // Photo-driven drafting — bridge case: "from the photos draft a QC/safety"
+  if (/from.*(photo|picture|image).*(qc|safety|quality|hazard|defect)/.test(t)) {
+    return /qc|quality|defect/.test(t) ? "qc" : "safety";
+  }
+  return null;
+}
+
 // Claude.ai-style document-intent detection. Inspect the user's message to
 // see if they're asking for a downloadable file, and infer the format. If
 // no intent is detected, no download button is shown on the AI reply —
@@ -188,6 +210,11 @@ export default function CopilotPanel({ open, onClose }) {
       const intent = !isBareTool && replyText && replyText.length > 40
         ? detectDocumentIntent(msg)
         : null;
+      // Send-to-form intent — only show QC/Safety buttons when user asked
+      // Mason to draft one of those, not on every DR-scoped reply.
+      const formInsert = !isBareTool && replyText
+        ? detectFormInsertIntent(msg)
+        : null;
       setThread((t) => [...t, {
         role: "ai",
         text: isBareTool ? `I ran ${replyText}, but the follow-up summary didn't come back.` : replyText,
@@ -196,6 +223,7 @@ export default function CopilotPanel({ open, onClose }) {
         bare_tool: isBareTool ? replyText : null,
         retry_payload: isBareTool ? msg : null,
         artifact: intent,
+        form_insert: formInsert,
         user_prompt: msg,
       }]);
     } catch (e) {
@@ -470,22 +498,31 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
                       )}
                     </div>
                   )}
-                  {m.role === "ai" && activeDrId && i > 0 && m.text && !m.error && (
+                  {/* pt.30: Send-to-form buttons only show when the user
+                      actually asked Mason to DRAFT a QC issue or safety
+                      event. If they asked for QC → show only QC button.
+                      If safety → only Safety button. Eliminates the
+                      previous always-on noise on every DR-scoped reply. */}
+                  {m.role === "ai" && activeDrId && m.text && !m.error && m.form_insert && (
                     <div className="copilot-send-to">
-                      <button
-                        data-testid={`copilot-send-qc-${i}`}
-                        onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
-                        className="copilot-send-to-btn copilot-send-to-btn--qc"
-                      >
-                        <ClipboardCheck className="h-3 w-3" /> Send to QC
-                      </button>
-                      <button
-                        data-testid={`copilot-send-safety-${i}`}
-                        onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
-                        className="copilot-send-to-btn copilot-send-to-btn--safety"
-                      >
-                        <ShieldAlert className="h-3 w-3" /> Send to Safety
-                      </button>
+                      {m.form_insert === "qc" && (
+                        <button
+                          data-testid={`copilot-send-qc-${i}`}
+                          onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
+                          className="copilot-send-to-btn copilot-send-to-btn--qc"
+                        >
+                          <ClipboardCheck className="h-3 w-3" /> Send to QC
+                        </button>
+                      )}
+                      {m.form_insert === "safety" && (
+                        <button
+                          data-testid={`copilot-send-safety-${i}`}
+                          onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
+                          className="copilot-send-to-btn copilot-send-to-btn--safety"
+                        >
+                          <ShieldAlert className="h-3 w-3" /> Send to Safety
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

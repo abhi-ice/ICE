@@ -38,7 +38,7 @@ export default function GlobalSearch() {
 
   return (
     <div ref={ref} className="v4-topbar-search relative hidden md:block">
-      <Search className="v4-topbar-search-icon absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5" />
+      <Search className="v4-topbar-search-icon absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 pointer-events-none" strokeWidth={2.2} />
       <input
         data-testid="global-search-input"
         value={q}
