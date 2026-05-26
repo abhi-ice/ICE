@@ -1,20 +1,48 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Send, X, CheckCircle2, FileSpreadsheet, ClipboardCheck, ShieldAlert } from "lucide-react";
+import {
+  Bot, Send, X, CheckCircle2, FileSpreadsheet, ClipboardCheck,
+  ShieldAlert, Sparkles, MessageSquare, ListChecks, BookOpen, AlertCircle,
+} from "lucide-react";
 import { useProjects } from "../../lib/projects";
 import { subscribeDailyReportId, emitDescriptionInsert } from "../../lib/copilotContext";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
+
+// v4 pt.23 (2026-05-26) — enterprise reskin of the Copilot panel.
+// Backend integration is unchanged: same state, same /ai/copilot POST,
+// same emitDescriptionInsert callbacks, same test-ids on every clickable
+// element. Only the visual layer was redone — capability chips, sample
+// prompts on the empty state, bubbles styled by role, tool-result chips
+// colored by success/error, animated thinking dots, and a textarea-style
+// composer with keyboard hint footer.
+const CAPABILITIES = [
+  { icon: ListChecks,     label: "Schedule",        hint: "Add tasks, check dependencies, recompute CPM" },
+  { icon: MessageSquare,  label: "RFIs",            hint: "Draft, send, link to tasks, track aging" },
+  { icon: FileSpreadsheet,label: "Daily Reports",   hint: "Record presence, mark activity progress, create unplanned" },
+  { icon: BookOpen,       label: "Knowledge Base",  hint: "Cite lessons from past projects" },
+];
+
+const SAMPLE_PROMPTS = [
+  "Add task install conference room AV, duration 4 days",
+  "Record presence electrical 4 workers 8 hours each",
+  "Draft RFI about the wall vent conflict on level 2",
+  "What's blocking my critical path this week?",
+];
 
 export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
   const [sessionId] = useState(`copilot-${Date.now()}`);
   const [activeDrId, setActiveDrId] = useState(null);
   const [thread, setThread] = useState([
-    { role: "ai", text: "I am the ICE Copilot. I can read schedule + RFIs + KB and create tasks, RFIs, daily reports, work items, KB lessons, and submittals on your behalf. When you have a Daily Report open I can also record crew presence, update activity progress, and create unplanned activities for PM review. Try: add task install conference room AV, duration 4 days. Or: record presence electrical 4 workers 8 hours each." },
+    {
+      role: "ai",
+      text: "I'm the ICE Copilot. I can read your schedule, RFIs, and KB, and take action across tasks, RFIs, daily reports, work items, KB lessons, and submittals. With a Daily Report open I can also record presence, mark progress, and create unplanned activities for PM review.",
+    },
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const endRef = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -23,9 +51,17 @@ export default function CopilotPanel({ open, onClose }) {
   // Track which DR (if any) is open so we ship daily_report_id with each turn
   useEffect(() => subscribeDailyReportId(setActiveDrId), []);
 
-  const send = async () => {
-    if (!input.trim() || busy) return;
-    const msg = input.trim();
+  // Auto-grow the composer textarea as the user types
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(140, ta.scrollHeight) + "px";
+  }, [input]);
+
+  const send = async (overrideText) => {
+    const msg = (overrideText ?? input).trim();
+    if (!msg || busy) return;
     setThread((t) => [...t, { role: "user", text: msg }]);
     setInput("");
     setBusy(true);
@@ -60,91 +96,174 @@ export default function CopilotPanel({ open, onClose }) {
   };
 
   if (!open) return null;
+  // The greeting card + capability chips + sample prompts only render
+  // until the user sends their first message. Past that the conversation
+  // takes over the body.
+  const isFresh = thread.length === 1 && thread[0]?.role === "ai";
+
   return (
-    <div
-      data-testid="copilot-panel"
-      className="fixed right-0 top-0 h-screen w-full sm:w-[420px] bg-card border-l border-border flex flex-col z-30 shadow-xl"
-    >
-      <div className="h-14 border-b border-border px-4 flex items-center gap-2">
-        <Bot className="h-4 w-4 text-primary" />
-        <div className="font-semibold text-sm">AI Copilot</div>
+    <div data-testid="copilot-panel" className="copilot-panel">
+      {/* ---- HEADER ---- */}
+      <header className="copilot-panel-header">
+        <div className="copilot-panel-icon">
+          <Bot className="h-4 w-4" strokeWidth={2} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="copilot-panel-title">AI Copilot</div>
+          <div className="copilot-panel-tagline">
+            <Sparkles className="h-2.5 w-2.5" />
+            <span>Schedule · RFIs · KB · Reports</span>
+          </div>
+        </div>
         {activeDrId && (
-          <span data-testid="copilot-dr-scope" className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-            <FileSpreadsheet className="h-3 w-3" /> Daily report scope
+          <span data-testid="copilot-dr-scope" className="copilot-scope-pill" title="Active Daily Report in scope">
+            <FileSpreadsheet className="h-3 w-3" /> DR scope
           </span>
         )}
         <button
           data-testid="copilot-close"
           onClick={onClose}
-          className="ml-auto h-7 w-7 grid place-items-center rounded hover:bg-muted"
+          className="copilot-panel-close"
+          aria-label="Close copilot"
+          title="Close"
         >
           <X className="h-4 w-4" />
         </button>
-      </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {thread.map((m, i) => (
-          <div key={i} className={`text-sm ${m.role === "user" ? "text-right" : ""}`}>
-            <div
-              className={`inline-block max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap ${
-                m.role === "user"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-foreground"
-              }`}
-            >
-              {m.text}
+      </header>
+
+      {/* ---- BODY ---- */}
+      <div className="copilot-panel-body">
+        {/* Greeting + capabilities + sample prompts (only on fresh thread) */}
+        {isFresh ? (
+          <div className="copilot-greeting" data-testid="copilot-greeting">
+            <div className="copilot-greeting-bubble">{thread[0].text}</div>
+            <div className="copilot-cap-label">What I can do</div>
+            <div className="copilot-cap-grid">
+              {CAPABILITIES.map((c) => (
+                <div key={c.label} className="copilot-cap-chip" title={c.hint}>
+                  <c.icon className="h-3.5 w-3.5" /> {c.label}
+                </div>
+              ))}
             </div>
-            {m.tools && m.tools.length > 0 && (
-              <div data-testid={`copilot-tools-${i}`} className="mt-1 flex flex-wrap gap-1">
-                {m.tools.map((tt, j) => (
-                  <span key={j} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                    <CheckCircle2 className="h-2.5 w-2.5" /> {tt}
-                  </span>
-                ))}
-              </div>
-            )}
-            {/* Phase D — when a daily report is open, every AI reply gets two
-                send-to-form buttons. They emit a context event the QC and
-                Safety panels listen for to insert text into their drafts. */}
-            {m.role === "ai" && activeDrId && i > 0 && m.text && (
-              <div className="mt-1 flex flex-wrap gap-1">
+            <div className="copilot-cap-label">Try one of these</div>
+            <div className="copilot-prompts">
+              {SAMPLE_PROMPTS.map((p) => (
                 <button
-                  data-testid={`copilot-send-qc-${i}`}
-                  onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
-                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-blue-200 text-blue-700 hover:bg-blue-50"
+                  key={p}
+                  type="button"
+                  data-testid={`copilot-sample-${p.slice(0, 12).replace(/\W/g, "")}`}
+                  className="copilot-prompt-btn"
+                  onClick={() => send(p)}
+                  disabled={busy}
                 >
-                  <ClipboardCheck className="h-3 w-3" /> Send to QC description
+                  <Sparkles className="h-3 w-3" /> {p}
                 </button>
-                <button
-                  data-testid={`copilot-send-safety-${i}`}
-                  onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
-                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-amber-200 text-amber-700 hover:bg-amber-50"
-                >
-                  <ShieldAlert className="h-3 w-3" /> Send to Safety description
-                </button>
-              </div>
-            )}
+              ))}
+            </div>
           </div>
-        ))}
-        {busy && <div className="text-xs text-muted-foreground">Thinking…</div>}
+        ) : (
+          <>
+            {/* Conversation — greeting becomes the first AI bubble */}
+            {thread.map((m, i) => (
+              <div key={i} className={`copilot-msg copilot-msg--${m.role}`}>
+                {m.role === "ai" && (
+                  <div className="copilot-msg-badge">
+                    <Bot className="h-2.5 w-2.5" /> AI
+                  </div>
+                )}
+                <div className="copilot-msg-bubble">{m.text}</div>
+                {m.tools && m.tools.length > 0 && (
+                  <div data-testid={`copilot-tools-${i}`} className="copilot-tools">
+                    {m.tools.map((tt, j) => {
+                      const isErr = tt.startsWith("error");
+                      return (
+                        <span key={j} className={`copilot-tool ${isErr ? "copilot-tool--err" : "copilot-tool--ok"}`}>
+                          {isErr ? <AlertCircle className="h-2.5 w-2.5" /> : <CheckCircle2 className="h-2.5 w-2.5" />}
+                          <span className="copilot-tool-text">{tt}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Phase D — when a daily report is open, every AI reply gets two
+                    send-to-form buttons. They emit a context event the QC and
+                    Safety panels listen for to insert text into their drafts. */}
+                {m.role === "ai" && activeDrId && i > 0 && m.text && (
+                  <div className="copilot-send-to">
+                    <button
+                      data-testid={`copilot-send-qc-${i}`}
+                      onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
+                      className="copilot-send-to-btn copilot-send-to-btn--qc"
+                    >
+                      <ClipboardCheck className="h-3 w-3" /> Send to QC
+                    </button>
+                    <button
+                      data-testid={`copilot-send-safety-${i}`}
+                      onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
+                      className="copilot-send-to-btn copilot-send-to-btn--safety"
+                    >
+                      <ShieldAlert className="h-3 w-3" /> Send to Safety
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </>
+        )}
+        {busy && (
+          <div className="copilot-thinking" data-testid="copilot-thinking">
+            <div className="copilot-msg-badge">
+              <Bot className="h-2.5 w-2.5" /> AI
+            </div>
+            <div className="copilot-thinking-dots">
+              <span /> <span /> <span />
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
-      <div className="p-3 border-t border-border flex gap-2">
-        <input
-          data-testid="copilot-input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Ask the copilot..."
-          className="flex-1 h-9 px-3 rounded border border-input bg-background text-sm"
-        />
-        <button
-          data-testid="copilot-send"
-          onClick={send}
-          disabled={busy}
-          className="h-9 w-9 grid place-items-center rounded bg-primary text-primary-foreground disabled:opacity-50"
-        >
-          <Send className="h-4 w-4" />
-        </button>
+
+      {/* ---- INPUT ---- */}
+      <div className="copilot-panel-input">
+        <div className="copilot-input-wrap">
+          <textarea
+            ref={inputRef}
+            data-testid="copilot-input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder={busy ? "Working…" : "Ask the copilot…"}
+            className="copilot-input"
+            rows={1}
+            disabled={busy}
+          />
+          <button
+            data-testid="copilot-send"
+            onClick={() => send()}
+            disabled={busy || !input.trim()}
+            className="copilot-send-btn"
+            aria-label="Send"
+            title="Send (Enter)"
+          >
+            <Send className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="copilot-input-hint">
+          <span><kbd>Enter</kbd> send</span>
+          <span className="copilot-input-hint-sep">·</span>
+          <span><kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
+          {activeDrId && (
+            <>
+              <span className="copilot-input-hint-sep">·</span>
+              <span className="copilot-input-hint-scope">DR context attached</span>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
