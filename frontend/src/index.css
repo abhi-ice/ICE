@@ -1745,40 +1745,76 @@ html[data-theme="light"] .sticky-submit .text-white {
     color: white !important;
 }
 
-/* v4 pt.20: Catch-all — any button with a brand/semantic colored
-   background gets white text in light theme. Covers buttons that
-   forgot to add text-white explicitly (those inherit body color =
-   fg-primary = black, which is unreadable on emerald/red/amber). */
+/* v4 pt.20: Catch-all — any clickable element (button/link/span used
+   as a clickable wrapper) with a brand/semantic colored bg gets white
+   text in light theme. Covers elements that forgot to add text-white
+   explicitly AND span-wrapped clickables (Photo tray AI badge,
+   DR "Upload + tag" label-wrapped span, etc).
+   pt.21 (2026-05-26): widened to spans, divs, labels — the AI
+   confidence badge "85%" on Photo tray + Photos page is a <span>
+   with bg-blue-600 text-white. text-white falls through pt.12
+   global remap → BLACK on emerald (since bg-blue-600 itself was
+   remapped to emerald). Adding span/div/label patterns. */
 html[data-theme="light"] button[class*="bg-emerald-5"],
 html[data-theme="light"] button[class*="bg-emerald-6"],
 html[data-theme="light"] button[class*="bg-emerald-7"],
 html[data-theme="light"] a[class*="bg-emerald-5"],
 html[data-theme="light"] a[class*="bg-emerald-6"],
 html[data-theme="light"] a[class*="bg-emerald-7"],
+html[data-theme="light"] span[class*="bg-emerald-5"],
+html[data-theme="light"] span[class*="bg-emerald-6"],
+html[data-theme="light"] span[class*="bg-emerald-7"],
+html[data-theme="light"] div[class*="bg-emerald-5"],
+html[data-theme="light"] div[class*="bg-emerald-6"],
+html[data-theme="light"] div[class*="bg-emerald-7"],
+html[data-theme="light"] label[class*="bg-emerald-5"],
+html[data-theme="light"] label[class*="bg-emerald-6"],
+html[data-theme="light"] label[class*="bg-emerald-7"],
 html[data-theme="light"] button.bg-emerald-600,
 html[data-theme="light"] button.bg-emerald-500,
 html[data-theme="light"] button.bg-emerald-700,
 html[data-theme="light"] button[class*="bg-rose-6"],
+html[data-theme="light"] span[class*="bg-rose-6"],
 html[data-theme="light"] button[class*="bg-rose-7"],
 html[data-theme="light"] button[class*="bg-red-6"],
+html[data-theme="light"] span[class*="bg-red-6"],
 html[data-theme="light"] button[class*="bg-red-7"],
 html[data-theme="light"] button[class*="bg-amber-5"],
+html[data-theme="light"] span[class*="bg-amber-5"],
 html[data-theme="light"] button[class*="bg-amber-6"],
+html[data-theme="light"] span[class*="bg-amber-6"],
 html[data-theme="light"] button[class*="bg-amber-7"],
 html[data-theme="light"] button[class*="bg-blue-6"],
-html[data-theme="light"] button[class*="bg-blue-7"] {
+html[data-theme="light"] span[class*="bg-blue-6"],
+html[data-theme="light"] button[class*="bg-blue-7"],
+html[data-theme="light"] button[class*="bg-sky-5"],
+html[data-theme="light"] span[class*="bg-sky-5"],
+html[data-theme="light"] button[class*="bg-sky-6"],
+html[data-theme="light"] span[class*="bg-sky-6"] {
     color: white !important;
 }
 html[data-theme="light"] button[class*="bg-emerald-5"] *,
 html[data-theme="light"] button[class*="bg-emerald-6"] *,
 html[data-theme="light"] button[class*="bg-emerald-7"] *,
 html[data-theme="light"] a[class*="bg-emerald-6"] *,
+html[data-theme="light"] span[class*="bg-emerald-6"] *,
+html[data-theme="light"] div[class*="bg-emerald-6"] *,
+html[data-theme="light"] label[class*="bg-emerald-6"] *,
 html[data-theme="light"] button.bg-emerald-600 *,
 html[data-theme="light"] button[class*="bg-rose-6"] *,
+html[data-theme="light"] span[class*="bg-rose-6"] *,
 html[data-theme="light"] button[class*="bg-red-6"] *,
+html[data-theme="light"] span[class*="bg-red-6"] *,
 html[data-theme="light"] button[class*="bg-amber-5"] *,
+html[data-theme="light"] span[class*="bg-amber-5"] *,
 html[data-theme="light"] button[class*="bg-amber-6"] *,
-html[data-theme="light"] button[class*="bg-blue-6"] * {
+html[data-theme="light"] span[class*="bg-amber-6"] *,
+html[data-theme="light"] button[class*="bg-blue-6"] *,
+html[data-theme="light"] span[class*="bg-blue-6"] *,
+html[data-theme="light"] button[class*="bg-sky-5"] *,
+html[data-theme="light"] span[class*="bg-sky-5"] *,
+html[data-theme="light"] button[class*="bg-sky-6"] *,
+html[data-theme="light"] span[class*="bg-sky-6"] * {
     color: inherit !important;
 }
 /* Same catch-all for DARK theme — emerald buttons should always have

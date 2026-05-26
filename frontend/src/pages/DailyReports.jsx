@@ -2262,95 +2262,99 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
           )}
         </div>
       }>
-      <div className="overflow-x-auto">
-        <table className="dense-table">
-          <thead>
-            <tr>
-              <th>Code</th><th>Description</th><th>Loc</th>
-              <th>SOD %</th><th>EOD %</th><th>Δ</th>
-              <th title="Hours worked by the crew on this activity today. Free-text — defaults to crew-headcount × hours/person from the Manpower Log if not overridden.">Hours</th>
-              <th>Status</th>
-              <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
-              <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
-              <th></th>
-            </tr>
-          </thead>
-          {/* F2 -- the grid is split into 3 sections by work_category.
-              Only the Field Work section is editable; Sections 1 & 3
-              are visible but read-only (no editable inputs).
-              2026-02-XX (Abhi) -- sections with zero rows for this DR
-              date collapse by default. Section header stays visible so
-              the super still sees the category exists; clicking the
-              header toggles the body. Non-empty sections stay
-              expanded by default. */}
-          {GRID_SECTIONS.map((sec) => {
-            const secRows = grid.filter((r) => gridSectionOf(r.work_category) === sec.n);
-            const isEmpty = secRows.length === 0;
-            const override = sectionOpenOverride[sec.n];
-            const isOpen = override !== undefined ? override : !isEmpty;
-            const toggle = () => setSectionOpenOverride((m) => ({ ...m, [sec.n]: !isOpen }));
-            return (
-              <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
-                {/* V4 Lifecycle Track section header (2026-05-26):
-                    - Editable (Today's Planned Activity) → emerald rail + "Action Required" badge
-                    - Read-only (Preconstruction / Closeout) → muted gray + "Reference" tag
-                    The eye should jump straight to the editable section. */}
-                <tr
-                  className={`cursor-pointer ${sec.editable
-                    ? "bg-[rgba(16,185,129,0.06)] hover:bg-[rgba(16,185,129,0.10)] border-y border-[rgba(16,185,129,0.30)]"
-                    : "bg-slate-100/80 hover:bg-slate-200/60 border-y border-slate-200 opacity-90"
-                  }`}
-                  onClick={toggle}
-                  data-testid={`dr-grid-section-${sec.n}-toggle`}
-                >
-                  <td colSpan="11" className={`px-3 py-2 ${sec.editable ? "border-l-2 border-l-[#10b981]" : ""}`}>
-                    <div className="flex items-center gap-2">
-                      <ChevronDown
-                        className={`h-3.5 w-3.5 ${sec.editable ? "text-[#10b981]" : "text-slate-500"} transition-transform ${isOpen ? "" : "-rotate-90"}`}
-                      />
-                      {sec.editable && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[#10b981] text-white text-[9px] font-bold">
-                          Today · Action Required
-                        </span>
-                      )}
-                      <span className={`text-sm font-semibold tracking-tight ${sec.editable ? "text-[#10b981]" : "text-slate-600"}`}>
-                        {sec.title}
-                      </span>
-                      <span className="text-xs text-slate-400 tabular-nums">
-                        · {secRows.length} {secRows.length === 1 ? "row" : "rows"}
-                      </span>
-                      {!sec.editable && (
-                        <span className="text-[9px] font-bold text-slate-400 bg-white border border-slate-200 rounded px-1.5 py-0.5">
-                          Reference · Read-Only
-                        </span>
-                      )}
-                      {!isOpen && isEmpty && (
-                        <span className="text-xs italic text-slate-400 ml-auto">
-                          click to expand
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-                {isOpen && (isEmpty ? (
-                  <tr>
-                    <td colSpan="11" data-testid={`dr-grid-section-${sec.n}-empty`}
-                      className="text-center py-3 text-xs text-slate-400 italic">
-                      {sec.empty}
-                    </td>
-                  </tr>
-                ) : secRows.map((r) => (
-                  <GridRow key={r.id} r={r} editable={sec.editable}
-                    locked={locked} staleRows={staleRows} refreshStaleRow={refreshStaleRow}
-                    submitRowErrors={submitRowErrors} presence={presence}
-                    updateRow={updateRow} removeRow={removeRow}
-                    dailyReportId={dailyReportId} reload={reload} />
-                )))}
-              </tbody>
-            );
-          })}
-        </table>
-      </div>
+      {/* v4 pt.21 (2026-05-26): Activity log redesigned to match v4
+          mockup Lifecycle Track. Three sections:
+          - BEFORE · REFERENCE: Preconstruction Paperwork (one-line
+            read-only summary, NOT collapsible)
+          - TODAY · ACTION REQUIRED: Today's Planned Activity (full
+            table ALWAYS visible — supers can't accidentally collapse
+            their core workflow)
+          - AFTER · REFERENCE: Closeout Paperwork (one-line read-only)
+          The old design had all three collapsible which hid the
+          "Today's Planned" table and confused supers. */}
+      {(() => {
+        const sec1 = GRID_SECTIONS[0]; // Preconstruction
+        const sec2 = GRID_SECTIONS[1]; // Today's Planned (editable)
+        const sec3 = GRID_SECTIONS[2]; // Closeout
+        const sec1Rows = grid.filter((r) => gridSectionOf(r.work_category) === 1);
+        const sec2Rows = grid.filter((r) => gridSectionOf(r.work_category) === 2);
+        const sec3Rows = grid.filter((r) => gridSectionOf(r.work_category) === 3);
+        const sec2Reported = sec2Rows.filter((r) => (r.pct_complete_end_of_day || 0) > 0).length;
+        const sec2Pct = sec2Rows.length === 0 ? 0 : Math.round((sec2Reported / sec2Rows.length) * 100);
+        return (
+          <div className="lifecycle">
+            {/* BEFORE · REFERENCE divider + one-line summary */}
+            <div className="phase-divider">Before · Reference</div>
+            <div className="phase-ref" data-testid="dr-grid-section-1">
+              <Lock className="lock-icon" />
+              <span className="title">{sec1.title}</span>
+              <span className="count">· {sec1Rows.length} {sec1Rows.length === 1 ? "row" : "rows"}</span>
+              <span className="ref-tag">Read-Only</span>
+              <span className="meta">cleared before today's activity began</span>
+            </div>
+
+            {/* TODAY · ACTION REQUIRED divider + always-expanded table */}
+            <div className="phase-divider now">Today · Action Required</div>
+            <div className="phase-now" data-testid="dr-grid-section-2">
+              <div className="phase-now-head">
+                <span className="phase-now-badge">
+                  <Pencil className="h-3 w-3" /> Your Job
+                </span>
+                <span className="phase-now-title">Today's Planned Activity</span>
+                <span className="phase-now-count">
+                  {sec2Reported} of {sec2Rows.length} {sec2Rows.length === 1 ? "row" : "rows"} reported · {sec2Pct}% complete
+                </span>
+              </div>
+              <div className="phase-now-helper">
+                Mark today's work — SOD %, EOD %, Δ, status, blockers. Submit blocks until every row has progress.
+              </div>
+              <div className="phase-now-body">
+                <div className="overflow-x-auto">
+                  <table className="dense-table">
+                    <thead>
+                      <tr>
+                        <th>Code</th><th>Description</th><th>Loc</th>
+                        <th>SOD %</th><th>EOD %</th><th>Δ</th>
+                        <th title="Hours worked by the crew on this activity today. Free-text — defaults to crew-headcount × hours/person from the Manpower Log if not overridden.">Hours</th>
+                        <th>Status</th>
+                        <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
+                        <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sec2Rows.length === 0 ? (
+                        <tr>
+                          <td colSpan="11" data-testid="dr-grid-section-2-empty"
+                            className="text-center py-4 text-xs italic" style={{ color: "var(--v4-fg-faint)" }}>
+                            {sec2.empty}
+                          </td>
+                        </tr>
+                      ) : sec2Rows.map((r) => (
+                        <GridRow key={r.id} r={r} editable={true}
+                          locked={locked} staleRows={staleRows} refreshStaleRow={refreshStaleRow}
+                          submitRowErrors={submitRowErrors} presence={presence}
+                          updateRow={updateRow} removeRow={removeRow}
+                          dailyReportId={dailyReportId} reload={reload} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* AFTER · REFERENCE divider + one-line summary */}
+            <div className="phase-divider">After · Reference</div>
+            <div className="phase-ref" data-testid="dr-grid-section-3">
+              <Lock className="lock-icon" />
+              <span className="title">{sec3.title}</span>
+              <span className="count">· {sec3Rows.length} {sec3Rows.length === 1 ? "row" : "rows"}</span>
+              <span className="ref-tag">Read-Only</span>
+              <span className="meta">activates once today's rows are submitted</span>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="mt-4 pt-3 border-t border-slate-100 space-y-3">
         {locked && (
