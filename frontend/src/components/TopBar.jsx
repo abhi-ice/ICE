@@ -39,10 +39,12 @@ export default function TopBar() {
   return (
     <header
       data-testid="app-topbar"
-      className="v4-topbar h-14 flex items-center gap-2 px-4 sticky top-0 z-10"
+      // pt.29 — match v4 mockup exactly: 52px tall (was 56), 14px
+      // horizontal padding, 10px gap, sticky.
+      className="v4-topbar h-[52px] flex items-center gap-2.5 px-3.5 sticky top-0 z-10"
     >
       <Select value={tenant?.id} onValueChange={() => {}}>
-        <SelectTrigger className="v4-topbar-select h-9 w-[160px] text-sm" data-testid="tenant-switcher">
+        <SelectTrigger className="v4-topbar-select h-8 w-[140px] text-xs" data-testid="tenant-switcher">
           <SelectValue placeholder="Tenant" />
         </SelectTrigger>
         <SelectContent>
@@ -53,7 +55,7 @@ export default function TopBar() {
       </Select>
 
       <Select value={activeId || ""} onValueChange={(v) => setActiveId(v)}>
-        <SelectTrigger className="v4-topbar-select h-9 w-[260px] text-sm" data-testid="project-switcher">
+        <SelectTrigger className="v4-topbar-select h-8 w-[230px] text-xs" data-testid="project-switcher">
           <SelectValue placeholder="Project" />
         </SelectTrigger>
         <SelectContent>
@@ -65,9 +67,12 @@ export default function TopBar() {
         </SelectContent>
       </Select>
 
-      <div className="ml-auto flex items-center gap-3">
-        <GlobalSearch />
+      {/* Search sits next to the project picker, with a flex spacer
+          AFTER it. Matches v4 layout (was right-anchored with all
+          actions together — v4 splits search from the actions). */}
+      <GlobalSearch />
 
+      <div className="ml-auto flex items-center gap-2.5">
         {/* v4: subtle save-state indicator (placeholder until wired to
             DR autosave state — for now indicates the app is healthy). */}
         <div className="v4-save-state hidden lg:inline-flex" title="Your work is auto-saved">
@@ -94,13 +99,13 @@ export default function TopBar() {
           <DropdownMenuTrigger asChild>
             <button
               data-testid="topbar-user-menu"
-              className="v4-topbar-avatar-btn flex items-center gap-2 h-10 pl-1.5 pr-2.5 rounded-md transition-colors"
+              className="v4-topbar-avatar-btn flex items-center gap-1.5 h-9 pl-1 pr-2 rounded-md transition-colors"
               title={user?.full_name}
             >
-              <div className="h-8 w-8 rounded-full bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30 grid place-items-center text-xs font-semibold tracking-wide">
+              <div className="h-[30px] w-[30px] rounded-full bg-[#10b981]/15 text-[#34D399] border border-[#10b981]/30 grid place-items-center text-[10.5px] font-semibold tracking-wide">
                 {initials}
               </div>
-              <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} style={{ color: "rgba(255,255,255,0.6)" }} />
+              <ChevronDown className="h-3 w-3" strokeWidth={2} style={{ color: "rgba(255,255,255,0.55)" }} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-72 p-0">

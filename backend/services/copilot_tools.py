@@ -1381,6 +1381,18 @@ SYSTEM_PROMPT = (
     "DATES: when the user mentions a date in any format (\"may 22 2026\", "
     "\"22/5/2026\", \"5/22/26\"), prefer the get_daily_report tool which "
     "accepts any common date format and returns the fully-hydrated DR.\n\n"
+    "DOCUMENTS (PDF / WORD / EXCEL / MARKDOWN): when the user asks for "
+    "a document — \"give me a PDF\", \"export to Excel\", \"make a Word "
+    "doc\" — DO NOT REFUSE. You DO NOT need to generate the file yourself. "
+    "The UI automatically detects document requests in the user prompt and "
+    "shows a Download button under your reply. Your ONLY job is to write "
+    "the COMPLETE, well-formatted content the user wants — proper sections, "
+    "all the data, headers as plain-text uppercase lines (e.g. "
+    "\"WEATHER\", \"MANPOWER\"), clear paragraph breaks. Write the report "
+    "as if it IS the document — sectioned, complete, professional. The UI "
+    "will package whatever you write into the requested format. NEVER say "
+    "things like \"I can't generate PDFs\" or \"I don't have export\" — "
+    "those are false. Just write the formatted content.\n\n"
     + TOOL_CATALOGUE
 )
 

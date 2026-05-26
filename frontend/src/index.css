@@ -2236,38 +2236,63 @@ html[data-theme="dark"] .text-slate-900 {
    <input>s without explicit type fall outside the pt.12 form selector.
    ========================================================================= */
 
-/* --- TopBar: dark in BOTH themes (matches v4 mockup: dark rail) --- */
+/* --- TopBar: dark in BOTH themes, dimensions match v4 mockup exactly
+   (pt.29). Mockup spec: 52px tall, 14px horizontal padding, 10px gap. */
 .v4-topbar {
     background-color: var(--v4-bg-topbar);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     color: rgba(255, 255, 255, 0.92);
 }
-/* Tenant + Project pickers — visible surface against the dark topbar.
-   User flagged: in dark theme dropdowns look "full grey" indistinct
-   from the topbar. Add a slightly lighter inset surface + a hover
-   lift so they read as interactive. */
+/* Tenant + Project pickers — match v4 .tb-select-native: 32px tall,
+   12.5px font, padding 0 28px 0 10px, semi-transparent white surface. */
 .v4-topbar-select {
-    background-color: rgba(255, 255, 255, 0.06) !important;
-    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
     color: rgba(255, 255, 255, 0.92) !important;
+    height: 32px !important;
+    font-size: 12.5px !important;
+    padding: 0 28px 0 10px !important;
+    border-radius: var(--v4-radius-btn) !important;
 }
 .v4-topbar-select:hover {
-    background-color: rgba(255, 255, 255, 0.10) !important;
-    border-color: rgba(255, 255, 255, 0.16) !important;
+    background-color: rgba(255, 255, 255, 0.12) !important;
+    border-color: rgba(255, 255, 255, 0.18) !important;
 }
 .v4-topbar-select[data-state="open"] {
     background-color: rgba(16, 185, 129, 0.14) !important;
     border-color: rgba(16, 185, 129, 0.45) !important;
     color: white !important;
 }
-.v4-topbar-select svg { color: rgba(255, 255, 255, 0.55) !important; }
-/* Search bar inside topbar — globalsearch — match select surface */
-.v4-topbar [data-testid="global-search-input"],
-.v4-topbar input[type="text"],
-.v4-topbar input[type="search"] {
-    background-color: rgba(255, 255, 255, 0.06) !important;
-    border: 1px solid rgba(255, 255, 255, 0.10) !important;
-    color: rgba(255, 255, 255, 0.92) !important;
+.v4-topbar-select svg { color: rgba(255, 255, 255, 0.55) !important; height: 12px !important; width: 12px !important; }
+/* Search bar — v4 spec: 280px wide, 34px tall, with Ctrl-K kbd badge.
+   .v4-topbar-search wraps the input + icon + kbd. */
+.v4-topbar-search {
+    width: 280px;
+    flex: 0 0 280px;
+}
+.v4-topbar-search-input {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    color: white !important;
+    font-size: 12.5px !important;
+}
+.v4-topbar-search-input::placeholder { color: rgba(255, 255, 255, 0.45) !important; }
+.v4-topbar-search-input:focus {
+    background-color: rgba(255, 255, 255, 0.12) !important;
+    border-color: rgba(16, 185, 129, 0.45) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15) !important;
+}
+.v4-topbar-search-icon { color: rgba(255, 255, 255, 0.45); }
+.v4-topbar-search-kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    padding: 2px 5px;
+    color: rgba(255, 255, 255, 0.60);
+    line-height: 1;
 }
 .v4-topbar input::placeholder { color: rgba(255, 255, 255, 0.40) !important; }
 
