@@ -399,9 +399,9 @@ html[data-theme="dark"] .page-shell::after {
 .dense-table-frozen thead th {
     position: sticky;
     top: 0;
-    background-color: #0a0a0c;            /* dark sticky header bg */
+    background-color: var(--v4-bg-surface-2);
     z-index: 5;
-    box-shadow: 0 1px 0 0 rgba(255,255,255,0.08);
+    box-shadow: 0 1px 0 0 var(--v4-border);
 }
 .dense-table-frozen td.col-pin-1,
 .dense-table-frozen th.col-pin-1 {
@@ -416,15 +416,15 @@ html[data-theme="dark"] .page-shell::after {
     left: 2.5rem;
     background-color: inherit;
     z-index: 3;
-    box-shadow: 2px 0 0 -1px rgba(255,255,255,0.10);
+    box-shadow: 2px 0 0 -1px var(--v4-border);
 }
 .dense-table-frozen thead th.col-pin-1,
 .dense-table-frozen thead th.col-pin-2 {
     z-index: 6;
-    background-color: #0a0a0c;
+    background-color: var(--v4-bg-surface-2);
 }
 .dense-table-frozen tbody tr {
-    background-color: rgba(15, 15, 18, 0.85);   /* solid-ish dark row bg */
+    background-color: var(--v4-bg-surface);
 }
 
 /* Top bar â€” dark glass, sticky */
@@ -938,13 +938,13 @@ button:disabled, .btn:disabled {
    render raw <table> for compact lists. Re-skin them so the rows
    don't end up white-on-white. */
 table:not(.dense-table) thead th {
-    color: rgba(255, 255, 255, 0.55);
-    background-color: rgba(255, 255, 255, 0.02);
-    border-bottom-color: rgba(255, 255, 255, 0.08);
+    color: var(--v4-fg-secondary);
+    background-color: var(--v4-bg-surface-2);
+    border-bottom-color: var(--v4-border);
 }
 table:not(.dense-table) tbody td {
-    color: rgb(212 212 216);
-    border-bottom-color: rgba(255, 255, 255, 0.04);
+    color: var(--v4-fg-primary);
+    border-bottom-color: var(--v4-border);
 }
 
 /* Card / panel default border (Tailwind `border` utility falls back
@@ -1140,7 +1140,7 @@ button { white-space: nowrap; }
    alignment artifact, and increase divider opacity slightly. */
 .dense-table td {
     border-bottom: 0 !important;
-    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+    box-shadow: inset 0 -1px 0 var(--v4-border);
 }
 .dense-table tbody tr:last-child td {
     box-shadow: none;
@@ -1704,3 +1704,333 @@ body.has-sticky-submit .copilot-fab { bottom: 70px; }
     .dr-spine .step-node { left: -28px; width: 22px; height: 22px; font-size: 10px; }
     .dr-spine .step::after { left: -18px; }
 }
+
+/* =========================================================================
+   LIGHT-THEME COMPREHENSIVE OVERRIDES (2026-05-26)
+   Source components were written for the dark theme and use Tailwind utility
+   classes like text-slate-300/400, text-white/X, bg-emerald-500/15, and
+   border-white/X. Those colors are designed for ~#26262b backgrounds — on
+   the light-theme #f5f6f8 page they range from low-contrast to invisible.
+   This block remaps them to theme tokens so every page is legible without
+   touching the source components.
+   FLAT SELECTORS ONLY — postcss/tailwind does not support nested CSS here.
+   ========================================================================= */
+
+/* --- pale slate / zinc / gray text → secondary fg ----------------- */
+html[data-theme="light"] .text-slate-200,
+html[data-theme="light"] .text-slate-300,
+html[data-theme="light"] .text-slate-400,
+html[data-theme="light"] .text-slate-500,
+html[data-theme="light"] .text-zinc-200,
+html[data-theme="light"] .text-zinc-300,
+html[data-theme="light"] .text-zinc-400,
+html[data-theme="light"] .text-zinc-500,
+html[data-theme="light"] .text-gray-200,
+html[data-theme="light"] .text-gray-300,
+html[data-theme="light"] .text-gray-400,
+html[data-theme="light"] .text-gray-500,
+html[data-theme="light"] .text-neutral-300,
+html[data-theme="light"] .text-neutral-400,
+html[data-theme="light"] .text-neutral-500 {
+    color: var(--v4-fg-secondary) !important;
+}
+html[data-theme="light"] .text-slate-100,
+html[data-theme="light"] .text-zinc-100,
+html[data-theme="light"] .text-gray-100,
+html[data-theme="light"] .text-neutral-100,
+html[data-theme="light"] .text-slate-50,
+html[data-theme="light"] .text-zinc-50,
+html[data-theme="light"] .text-gray-50 {
+    color: var(--v4-fg-primary) !important;
+}
+
+/* --- text-white and white/X opacity text → theme fg --------------- */
+html[data-theme="light"] .text-white,
+html[data-theme="light"] .text-white\/95,
+html[data-theme="light"] .text-white\/90,
+html[data-theme="light"] .text-white\/85,
+html[data-theme="light"] .text-white\/80,
+html[data-theme="light"] .text-white\/75,
+html[data-theme="light"] .text-white\/70 {
+    color: var(--v4-fg-primary) !important;
+}
+html[data-theme="light"] .text-white\/65,
+html[data-theme="light"] .text-white\/60,
+html[data-theme="light"] .text-white\/55,
+html[data-theme="light"] .text-white\/50 {
+    color: var(--v4-fg-secondary) !important;
+}
+html[data-theme="light"] .text-white\/45,
+html[data-theme="light"] .text-white\/40,
+html[data-theme="light"] .text-white\/35,
+html[data-theme="light"] .text-white\/30,
+html[data-theme="light"] .text-white\/25,
+html[data-theme="light"] .text-white\/20 {
+    color: var(--v4-fg-muted) !important;
+}
+
+/* --- brand-tinted text colors → solid brand emerald --------------- */
+html[data-theme="light"] .text-emerald-200,
+html[data-theme="light"] .text-emerald-300,
+html[data-theme="light"] .text-emerald-400 {
+    color: var(--brand-primary) !important;
+}
+
+/* semantic light variants → darker readable ink */
+html[data-theme="light"] .text-amber-200,
+html[data-theme="light"] .text-amber-300,
+html[data-theme="light"] .text-amber-400 { color: #b45309 !important; }
+html[data-theme="light"] .text-yellow-200,
+html[data-theme="light"] .text-yellow-300,
+html[data-theme="light"] .text-yellow-400 { color: #a16207 !important; }
+html[data-theme="light"] .text-rose-200,
+html[data-theme="light"] .text-rose-300,
+html[data-theme="light"] .text-rose-400,
+html[data-theme="light"] .text-red-200,
+html[data-theme="light"] .text-red-300,
+html[data-theme="light"] .text-red-400 { color: #b91c1c !important; }
+html[data-theme="light"] .text-blue-200,
+html[data-theme="light"] .text-blue-300,
+html[data-theme="light"] .text-blue-400 { color: #1d4ed8 !important; }
+html[data-theme="light"] .text-sky-200,
+html[data-theme="light"] .text-sky-300,
+html[data-theme="light"] .text-sky-400 { color: #0369a1 !important; }
+html[data-theme="light"] .text-indigo-200,
+html[data-theme="light"] .text-indigo-300,
+html[data-theme="light"] .text-indigo-400 { color: #4338ca !important; }
+html[data-theme="light"] .text-purple-200,
+html[data-theme="light"] .text-purple-300,
+html[data-theme="light"] .text-purple-400 { color: #7e22ce !important; }
+html[data-theme="light"] .text-cyan-200,
+html[data-theme="light"] .text-cyan-300,
+html[data-theme="light"] .text-cyan-400 { color: #0e7490 !important; }
+
+/* --- borders: white/X → theme border ------------------------------ */
+html[data-theme="light"] .border-white\/20,
+html[data-theme="light"] .border-white\/15,
+html[data-theme="light"] .border-white\/10,
+html[data-theme="light"] .border-white\/\[0\.20\],
+html[data-theme="light"] .border-white\/\[0\.15\],
+html[data-theme="light"] .border-white\/\[0\.12\],
+html[data-theme="light"] .border-white\/\[0\.10\],
+html[data-theme="light"] .border-white\/\[0\.08\],
+html[data-theme="light"] .border-white\/\[0\.07\],
+html[data-theme="light"] .border-white\/\[0\.06\],
+html[data-theme="light"] .border-white\/\[0\.05\],
+html[data-theme="light"] .border-white\/\[0\.04\],
+html[data-theme="light"] .border-white\/\[0\.03\],
+html[data-theme="light"] .border-white\/\[0\.02\],
+html[data-theme="light"] .border-white\/5 {
+    border-color: var(--v4-border) !important;
+}
+
+/* --- backgrounds: white/X → surface-2 ----------------------------- */
+html[data-theme="light"] .bg-white\/\[0\.10\],
+html[data-theme="light"] .bg-white\/\[0\.08\],
+html[data-theme="light"] .bg-white\/\[0\.06\],
+html[data-theme="light"] .bg-white\/\[0\.05\],
+html[data-theme="light"] .bg-white\/\[0\.04\],
+html[data-theme="light"] .bg-white\/\[0\.03\],
+html[data-theme="light"] .bg-white\/\[0\.02\],
+html[data-theme="light"] .bg-white\/5,
+html[data-theme="light"] .bg-white\/10 {
+    background-color: var(--v4-bg-surface-2) !important;
+}
+
+/* --- dark slate panel bgs (form fields, dialogs) → light surface -- */
+html[data-theme="light"] .bg-slate-900,
+html[data-theme="light"] .bg-slate-900\/80,
+html[data-theme="light"] .bg-slate-900\/70,
+html[data-theme="light"] .bg-slate-900\/60,
+html[data-theme="light"] .bg-slate-900\/50,
+html[data-theme="light"] .bg-slate-900\/40,
+html[data-theme="light"] .bg-slate-800,
+html[data-theme="light"] .bg-slate-800\/80,
+html[data-theme="light"] .bg-slate-800\/60,
+html[data-theme="light"] .bg-slate-800\/50,
+html[data-theme="light"] .bg-slate-800\/40,
+html[data-theme="light"] .bg-zinc-900,
+html[data-theme="light"] .bg-zinc-900\/80,
+html[data-theme="light"] .bg-zinc-900\/60,
+html[data-theme="light"] .bg-zinc-800,
+html[data-theme="light"] .bg-neutral-900,
+html[data-theme="light"] .bg-neutral-800 {
+    background-color: var(--v4-bg-input) !important;
+    color: var(--v4-fg-primary) !important;
+}
+html[data-theme="light"] .bg-slate-950,
+html[data-theme="light"] .bg-zinc-950,
+html[data-theme="light"] .bg-neutral-950,
+html[data-theme="light"] .bg-black,
+html[data-theme="light"] .bg-black\/80,
+html[data-theme="light"] .bg-black\/60,
+html[data-theme="light"] .bg-black\/50,
+html[data-theme="light"] .bg-black\/40 {
+    background-color: var(--v4-bg-page) !important;
+    color: var(--v4-fg-primary) !important;
+}
+
+/* --- soft emerald-tinted backgrounds (voice button, AI badge) ----- */
+html[data-theme="light"] .bg-emerald-500\/5,
+html[data-theme="light"] .bg-emerald-500\/10,
+html[data-theme="light"] .bg-emerald-500\/15,
+html[data-theme="light"] .bg-emerald-500\/20,
+html[data-theme="light"] .bg-emerald-400\/10,
+html[data-theme="light"] .bg-emerald-400\/15 {
+    background-color: rgba(16, 185, 129, 0.10) !important;
+    color: var(--brand-primary) !important;
+}
+html[data-theme="light"] .border-emerald-500\/20,
+html[data-theme="light"] .border-emerald-500\/30,
+html[data-theme="light"] .border-emerald-500\/40,
+html[data-theme="light"] .border-emerald-400\/30,
+html[data-theme="light"] .border-emerald-400\/40 {
+    border-color: rgba(16, 185, 129, 0.32) !important;
+}
+
+/* semantic soft-tinted badges */
+html[data-theme="light"] .bg-amber-500\/10,
+html[data-theme="light"] .bg-amber-500\/15,
+html[data-theme="light"] .bg-amber-500\/20 {
+    background-color: rgba(245, 158, 11, 0.12) !important;
+    color: #b45309 !important;
+}
+html[data-theme="light"] .bg-rose-500\/10,
+html[data-theme="light"] .bg-rose-500\/15,
+html[data-theme="light"] .bg-rose-500\/20,
+html[data-theme="light"] .bg-red-500\/10,
+html[data-theme="light"] .bg-red-500\/15,
+html[data-theme="light"] .bg-red-500\/20 {
+    background-color: rgba(239, 68, 68, 0.10) !important;
+    color: #b91c1c !important;
+}
+html[data-theme="light"] .bg-blue-500\/10,
+html[data-theme="light"] .bg-blue-500\/15,
+html[data-theme="light"] .bg-blue-500\/20 {
+    background-color: rgba(59, 130, 246, 0.10) !important;
+    color: #1d4ed8 !important;
+}
+
+/* --- legacy shadcn / "card" tokens map onto v4 tokens ------------- */
+html[data-theme="light"] .bg-card,
+html[data-theme="light"] .bg-popover,
+html[data-theme="light"] .bg-background {
+    background-color: var(--v4-bg-surface) !important;
+}
+html[data-theme="light"] .text-foreground { color: var(--v4-fg-primary) !important; }
+html[data-theme="light"] .text-muted-foreground { color: var(--v4-fg-secondary) !important; }
+html[data-theme="light"] .border-border,
+html[data-theme="light"] .border-input { border-color: var(--v4-border) !important; }
+
+/* --- pills (.pill-green / -amber / -red / -blue / -slate) --------- */
+html[data-theme="light"] .pill-green {
+    background: var(--v4-status-closed-bg) !important;
+    color: var(--v4-status-closed-fg) !important;
+    border-color: rgba(38, 115, 45, 0.32) !important;
+}
+html[data-theme="light"] .pill-amber {
+    background: var(--v4-status-open-bg) !important;
+    color: var(--v4-status-open-fg) !important;
+    border-color: rgba(138, 85, 0, 0.32) !important;
+}
+html[data-theme="light"] .pill-red {
+    background: var(--v4-status-blocker-bg) !important;
+    color: var(--v4-status-blocker-fg) !important;
+    border-color: rgba(163, 38, 26, 0.32) !important;
+}
+html[data-theme="light"] .pill-blue {
+    background: var(--v4-status-submitted-bg) !important;
+    color: var(--v4-status-submitted-fg) !important;
+    border-color: rgba(26, 85, 163, 0.32) !important;
+}
+html[data-theme="light"] .pill-slate {
+    background: var(--v4-status-draft-bg) !important;
+    color: var(--v4-status-draft-fg) !important;
+    border-color: rgba(120, 130, 140, 0.32) !important;
+}
+
+/* --- placeholders: dark-theme placeholders are invisible on white - */
+html[data-theme="light"] ::placeholder { color: var(--v4-fg-muted) !important; opacity: 1; }
+html[data-theme="light"] input::placeholder,
+html[data-theme="light"] textarea::placeholder { color: var(--v4-fg-muted) !important; }
+
+/* --- form controls baseline --------------------------------------- */
+html[data-theme="light"] input[type="text"],
+html[data-theme="light"] input[type="email"],
+html[data-theme="light"] input[type="password"],
+html[data-theme="light"] input[type="number"],
+html[data-theme="light"] input[type="search"],
+html[data-theme="light"] input[type="tel"],
+html[data-theme="light"] input[type="url"],
+html[data-theme="light"] input[type="date"],
+html[data-theme="light"] input[type="datetime-local"],
+html[data-theme="light"] input[type="time"],
+html[data-theme="light"] select,
+html[data-theme="light"] textarea {
+    background-color: var(--v4-bg-input) !important;
+    color: var(--v4-fg-primary) !important;
+    border-color: var(--v4-border) !important;
+}
+html[data-theme="light"] input:focus,
+html[data-theme="light"] select:focus,
+html[data-theme="light"] textarea:focus {
+    border-color: var(--brand-primary) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 3px var(--brand-pale-bg) !important;
+}
+html[data-theme="light"] input:disabled,
+html[data-theme="light"] textarea:disabled,
+html[data-theme="light"] select:disabled,
+html[data-theme="light"] input[readonly],
+html[data-theme="light"] textarea[readonly] {
+    background-color: var(--v4-bg-surface-2) !important;
+    color: var(--v4-fg-muted) !important;
+}
+
+/* --- scrollbars: dark thumbs on light track ----------------------- */
+html[data-theme="light"] ::-webkit-scrollbar-thumb,
+html[data-theme="light"] .scrollbar-soft::-webkit-scrollbar-thumb {
+    background: var(--v4-border-strong) !important;
+}
+html[data-theme="light"] ::-webkit-scrollbar-track,
+html[data-theme="light"] .scrollbar-soft::-webkit-scrollbar-track {
+    background: var(--v4-bg-surface-2) !important;
+}
+
+/* --- voice / AI badge specific overrides -------------------------- */
+html[data-theme="light"] .voice-badge {
+    background-color: rgba(16, 185, 129, 0.10) !important;
+    color: var(--brand-primary) !important;
+    border-color: rgba(16, 185, 129, 0.30) !important;
+}
+
+/* --- spec-citation re-tints to blue (escape the brand override) --- */
+html[data-theme="light"] .spec-citation,
+html[data-theme="light"] .spec-citation:hover {
+    background-color: rgba(59, 130, 246, 0.10) !important;
+    color: #1d4ed8 !important;
+    border-color: rgba(59, 130, 246, 0.30) !important;
+}
+
+/* --- generic .surface class used in Vendors/Imports etc. ---------- */
+html[data-theme="light"] .surface {
+    background-color: var(--v4-bg-surface) !important;
+    border-color: var(--v4-border) !important;
+    color: var(--v4-fg-primary) !important;
+}
+
+/* --- toast notifications (sonner) --------------------------------- */
+html[data-theme="light"] [data-sonner-toast] {
+    background-color: var(--v4-bg-surface) !important;
+    color: var(--v4-fg-primary) !important;
+    border-color: var(--v4-border) !important;
+}
+
+/* --- "Reference · Read-Only" / "Today · Action Required" tags ----- */
+html[data-theme="light"] .phase-ref {
+    background: var(--v4-bg-surface-2) !important;
+    color: var(--v4-fg-muted) !important;
+}
+
+/* --- KPI band labels: faint text on glass bg readable now --------- */
+html[data-theme="light"] .kpi-delta.flat { color: var(--v4-fg-muted) !important; }
