@@ -45,7 +45,47 @@ Schema:
 
 Tools:
   - search                    args: {query: str}
+                              Global cross-collection text search (projects, tasks, RFIs, work items, specs).
+                              Use when the user gives a free-text query like "the wall vent issue" — fuzzy.
+
   - get_status                args: {entity_type: 'tasks'|'rfis'|'submittals'|'work_items', filter?: str}
+                              Quick top-20 list for a known entity type.
+
+  - get_daily_report          args: {date?: str (any common format: '2026-05-22', '05/22/2026', '22 may 2026',
+                              'May 22 2026' all work)}
+                              Returns the fully-hydrated DR for that date: summary + activity_grid + presence +
+                              delays + rfis + safety_events + qc_issues + deliveries + photos. If no date,
+                              returns recent_daily_reports list. PREFER this over `search` when the user asks
+                              for a daily report by date.
+
+  - query                     args: {collection: str, filter?: dict, sort?: str, limit?: int, project_id?: str}
+                              UNIVERSAL READ. Works against any of these collections:
+                                projects, master_docs,
+                                tasks, schedule_proposals, schedule_diffs,
+                                daily_reports, daily_report_activities, daily_presence,
+                                delays, safety_events, qc_issues, deliveries,
+                                work_items, rfis, submittals, change_orders, coordination_events,
+                                specs, spec_sections, drawings, kb_entries, photos,
+                                crews, equipment, people, subcontractors, suppliers,
+                                locations, floors, rooms,
+                                approvals, audit_log,
+                                ai_recovery_suggestions, ai_kb_recommendations.
+                              `filter` is a MongoDB-style dict, e.g. {"severity": "high"} or
+                              {"created_at": {"$gte": "2026-05-01"}}. `sort` is a field name; prefix
+                              with "-" for descending (e.g. "-created_at"). `limit` defaults to 50, max 200.
+                              Auto-scopes to active tenant + project. USE THIS when no dedicated tool fits.
+
+  - get_project_context       args: {project_id?: str}
+                              One-call snapshot of the project: meta + master_doc + KPI counts
+                              (tasks total / critical / slipping / blocked, RFIs open, submittals open,
+                              delays/safety/QC/work_items open, DRs filed, photos) + recent DRs + recent RFIs
+                              + top blockers. Use when the user asks "what's going on" or "status update".
+
+  - get_schedule_analysis     args: {view: 'critical_path'|'slipping'|'upcoming'|'blockers'|'completed'|'summary',
+                              days?: int (for 'upcoming', default 14), project_id?: str}
+                              CPM-aware schedule views — saves multiple round-trips when the user asks
+                              "what's slipping", "what's blocking", "what's coming this week", "show me
+                              the critical path".
   - create_task               args: {description: str, planned_start?: 'YYYY-MM-DD', planned_finish?: 'YYYY-MM-DD', duration_days?: int, trade_code?: str}
   - update_task               args: {activity_code: str, pct_complete?: int (0..100), planned_start?: 'YYYY-MM-DD', planned_finish?: 'YYYY-MM-DD', status?: 'in_progress'|'complete'|'blocked'}
   - mark_task_complete        args: {activity_code: str}
@@ -132,6 +172,349 @@ async def _tool_search(ctx: dict, args: dict) -> dict:
     from routers.iter5_router import global_search as _search  # type: ignore
     res = await _search(q=args.get("query", ""), ctx=ctx)  # type: ignore
     return {"results": (res.get("results") or [])[:10]}
+
+
+def _parse_date_loose(s: str) -> Optional[str]:
+    """Try hard to interpret a date string the user typed. Returns ISO
+    YYYY-MM-DD or None. Supports US slash, ISO, dotted, dashed, and
+    common natural-language formats: "22 may 2026", "May 22, 2026",
+    "may 22 26", "2026-05-22", "05/22/2026", "22/05/2026", etc.
+    pt.28: needed because the user can ask Mason for a daily report
+    by date in any spelling and expects it to just work."""
+    if not s:
+        return None
+    s = str(s).strip().strip('"').strip("'").replace(",", "")
+    # Direct formats — try strict parses first
+    for fmt in (
+        "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
+        "%m/%d/%Y", "%m-%d-%Y", "%m.%d.%Y",
+        "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
+        "%B %d %Y", "%b %d %Y",
+        "%d %B %Y", "%d %b %Y",
+        "%m/%d/%y", "%d/%m/%y",
+    ):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    # Case-insensitive month names
+    sl = s.lower()
+    for fmt in ("%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y"):
+        try:
+            return datetime.strptime(sl, fmt.lower()).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    # Last resort: dateutil if available
+    try:
+        from dateutil import parser as _dp  # type: ignore
+        dt = _dp.parse(s, fuzzy=True)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+async def _tool_get_daily_report(ctx: dict, args: dict) -> dict:
+    """Find and fully hydrate a Daily Report by date (or list recent if
+    no date given). Smart date parsing accepts every common format. The
+    returned payload includes every sub-collection so the LLM can answer
+    "list everything in the DR for X" in one tool call — no chasing.
+    pt.28 — new tool to fix Mason's "I searched for May 22 but couldn't
+    find it" failures when the user typed the date in any non-ISO form."""
+    db = get_db()
+    project_id = ctx.get("project_id")
+    tenant_id = ctx["tenant_id"]
+    raw_date = args.get("date") or args.get("report_date")
+    if raw_date:
+        iso = _parse_date_loose(raw_date)
+        if not iso:
+            return {"error": f"Could not parse '{raw_date}' as a date — try YYYY-MM-DD."}
+        q = {"report_date": iso}
+        if project_id:
+            q["project_id"] = project_id
+        dr = await db.daily_reports.find_one(tenant_filter(tenant_id, q), {"_id": 0})
+        if not dr:
+            # Fall back: look up by date only across all projects in tenant
+            dr = await db.daily_reports.find_one(
+                tenant_filter(tenant_id, {"report_date": iso}), {"_id": 0})
+        if not dr:
+            return {
+                "error": f"no daily report found for {iso}",
+                "hint": "the report may not exist yet, or may be on a different project",
+                "parsed_date": iso,
+                "original_input": raw_date,
+            }
+        return await _hydrate_dr(db, tenant_id, dr)
+    # No date — return 10 most recent
+    q = {"project_id": project_id} if project_id else {}
+    recent = await db.daily_reports.find(
+        tenant_filter(tenant_id, q),
+        {"_id": 0, "id": 1, "report_date": 1, "status": 1, "project_id": 1},
+    ).sort("report_date", -1).limit(10).to_list(10)
+    return {"recent_daily_reports": recent}
+
+
+async def _tool_query(ctx: dict, args: dict) -> dict:
+    """Universal read tool — Mason can query ANY collection with optional
+    filter, sort, limit. Allow-listed for security. Auto-scopes to the
+    active tenant + project. pt.28: lets Mason answer questions like
+    "show me all delays severity high last 14 days" or "which RFIs
+    haven't been answered" without needing a dedicated tool per query."""
+    ALLOWED = {
+        # Project + master config
+        "projects", "master_docs",
+        # Schedule
+        "tasks", "schedule_proposals", "schedule_diffs",
+        # Daily report family
+        "daily_reports", "daily_report_activities", "daily_presence",
+        # Events
+        "delays", "safety_events", "qc_issues", "deliveries",
+        "work_items", "rfis", "submittals", "change_orders",
+        "coordination_events",
+        # Documents
+        "specs", "spec_sections", "drawings", "kb_entries", "photos",
+        # Resources
+        "crews", "equipment", "people", "subcontractors", "suppliers",
+        "locations", "floors", "rooms",
+        # Governance
+        "approvals", "audit_log", "copilot_messages",
+        # Aging / metrics views (collections proper)
+        "ai_recovery_suggestions", "ai_recovery_applied",
+        "ai_kb_recommendations",
+    }
+    collection = args.get("collection") or args.get("entity_type")
+    if not collection:
+        return {"error": "collection arg is required", "allowed_collections": sorted(ALLOWED)}
+    if collection not in ALLOWED:
+        # Common alias fixups so the LLM doesn't have to guess
+        aliases = {
+            "kb": "kb_entries", "knowledge": "kb_entries", "lessons": "kb_entries",
+            "field_issues": "work_items", "issues": "work_items",
+            "presence": "daily_presence", "manpower": "daily_presence",
+            "events": "delays",  # closest single collection
+            "subs": "subcontractors",
+            "vendors": "subcontractors",
+        }
+        if collection in aliases:
+            collection = aliases[collection]
+        else:
+            return {"error": f"unknown collection '{collection}'", "allowed_collections": sorted(ALLOWED)}
+    db = get_db()
+    tenant_id = ctx["tenant_id"]
+    project_id = args.get("project_id") or ctx.get("project_id")
+    # Build query: always tenant-scoped, optionally project-scoped (for
+    # collections that have a project_id). Tenant-wide collections like
+    # subcontractors/suppliers/kb_entries/audit_log are NOT project-scoped.
+    NOT_PROJECT_SCOPED = {"subcontractors", "suppliers", "kb_entries",
+                          "audit_log", "copilot_messages", "people",
+                          "equipment", "ai_kb_recommendations"}
+    q = dict(tenant_filter(tenant_id))
+    if project_id and collection not in NOT_PROJECT_SCOPED:
+        q["project_id"] = project_id
+    # Merge user-supplied filter dict (LLM produced a Mongo-like filter).
+    # We do shallow validation — strip dangerous operators we don't want.
+    user_filter = args.get("filter") or {}
+    if not isinstance(user_filter, dict):
+        return {"error": "filter must be a dict"}
+    BANNED = {"$where", "$expr", "$function", "$accumulator"}
+    def _scrub(node):
+        if isinstance(node, dict):
+            return {k: _scrub(v) for k, v in node.items() if k not in BANNED}
+        if isinstance(node, list):
+            return [_scrub(v) for v in node]
+        return node
+    safe_filter = _scrub(user_filter)
+    q.update(safe_filter)
+    # Sort: support "field" (asc) or "-field" (desc)
+    sort_arg = args.get("sort")
+    cursor = db[collection].find(q, {"_id": 0})
+    if sort_arg:
+        direction = -1 if str(sort_arg).startswith("-") else 1
+        field = str(sort_arg).lstrip("-")
+        cursor = cursor.sort(field, direction)
+    limit = min(int(args.get("limit") or 50), 200)
+    try:
+        rows = await cursor.limit(limit).to_list(limit)
+    except Exception as e:
+        return {"error": f"query failed: {e}", "filter_used": safe_filter}
+    return {"collection": collection, "count": len(rows), "rows": rows}
+
+
+async def _tool_get_project_context(ctx: dict, args: dict) -> dict:
+    """One-call full snapshot of the active (or specified) project — meta,
+    master doc, KPI counts, recent DRs, recent RFIs, top blockers. Useful
+    when the user asks "what's going on with this project" or "give me a
+    status update". Mason can call this first then drill into specifics."""
+    db = get_db()
+    tenant_id = ctx["tenant_id"]
+    project_id = args.get("project_id") or ctx.get("project_id")
+    if not project_id:
+        # No active project — list projects to choose from
+        projects = await db.projects.find(
+            tenant_filter(tenant_id), {"_id": 0, "id": 1, "name": 1, "status": 1},
+        ).sort("name", 1).limit(20).to_list(20)
+        return {"error": "no active project", "available_projects": projects}
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}), {"_id": 0})
+    if not proj:
+        return {"error": f"project {project_id} not found"}
+    master_doc = await db.master_docs.find_one(
+        tenant_filter(tenant_id, {"project_id": project_id}), {"_id": 0})
+    base = tenant_filter(tenant_id, {"project_id": project_id})
+    async def _count(coll, extra=None):
+        q = dict(base)
+        if extra: q.update(extra)
+        try: return await db[coll].count_documents(q)
+        except Exception: return 0
+    counts = {
+        "tasks_total": await _count("tasks", {"status": {"$ne": "deleted"}}),
+        "tasks_critical": await _count("tasks", {"is_critical": True, "status": {"$ne": "deleted"}}),
+        "tasks_slipping": await _count("tasks", {"slip_days": {"$gt": 0}}),
+        "tasks_blocked": await _count("tasks", {"open_blocker_count": {"$gt": 0}}),
+        "rfis_open": await _count("rfis", {"status": {"$nin": ["answered", "closed"]}}),
+        "submittals_open": await _count("submittals", {"status": {"$nin": ["approved", "closed"]}}),
+        "delays_open": await _count("delays", {"status": {"$ne": "resolved"}}),
+        "safety_events_open": await _count("safety_events", {"status": {"$ne": "closed"}}),
+        "qc_issues_open": await _count("qc_issues", {"status": {"$ne": "closed"}}),
+        "work_items_open": await _count("work_items", {"status": {"$ne": "closed"}}),
+        "daily_reports_filed": await _count("daily_reports"),
+        "photos_total": await _count("photos"),
+    }
+    recent_drs = await db.daily_reports.find(
+        base, {"_id": 0, "id": 1, "report_date": 1, "status": 1, "ppc": 1},
+    ).sort("report_date", -1).limit(5).to_list(5)
+    recent_rfis = await db.rfis.find(
+        base, {"_id": 0, "rfi_number": 1, "subject": 1, "status": 1, "date_initiated": 1},
+    ).sort("date_initiated", -1).limit(5).to_list(5)
+    top_blockers = await db.tasks.find(
+        {**base, "open_blocker_count": {"$gt": 0}},
+        {"_id": 0, "activity_code": 1, "description": 1, "open_blocker_count": 1, "open_blocker_summary": 1},
+    ).sort("open_blocker_count", -1).limit(5).to_list(5)
+    return {
+        "project": proj,
+        "master_doc": master_doc,
+        "counts": counts,
+        "recent_daily_reports": recent_drs,
+        "recent_rfis": recent_rfis,
+        "top_blockers": top_blockers,
+    }
+
+
+async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
+    """CPM-aware schedule views: critical_path / slipping / upcoming /
+    blockers / summary. Mason uses this when the user asks "what's the
+    critical path", "what's slipping", "what's blocked", "what's coming
+    up this week" — saves N round-trips to the generic query tool."""
+    db = get_db()
+    project_id = args.get("project_id") or ctx.get("project_id")
+    if not project_id:
+        return {"error": "no active project"}
+    view = (args.get("view") or "summary").lower()
+    base = tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}})
+    proj_fields = {"_id": 0, "activity_code": 1, "description": 1,
+                   "planned_start": 1, "planned_finish": 1, "pct_complete": 1,
+                   "status": 1, "is_critical": 1, "slip_days": 1,
+                   "open_blocker_count": 1, "open_blocker_summary": 1,
+                   "trade": 1, "duration_days": 1}
+    if view == "critical_path":
+        rows = await db.tasks.find({**base, "is_critical": True}, proj_fields).sort("planned_start", 1).limit(80).to_list(80)
+    elif view == "slipping":
+        rows = await db.tasks.find({**base, "slip_days": {"$gt": 0}}, proj_fields).sort("slip_days", -1).limit(30).to_list(30)
+    elif view == "upcoming":
+        days = int(args.get("days") or 14)
+        until = (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+        rows = await db.tasks.find(
+            {**base, "planned_start": {"$lte": until}, "status": {"$in": ["not_started", "in_progress"]}},
+            proj_fields,
+        ).sort("planned_start", 1).limit(50).to_list(50)
+    elif view == "blockers":
+        rows = await db.tasks.find({**base, "open_blocker_count": {"$gt": 0}}, proj_fields).sort("open_blocker_count", -1).limit(30).to_list(30)
+    elif view == "completed":
+        rows = await db.tasks.find({**base, "status": "complete"}, proj_fields).sort("planned_finish", -1).limit(50).to_list(50)
+    else:
+        # summary — counts + 3 top-of-mind activities for each pivot
+        async def _cnt(extra):
+            try: return await db.tasks.count_documents({**base, **extra})
+            except Exception: return 0
+        return {
+            "view": "summary",
+            "counts": {
+                "total": await _cnt({}),
+                "critical_path": await _cnt({"is_critical": True}),
+                "slipping": await _cnt({"slip_days": {"$gt": 0}}),
+                "blocked": await _cnt({"open_blocker_count": {"$gt": 0}}),
+                "in_progress": await _cnt({"status": "in_progress"}),
+                "complete": await _cnt({"status": "complete"}),
+                "not_started": await _cnt({"status": "not_started"}),
+            },
+            "top_slipping": await db.tasks.find({**base, "slip_days": {"$gt": 0}}, proj_fields).sort("slip_days", -1).limit(3).to_list(3),
+            "top_blocked": await db.tasks.find({**base, "open_blocker_count": {"$gt": 0}}, proj_fields).sort("open_blocker_count", -1).limit(3).to_list(3),
+        }
+    return {"view": view, "count": len(rows), "rows": rows}
+
+
+async def _hydrate_dr(db, tenant_id: str, dr: dict) -> dict:
+    """Pull every sub-collection tied to a DR so the LLM gets one
+    complete payload instead of having to call 6 more tools."""
+    drid = dr.get("id")
+    if not drid:
+        return {"report": dr}
+    # Activity grid (sorted by position so AI lists in scheduled order)
+    grid = await db.daily_report_activities.find(
+        {"daily_report_id": drid}, {"_id": 0}
+    ).sort("position", 1).to_list(100)
+    presence = await db.daily_presence.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}), {"_id": 0}
+    ).to_list(50)
+    # Events filed against this DR (delays, RFIs, safety, QC, deliveries)
+    delays = await db.delays.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}), {"_id": 0}
+    ).to_list(30)
+    rfis = await db.rfis.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}), {"_id": 0}
+    ).to_list(30)
+    safety = await db.safety_events.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}), {"_id": 0}
+    ).to_list(30)
+    qc = await db.qc_issues.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}), {"_id": 0}
+    ).to_list(30)
+    deliveries = await db.deliveries.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}), {"_id": 0}
+    ).to_list(30)
+    photos = await db.photos.find(
+        tenant_filter(tenant_id, {"daily_report_id": drid}),
+        {"_id": 0, "id": 1, "caption": 1, "captured_at": 1, "photo_class": 1}
+    ).to_list(30)
+    summary = {
+        "date": dr.get("report_date"),
+        "status": dr.get("status"),
+        "weather": dr.get("weather_conditions"),
+        "temp_high_f": dr.get("weather_temp_high_f"),
+        "temp_low_f": dr.get("weather_temp_low_f"),
+        "precip_in": dr.get("weather_precipitation_in"),
+        "activities_total": len(grid),
+        "presence_rows": len(presence),
+        "total_headcount": sum(int(p.get("headcount") or 0) for p in presence),
+        "total_crew_hours": sum(int(p.get("headcount") or 0) * float(p.get("hours_per_person") or 0) for p in presence),
+        "delays": len(delays),
+        "rfis": len(rfis),
+        "safety_events": len(safety),
+        "qc_issues": len(qc),
+        "deliveries": len(deliveries),
+        "photos": len(photos),
+    }
+    return {
+        "summary": summary,
+        "report": dr,
+        "activity_grid": grid,
+        "presence": presence,
+        "delays": delays,
+        "rfis": rfis,
+        "safety_events": safety,
+        "qc_issues": qc,
+        "deliveries": deliveries,
+        "photos": photos,
+    }
 
 
 async def _tool_get_status(ctx: dict, args: dict) -> dict:
@@ -950,6 +1333,10 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
 TOOL_REGISTRY = {
     "search": _tool_search,
     "get_status": _tool_get_status,
+    "get_daily_report": _tool_get_daily_report,
+    "query": _tool_query,
+    "get_project_context": _tool_get_project_context,
+    "get_schedule_analysis": _tool_get_schedule_analysis,
     "create_task": _tool_create_task,
     "update_task": _tool_update_task,
     "mark_task_complete": _tool_mark_task_complete,
@@ -978,13 +1365,22 @@ TOOL_REGISTRY = {
 
 # ---- ORCHESTRATOR -------------------------------------------------------
 SYSTEM_PROMPT = (
-    "You are the AI copilot inside ICE Schedule Ops, a federal-construction "
-    "project-management platform. You can READ and WRITE to the project's "
-    "database via the tool calls below. ALWAYS reply with a JSON object only — "
-    "no prose outside the JSON. Plain text only inside 'reply' (NO markdown, "
-    "no asterisks, no fenced code blocks, no headers, no bullet markers like "
-    "'-' or '*' or '+', no tables). Use [A1240] for activity codes, RFI-014 "
-    "for RFI numbers.\n\n"
+    "You are Mason, the AI craftsman inside ICE Schedule Ops, a federal-"
+    "construction project-management platform. You can READ and WRITE to "
+    "the project's database via the tool calls below. ALWAYS reply with a "
+    "JSON object only — no prose outside the JSON. Plain text only inside "
+    "'reply' (NO markdown, no asterisks, no fenced code blocks, no headers, "
+    "no bullet markers like '-' or '*' or '+', no tables). Use [A1240] for "
+    "activity codes, RFI-014 for RFI numbers.\n\n"
+    "AGENTIC LOOP (important): when you call tools, you will be sent the "
+    "tool results back in a follow-up message. At that point you MUST write "
+    "the final answer for the user — actions=[] and a clean 'reply' that "
+    "uses the data the tools returned. Do NOT keep saying 'I will retrieve' "
+    "or 'one moment'. Either call tools immediately OR write the final reply. "
+    "After your first turn, the system will hand you results — use them.\n\n"
+    "DATES: when the user mentions a date in any format (\"may 22 2026\", "
+    "\"22/5/2026\", \"5/22/26\"), prefer the get_daily_report tool which "
+    "accepts any common date format and returns the fully-hydrated DR.\n\n"
     + TOOL_CATALOGUE
 )
 
@@ -1107,49 +1503,99 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
         system_message=SYSTEM_PROMPT,
     ).with_model(MODEL_PROVIDER, MODEL_NAME)
     started = datetime.now(timezone.utc)
-    try:
-        msg = UserMessage(text=user_text, file_contents=photo_attachments) if photo_attachments \
-            else UserMessage(text=user_text)
-        raw = await chat.send_message(msg)
-    except Exception as e:
-        return {"reply": f"AI error: {e}", "actions_executed": [], "tool_results": []}
-
-    raw = str(raw).strip()
-    # Strip ```json ... ``` fences if present
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.MULTILINE)
-    plan: dict
-    try:
-        plan = json.loads(cleaned)
-    except Exception:
-        # last resort — try to extract { ... }
-        m = re.search(r"\{[\s\S]+\}", cleaned)
-        plan = json.loads(m.group(0)) if m else {"actions": [], "reply": "Sorry, I could not interpret that."}
-
-    actions = plan.get("actions") or []
-    tool_results: list[dict] = []
-
-    # Permission gate: voice role can only READ
-    if user_role == "voice":
-        actions = [a for a in actions if a.get("tool") not in WRITE_TOOLS]
 
     ctx = {"tenant_id": tenant_id, "project_id": project_id,
            "daily_report_id": daily_report_id,
            "user": {"id": user_id, "role": user_role}}
 
-    for a in actions:
-        tool = a.get("tool")
-        args = a.get("args") or {}
-        impl = TOOL_REGISTRY.get(tool)
-        if not impl:
-            tool_results.append({"tool": tool, "error": "unknown tool"})
-            continue
-        try:
-            res = await impl(ctx, args)
-            tool_results.append({"tool": tool, "args": args, "result": res})
-        except Exception as e:
-            tool_results.append({"tool": tool, "args": args, "error": str(e)})
+    # pt.28 AGENTIC LOOP: keep round-tripping with the LLM until either
+    # it returns no more tool calls (final reply) or we hit the safety
+    # cap. Before pt.28 this was single-shot — the LLM wrote its reply
+    # BEFORE tools ran, so the reply never actually contained tool data.
+    # Result was "I will retrieve…" + silence. Now after each tool batch
+    # we feed the results back in and ask for a follow-up reply.
+    MAX_ITERATIONS = 4
+    all_actions: list[dict] = []
+    all_tool_results: list[dict] = []
+    reply = ""
 
-    reply = _strip_markdown(plan.get("reply") or "Done.")
+    # First message — user request with full context
+    next_msg = UserMessage(text=user_text, file_contents=photo_attachments) if photo_attachments \
+        else UserMessage(text=user_text)
+
+    for iteration in range(MAX_ITERATIONS):
+        try:
+            raw = await chat.send_message(next_msg)
+        except Exception as e:
+            reply = f"AI error: {e}"
+            break
+
+        raw = str(raw).strip()
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.MULTILINE)
+        try:
+            plan = json.loads(cleaned)
+        except Exception:
+            m = re.search(r"\{[\s\S]+\}", cleaned)
+            plan = json.loads(m.group(0)) if m else {"actions": [], "reply": "Sorry, I could not interpret that."}
+
+        actions = plan.get("actions") or []
+        # Permission gate: voice role can only READ
+        if user_role == "voice":
+            actions = [a for a in actions if a.get("tool") not in WRITE_TOOLS]
+
+        # No actions → AI is done, capture the final reply and break
+        if not actions:
+            reply = plan.get("reply") or "Done."
+            break
+
+        # Execute every action this round
+        turn_results: list[dict] = []
+        for a in actions:
+            tool = a.get("tool")
+            args = a.get("args") or {}
+            impl = TOOL_REGISTRY.get(tool)
+            if not impl:
+                rec = {"tool": tool, "error": "unknown tool"}
+            else:
+                try:
+                    res = await impl(ctx, args)
+                    rec = {"tool": tool, "args": args, "result": res}
+                except Exception as e:
+                    rec = {"tool": tool, "args": args, "error": str(e)}
+            turn_results.append(rec)
+            all_actions.append(a)
+            all_tool_results.append(rec)
+
+        # If this is the last allowed iteration we'll use the in-plan
+        # reply as-is (no more LLM turns). Otherwise we hand the tool
+        # results back and ask for a clean summary or more tools.
+        if iteration == MAX_ITERATIONS - 1:
+            reply = plan.get("reply") or "Done."
+            break
+
+        # Cap the tool-results payload so we don't blow the LLM context
+        try:
+            results_json = json.dumps(turn_results, default=str)
+        except Exception:
+            results_json = str(turn_results)
+        if len(results_json) > 12000:
+            results_json = results_json[:12000] + " …(truncated)"
+        next_msg = UserMessage(text=(
+            "Here are the results from the tool calls you just made:\n"
+            f"{results_json}\n\n"
+            "Now write the final answer for the user using these results. "
+            "Reply with the same JSON schema: actions=[] and a 'reply' field "
+            "containing a clean plain-text summary (NO markdown, NO bullet "
+            "markers). If you genuinely need to call MORE tools first, you "
+            "may return more actions instead — but only if essential."
+        ))
+
+    if not reply:
+        reply = "Done."
+    reply = _strip_markdown(reply)
+    actions = all_actions
+    tool_results = all_tool_results
+
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     # audit
     await db.copilot_messages.insert_one({

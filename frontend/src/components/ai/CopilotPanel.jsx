@@ -184,14 +184,13 @@ export default function CopilotPanel({ open, onClose }) {
       const replyText = data.response || "";
       const isBareTool = looksLikeBareToolName(replyText);
       // Claude-style: only attach a download artifact when the USER asked
-      // for one. Detection runs against the original user message (msg),
-      // not against the AI reply. Empty/error replies skip artifact.
+      // for one. Detection runs against the original user message (msg).
       const intent = !isBareTool && replyText && replyText.length > 40
         ? detectDocumentIntent(msg)
         : null;
       setThread((t) => [...t, {
         role: "ai",
-        text: isBareTool ? `I ran ${replyText}, but the follow-up summary didn't come back. Try asking again or click Retry.` : replyText,
+        text: isBareTool ? `I ran ${replyText}, but the follow-up summary didn't come back.` : replyText,
         tools,
         tools_only: isBareTool && !replyText,
         bare_tool: isBareTool ? replyText : null,
