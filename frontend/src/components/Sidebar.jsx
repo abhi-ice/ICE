@@ -256,7 +256,7 @@ export default function Sidebar() {
 
       {!rail && (
         <div className="px-4 py-3 mt-auto border-t border-white/10 text-xs text-slate-500">
-          v0.3 Â· Iter 3 Â· {new Date().getFullYear()}
+          v0.3 · Iter 3 · {new Date().getFullYear()}
         </div>
       )}
     </aside>
