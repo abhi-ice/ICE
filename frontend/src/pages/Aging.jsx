@@ -46,7 +46,7 @@ export default function Aging() {
                 data-testid={`aging-card-${s.key}`}
                 className={`surface p-4 hover:shadow-md transition border ${overdue ? "border-amber-200 bg-amber-50/40" : ""}`}
               >
-                <div className="flex items-center gap-2 text-slate-500 text-xs uppercase font-semibold tracking-wider">
+                <div className="flex items-center gap-2 text-slate-500 text-xs font-semibold tracking-wider">
                   <Icon className={`h-4 w-4 ${overdue ? "text-amber-600" : ""}`} />
                   {s.label}
                 </div>

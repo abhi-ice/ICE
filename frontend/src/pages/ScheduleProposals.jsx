@@ -358,7 +358,7 @@ function Stat({ label, value, sub, tone = "slate" }) {
     : "text-slate-700";
   return (
     <div className="bg-slate-50 border border-slate-200 rounded p-2" data-testid={`kpi-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>
-      <div className="text-xs uppercase text-slate-500 tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 tracking-wide">{label}</div>
       <div className={`font-semibold tabular-nums ${klass}`}>{value}</div>
       {sub && <div className="text-xs text-slate-400">{sub}</div>}
     </div>

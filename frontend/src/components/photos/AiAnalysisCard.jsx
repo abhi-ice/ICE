@@ -291,25 +291,25 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-1">
         <div>
-          <div className="text-xs uppercase text-slate-500">Class</div>
+          <div className="text-xs text-slate-500">Class</div>
           <div className="font-medium text-slate-800 capitalize">
             {data.ai_suggested_class || "—"}
           </div>
         </div>
         <div>
-          <div className="text-xs uppercase text-slate-500">Event type</div>
+          <div className="text-xs text-slate-500">Event type</div>
           <div className="font-medium text-slate-800">
             {(data.ai_suggested_event_type || "none").replace(/_/g, " ")}
           </div>
         </div>
         <div>
-          <div className="text-xs uppercase text-slate-500">Trade</div>
+          <div className="text-xs text-slate-500">Trade</div>
           <div className="font-medium text-slate-800">
             {data.ai_suggested_trade || "—"}
           </div>
         </div>
         <div>
-          <div className="text-xs uppercase text-slate-500">Model</div>
+          <div className="text-xs text-slate-500">Model</div>
           <div className="text-slate-600 text-xs font-mono">
             {data.ai_model_version || "—"}
           </div>
@@ -318,7 +318,7 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
 
       {data.ai_suggested_caption && (
         <div className="bg-white border border-slate-200 rounded p-2">
-          <div className="text-xs uppercase text-slate-500 mb-0.5">Caption</div>
+          <div className="text-xs text-slate-500 mb-0.5">Caption</div>
           <div className="text-slate-800 italic">"{data.ai_suggested_caption}"</div>
         </div>
       )}
@@ -398,19 +398,19 @@ function AiOverrideDialog({ open, onOpenChange, data, trayId, onSaved }) {
         <DialogHeader><DialogTitle>Override AI suggestion</DialogTitle></DialogHeader>
         <div className="space-y-2 text-sm">
           <div>
-            <label className="text-xs uppercase text-slate-500">Photo class</label>
+            <label className="text-xs text-slate-500">Photo class</label>
             <select value={photoClass} onChange={(e) => setPhotoClass(e.target.value)}
               className="w-full h-8 px-2 rounded border border-slate-300 bg-white text-sm">
               {OVERRIDE_CLASSES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500">Caption</label>
+            <label className="text-xs text-slate-500">Caption</label>
             <input value={caption} onChange={(e) => setCaption(e.target.value)}
               className="w-full h-8 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500">Event type</label>
+            <label className="text-xs text-slate-500">Event type</label>
             <select value={eventType} onChange={(e) => setEventType(e.target.value)}
               className="w-full h-8 px-2 rounded border border-slate-300 bg-white text-sm">
               {OVERRIDE_EVENT_TYPES.map((c) => (
@@ -419,13 +419,13 @@ function AiOverrideDialog({ open, onOpenChange, data, trayId, onSaved }) {
             </select>
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500">Trade</label>
+            <label className="text-xs text-slate-500">Trade</label>
             <input value={trade} onChange={(e) => setTrade(e.target.value)}
               placeholder="plumber, electrician, drywall…"
               className="w-full h-8 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500">Why are you overriding? (5+ chars) *</label>
+            <label className="text-xs text-slate-500">Why are you overriding? (5+ chars) *</label>
             <textarea value={reason} onChange={(e) => setReason(e.target.value)}
               rows={2}
               placeholder="e.g. AI labeled progress but this is rework"
@@ -476,7 +476,7 @@ function AiRejectDialog({ open, onOpenChange, trayId, onSaved }) {
             The photo stays in the tray; manual tagging is still available.
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500">Why? (10+ chars) *</label>
+            <label className="text-xs text-slate-500">Why? (10+ chars) *</label>
             <textarea value={reason} onChange={(e) => setReason(e.target.value)}
               rows={3}
               placeholder="e.g. AI completely misread; this is a delivery photo not a QC issue"

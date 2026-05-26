@@ -70,7 +70,7 @@ export default function MasterDoc() {
       </div>
 
       <div className="surface p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase text-slate-500 tracking-wider">Construction type</div>
+        <div className="text-xs font-semibold text-slate-500 tracking-wider">Construction type</div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {CONSTRUCTION_TYPES.map((t) => (
             <button
@@ -90,7 +90,7 @@ export default function MasterDoc() {
       </div>
 
       <div className="surface p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase text-slate-500 tracking-wider">Delivery & sketch review</div>
+        <div className="text-xs font-semibold text-slate-500 tracking-wider">Delivery & sketch review</div>
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className="field-label">Delivery method</label>
@@ -114,7 +114,7 @@ export default function MasterDoc() {
       </div>
 
       <div className="surface p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase text-slate-500 tracking-wider">Site conditions</div>
+        <div className="text-xs font-semibold text-slate-500 tracking-wider">Site conditions</div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {[
             { k: "occupancy_during_work", label: "Building occupied during work" },
@@ -133,7 +133,7 @@ export default function MasterDoc() {
       </div>
 
       <div className="surface p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase text-slate-500 tracking-wider">Site constraints (chips)</div>
+        <div className="text-xs font-semibold text-slate-500 tracking-wider">Site constraints (chips)</div>
         <div className="flex flex-wrap gap-2">
           {COMMON_CONSTRAINTS.map((c) => {
             const on = (doc.site_constraints || []).includes(c);

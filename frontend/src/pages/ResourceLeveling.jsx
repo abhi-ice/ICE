@@ -228,7 +228,7 @@ export default function ResourceLeveling() {
         <div className="flex flex-wrap items-end gap-3 p-3 bg-slate-50 border border-slate-200 rounded">
           <Filter className="h-4 w-4 text-slate-500 mb-2" />
           <div>
-            <label className="text-xs uppercase text-slate-500 block">Window (days)</label>
+            <label className="text-xs text-slate-500 block">Window (days)</label>
             <select data-testid="rl-filter-days" value={String(days)}
               onChange={(e) => setFilters({ ...filters, days: e.target.value })}
               className="h-8 px-2 rounded border border-slate-300 text-sm bg-white">
@@ -241,14 +241,14 @@ export default function ResourceLeveling() {
             </select>
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500 block">Trade (csv)</label>
+            <label className="text-xs text-slate-500 block">Trade (csv)</label>
             <input data-testid="rl-filter-trade" value={filters.trade}
               onChange={(e) => setFilters({ ...filters, trade: e.target.value })}
               placeholder="Plumber,Electrician"
               className="h-8 px-2 rounded border border-slate-300 text-sm w-48" />
           </div>
           <div>
-            <label className="text-xs uppercase text-slate-500 block">Project id (csv)</label>
+            <label className="text-xs text-slate-500 block">Project id (csv)</label>
             <input data-testid="rl-filter-project" value={filters.project_id}
               onChange={(e) => setFilters({ ...filters, project_id: e.target.value })}
               placeholder="project id"
@@ -696,7 +696,7 @@ function DrillDown({ cell, onReallocate }) {
       )}
       {cell.contributing_project_ids?.length > 0 && (
         <div>
-          <div className="text-xs uppercase text-slate-500 mb-1">Contributing projects</div>
+          <div className="text-xs text-slate-500 mb-1">Contributing projects</div>
           <div className="text-xs space-y-0.5">
             {cell.contributing_project_ids.map((pid) => (
               <div key={pid} className="font-mono text-slate-600">{pid.slice(0, 8)}…</div>
@@ -705,7 +705,7 @@ function DrillDown({ cell, onReallocate }) {
         </div>
       )}
       <div>
-        <div className="text-xs uppercase text-slate-500 mb-1">Resolution suggestions</div>
+        <div className="text-xs text-slate-500 mb-1">Resolution suggestions</div>
         {cell.loading ? (
           <SkeletonBlock height="3rem" />
         ) : cell.error ? (
@@ -780,7 +780,7 @@ function CrewCalendar({ data }) {
                 <td className="p-2 text-right">{d.committed_headcount}</td>
                 <td className="p-2 text-right">{d.available_headcount}</td>
                 <td className="p-2">{d.is_holiday ? "yes" : ""}</td>
-                <td className="p-2 text-xs uppercase text-slate-500">{d.computed_from}</td>
+                <td className="p-2 text-xs text-slate-500">{d.computed_from}</td>
               </tr>
             ))}
           </tbody>

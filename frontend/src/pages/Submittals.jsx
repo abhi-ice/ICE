@@ -978,7 +978,7 @@ function AgingTab() {
           <div key={b.label}
             data-testid={`aging-bucket-${b.label}`}
             className="bg-white border border-slate-200 rounded p-3">
-            <div className="text-xs uppercase text-slate-500">{b.label}</div>
+            <div className="text-xs text-slate-500">{b.label}</div>
             <div className="text-2xl font-semibold tabular-nums mt-0.5">{b.count}</div>
             <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden">
               <div

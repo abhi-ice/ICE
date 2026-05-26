@@ -334,7 +334,7 @@ export function AuditLog() {
       {/* Phase 5 -- filter row. */}
       <div className="flex flex-wrap items-end gap-2 p-2 bg-slate-50 border border-slate-200 rounded text-sm">
         <div>
-          <label className="text-xs uppercase text-slate-500 block">Op</label>
+          <label className="text-xs text-slate-500 block">Op</label>
           <select data-testid="audit-filter-op" value={opFilter}
             onChange={(e) => setOpFilter(e.target.value)}
             className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
@@ -347,7 +347,7 @@ export function AuditLog() {
           </select>
         </div>
         <div>
-          <label className="text-xs uppercase text-slate-500 block">Table name</label>
+          <label className="text-xs text-slate-500 block">Table name</label>
           <input data-testid="audit-filter-table" value={tableFilter}
             onChange={(e) => setTableFilter(e.target.value)}
             placeholder="e.g. crew_capacity"
@@ -602,7 +602,7 @@ function AiUsageTab() {
           </button>
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-xs uppercase text-slate-500">Window</label>
+          <label className="text-xs text-slate-500">Window</label>
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}
             className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
             <option value={7}>7 days</option>
@@ -757,7 +757,7 @@ function BudgetControls({ budget, editing, setEditing, onSaved }) {
       ) : (
         <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-2">
           <div>
-            <label className="text-xs uppercase text-slate-500 block">Monthly cap (USD)</label>
+            <label className="text-xs text-slate-500 block">Monthly cap (USD)</label>
             <input data-testid="ai-budget-input" type="number" min="0" step="10"
               value={val} onChange={(e) => setVal(e.target.value)}
               className="h-8 px-2 rounded border border-slate-300 text-sm w-32" />
@@ -793,7 +793,7 @@ function KpiTile({ label, value, tone }) {
     : "text-slate-700";
   return (
     <div className="border border-slate-200 rounded p-2 bg-white">
-      <div className="text-xs uppercase text-slate-500">{label}</div>
+      <div className="text-xs text-slate-500">{label}</div>
       <div className={`text-base font-semibold tabular-nums mt-0.5 ${toneCls}`}>{value}</div>
     </div>
   );
@@ -815,7 +815,7 @@ function CostDashboardCard({ dashboard }) {
       {perDay.length > 0 && (
         <div data-testid="ai-cost-per-day"
           className="border border-slate-200 rounded p-2 bg-white">
-          <div className="text-xs uppercase text-slate-500 mb-2">Spend per day</div>
+          <div className="text-xs text-slate-500 mb-2">Spend per day</div>
           <div className="flex items-end gap-0.5 h-20">
             {perDay.map((d) => (
               <div key={d.date} title={`${d.date}: $${d.usd.toFixed(3)} (${d.analyses} analyses)`}
@@ -831,7 +831,7 @@ function CostDashboardCard({ dashboard }) {
       )}
       {dashboard.per_model?.length > 0 && (
         <div data-testid="ai-cost-per-model">
-          <div className="text-xs uppercase text-slate-500 mb-1">By model version</div>
+          <div className="text-xs text-slate-500 mb-1">By model version</div>
           <div className="space-y-1">
             {dashboard.per_model.map((m) => (
               <div key={m.model} className="flex items-center justify-between text-xs border-b border-slate-100 py-1">
@@ -885,7 +885,7 @@ function TimingPercentilesCard({ timings }) {
         <KpiTile label="Max" value={fmt(timings.max_ms)} />
       </div>
       {timings.by_status && Object.keys(timings.by_status).length > 0 && (
-        <div className="text-xs uppercase text-slate-500 mt-2">By status</div>
+        <div className="text-xs text-slate-500 mt-2">By status</div>
       )}
       {timings.by_status && (
         <div className="space-y-0.5 text-xs">
@@ -1043,7 +1043,7 @@ function CuiComplianceReport({ report }) {
                 <code className="text-slate-600">{f.tray_id}</code>
                 {" · "}status={f.status}
                 {f.reason && <> · reason={f.reason}</>}
-                <span className="ml-1 text-xs uppercase text-slate-500">[{f.severity}]</span>
+                <span className="ml-1 text-xs text-slate-500">[{f.severity}]</span>
               </li>
             ))}
           </ul>
@@ -1755,7 +1755,7 @@ function ReportsGeneratorTab() {
         data-testid="generator-controls">
         <div className="flex flex-wrap items-end gap-2">
           <div>
-            <label className="text-xs uppercase text-slate-500 block">Report type</label>
+            <label className="text-xs text-slate-500 block">Report type</label>
             <select data-testid="generator-type"
               value={reportType}
               onChange={(e) => setReportType(e.target.value)}
@@ -1767,14 +1767,14 @@ function ReportsGeneratorTab() {
           {reportType !== "project_health_summary" && (
             <>
               <div>
-                <label className="text-xs uppercase text-slate-500 block">From</label>
+                <label className="text-xs text-slate-500 block">From</label>
                 <input data-testid="generator-period-start" type="date"
                   value={periodStart}
                   onChange={(e) => setPeriodStart(e.target.value)}
                   className="h-8 px-2 rounded border border-slate-200 text-sm" />
               </div>
               <div>
-                <label className="text-xs uppercase text-slate-500 block">To</label>
+                <label className="text-xs text-slate-500 block">To</label>
                 <input data-testid="generator-period-end" type="date"
                   value={periodEnd}
                   onChange={(e) => setPeriodEnd(e.target.value)}
@@ -1980,7 +1980,7 @@ function ReportModal({ report, onClose, onFinalize, onExport, isAdminOrPm }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {Object.entries(report.variance_summary || {}).map(([k, v]) => (
                 <div key={k} className="bg-slate-50 border border-slate-200 rounded p-2">
-                  <div className="text-xs uppercase text-slate-500">
+                  <div className="text-xs text-slate-500">
                     {k.replace(/_/g, " ")}
                   </div>
                   <div className="text-lg font-semibold tabular-nums mt-0.5">

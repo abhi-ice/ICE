@@ -76,12 +76,12 @@ export default function CalendarReconciliation() {
 
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <div>
-          <label className="text-xs text-slate-500 uppercase">From</label>
+          <label className="text-xs text-slate-500">From</label>
           <input data-testid="reconciliation-start" type="date" value={start} onChange={(e) => setStart(e.target.value)}
             className="block h-9 px-2 rounded border border-slate-300 text-sm" />
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase">To</label>
+          <label className="text-xs text-slate-500">To</label>
           <input data-testid="reconciliation-end" type="date" value={end} onChange={(e) => setEnd(e.target.value)}
             className="block h-9 px-2 rounded border border-slate-300 text-sm" />
         </div>

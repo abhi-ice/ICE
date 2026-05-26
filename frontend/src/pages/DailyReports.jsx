@@ -2013,7 +2013,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
     <tr data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
       <td className="font-mono text-xs">
         {r.activity_code}
-        {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-xs uppercase">field</span>}
+        {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-xs">field</span>}
         {isProvisional && !isStale && (
           <span title="Provisional sync — confirmed on submit"
             className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
@@ -3073,14 +3073,14 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               )}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="text-xs text-slate-500 uppercase">Rework duration (days) *</label>
+                  <label className="text-xs text-slate-500">Rework duration (days) *</label>
                   <input data-testid="qc-rework-days" type="number" step="0.5" min="0"
                     value={draft.rework_duration_days}
                     onChange={(e) => setDraft({ ...draft, rework_duration_days: e.target.value })}
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-xs text-slate-500 uppercase">Basis * (short note)</label>
+                  <label className="text-xs text-slate-500">Basis * (short note)</label>
                   <input data-testid="qc-rework-basis" type="text"
                     value={draft.rework_duration_basis}
                     onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
@@ -3686,7 +3686,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
         {photo.is_supplement && (
           <span data-testid={`photo-supplement-${photo.id}`}
             title={`Supplement to DR ${photo.parent_daily_report_date ? formatDateDisplay(photo.parent_daily_report_date) : (photo.parent_daily_report_id?.slice(0, 8) || "")}`}
-            className="bg-amber-200 text-amber-900 rounded px-1 text-xs font-mono uppercase">
+            className="bg-amber-200 text-amber-900 rounded px-1 text-xs font-mono">
             SUPP
           </span>
         )}
@@ -3696,7 +3696,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
         {photo.post_submit_edited && (
           <span data-testid={`photo-edited-${photo.id}`}
             title={`Edited ${photo.edit_count || 0}x post-submit. ${photo.last_edit_reason ? `Last reason: ${photo.last_edit_reason}` : ""}`}
-            className="bg-amber-300 text-amber-900 rounded px-1 text-xs font-mono uppercase">
+            className="bg-amber-300 text-amber-900 rounded px-1 text-xs font-mono">
             EDITED {photo.edit_count || 0}x
           </span>
         )}
@@ -3711,7 +3711,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
                 ? `Tagged from AI suggestion at ${Math.round(photo.ai_confidence_at_tag_time * 100)}% confidence`
                 : "Tagged from AI suggestion"
             }
-            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-xs font-mono uppercase inline-flex items-center gap-0.5">
+            className="bg-blue-100 text-blue-800 border border-blue-200 rounded px-1 text-xs font-mono inline-flex items-center gap-0.5">
             <Sparkles className="h-2 w-2" /> AI
           </span>
         )}
@@ -3907,13 +3907,13 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
               Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
             </div>
             <div>
-              <label className="text-xs text-slate-500 uppercase">Actual rework (days) *</label>
+              <label className="text-xs text-slate-500">Actual rework (days) *</label>
               <input data-testid="qc-rework-actual-days" type="number" step="0.5" min="0"
                 value={days} onChange={(e) => setDays(e.target.value)}
                 className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
             </div>
             <div>
-              <label className="text-xs text-slate-500 uppercase">Notes</label>
+              <label className="text-xs text-slate-500">Notes</label>
               <textarea data-testid="qc-rework-outcome-notes" rows={3}
                 value={notes} onChange={(e) => setNotes(e.target.value)}
                 placeholder="What went better or worse than expected?"

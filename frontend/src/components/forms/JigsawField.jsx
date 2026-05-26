@@ -388,7 +388,7 @@ export default function JigsawField({
             className="rounded p-2 text-xs border border-rose-300 bg-rose-50 space-y-1"
             data-testid={`jigsaw-reject-dialog-${fieldPath}`}
           >
-            <label className="block text-xs uppercase text-rose-800">
+            <label className="block text-xs text-rose-800">
               Rejection reason (required, min 10 chars)
             </label>
             <textarea

@@ -431,7 +431,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                 </select>
               )}
               <div>
-                <label className="text-xs text-slate-500 uppercase inline-flex items-center gap-1">
+                <label className="text-xs text-slate-500 inline-flex items-center gap-1">
                   Photo class
                   {aiSuggestion?.ai_suggested_class && photoClass === aiSuggestion.ai_suggested_class && (
                     <span className="text-xs text-blue-700 inline-flex items-center gap-0.5">
@@ -445,7 +445,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
                 </select>
               </div>
               <div>
-                <label className="text-xs text-slate-500 uppercase inline-flex items-center gap-1">
+                <label className="text-xs text-slate-500 inline-flex items-center gap-1">
                   Caption (optional)
                   {aiSuggestion?.ai_suggested_caption && caption === aiSuggestion.ai_suggested_caption && (
                     <span className="text-xs text-blue-700 inline-flex items-center gap-0.5">

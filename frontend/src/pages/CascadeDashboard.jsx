@@ -242,7 +242,7 @@ export default function CascadeDashboard() {
                   <td className="p-2 border border-slate-200 text-right">{fmtDays(r.projected_slip_at_n20_days)}</td>
                   <td className="p-2 border border-slate-200 text-right font-medium">{fmtDays(r.projected_cp_impact_at_n10_days)}</td>
                   <td className="p-2 border border-slate-200">
-                    <span className={`px-1.5 py-0.5 rounded text-xs uppercase ${SEVERITY_PILL[r.severity_band] || "bg-slate-100"}`}>
+                    <span className={`px-1.5 py-0.5 rounded text-xs ${SEVERITY_PILL[r.severity_band] || "bg-slate-100"}`}>
                       {r.severity_band || "?"}
                     </span>
                   </td>

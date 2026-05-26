@@ -334,7 +334,7 @@ function PendingSuggestionsQueue() {
       <div className="flex flex-wrap items-end gap-2 p-2 bg-slate-50 border border-slate-200 rounded text-sm">
         <Filter className="h-4 w-4 text-slate-500 mb-1.5" />
         <div>
-          <label className="text-xs uppercase text-slate-500 block">Entity type</label>
+          <label className="text-xs text-slate-500 block">Entity type</label>
           <select
             data-testid="suggestions-filter-entity"
             value={entityFilter}
@@ -348,7 +348,7 @@ function PendingSuggestionsQueue() {
           </select>
         </div>
         <div>
-          <label className="text-xs uppercase text-slate-500 block">AI source</label>
+          <label className="text-xs text-slate-500 block">AI source</label>
           <select
             data-testid="suggestions-filter-source"
             value={sourceFilter}
@@ -362,7 +362,7 @@ function PendingSuggestionsQueue() {
           </select>
         </div>
         <div>
-          <label className="text-xs uppercase text-slate-500 block">Sort by</label>
+          <label className="text-xs text-slate-500 block">Sort by</label>
           <select
             data-testid="suggestions-sort"
             value={sortBy}
@@ -430,7 +430,7 @@ function PendingSuggestionsQueue() {
           data-testid="suggestions-bulk-reject-dialog"
           className="rounded p-2 text-xs border border-rose-300 bg-rose-50 space-y-1"
         >
-          <label className="block text-xs uppercase text-rose-800">
+          <label className="block text-xs text-rose-800">
             Rejection reason (required, min 10 chars; applies to all {selected.size})
           </label>
           <textarea
@@ -642,7 +642,7 @@ function SuggestionRow({ row, selected, onToggle, onNavigate, onChanged }) {
           />
         </label>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-1 text-xs uppercase">
+          <div className="flex flex-wrap items-center gap-1 text-xs">
             <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-200">
               {entityLabel}
             </span>
@@ -700,7 +700,7 @@ function SuggestionRow({ row, selected, onToggle, onNavigate, onChanged }) {
       {rejectOpen && (
         <div className="mt-2 rounded p-2 text-xs border border-rose-300 bg-rose-50 space-y-1"
           data-testid={`suggestion-reject-dialog-${row.id}`}>
-          <label className="block text-xs uppercase text-rose-800">
+          <label className="block text-xs text-rose-800">
             Reason (10+ chars)
           </label>
           <textarea

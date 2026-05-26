@@ -209,7 +209,7 @@ function Stat({ label, value, tone = "slate" }) {
   const klass = tone === "amber" ? "text-amber-700" : "text-slate-700";
   return (
     <div className="bg-slate-50 border border-slate-200 rounded p-2">
-      <div className="text-xs uppercase text-slate-500 tracking-wide">{label}</div>
+      <div className="text-xs text-slate-500 tracking-wide">{label}</div>
       <div className={`font-semibold tabular-nums ${klass}`}>{value ?? "—"}</div>
     </div>
   );

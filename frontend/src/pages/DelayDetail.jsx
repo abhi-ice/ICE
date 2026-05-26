@@ -480,7 +480,7 @@ function ScenariosSection({ delayId, delayStatus }) {
               {data.history.map((h) => (
                 <div key={h.id} className="flex items-center gap-2 text-slate-600 border-b border-slate-100 py-1">
                   <span className="text-xs font-mono text-slate-400">{h.generation_at?.slice(0, 16)?.replace("T", " ")}</span>
-                  <span className="font-mono text-xs uppercase">{h.scenario_label}</span>
+                  <span className="font-mono text-xs">{h.scenario_label}</span>
                   <span className="flex-1 truncate">{h.strategy_name}</span>
                   <span className="text-slate-400">{h.estimated_schedule_impact_days}d · ${h.estimated_cost_impact_usd}</span>
                   <span className="text-xs text-slate-400">{h.decision_status}</span>

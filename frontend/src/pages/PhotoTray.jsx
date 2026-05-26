@@ -162,7 +162,7 @@ export default function PhotoTray() {
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
         <Filter className="h-4 w-4 text-slate-500 mb-2" />
         <div>
-          <label className="text-xs text-slate-500 uppercase">Status</label>
+          <label className="text-xs text-slate-500">Status</label>
           <select data-testid="tray-filter-status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value, untagged_only: false })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white" disabled={filters.untagged_only}>
             <option value="">(any)</option>
@@ -173,7 +173,7 @@ export default function PhotoTray() {
           </select>
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase">Source</label>
+          <label className="text-xs text-slate-500">Source</label>
           <select data-testid="tray-filter-source" value={filters.capture_source} onChange={(e) => setFilters({ ...filters, capture_source: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
             <option value="">(any)</option>
@@ -183,12 +183,12 @@ export default function PhotoTray() {
           </select>
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase">From</label>
+          <label className="text-xs text-slate-500">From</label>
           <input data-testid="tray-filter-from" type="date" value={filters.date_from} onChange={(e) => setFilters({ ...filters, date_from: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm" />
         </div>
         <div>
-          <label className="text-xs text-slate-500 uppercase">To</label>
+          <label className="text-xs text-slate-500">To</label>
           <input data-testid="tray-filter-to" type="date" value={filters.date_to} onChange={(e) => setFilters({ ...filters, date_to: e.target.value })}
             className="block h-8 px-2 rounded border border-slate-300 text-sm" />
         </div>

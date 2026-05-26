@@ -128,7 +128,7 @@ export default function TIAGenerationDetail() {
               You can reflag later, but past downloads can't be reversed.
             </p>
             <div>
-              <label className="text-xs text-slate-500 uppercase">Reason (required)</label>
+              <label className="text-xs text-slate-500">Reason (required)</label>
               <textarea data-testid="tia-unflag-reason" rows={3} value={unflagReason} onChange={(e) => setUnflagReason(e.target.value)}
                 placeholder="e.g. shared with sub for change-order negotiation per counsel approval 2026-05-06"
                 className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
@@ -145,12 +145,12 @@ export default function TIAGenerationDetail() {
       </Dialog>
 
       <div className="bg-white border border-slate-200 rounded p-4 mb-4 space-y-2 text-sm">
-        <div><span className="text-slate-500 text-xs uppercase">Generated:</span> {new Date(doc.generated_at).toLocaleString()}</div>
-        <div><span className="text-slate-500 text-xs uppercase">Date range:</span> {formatDateDisplay(doc.date_range_start)} → {formatDateDisplay(doc.date_range_end)}</div>
-        <div><span className="text-slate-500 text-xs uppercase">Status:</span> {doc.status}</div>
+        <div><span className="text-slate-500 text-xs">Generated:</span> {new Date(doc.generated_at).toLocaleString()}</div>
+        <div><span className="text-slate-500 text-xs">Date range:</span> {formatDateDisplay(doc.date_range_start)} → {formatDateDisplay(doc.date_range_end)}</div>
+        <div><span className="text-slate-500 text-xs">Status:</span> {doc.status}</div>
         {doc.error && <div className="text-rose-600 text-xs">{doc.error}</div>}
         {Object.keys(doc.filters_applied || {}).length > 0 && (
-          <div><span className="text-slate-500 text-xs uppercase">Filters:</span> <span className="font-mono text-xs">{JSON.stringify(doc.filters_applied)}</span></div>
+          <div><span className="text-slate-500 text-xs">Filters:</span> <span className="font-mono text-xs">{JSON.stringify(doc.filters_applied)}</span></div>
         )}
       </div>
 
