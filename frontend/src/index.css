@@ -479,6 +479,40 @@ h4 { font-size: 1rem;     line-height: 1.4; }
 }
 
 /* ============================================================
+   DR SECTION FLOW (2026-02-XX) — soft hairline borders + step
+   accent so each section reads as a discrete card while the page
+   still feels continuous top-to-bottom. Numbered badges live in
+   the PanelShell header (rendered by React); this CSS only adds
+   the slim glow ring and a left accent strip.
+   ============================================================ */
+.dr-section {
+    position: relative;
+    border: 1px solid rgba(52, 211, 153, 0.08);
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+        0 1px 0 rgba(52, 211, 153, 0.04);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.dr-section:hover {
+    border-color: rgba(52, 211, 153, 0.16);
+}
+.dr-section::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 12px;
+    bottom: 12px;
+    width: 2px;
+    background: linear-gradient(180deg, rgba(52, 211, 153, 0.0), rgba(52, 211, 153, 0.25), rgba(52, 211, 153, 0.0));
+    border-radius: 2px;
+    pointer-events: none;
+}
+.dr-grid > .dr-section + .dr-section {
+    margin-top: 0.25rem;
+}
+
+
+/* ============================================================
    HARD-CODED TAILWIND UTILITY OVERRIDES â€” re-skin pages that still
    inline bg-white / bg-slate-50 / bg-blue-600 / text-slate-700 etc.
    Goal: no page JSX touched. Status pills (pill-blue) stay intact
@@ -912,8 +946,19 @@ input:-webkit-autofill:active {
     transition: background-color 9999s ease-in-out 0s;
 }
 
-/* Native <select> dropdown arrow color (Firefox/Safari) */
+/* Native <select> dropdown arrow color (Firefox/Safari) and
+   forced-dark popup theming (2026-05-26). Some pages (Coordination
+   filters, RFI, Submittal forms) use plain native <select> elements
+   without explicit bg classes; without these rules Chrome on Windows
+   renders the OPENED dropdown popup white with black text, which is
+   jarring on the dark theme. Hint the browser AND seed the option
+   background so the popup matches the rest of the UI. */
+html { color-scheme: dark; }
 select { color-scheme: dark; }
+option, optgroup {
+    background-color: #1e293b;  /* slate-800 */
+    color: #e2e8f0;             /* slate-200 */
+}
 
 /* PDF viewer (react-pdf) wraps the rendered page in .react-pdf
    classes â€” keep page bg light so PDF content is readable; the

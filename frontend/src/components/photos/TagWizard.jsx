@@ -303,7 +303,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Tag photo to event ({step}/3)</DialogTitle></DialogHeader>
         <div className="space-y-3 text-sm">
           {step === 1 && (

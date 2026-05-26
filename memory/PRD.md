@@ -275,6 +275,382 @@ must be reviewed and approved before its rows touch the `tasks` collection
 | 11   | 27/27   | 100%     | Auth rebuild, Google removed, team invites, DR refresh, delay→days, demo wiped |
 | 12   | 18/18   | 100%     | Schedule diff + AI review + PM approval workflow |
 | 12.1 | smoke   | smoke    | Heading-row filter (FREE heuristic) + chat + manual toggles |
+| 13   | 4/4     | smoke    | 5-Route DR Voice Intake (Phase A: Manual/Voice Memo/Live Voice mode selector + Claude extraction + offline IndexedDB queue + offline request interceptor) |
+
+### Iter 13 — 5-Route DR Voice Intake (Phase A; 2026-05-25)
+The "New Daily Report" flow now exposes three intake modes (per Abhi's
+specification, standard short names):
+
+- **Manual** — type into the form (default, offline-capable).
+- **Voice Memo** — record on-device, server-side Gemini transcribes,
+  Claude extracts structured fields, DR collections auto-populate.
+- **Live Voice** — Gemini Live WebSocket directly from the browser;
+  AI guides the super through weather → trades → activity-by-activity
+  → events. Final transcript posted to /voice/extract for the same
+  Claude write-through.
+
+Offline behaviour: Manual and Voice Memo stay enabled (form drafts +
+audio blobs queue locally). Live Voice is grayed-out (label `(offline)`)
+when `navigator.onLine` is false OR when `GEMINI_API_KEY` is absent on
+the backend (`/api/daily-reports/voice/config` probe).
+
+**Backend**
+- `routers/dr_voice_router.py` — `/voice/transcribe`,
+  `/voice/extract`, `/voice/transcribe-and-extract`,
+  `/voice/live-token`, `/voice/config`.
+- `services/dr_voice_extract.py` — Claude Sonnet 4.5 with a strict
+  JSON schema covering weather, notes, activity_updates,
+  crew_presence, delays, safety, qc, deliveries, coordination.
+- Fixed: extract writes now use `db.daily_presence` (not
+  `crew_presence`) and `daily_report_id` (not
+  `logged_on_daily_report_id`) so rows appear in `/context`.
+- `tests/test_dr_voice_intake.py` — 4 regression tests; all PASS.
+
+**Frontend**
+- `pages/DailyReports.jsx` — three-mode dropdown next to date picker.
+- `components/VoiceIntakePanel.jsx` — async recorder + offline queue
+  UI + Gemini Live WebSocket client. Auto-mounted at the top of DR
+  detail when intake mode != "manual".
+- `lib/drVoiceQueue.js` — IndexedDB audio queue.
+- `lib/drOfflineSync.js` (NEW) — axios interceptor that captures
+  network-only failures on PATCH/POST against /daily-reports/* and
+  friends, queues to localStorage, drains on `online` event.
+- DR detail page shows an offline status banner (amber when offline,
+  blue when draining a non-empty queue with "Sync now" button).
+
+**Phase B (completed 2026-05-25 ~21:00 UTC)** — User provided
+`GEMINI_API_KEY` and billing is enabled on Google AI Studio. Voice
+endpoints are LIVE.
+
+- Transcription model: **`gemini-3.5-flash`** (GA; replaces the
+  deprecated `gemini-2.0-flash` and the soon-to-be deprecated
+  `gemini-2.5-flash`).
+- Live conversational model: **`gemini-3.1-flash-live-preview`**
+  (current Live-API recommendation; replaces the deprecated
+  `gemini-2.0-flash-exp`).
+- Transcription prompt hardened against hallucination on non-speech
+  audio (verified with a synthetic 440 Hz tone → returns `""`).
+- **Files API path added**: audio uploads <18 MB use inline bytes;
+  uploads 18 MB-100 MB are routed through Google's Files API
+  (`client.aio.files.upload`) so 60-minute high-quality memos work.
+  Best-effort cleanup deletes the uploaded file after extraction.
+- New endpoint cap raised from 25 MB → 100 MB.
+- **E2E test suite** (`tests/test_dr_voice_e2e.py`) uses gTTS to
+  synthesize a real construction-site voice memo, posts it to
+  `/voice/transcribe-and-extract`, and verifies the whole pipeline
+  populates weather, presence, and safety_event rows. **4/4 PASS**
+  (full run including audio synthesis + Gemini + Claude + DB
+  round-trip: 23s).
+
+### Iter 13.1 — Voice intake debugging UX + fixes (2026-05-25 evening)
+User filed a real voice memo for May 22 DR (3 carpenters + electrical
+rough-in 20% + 3-day electrical delay) and got "no fields applied".
+Multiple bugs surfaced:
+
+1. **MIME codec parameter broke Gemini**: browser MediaRecorder sends
+   `audio/webm;codecs=opus` but Gemini only accepts `audio/webm`.
+   Backend now strips the `;codecs=...` suffix before calling Part.from_bytes.
+2. **Activity grid was invisible to Claude**: the router pulled grid
+   rows with a `tenant_filter()` call, but `daily_report_activities`
+   docs don't carry tenant_id (tenant scope is enforced via DR
+   parent). Removed the bogus filter so Claude actually sees the grid.
+3. **Grid projection field name wrong**: was asking for `name` /
+   `description`; the actual field is `activity_description`. Fixed.
+4. **Description-based activity matching**: Claude now sees
+   `code + activity_description + trade` for every grid row and
+   matches spoken hints like "electrical rough in" to the right
+   activity code. Added a server-side fuzzy fallback (token-overlap
+   score) for cases where Claude leaves activity_code null but
+   provides a description hint.
+5. **Delay impact days**: extraction prompt now captures
+   `projected_impact_days`; router writes it into `delay.delay_days`
+   and into each `per_task_impacts` entry.
+6. **Frontend transparency**:
+   - **Live transcript preview** while recording, using the browser's
+     native Web Speech API (free, real-time, no Gemini cost).
+   - **Final Gemini transcript** displayed prominently after stop so
+     the super can compare what they said vs what AI heard.
+   - Color-coded result card: green when fields extracted, amber when
+     transcript came back but no structured fields, red when no
+     speech was detected at all (with troubleshooting tips).
+7. **"Add via voice" button** on DR detail header — users can now
+   open the voice intake panel on any draft DR, not just at creation.
+8. **Verified**: feeding user's exact transcript through `/voice/extract`
+   correctly produces activity_updates=1 (grid 1.9 → 20%),
+   crew_presence=1 (CARP × 3 × 8 hr from ICE), and delays=1
+   (3-day impact, linked to schedule_activity_id of the electrical task).
+
+### Iter 13.2 — Voice intake hardening + Live Voice fix (2026-05-25 night)
+After the codec/mic-stream fix, the user's first real voice recording
+worked at ~95% accuracy. Two follow-up issues:
+
+1. **Delays page 500'd**: `/api/projects/{id}/delays` returned 500 with
+   `Delay.date Field required` ValidationError. Legacy delay rows in
+   MongoDB predate `date` + `reported_at` being on the Delay model;
+   the FIRST legacy row in a list killed the whole endpoint. Added
+   defensive `_enrich_delay_for_read`, `_enrich_safety_for_read`,
+   `_enrich_qc_for_read` helpers that fall back to `created_at` /
+   `logged_date` / today's date. Three list endpoints now 200 again.
+
+2. **Duplicate event rows when voice memo runs twice**: A single
+   Claude response with two paraphrased delays (or two recordings on
+   the same DR) created duplicate delay rows. Added token-overlap
+   (≥60%) dedup in `dr_voice_router.py` for delays / safety / qc /
+   deliveries / coordination + (trade, company) dedup for presence.
+   Response now includes `skipped_duplicates` so the frontend toast
+   tells the user "skipped 2 duplicates already on this DR".
+
+3. **Live Voice WebSocket closed immediately**: model name
+   `gemini-3.1-flash-live-preview` was 404. Probed Google's
+   `models?supportedGenerationMethods=bidiGenerateContent` endpoint
+   and found the real live-capable models: `gemini-2.5-flash-native-
+   audio-latest` and `gemini-2.5-flash-native-audio-preview-09-2025`.
+   Updated `/voice/live-token` to return the correct model.
+
+4. **Live Voice setup required AUDIO modality**: native-audio model
+   rejects `response_modalities=["TEXT"]` with code 1007 "Cannot
+   extract voices from a non-audio request." Switched frontend to
+   `["AUDIO"]` + enabled `input_audio_transcription` and
+   `output_audio_transcription` so the user sees captioned text of
+   both AI and human speech. Added audio playback through Web Audio
+   API (24 kHz PCM chunks decoded + scheduled onto an AudioContext
+   queue so AI's voice plays back in real time).
+
+5. **Wait for setupComplete before streaming mic**: previously fired
+   mic samples immediately on ws.onopen, which Gemini drops. Now
+   waits for the setupComplete server message, then starts
+   ScriptProcessor mic loop.
+
+6. **Better Live Voice error UX**: WebSocket close handler now
+   distinguishes "closed during connect" (auth/model rejection) from
+   "closed during live" (network/timeout); explicit toast per case.
+
+7. **8/8 voice regression tests PASS** after all changes. E2E test
+   was updated to delete pre-existing rows on its target DR so it
+   doesn't trip the new dedup logic.
+
+### Iter 13.3 — Live Voice polish + Q&A extraction (2026-05-25 late night)
+User reported live voice was choppy and final extraction produced "no
+fields" because the transcript was fragmented per-token. Root causes:
+
+1. **Choppy audio playback**: scheduling was using `Math.max(currentTime, nextAt)`
+   which falls back to currentTime on buffer underrun → gaps. Switched
+   to a 250ms pre-buffer; when the queue is exhausted, the next chunk
+   starts `currentTime + 0.25s` so network jitter doesn't cut the AI off.
+
+2. **AI's internal thinking text was captured**: native-audio model
+   streams chain-of-thought as `modelTurn.parts[].text` ("**Initiating
+   Daily Report**", "**Acknowledging the Delay**"). These got mixed
+   into the transcript. Frontend now ignores those entirely — only
+   `outputTranscription.text` (what the AI actually SPOKE) is shown.
+
+3. **Per-token transcript fragmentation**: input/output transcription
+   chunks arrived 1-3 chars at a time, each rendered as its own
+   "You:" or "AI:" line. Refactored into turn-based ref accumulators
+   (`userTurnRef`, `aiTurnRef`) that flush only on `turnComplete`.
+   Display now reads as a clean conversation.
+
+4. **Extract at end-of-session was being fed the fragmented mess**:
+   stopLive() now builds a clean `Q (AI): ... A (super): ...`
+   formatted transcript from the accumulated turns and sends THAT to
+   `/voice/extract`. Tested with user's actual conversation transcript:
+   weather + crew + activity 1.7 + delay (3-day impact, moderate) all
+   extracted correctly. Live Voice now works end-to-end.
+
+5. **Claude system prompt updated** to recognize the Q&A format and
+   handle partial answers like "yes", "skip", "no", "moderate" by
+   pairing them with the preceding AI question for context. Said "no"
+   to safety/QC questions now produces ZERO event records (no empty
+   placeholders).
+
+6. **Live Voice system instruction strengthened**: AI now asks ONE-
+   sentence questions, acknowledges in ≤3 words, asks ONE follow-up
+   for missing fields (severity, impact days), accepts "skip" to
+   move on, never repeats itself, and never speaks its internal
+   reasoning out loud.
+
+7. **Interruption support**: when Gemini sends `serverContent.interrupted`,
+   the audio playback queue is immediately stopped so the AI doesn't
+   keep talking over the user.
+
+8. **Voice live transcript UI** rewritten — Slack-style chat layout
+   with colored You/AI prefix and proper line breaks instead of one
+   line per token.
+
+9. **9/9 voice regression tests PASS** after all changes (added
+   `test_e2e_live_voice_qa_transcript_extraction` to guard the new
+   conversation-format extraction).
+
+### Iter 13.4 — DR Events tabbed layout (2026-02-XX)
+Restructured the Daily Report detail view: the previous 6-card grid
+(Delays / Safety / QC / RFIs / Deliveries / Notes) is replaced with a
+single tabbed "Events" surface. Each panel keeps **all** of its
+fields, dropdowns, task-link pickers, severity selectors, form
+buttons, and audit behavior intact -- this is a structural change
+only, no data was removed.
+
+Implementation:
+1. New `EventsTabsCard` wrapper inside `DailyReports.jsx` that holds
+   the active tab + a `pendingDetail` state.
+2. Listens for the Activity Grid Issues dropdown's
+   `dr-open-event-form` window event. When the target tab is not
+   currently active, switches to it then re-dispatches the event with
+   `__replayed: true` so the freshly-mounted panel's existing
+   `useIssueDropdownListener` picks it up after React commits.
+3. A floating emerald "+" button on the tab strip dispatches the
+   same event so users can add an event from the tab header itself.
+   Notes tab special-cases this -- focuses the notes textarea.
+4. Empty-state text on every event tab updated to:
+   "Nothing logged today — say so by clicking + at right."
+5. Open delay reminders banner (`ReminderBanner`) was kept and moved
+   ABOVE the Events tabbed card per user request, so rolled-forward
+   delays remain the first thing the super sees.
+
+Verified via screenshot tool: tab switching, "+" button, and the
+Activity Grid → cross-tab navigation all work; QC pre-link from grid
+correctly fires across tab boundaries.
+
+### Iter 13.5 — DR detail UX cleanup (2026-02-XX)
+Tightened the DR detail surface in response to Abhi's "saves N px every
+DR" review:
+
+1. **Project / Contract header** -- collapsed by default to a single-
+   line summary `Client · Station · #Contract · Contractor · Signature`
+   with a chevron. Full 6-field grid only renders when expanded; the
+   PDF/xlsx export pipeline is untouched (still renders the full
+   block for client deliverables). ~150px saved per DR open.
+2. **Activity Grid sections** -- sections with 0 scheduled rows for
+   the report date collapse by default. Section header (with count
+   chip + read-only label) stays visible so the super sees the
+   category exists; click the header to expand the body.
+3. **Weather auto-fill** -- "Auto-fill from forecast" button removed.
+   A new effect in `DailyReportDetail` fires the autofill endpoint
+   automatically the first time the DR is opened when every weather
+   field is blank AND `weather_fetched_at` is null, so a super who
+   manually edited values (without invoking autofill) never has them
+   overwritten on reopen. Badge now reads "auto-filled HH:MM:SS".
+4. **Hours column** removed from the Activity Grid (header + per-row
+   cell + section colspans). Activity hours are tracked via the
+   Manpower log → activity link instead; the locked-DR per-row edit
+   modal still keeps `hours_worked` as a back-compat field.
+5. **"Crew presence" → "Manpower log"** rename on the panel header.
+6. **Date format consistency** -- Activity Grid header date now uses
+   `formatDateDisplay` (MM/DD/YYYY) so it matches the DR list,
+   reminder cards, and toasts. SupplementBadge + photo supplement
+   tooltip also pass through `formatDateDisplay`.
+7. **Audit trail** -- collapses to `"N audit entries — click to
+   expand"` chip by default; expanded view shows the rolling 30-row
+   list with a "Collapse" link to fold it back.
+
+Verified via screenshot tool: all 7 changes render correctly on a
+freshly-opened DR. No regressions to the Events tabs card (13.4).
+
+### Iter 13.6 — DR polish + Voice AI fixes + Vendor repo (2026-02-XX)
+
+**TIER A — UX polish**
+- Manpower log: removed the always-visible auto-blank draft. Saved
+  rows sit clean; an explicit "+ Add trade" emerald button below the
+  table opens one editable draft, which switches to "Save" once a
+  trade is typed. Delete (Trash2) icon on draft + persisted rows is
+  always clickable now (the `isOnlyRowInPanel` guard was dropped).
+- Weather card slimmed (px-4 py-3 vs surface p-5) and given its own
+  inline header so it doesn't dominate the viewport given that it's
+  auto-filled.
+- Renames: "Activity grid" → "Activity log"; "Field Work" →
+  "Today's planned activity".
+- New section-flow UI: each PanelShell now accepts a `step` prop
+  rendering a numbered emerald badge (1 Project · 2 Weather ·
+  3 Manpower · 4 Activity Log · 5 Events · 6 Photos · 7 Audit).
+  New CSS class `.dr-section` adds a soft hairline border + left
+  accent strip so the page reads as a flowing sequence of cards.
+
+**TIER B — Voice AI fixes**
+- RFI extraction: the system prompt now has an explicit RFI-vs-Delay
+  decision rule + an `rfis[]` array in the extraction schema. Router
+  inserts into `db.rfis` with priority normalization and dedupe.
+- Re-recording dedupe: voice extractor now receives `already_logged_
+  crews` for the DR and the prompt's CRITICAL RULES section tells
+  Claude NOT to re-emit known trade+company pairs as new
+  crew_presence rows.
+- Activity progress nuance: voice extractor receives SOD%,
+  duration_days, scheduled_hours_today, and open_blocker_count per
+  grid row. Prompt's ACTIVITY PROGRESS NUANCE block now explains
+  how to compute pct_complete_end_of_day from a phrase like "half of
+  today's planned work" rather than blindly writing 50.
+- Live voice prompt updated to capture RFI mentions distinctly.
+
+**TIER C — Photo UX**
+- AiAnalysisCard + TagWizard dialogs gained `max-h-[90vh]
+  overflow-y-auto` so the action buttons are always reachable on
+  shorter laptop screens at 100% zoom.
+- Photo thumbnails shrunk: Photos page + PhotoTray now render
+  3-8 columns (was 2-5); DR detail Photos panel renders 4-8 columns
+  (was 3). Click any thumb to open the larger preview/tag wizard.
+
+**TIER D — Bigger features**
+- New EodSlider component: replaces the EOD% numeric input in the
+  Activity log with a range slider (0-100) + live percent readout.
+- Voice memo playback: VoiceIntakePanel keeps a Blob URL of the most-
+  recent recording and renders a native `<audio controls>` in the
+  result panel. URL is revoked + replaced on the next recording start
+  so it never persists across page reloads.
+- Delete project (admin-only): new `DELETE /api/projects/:id` route
+  cascades across 24 project-scoped collections; UI button on
+  /projects with name-confirmation prompt.
+- Close tenant account (admin-only): new
+  `POST /api/auth/close-account` route wipes 31 tenant-scoped
+  collections including the tenant + users + memberships, freeing
+  the email to sign up a brand-new organization. UI button in the
+  user dropdown (`/components/TopBar.jsx`) with DELETE
+  confirmation.
+- Subcontractor / Supplier central repo:
+  - New `vendors_router.py` with CRUD for both collections
+    (`/api/subcontractors`, `/api/suppliers`) — tenant-scoped, name
+    dedupe on insert.
+  - New `/vendors` page with Tabs (Subcontractors / Suppliers),
+    add/edit/delete via a shared dialog.
+  - Sidebar entry "Vendors" added under OVERVIEW.
+  - DR Manpower log "Company" column auto-completes from the
+    subcontractor list (HTML5 `<datalist>`); empty state shows a
+    "+ Add to vendor repo" link.
+  - Voice AI now receives the list of known subcontractor names +
+    their trades; system prompt instructs Claude to use the EXACT
+    stored name on `crew_presence.company_name` when a trade match
+    is found (else leaves it null).
+- Collections `subcontractors` and `suppliers` are listed in the
+  tenant + project cascade-delete arrays so account-close + project-
+  delete wipe them cleanly.
+
+Smoke-tested via screenshot: Vendors page renders, DR detail still
+mounts with all 4 numbered section badges visible, no console errors.
+
+### Iter 13.7 — Dialog viewport fit + project vendor links (2026-02-XX)
+
+**Dialog scroll fix** — `components/ui/dialog.jsx` DialogContent base
+class went from `grid` to `flex flex-col` with `max-h-[90vh]
+overflow-y-auto overscroll-contain`. Every dialog in the app
+(AiAnalysisCard preview, TagWizard, project create/edit, vendor
+create/edit) now respects the viewport: top X close button is always
+reachable, scrolling happens inside the modal, bottom action buttons
+never get clipped. Verified at 1280×720.
+
+**Project ↔ Vendor linking** —
+- Backend: `Project`, `ProjectCreate`, `ProjectUpdate` now carry
+  `subcontractor_ids: list[str]` and `supplier_ids: list[str]`
+  (default `[]`).
+- Frontend: new `VendorPicker` chip-grid component on the project
+  create + edit dialog. Subs and suppliers are loaded from
+  `/api/subcontractors` and `/api/suppliers`; selecting a chip
+  toggles the ID in `form.subcontractor_ids` / `form.supplier_ids`.
+  Empty-state surfaces a "Manage repo ↗" link + an "Add some →"
+  link straight to /vendors so the user can populate the repo
+  without leaving the project flow.
+- Voice AI now narrows its `known_subcontractors` list to the
+  project's selected subs when populated; falls back to the full
+  tenant list otherwise (so legacy projects without explicit
+  vendor linkage continue to work).
+- The submit() function preserves empty arrays in payload so
+  un-selecting all subs / suppliers actually clears the linkage.
 
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash

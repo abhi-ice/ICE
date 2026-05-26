@@ -208,7 +208,7 @@ export default function Photos() {
           No photos match these filters. Upload + tag from the Photo tray.
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 gap-2">
           {photos.map((p) => <PhotoCard key={p.id} photo={p} projectId={activeId} />)}
         </div>
       )}

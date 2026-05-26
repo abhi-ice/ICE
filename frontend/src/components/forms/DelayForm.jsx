@@ -85,7 +85,8 @@ const DELAY_STATUS_ONLY_FIELDS = new Set([
 
 export default function DelayForm({ projectId, reportDate, dailyReportId, initial,
                                      onSaved, onCancel,
-                                     isLocked = false, lockedAddReason = null }) {
+                                     isLocked = false, lockedAddReason = null,
+                                     prelinkedTaskId = null }) {
   const [tasks, setTasks] = useState([]);  // [{id, activity_code, description, total_float_days, is_critical_path}]
   const [tasksLoaded, setTasksLoaded] = useState(false);
   const [picker, setPicker] = useState("");
@@ -110,6 +111,22 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
   const [busy, setBusy] = useState(false);
+
+  // 2026-05-26 — when opened via the Activity Grid Issues dropdown,
+  // pre-link to the activity that the super flagged. We seed it
+  // through `impacts` so the rest of the form pipeline treats it like
+  // any other linked task.
+  useEffect(() => {
+    if (!prelinkedTaskId) return;
+    if (initial?.id) return;   // edit mode -- don't override existing
+    setForm((f) => {
+      if (f.impacts.some((i) => i.task_id === prelinkedTaskId)) return f;
+      return {
+        ...f,
+        impacts: [...f.impacts, { task_id: prelinkedTaskId, projected_impact_days: 0 }],
+      };
+    });
+  }, [prelinkedTaskId, initial?.id]);
 
   // Bug #54 (2026-05-13) -- edit_reason capture for field edits on
   // locked-DR delays. When the user opens this form from /delays or
@@ -470,10 +487,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
               <span className="text-slate-400">({hiddenCompletedCount} hidden)</span>
             )}
           </label>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <select data-testid="delay-form-add-task-select" value={picker}
               onChange={(e) => setPicker(e.target.value)}
-              className="flex-1 h-8 px-2 rounded border border-slate-200 text-sm"
+              className="flex-1 min-w-0 h-8 px-2 rounded border border-slate-200 text-sm"
               disabled={!tasksLoaded}>
               <option value="">{tasksLoaded ? `— select a task (${availableTasks.length} available) —` : "Loading project tasks…"}</option>
               {availableTasks.map((t) => (
@@ -483,8 +500,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
               ))}
             </select>
             <button data-testid="delay-form-add-task" type="button" onClick={addLinkedTask} disabled={!picker}
-              className="h-8 px-3 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700 inline-flex items-center gap-1">
-              <Plus className="h-3 w-3" /> Add task
+              title="Add selected task as linked"
+              className="shrink-0 h-8 w-8 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700 inline-flex items-center justify-center"
+              aria-label="Add task">
+              <Plus className="h-4 w-4" />
             </button>
           </div>
         </div>

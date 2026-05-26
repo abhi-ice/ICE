@@ -9,7 +9,7 @@
  * Copilot is given the active daily_report_id when this page is open, so it can
  * call DR-only tools: record_presence, mark_activity_status, create_unplanned_activity.
  */
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -36,6 +36,16 @@ import { BlockerPopover } from "../components/BlockerPopover";
 // CPM Part J-6 (2026-05-15) -- per-task RFI impact input.
 import PerTaskImpactsInput from "../components/forms/PerTaskImpactsInput";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from "../components/ui/dropdown-menu";
+import { ChevronDown } from "lucide-react";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
@@ -48,6 +58,11 @@ import {
 import TagWizard from "../components/photos/TagWizard";
 // Bucket G Phase 3 -- Jigsaw pre-fill widget on the DR narrative.
 import JigsawField from "../components/forms/JigsawField";
+// 5-Route DR voice intake (Phase A 2026-05-25): renders the voice memo
+// recorder and live-conversational launcher when the user picked one
+// of the voice modes at New-DR time. Imported lazily-friendly default
+// from /components/VoiceIntakePanel.jsx.
+import VoiceIntakePanel from "../components/VoiceIntakePanel";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -141,12 +156,49 @@ const PHOTO_CLASS_BY_VALUE = Object.fromEntries(PHOTO_CLASSES.map((c) => [c.valu
 // ------------------------------------------------------------
 //  Top-level list — pick a date (any past/future), open or create
 // ------------------------------------------------------------
+// 5-Route DR Entry — three user-facing intake modes selected when
+// opening a new daily report. Standard, short names per Abhi:
+//   - manual      → fill the form by hand (default; always available)
+//   - voice_memo  → record a voice recap; AI transcribes + populates DR
+//   - live_voice  → Gemini Live conversational walkthrough
+//
+// Offline rules:
+//   - manual stays available (autosaves draft to localStorage)
+//   - voice_memo stays available (recording queues to IndexedDB, syncs
+//     when connection returns)
+//   - live_voice REQUIRES connection (Gemini Live WebSocket) → grayed
+//     out + tooltip when offline OR when GEMINI_API_KEY isn't configured.
+const DR_INTAKE_MODES = [
+  { value: "manual",     label: "Manual",     hint: "Type values into the form",                 requiresOnline: false, requiresGemini: false },
+  { value: "voice_memo", label: "Voice Memo", hint: "Record voice recap, AI fills DR",          requiresOnline: false, requiresGemini: true  },
+  { value: "live_voice", label: "Live Voice", hint: "AI guides you with questions in real time", requiresOnline: true,  requiresGemini: true  },
+];
+
 export default function DailyReports() {
   const { activeId } = useProjects();
   const [reports, setReports] = useState([]);
   const [openId, setOpenId] = useState(null);
+  const [openMode, setOpenMode] = useState("manual");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerDate, setPickerDate] = useState(localTodayISO());
+  const [pickerMode, setPickerMode] = useState("manual");
+  const [voiceConfig, setVoiceConfig] = useState({ gemini_configured: false, voice_memo_enabled: false, live_voice_enabled: false });
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  useEffect(() => {
+    const setOn = () => setOnline(true);
+    const setOff = () => setOnline(false);
+    window.addEventListener("online", setOn);
+    window.addEventListener("offline", setOff);
+    return () => {
+      window.removeEventListener("online", setOn);
+      window.removeEventListener("offline", setOff);
+    };
+  }, []);
+  useEffect(() => {
+    api.get("/daily-reports/voice/config")
+      .then(({ data }) => setVoiceConfig(data || {}))
+      .catch(() => setVoiceConfig({ gemini_configured: false, voice_memo_enabled: false, live_voice_enabled: false }));
+  }, []);
   // Feature Client DR Template Export (2026-05-20) -- the role gate
   // here is for the "Upload DR Template" button in the list header.
   // The per-DR "Client Format" export now lives on the DR detail view
@@ -205,6 +257,7 @@ export default function DailyReports() {
       toast.success(existed ? `Opened existing report for ${formatDateDisplay(data.report_date)}`
                             : `Daily report opened for ${formatDateDisplay(data.report_date)}`);
       setPickerOpen(false);
+      setOpenMode(pickerMode || "manual");
       setOpenId(data.id);
       load();
     } catch (e) {
@@ -225,7 +278,7 @@ export default function DailyReports() {
   };
 
   if (openId) {
-    return <DailyReportDetail id={openId} onBack={() => setOpenId(null)} />;
+    return <DailyReportDetail id={openId} intakeMode={openMode} onBack={() => { setOpenId(null); setOpenMode("manual"); }} />;
   }
 
   return (
@@ -268,6 +321,35 @@ export default function DailyReports() {
               <input data-testid="dr-new-date" type="date" value={pickerDate}
                 onChange={(e) => setPickerDate(e.target.value)}
                 className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm" />
+            </label>
+            <label className="text-xs">
+              <div className="text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+                Intake mode
+                {online ? null : <span className="text-amber-600 normal-case">(offline — Live Voice disabled)</span>}
+              </div>
+              <select
+                data-testid="dr-new-mode"
+                value={pickerMode}
+                onChange={(e) => setPickerMode(e.target.value)}
+                className="mt-1 h-9 px-2 border border-slate-200 rounded text-sm bg-white min-w-[140px]"
+              >
+                {DR_INTAKE_MODES.map((m) => {
+                  const offlineBlocked = m.requiresOnline && !online;
+                  const geminiBlocked = m.requiresGemini && !voiceConfig.gemini_configured;
+                  const disabled = offlineBlocked || geminiBlocked;
+                  let suffix = "";
+                  if (offlineBlocked) suffix = " (offline)";
+                  else if (geminiBlocked) suffix = " (not configured)";
+                  return (
+                    <option key={m.value} value={m.value} disabled={disabled} data-testid={`dr-new-mode-${m.value}`}>
+                      {m.label}{suffix}
+                    </option>
+                  );
+                })}
+              </select>
+              <div className="mt-1 text-[10px] text-slate-400 max-w-[220px] leading-tight">
+                {DR_INTAKE_MODES.find((m) => m.value === pickerMode)?.hint}
+              </div>
             </label>
             <button data-testid="dr-new-confirm" onClick={createForDate}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">
@@ -320,9 +402,14 @@ export default function DailyReports() {
 // ------------------------------------------------------------
 //  Detail page (the heart of Phase 2)
 // ------------------------------------------------------------
-function DailyReportDetail({ id, onBack }) {
+function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
+  // 5-Route DR (2026-05-25) — allow switching to voice mode AFTER the
+  // DR is already open. Initial value comes from the New-DR picker;
+  // user can flip it from inside the detail page via the header
+  // "Voice intake" toggle.
+  const [activeIntakeMode, setActiveIntakeMode] = useState(intakeMode);
   // Feature Client DR Template Export (2026-05-20) -- the third export
   // button (next to Internal / External) is gated on the project
   // having a client xlsx template uploaded. We fetch the metadata
@@ -343,6 +430,32 @@ function DailyReportDetail({ id, onBack }) {
   // resubmit with is_no_work_day=true + the reason/note.
   const [noWorkModal, setNoWorkModal] = useState(null); // null | {reason, note}
 
+  // 5-Route DR Entry (2026-05-25) — online/offline status + pending
+  // offline-queue size for the banner shown at the top of the detail.
+  const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [queueSize, setQueueSize] = useState(0);
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        // Lazy require to avoid a circular dep at module init.
+        // eslint-disable-next-line global-require
+        const { getQueueSize } = require("../lib/drOfflineSync");
+        setQueueSize(getQueueSize());
+      } catch { /* ignore */ }
+    };
+    refresh();
+    const setOn = () => { setOnline(true); refresh(); };
+    const setOff = () => { setOnline(false); refresh(); };
+    window.addEventListener("online", setOn);
+    window.addEventListener("offline", setOff);
+    const t = setInterval(refresh, 5000);
+    return () => {
+      window.removeEventListener("online", setOn);
+      window.removeEventListener("offline", setOff);
+      clearInterval(t);
+    };
+  }, []);
+
   const [reminders, setReminders] = useState([]);
   const reload = useCallback(async () => {
     // 2026-05-19 -- /available-tasks call removed along with the
@@ -356,6 +469,31 @@ function DailyReportDetail({ id, onBack }) {
     setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
+
+  // 2026-02-XX (Abhi) -- weather auto-fill on first open. Fires once
+  // per DR-detail mount IF every weather field is empty AND the
+  // backend has never recorded a fetched_at. The ref guard prevents
+  // re-firing if the bundle reloads (e.g. after another patch lands)
+  // and the fetched_at gate prevents overwriting a super's manual
+  // edits when they reopen a draft they already populated by hand.
+  const weatherAutofillTriedRef = useRef(false);
+  useEffect(() => {
+    if (!bundle || weatherAutofillTriedRef.current) return;
+    const r = bundle.report;
+    const locked = r.status === "submitted" || r.status === "approved";
+    if (locked) { weatherAutofillTriedRef.current = true; return; }
+    const isBlank = !r.weather_fetched_at
+      && !r.weather_conditions
+      && r.weather_temp_high_f == null
+      && r.weather_temp_low_f == null
+      && r.weather_precipitation_in == null
+      && r.weather_wind_mph == null;
+    weatherAutofillTriedRef.current = true;
+    if (!isBlank) return;
+    api.post(`/daily-reports/${id}/weather-autofill`)
+      .then(() => reload())
+      .catch(() => { /* silent -- super can type values manually */ });
+  }, [bundle, id, reload]);
 
   // Bucket D Fix F -- gallery click-through highlight. After the bundle
   // renders, find the matching event row by data-testid, scroll into
@@ -693,6 +831,44 @@ function DailyReportDetail({ id, onBack }) {
               onDownloadClientTemplate={downloadClientTemplate}
               onQuickLogCoordination={() => setCoordOpen(true)} />
 
+      {/* 5-Route DR Entry — offline banner. Shows when offline OR when
+          there are queued requests waiting to drain. Auto-hides when
+          online and queue is empty. */}
+      {(!online || queueSize > 0) && (
+        <div data-testid="dr-offline-banner"
+          className={`rounded-lg border px-3 py-2 text-sm flex items-center justify-between gap-3 ${
+            !online
+              ? "bg-amber-50 border-amber-300 text-amber-900"
+              : "bg-blue-50 border-blue-300 text-blue-900"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <div className={`h-2 w-2 rounded-full ${!online ? "bg-amber-500 animate-pulse" : "bg-blue-500"}`} />
+            {!online
+              ? <span><strong>You're offline.</strong> Edits save locally and sync automatically when you reconnect.</span>
+              : <span><strong>{queueSize}</strong> pending change{queueSize === 1 ? "" : "s"} syncing…</span>}
+          </div>
+          {online && queueSize > 0 && (
+            <button
+              data-testid="dr-offline-drain"
+              onClick={async () => {
+                try {
+                  // eslint-disable-next-line global-require
+                  const { drainOfflineQueue } = require("../lib/drOfflineSync");
+                  const r = await drainOfflineQueue(api);
+                  if (r.synced > 0) toast.success(`Synced ${r.synced} pending change${r.synced === 1 ? "" : "s"}.`);
+                  if (r.remaining > 0) toast.error(`${r.remaining} change${r.remaining === 1 ? "" : "s"} still pending — will retry.`);
+                  reload();
+                } catch (e) {
+                  toast.error(`Sync failed: ${e.message}`);
+                }
+              }}
+              className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700"
+            >Sync now</button>
+          )}
+        </div>
+      )}
+
       {/* Feature DR Header Auto-Population (2026-05-20) -- the formal
           contract / station / signature block shown on every Daily
           Report. Read-only, auto-populated from the project record and
@@ -700,6 +876,31 @@ function DailyReportDetail({ id, onBack }) {
           the project field is empty -- no error, no block on DR
           creation. Above the date/weather block per the spec. */}
       <DrAutoHeader project={project} currentUserName={currentUserName} />
+
+      {/* 5-Route DR voice intake (Phase A 2026-05-25). The "Voice Memo"
+          and "Live Voice" modes selected at New-DR time auto-expand
+          the matching panel; Manual mode hides it. Recording / live /
+          offline-queue logic lives inside VoiceIntakePanel.
+          User can toggle the panel on any open DR via the header
+          "Voice intake" button below. */}
+      {activeIntakeMode && activeIntakeMode !== "manual" && (
+        <VoiceIntakePanel
+          dailyReportId={id}
+          initialMode={activeIntakeMode === "voice_memo" ? "voice_async" : "voice_live"}
+          locked={locked}
+          onApplied={reload}
+        />
+      )}
+      {activeIntakeMode === "manual" && !locked && (
+        <div className="flex justify-end -mt-2">
+          <button data-testid="dr-open-voice-intake"
+            onClick={() => setActiveIntakeMode("voice_memo")}
+            className="h-8 px-3 rounded border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 text-xs inline-flex items-center gap-1.5 hover:bg-emerald-900/40"
+          >
+            <Mic className="h-3 w-3" /> Add via voice
+          </button>
+        </div>
+      )}
 
       {/* Bucket C3b Phase 1 — quick-log coordination event from this DR.
           Pre-links the event to this daily report on save so it shows up
@@ -816,32 +1017,33 @@ function DailyReportDetail({ id, onBack }) {
         <RenovationPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       )}
 
-      {/* OPEN DELAY REMINDERS — only renders when reminders array non-empty */}
+      {/* OPEN DELAY REMINDERS — only renders when reminders array
+          non-empty. Placed strategically ABOVE the Events tabbed card
+          so rolled-forward delays are the FIRST thing the super sees
+          before navigating the per-event tabs. */}
       <ReminderBanner reminders={reminders} reload={reload} />
 
-      {/* INLINE EVENT PANELS */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <DelaysPanel rows={delays} dailyReportId={id} projectId={project.id}
-                     reportDate={report.report_date} locked={locked} reload={reload} />
-        <SafetyPanel rows={safety_events} dailyReportId={id} projectId={project.id}
-                     reportDate={report.report_date} locked={locked} reload={reload}
-                     grid={grid} />
-        <QcPanel rows={qc_issues} dailyReportId={id} projectId={project.id}
-                 reportDate={report.report_date} locked={locked} reload={reload}
-                 grid={grid} />
-        <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
-                   locked={locked} reload={reload} grid={grid} />
-        <DeliveriesPanel rows={deliveries} dailyReportId={id} projectId={project.id}
-                         reportDate={report.report_date} locked={locked} reload={reload}
-                         grid={grid} />
-        <NotesPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
-      </div>
+      {/* EVENTS — tabbed card (Delays · Safety · QC · RFIs ·
+          Deliveries · Notes). Each panel keeps its full form,
+          linking, and audit behavior intact; the tabs are purely a
+          structural / layout change so the super can land on the
+          right surface in one click instead of scrolling 1500px.
+          The "+ Add" button at the right of the tab strip dispatches
+          the same `dr-open-event-form` window event that the Activity
+          Grid Issues dropdown uses, so the panel-level scroll/focus
+          logic continues to work uniformly. */}
+      <EventsTabsCard
+        delays={delays} safetyEvents={safety_events} qcIssues={qc_issues}
+        rfis={rfis} deliveries={deliveries}
+        dailyReportId={id} projectId={project.id} reportDate={report.report_date}
+        locked={locked} reload={reload} grid={grid} report={report} />
 
-      {/* PHOTOS + VOICE */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      {/* PHOTOS (Voice Annotations card removed 2026-05-26 per spec --
+          the AI voice intake at the top of the page supersedes the
+          legacy per-DR audio attachment workflow.) */}
+      <div className="grid grid-cols-1 gap-5">
         <PhotosPanel rows={photos} dailyReportId={id} projectId={project.id}
                      locked={locked} reload={reload} />
-        <VoicePanel rows={voice_annotations} dailyReportId={id} reload={reload} />
       </div>
 
       {/* Bucket D Phase 4 -- supplements appendix. Lists every event
@@ -906,41 +1108,72 @@ function Header({ report, project, userLabels, ppc, totalHours,
           {/* Bucket C3b Phase 1 — quick-log a coordination event from
               the daily report. Pre-links to this DR; user can expand
               to full form on the Coordination page later. */}
+          {/* Action buttons (2026-05-26) — three Export options
+              consolidated into a single "Export ▼" dropdown to keep
+              the header compact and leave room for future actions
+              (Email DR, Print, Compare-to-prior-day, etc.). */}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
-              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
+              className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
               <MessageSquare className="h-4 w-4" />
               {locked ? "+ Coordination (post-submit)" : "+ Coordination"}
             </button>
           )}
-          <button data-testid="dr-download-pdf-internal" onClick={() => onDownload("internal")} disabled={busy}
-            className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700">
-            <Download className="h-4 w-4" /> Export for Internal
-          </button>
-          <button data-testid="dr-download-pdf-external" onClick={() => onDownload("external")} disabled={busy}
-            className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-1 hover:bg-slate-50">
-            <Download className="h-4 w-4" /> Export for External
-          </button>
-          {/* Feature Client DR Template Export (2026-05-20) -- third
-              export option, sits next to Internal / External. Only
-              rendered when the project has a client xlsx template
-              uploaded; otherwise hidden entirely (no toast, no
-              disabled button -- the upload flow is on the list
-              header). */}
-          {templateMeta?.present && (
-            <button
-              data-testid="dr-download-client-template"
-              onClick={onDownloadClientTemplate}
-              disabled={exportingClient || busy}
-              title={`Export this DR using the project's client template (${templateMeta.file_name || "xlsx"})`}
-              className="h-9 px-3 rounded border border-emerald-300 bg-white text-emerald-700 text-sm flex items-center gap-1 hover:bg-emerald-50 disabled:opacity-50">
-              {exportingClient ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>
-              ) : (
-                <><FileSpreadsheet className="h-4 w-4" /> Export: Client Format</>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button data-testid="dr-export-menu" disabled={busy}
+                className="h-9 px-3 rounded bg-blue-600 text-white text-sm flex items-center gap-1 hover:bg-blue-700 disabled:opacity-50">
+                <Download className="h-4 w-4" /> Export
+                <ChevronDown className="h-3.5 w-3.5 -mr-1" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Export format</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem data-testid="dr-export-internal"
+                disabled={busy}
+                onClick={() => onDownload("internal")}
+                className="flex items-start gap-2 cursor-pointer">
+                <Download className="h-4 w-4 mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-medium">For Internal</div>
+                  <div className="text-xs text-slate-500">Full audit trail, all fields</div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="dr-export-external"
+                disabled={busy}
+                onClick={() => onDownload("external")}
+                className="flex items-start gap-2 cursor-pointer">
+                <Download className="h-4 w-4 mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-medium">For External</div>
+                  <div className="text-xs text-slate-500">Client-safe, redacted internals</div>
+                </div>
+              </DropdownMenuItem>
+              {templateMeta?.present && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem data-testid="dr-export-client-template"
+                    disabled={exportingClient || busy}
+                    onClick={onDownloadClientTemplate}
+                    title={`Export using the project's client template (${templateMeta.file_name || "xlsx"})`}
+                    className="flex items-start gap-2 cursor-pointer">
+                    {exportingClient ? (
+                      <Loader2 className="h-4 w-4 mt-0.5 shrink-0 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="h-4 w-4 mt-0.5 shrink-0" />
+                    )}
+                    <div>
+                      <div className="font-medium">{exportingClient ? "Exporting…" : "Client format (xlsx)"}</div>
+                      <div className="text-xs text-slate-500 truncate max-w-[180px]">
+                        {templateMeta.file_name || "Uses uploaded template"}
+                      </div>
+                    </div>
+                  </DropdownMenuItem>
+                </>
               )}
-            </button>
-          )}
+            </DropdownMenuContent>
+          </DropdownMenu>
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
               className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
@@ -962,9 +1195,17 @@ function Header({ report, project, userLabels, ppc, totalHours,
 // Feature DR Header Auto-Population (2026-05-20) -- read-only project
 // / contract / signature block. Six fields, all auto-populated, never
 // editable. Blank values render as em-dash; absent project fields do
-// NOT block DR creation. Shown on every Daily Report (creation flow +
-// detail view) above the date / weather block.
+// NOT block DR creation.
+//
+// 2026-02-XX collapse-by-default refactor (Abhi):
+// The full 6-field card is only really needed on the exported
+// PDF/xlsx -- on the live DR view, the super only checks these
+// values once per DR open. So the card now renders as a single-line
+// summary `Client · Station · #Contract · Contractor · Signature`
+// with a chevron to expand. Saves ~150px vertical space per DR open.
+// Backend export paths render the full block unchanged.
 function DrAutoHeader({ project, currentUserName }) {
+  const [expanded, setExpanded] = useState(false);
   const fields = [
     { label: "Client",          value: project.client_name,      testid: "dr-hdr-client" },
     { label: "Station",         value: project.station_id,       testid: "dr-hdr-station" },
@@ -973,23 +1214,60 @@ function DrAutoHeader({ project, currentUserName }) {
     { label: "Contractor",      value: project.contractor_name,  testid: "dr-hdr-contractor" },
     { label: "Signature",       value: currentUserName,          testid: "dr-hdr-signature" },
   ];
+  // Compact summary line. Skip nulls so the row reads cleanly when
+  // a project record is partially populated. Contract number is
+  // prefixed with "#" only when the stored value doesn't already
+  // include one (some legacy records store "#1234" while newer ones
+  // store "1234").
+  const contractLabel = project.contract_number
+    ? (String(project.contract_number).trim().startsWith("#")
+        ? project.contract_number
+        : `#${project.contract_number}`)
+    : null;
+  const summaryParts = [
+    project.client_name,
+    project.station_id,
+    contractLabel,
+    project.contractor_name,
+    currentUserName,
+  ].filter(Boolean);
   return (
-    <div className="surface p-5" data-testid="dr-auto-header">
-      <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 mb-3 font-semibold">
-        Project / Contract Information
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-2">
-        {fields.map((f) => (
-          <div key={f.label} data-testid={f.testid}>
-            <div className="text-xs text-slate-500 uppercase tracking-wide">{f.label}</div>
-            <div className="text-sm text-slate-700">
-              {f.value
-                ? f.value
-                : <span className="text-slate-300" data-testid={`${f.testid}-empty`}>—</span>}
+    <div className="surface px-4 py-2.5 dr-section" data-testid="dr-auto-header">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        data-testid="dr-auto-header-toggle"
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-3 text-left group"
+      >
+        <ChevronDown
+          className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+        />
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums shrink-0">1</span>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0">
+          Project / Contract
+        </div>
+        <div className="text-sm text-slate-300 truncate flex-1" data-testid="dr-auto-header-summary">
+          {summaryParts.length
+            ? summaryParts.join("  ·  ")
+            : <span className="text-slate-500 italic">No project metadata yet — click to expand</span>}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-3 pt-3 border-t border-white/[0.06] grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-2"
+          data-testid="dr-auto-header-grid">
+          {fields.map((f) => (
+            <div key={f.label} data-testid={f.testid}>
+              <div className="text-xs text-slate-500 uppercase tracking-wide">{f.label}</div>
+              <div className="text-sm text-slate-300">
+                {f.value
+                  ? f.value
+                  : <span className="text-slate-500" data-testid={`${f.testid}-empty`}>—</span>}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1003,10 +1281,15 @@ function KPI({ label, value, testid }) {
   );
 }
 
-function PanelShell({ icon: Icon, title, count, testid, children, badge }) {
+function PanelShell({ icon: Icon, title, count, testid, children, badge, step }) {
   return (
-    <div data-testid={testid} className="surface p-5">
+    <div data-testid={testid} className="surface p-5 dr-section">
       <div className="flex items-center gap-2 mb-4 pb-3 border-b border-white/[0.06]">
+        {typeof step === "number" && (
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">
+            {step}
+          </span>
+        )}
         <Icon className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">{title}</div>
         {typeof count === "number" && (
@@ -1022,17 +1305,11 @@ function PanelShell({ icon: Icon, title, count, testid, children, badge }) {
 }
 
 function WeatherPanel({ report, dailyReportId, locked, reload }) {
-  const [busy, setBusy] = useState(false);
-  const autoFill = async () => {
-    setBusy(true);
-    try {
-      await api.post(`/daily-reports/${dailyReportId}/weather-autofill`);
-      toast.success("Weather pulled from forecast.");
-      reload();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Weather provider unreachable");
-    } finally { setBusy(false); }
-  };
+  // 2026-02-XX (Abhi) -- the "Auto-fill from forecast" button was
+  // removed; weather now auto-populates ONCE when the DR is first
+  // opened with all weather fields blank (see auto-trigger effect
+  // in DailyReportDetail). This component is purely render-and-edit
+  // so the super still tweaks values manually after autofill lands.
   const patch = async (fields) => {
     try { await api.patch(`/daily-reports/${dailyReportId}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
@@ -1040,29 +1317,27 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
 
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
-    <PanelShell icon={Cloud} title="Weather" testid="dr-weather-panel"
-      badge={fetchedAt && <span className="text-xs text-slate-400 ml-auto">fetched {fetchedAt}</span>}>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+    <div data-testid="dr-weather-panel" className="surface px-4 py-3 dr-section">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">2</span>
+        <Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
+        <div className="font-semibold text-sm tracking-tight text-foreground">Weather</div>
+        {fetchedAt && <span className="text-xs text-slate-400 ml-auto">auto-filled {fetchedAt}</span>}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
         <Field label="Low °F" type="number" value={report.weather_temp_low_f ?? ""} onChange={(v) => patch({ weather_temp_low_f: v ? Number(v) : null })} disabled={locked} testid="weather-low" />
         <Field label="Precip in" type="number" value={report.weather_precipitation_in ?? ""} onChange={(v) => patch({ weather_precipitation_in: v ? Number(v) : null })} disabled={locked} testid="weather-precip" />
         <Field label="Wind mph" type="number" value={report.weather_wind_mph ?? ""} onChange={(v) => patch({ weather_wind_mph: v ? Number(v) : null })} disabled={locked} testid="weather-wind" />
       </div>
-      {!locked && (
-        <button data-testid="weather-autofill" onClick={autoFill} disabled={busy}
-          className="mt-3 h-8 px-3 rounded bg-slate-900 text-white text-xs flex items-center gap-1 hover:bg-slate-800 disabled:opacity-50">
-          <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Auto-fill from forecast
-        </button>
-      )}
-    </PanelShell>
+    </div>
   );
 }
 
 const PRESENCE_SHIFTS = ["first", "second", "third", "weekend", "holiday", "off_hours"];
 
 function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [], reportDate }) {
-  const [draft, setDraft] = useState({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "" });
   // Bucket H Phase 4 -- demand-vs-actual comparison. Fetch per-project
   // demand for this DR's date, group by trade, render alongside actual
   // headcount totals from presence rows.
@@ -1087,45 +1362,53 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     acc[t] = (acc[t] || 0) + (r.headcount || 0);
     return acc;
   }, {});
-  // Bucket C3b Phase 3 — detailed roster toggle. When on, the table
-  // shows zone / shift / activity columns and the add-row form gets the
-  // same fields. Remembered per session via localStorage so users who
-  // prefer the granular view don't have to flip it every time.
-  const [showDetailed, setShowDetailed] = useState(() => {
-    try { return localStorage.getItem("ice.presence.detailed") === "1"; } catch { return false; }
-  });
-  const [zones, setZones] = useState([]);
-
-  useEffect(() => {
-    if (!showDetailed || !projectId) return;
-    api.get(`/projects/${projectId}/locations`).then(({ data }) => {
-      setZones(Array.isArray(data) ? data : []);
-    }).catch(() => setZones([]));
-  }, [showDetailed, projectId]);
-
-  const toggleDetailed = () => {
-    const next = !showDetailed;
-    setShowDetailed(next);
-    try { localStorage.setItem("ice.presence.detailed", next ? "1" : "0"); } catch { /* ignore */ }
-  };
 
   const total = rows.reduce((s, r) => s + (r.headcount || 0), 0);
   const totalHours = rows.reduce((s, r) => s + (r.headcount || 0) * (r.hours_per_person || 0), 0);
 
-  // Bucket D Fix E -- double-click guard.
-  const [busy, setBusy] = useState(false);
-  const add = async () => {
-    if (busy) return;
-    if (!draft.trade) return toast.error("Trade is required");
-    setBusy(true);
-    try {
-      await api.post(`/daily-reports/${dailyReportId}/presence`, { ...draft, daily_report_id: dailyReportId });
-      setDraft({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "",
-                 zone_id: undefined, zone_name: undefined, shift: "first", schedule_activity_id: undefined });
-      reload();
-    } catch (e) { toast.error(e.response?.data?.detail || "Add failed"); }
-    finally { setBusy(false); }
-  };
+  // 2026-05-26 inline-row redesign (Abhi).
+  // Old pattern: persisted rows + a separate "Add trade" form at the bottom.
+  // New pattern: persisted rows + one ALWAYS-VISIBLE blank draft row at
+  // the end. User types directly into the draft; clicking "+ Add more
+  // trade" on the last row's right edge saves the current draft AND
+  // appends a new blank draft below. Deleting a row keeps the
+  // always-visible blank draft on whichever row is now last.
+  // 2026-02-XX (Abhi) -- the manpower log no longer auto-shows a
+  // blank draft row. Once the super saves a trade, the table sits
+  // clean; clicking the dedicated "+ Add trade" button below opens
+  // one editable draft. Same button switches to "Save" when the
+  // draft has a trade typed in, then disappears again on success.
+  const [draftsCount, setDraftsCount] = useState(0);
+  // Each draft has a stable local id so input components don't lose
+  // focus on every keystroke as the array re-mounts.
+  const draftIdsRef = useRef([]);
+  if (draftIdsRef.current.length < draftsCount) {
+    while (draftIdsRef.current.length < draftsCount) {
+      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    }
+  }
+  const [drafts, setDrafts] = useState(() => []);
+  // 2026-02-XX (Abhi) -- Subcontractor central repo integration. Pull
+  // the tenant-wide subs so the Company column on the manpower log
+  // gets autocomplete. Empty list also lets the empty-state surface
+  // a "+ Add to repo" link.
+  const [subs, setSubs] = useState([]);
+  useEffect(() => {
+    api.get("/subcontractors")
+      .then(({ data }) => setSubs(Array.isArray(data) ? data : []))
+      .catch(() => setSubs([]));
+  }, []);
+  // Keep drafts array length in sync with draftsCount (additions only).
+  if (drafts.length < draftsCount) {
+    setDrafts((arr) => {
+      const out = [...arr];
+      while (out.length < draftsCount) {
+        out.push({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" });
+      }
+      return out;
+    });
+  }
+
   const patch = async (rid, fields) => {
     try { await api.patch(`/daily-presence/${rid}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
@@ -1134,26 +1417,86 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     if (!window.confirm("Remove this presence row?")) return;
     await api.delete(`/daily-presence/${rid}`); reload();
   };
+  // Save a single draft row. Returns true on success.
+  const [busySaveIdx, setBusySaveIdx] = useState(-1);
+  const saveDraft = async (idx) => {
+    const d = drafts[idx];
+    if (!d) return false;
+    if (!d.trade?.trim()) {
+      toast.error("Trade is required");
+      return false;
+    }
+    setBusySaveIdx(idx);
+    try {
+      await api.post(`/daily-reports/${dailyReportId}/presence`, {
+        trade: d.trade.trim(),
+        company_name: d.company_name?.trim() || "",
+        headcount: Number(d.headcount) || 0,
+        hours_per_person: Number(d.hours_per_person) || 0,
+        notes: d.notes || "",
+        schedule_activity_id: d.schedule_activity_id || null,
+        shift: "first",
+        daily_report_id: dailyReportId,
+      });
+      reload();
+      return true;
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Add failed");
+      return false;
+    } finally {
+      setBusySaveIdx(-1);
+    }
+  };
+  // "+ Add trade" (when drafts is empty) or "Save trade" (when a draft
+  // has a trade typed). Saves the current LAST draft (if filled) and
+  // clears the drafts array — no auto-blank below.
+  const addAnotherRow = async () => {
+    if (drafts.length === 0) {
+      // Open one fresh draft.
+      setDrafts([{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
+      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      setDraftsCount((n) => n + 1);
+      return;
+    }
+    const lastIdx = drafts.length - 1;
+    const last = drafts[lastIdx];
+    if (last?.trade?.trim()) {
+      const ok = await saveDraft(lastIdx);
+      if (!ok) return;
+      // Wipe drafts entirely — the saved row will appear via reload().
+      setDrafts([]);
+      draftIdsRef.current = [];
+      setDraftsCount(0);
+    } else {
+      toast.error("Type a trade first, or click the trash icon to discard the empty row.");
+    }
+  };
+  const removeDraft = (idx) => {
+    setDrafts((arr) => arr.filter((_, i) => i !== idx));
+    draftIdsRef.current = draftIdsRef.current.filter((_, i) => i !== idx);
+    setDraftsCount((n) => Math.max(0, n - 1));
+  };
+
+  const setDraftField = (idx, field, value) => {
+    setDrafts((arr) => arr.map((d, i) => i === idx ? { ...d, [field]: value } : d));
+  };
 
   const taskOptions = grid.map((g) => ({
     id: g.schedule_activity_id, code: g.activity_code, desc: g.activity_description,
   })).filter((t) => t.id);
 
+  // Total column count for empty-state rowspan calc -- header below has:
+  // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Notes, actions = 8
+  const COL_COUNT = 8;
+
   return (
-    <PanelShell icon={Users} title="Crew presence" testid="dr-presence-panel" count={rows.length}
+    <PanelShell icon={Users} title="Manpower log" testid="dr-presence-panel" count={rows.length} step={3}
       badge={
         <div className="ml-2 flex items-center gap-3">
           <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
-          <button data-testid="presence-toggle-detailed" onClick={toggleDetailed}
-            className="text-xs text-blue-600 hover:underline">
-            {showDetailed ? "Hide detailed roster" : "Show detailed roster"}
-          </button>
         </div>
       }>
-      {/* Bucket H Phase 4 -- demand-vs-actual comparison. Only rendered
-          when the project has declared trade demand on this DR's date.
-          Each row shows trade / demanded / actual / delta with color
-          tone. Clicking a row routes to Resource Leveling. */}
+      {/* Bucket H Phase 4 -- demand-vs-actual comparison. */}
       {demandByTrade && Object.keys(demandByTrade).length > 0 && (
         <div data-testid="dr-presence-demand-vs-actual"
           className="mb-2 p-2 rounded bg-slate-50 border border-slate-200 text-xs">
@@ -1203,113 +1546,135 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         <table className="dense-table">
           <thead>
             <tr>
-              <th>Trade</th>
               <th>Company</th>
+              <th>Trade</th>
+              <th title="Optional: link this crew to a scheduled activity on today's DR">Task</th>
               <th>Headcount</th>
               <th>Hrs/person</th>
               <th>Sub-total</th>
-              {showDetailed && <th title="C3b Phase 3 — granular layer">Zone</th>}
-              {showDetailed && <th>Shift</th>}
-              {showDetailed && <th>Activity</th>}
               <th>Notes</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
+            {/* Persisted rows (edit-in-place). */}
             {rows.map((r) => {
               const isAuto = (r.notes || "").startsWith("Auto-created");
               return (
                 <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
+                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
                   <td>
                     <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
                       onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
                       className="w-32 px-2 py-1 border border-slate-200 rounded text-sm" />
                   </td>
-                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
+                  <td>
+                    <select data-testid={`presence-task-${r.id}`} defaultValue={r.schedule_activity_id || ""}
+                      onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
+                      className="h-7 px-1 border border-slate-200 rounded bg-white text-xs min-w-[140px]">
+                      <option value="">— none —</option>
+                      {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                    </select>
+                  </td>
                   <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
                   <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 border border-slate-200 rounded text-sm tabular-nums" /></td>
                   <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
-                  {showDetailed && (
-                    <td>
-                      <select data-testid={`presence-zone-${r.id}`} defaultValue={r.zone_id || ""}
-                        onChange={(e) => {
-                          const z = zones.find((zz) => zz.id === e.target.value);
-                          patch(r.id, { zone_id: e.target.value || null, zone_name: z?.name || null });
-                        }} disabled={locked}
-                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[110px]">
-                        <option value="">— no zone —</option>
-                        {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
-                      </select>
-                    </td>
-                  )}
-                  {showDetailed && (
-                    <td>
-                      <select data-testid={`presence-shift-${r.id}`} defaultValue={r.shift || "first"}
-                        onChange={(e) => patch(r.id, { shift: e.target.value })} disabled={locked}
-                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white">
-                        {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
-                      </select>
-                    </td>
-                  )}
-                  {showDetailed && (
-                    <td>
-                      <select data-testid={`presence-activity-${r.id}`} defaultValue={r.schedule_activity_id || ""}
-                        onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
-                        className="text-xs h-7 px-1 border border-slate-200 rounded bg-white min-w-[120px]">
-                        <option value="">— project-wide —</option>
-                        {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
-                      </select>
-                    </td>
-                  )}
                   <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
-                  <td>{!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded"><Trash2 className="h-3.5 w-3.5" /></button>}</td>
+                  <td>
+                    {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
+                  </td>
                 </tr>
               );
             })}
-            {!rows.length && <tr><td colSpan={showDetailed ? "10" : "7"} className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>}
+            {/* Always-visible blank draft row(s) at the end. */}
+            {!locked && drafts.map((d, idx) => {
+              const localId = draftIdsRef.current[idx] || `d_${idx}`;
+              const subtotal = (Number(d.headcount) || 0) * (Number(d.hours_per_person) || 0);
+              const isLast = idx === drafts.length - 1;
+              return (
+                <tr key={localId} data-testid={`presence-draft-${idx}`} className="bg-emerald-50/30">
+                  <td>
+                    <input data-testid={`presence-draft-company-${idx}`} value={d.company_name}
+                      onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
+                      placeholder={subs.length ? "Company (type to pick)" : "Company"}
+                      list={subs.length ? `subs-datalist-${idx}` : undefined}
+                      className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                    {subs.length > 0 && (
+                      <datalist id={`subs-datalist-${idx}`}>
+                        {subs.map((s) => <option key={s.id} value={s.name} />)}
+                      </datalist>
+                    )}
+                    {subs.length === 0 && (
+                      <a href="/vendors" target="_blank" rel="noreferrer"
+                         className="block mt-0.5 text-[10px] text-emerald-600 hover:underline"
+                         data-testid="presence-add-sub-link">
+                        + Add to vendor repo
+                      </a>
+                    )}
+                  </td>
+                  <td>
+                    <input data-testid={`presence-draft-trade-${idx}`} value={d.trade}
+                      onChange={(e) => setDraftField(idx, "trade", e.target.value)}
+                      placeholder="Trade *"
+                      className="w-32 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                  </td>
+                  <td>
+                    <select data-testid={`presence-draft-task-${idx}`} value={d.schedule_activity_id || ""}
+                      onChange={(e) => setDraftField(idx, "schedule_activity_id", e.target.value)}
+                      className="h-7 px-1 border border-emerald-200 rounded bg-white text-xs min-w-[140px]">
+                      <option value="">— none —</option>
+                      {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <input data-testid={`presence-draft-headcount-${idx}`} type="number" value={d.headcount}
+                      onChange={(e) => setDraftField(idx, "headcount", e.target.value)}
+                      className="w-20 px-2 py-1 border border-emerald-200 rounded text-sm tabular-nums" />
+                  </td>
+                  <td>
+                    <input data-testid={`presence-draft-hours-${idx}`} type="number" step="0.5" value={d.hours_per_person}
+                      onChange={(e) => setDraftField(idx, "hours_per_person", e.target.value)}
+                      className="w-20 px-2 py-1 border border-emerald-200 rounded text-sm tabular-nums" />
+                  </td>
+                  <td className="tabular-nums text-sm text-slate-500">{subtotal.toFixed(1)}</td>
+                  <td>
+                    <input data-testid={`presence-draft-notes-${idx}`} value={d.notes}
+                      onChange={(e) => setDraftField(idx, "notes", e.target.value)}
+                      placeholder="Notes"
+                      className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                  </td>
+                  <td>
+                    <div className="flex items-center gap-1">
+                      <button data-testid={`presence-draft-delete-${idx}`} onClick={() => removeDraft(idx)}
+                        className="text-red-600 hover:bg-red-50 p-1 rounded" title="Discard this row">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                      {isLast && (
+                        <button data-testid="presence-save-row" onClick={addAnotherRow} disabled={busySaveIdx === idx}
+                          className="shrink-0 h-8 px-2 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-500 disabled:opacity-50 inline-flex items-center justify-center gap-1"
+                          title="Save this row"
+                          aria-label="Save row">
+                          {busySaveIdx === idx
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : <><CheckCircle2 className="h-3.5 w-3.5" /> Save</>}
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {!rows.length && drafts.length === 0 && (
+              <tr><td colSpan={COL_COUNT} className="text-center py-4 text-sm text-slate-500">No manpower logged yet — click "+ Add trade" below.</td></tr>
+            )}
           </tbody>
         </table>
       </div>
-      {!locked && (
-        <div className="mt-3 flex flex-wrap gap-2 items-end pt-3 border-t border-slate-100">
-          <Field label="Trade" value={draft.trade} onChange={(v) => setDraft({ ...draft, trade: v })} testid="presence-new-trade" />
-          <Field label="Company" value={draft.company_name} onChange={(v) => setDraft({ ...draft, company_name: v })} testid="presence-new-company" />
-          <Field label="Headcount" type="number" value={draft.headcount} onChange={(v) => setDraft({ ...draft, headcount: Number(v) })} testid="presence-new-headcount" />
-          <Field label="Hrs/person" type="number" value={draft.hours_per_person} onChange={(v) => setDraft({ ...draft, hours_per_person: Number(v) })} testid="presence-new-hours" />
-          {showDetailed && (
-            <>
-              <label className="text-xs flex flex-col gap-1">
-                <span className="text-slate-500">Zone</span>
-                <select value={draft.zone_id || ""}
-                  onChange={(e) => {
-                    const z = zones.find((zz) => zz.id === e.target.value);
-                    setDraft({ ...draft, zone_id: e.target.value || null, zone_name: z?.name || null });
-                  }}
-                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
-                  <option value="">— no zone —</option>
-                  {zones.map((z) => <option key={z.id} value={z.id}>{z.code ? `${z.code} ${z.name}` : z.name}</option>)}
-                </select>
-              </label>
-              <label className="text-xs flex flex-col gap-1">
-                <span className="text-slate-500">Shift</span>
-                <select value={draft.shift || "first"}
-                  onChange={(e) => setDraft({ ...draft, shift: e.target.value })}
-                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
-                  {PRESENCE_SHIFTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
-                </select>
-              </label>
-              <label className="text-xs flex flex-col gap-1">
-                <span className="text-slate-500">Activity</span>
-                <select value={draft.schedule_activity_id || ""}
-                  onChange={(e) => setDraft({ ...draft, schedule_activity_id: e.target.value || null })}
-                  className="h-8 px-2 border border-slate-200 rounded text-sm bg-white">
-                  <option value="">— project-wide —</option>
-                  {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
-                </select>
-              </label>
-            </>
-          )}
-          <button data-testid="presence-add" onClick={add} disabled={busy} className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
+      {!locked && drafts.length === 0 && (
+        <div className="mt-3 flex justify-start">
+          <button data-testid="presence-add-row" onClick={addAnotherRow}
+            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1.5 hover:bg-emerald-500"
+            aria-label="Add a new trade row">
             <Plus className="h-3.5 w-3.5" /> Add trade
           </button>
         </div>
@@ -1381,8 +1746,8 @@ function CrewSelector({ row, presence, locked, updateRow }) {
 const GRID_SECTIONS = [
   { n: 1, title: "Preconstruction & Construction Paperwork",
     editable: false, empty: "No paperwork scheduled on this date." },
-  { n: 2, title: "Field Work",
-    editable: true, empty: "No field work scheduled on this date." },
+  { n: 2, title: "Today's planned activity",
+    editable: true, empty: "No activities scheduled on this date." },
   { n: 3, title: "Closeout Paperwork",
     editable: false, empty: "No closeout paperwork scheduled on this date." },
 ];
@@ -1425,6 +1790,60 @@ function GridStatusPill({ status, testid }) {
 // Field Work section) decides whether the progress cells render as
 // inputs or as read-only text. Status is always a read-only pill
 // (F4 auto-status); the blocker badge (F3) is always shown.
+// Helper hook (2026-05-26) — listens for the Activity Grid Issues
+// dropdown event and, if the kind matches this panel, opens the
+// inline-add form, scrolls the panel into view, focuses the first
+// input, and pre-fills linked_task_ids with the activity that the
+// super flagged. Returns a `consumed` ref the panel can read after
+// mount to apply the prefill.
+function useIssueDropdownListener(kind, panelTestid, onOpen) {
+  useEffect(() => {
+    const handler = (e) => {
+      const d = e?.detail || {};
+      if (d.kind !== kind) return;
+      // Defer one frame so the form can mount before we scroll/focus.
+      requestAnimationFrame(() => {
+        const panel = document.querySelector(`[data-testid="${panelTestid}"]`);
+        if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        // Form may not be visible until onOpen() runs, so wait a tick.
+        setTimeout(() => {
+          const target = panel?.querySelector("input[data-issue-firstfield], textarea[data-issue-firstfield], select[data-issue-firstfield]");
+          (target || panel?.querySelector("input,textarea,select"))?.focus();
+        }, 60);
+      });
+      onOpen?.(d);
+    };
+    window.addEventListener("dr-open-event-form", handler);
+    return () => window.removeEventListener("dr-open-event-form", handler);
+  }, [kind, panelTestid, onOpen]);
+}
+
+function EodSlider({ rowId, initialValue, locked, updateRow, activityCode }) {
+  const [val, setVal] = useState(Number(initialValue) || 0);
+  useEffect(() => { setVal(Number(initialValue) || 0); }, [initialValue]);
+  const commit = (v) => {
+    const n = Math.max(0, Math.min(100, Number(v) || 0));
+    setVal(n);
+    if (n !== Number(initialValue)) updateRow(rowId, { pct_complete_end_of_day: n });
+  };
+  return (
+    <div className="flex items-center gap-2 min-w-[180px]" data-testid={`dr-pct-wrap-${activityCode}`}>
+      <input
+        data-testid={`dr-pct-${activityCode}`}
+        type="range" min="0" max="100" step="1"
+        value={val}
+        onChange={(e) => setVal(Number(e.target.value))}
+        onMouseUp={(e) => commit(e.target.value)}
+        onTouchEnd={(e) => commit(e.target.value)}
+        onKeyUp={(e) => commit(e.target.value)}
+        disabled={locked}
+        className="flex-1 accent-emerald-500 cursor-pointer disabled:opacity-50"
+      />
+      <span className="text-xs tabular-nums font-medium text-emerald-300 w-9 text-right">{val}%</span>
+    </div>
+  );
+}
+
 function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
                    submitRowErrors, presence, updateRow, removeRow,
                    dailyReportId, reload }) {
@@ -1466,19 +1885,11 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       </td>
       <td className="truncate max-w-[260px]">{r.activity_description}</td>
       <td className="text-xs">{r.location_name || "—"}</td>
-      <td className="text-xs">{r.trade_code || "—"}</td>
-      <td>
-        {editable
-          ? <CrewSelector row={r} presence={presence} locked={locked} updateRow={updateRow} />
-          : <span className="text-xs text-slate-400">—</span>}
-      </td>
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td>
         {editable ? (
-          <input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100"
-            defaultValue={r.pct_complete_end_of_day}
-            onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })}
-            disabled={locked} className="w-14 tabular-nums" />
+          <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
+            locked={locked} updateRow={updateRow} activityCode={r.activity_code} />
         ) : (
           <span className="text-xs tabular-nums text-slate-500">{r.pct_complete_end_of_day || 0}</span>
         )}
@@ -1486,24 +1897,46 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
         {delta > 0 ? "+" : ""}{delta}
       </td>
-      <td>
-        {editable ? (
-          <input type="number" defaultValue={r.hours_worked}
-            onBlur={(e) => updateRow(r.id, { hours_worked: Number(e.target.value) })}
-            disabled={locked} className="w-14" />
-        ) : (
-          <span className="text-xs tabular-nums text-slate-500">{r.hours_worked || 0}</span>
-        )}
-      </td>
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
       <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
       <td>
-        {editable ? (
-          <input type="text" defaultValue={r.notes || ""}
-            onBlur={(e) => updateRow(r.id, { notes: e.target.value })}
-            disabled={locked} placeholder="Notes…" className="w-44" />
+        {/* Issues dropdown (2026-05-26) -- lets the super flag a new
+            delay / safety / QC / RFI / delivery against THIS activity
+            without scrolling. Selection emits a global custom event
+            that the relevant Panel listens for: it opens the panel's
+            inline-add form, scrolls into view, focuses the first
+            input, and pre-fills linked_task_ids with this activity's
+            schedule_activity_id. */}
+        {editable && !locked && r.schedule_activity_id ? (
+          <select
+            data-testid={`dr-row-issue-${r.activity_code}`}
+            defaultValue=""
+            onChange={(e) => {
+              const kind = e.target.value;
+              if (!kind) return;
+              window.dispatchEvent(new CustomEvent("dr-open-event-form", {
+                detail: {
+                  kind,
+                  activityId: r.schedule_activity_id,
+                  activityCode: r.activity_code,
+                  activityDescription: r.activity_description,
+                },
+              }));
+              // Reset the dropdown so the same activity can flag
+              // multiple issues in a row.
+              e.target.value = "";
+            }}
+            className="text-xs px-1.5 py-0.5 border border-slate-200 rounded bg-white"
+          >
+            <option value="">Flag issue…</option>
+            <option value="delay">Log delay</option>
+            <option value="safety">Log safety event</option>
+            <option value="qc">Log QC issue</option>
+            <option value="delivery">Log delivery</option>
+            <option value="rfi">Log RFI</option>
+          </select>
         ) : (
-          <span className="text-xs text-slate-500">{r.notes || "—"}</span>
+          <span className="text-xs text-slate-300">—</span>
         )}
       </td>
       <td>
@@ -1522,6 +1955,9 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
 function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
+  // 2026-02-XX (Abhi) -- empty sections collapse by default; the
+  // user can click any section header to flip the override.
+  const [sectionOpenOverride, setSectionOpenOverride] = useState({});
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture
   // for activity grid rows (both planned + unplanned). Reused across the
   // two add forms below so a single reason captures both kinds.
@@ -1618,10 +2054,10 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
   };
 
   return (
-    <PanelShell icon={ClipboardList} title="Activity grid" testid="dr-activity-grid" count={grid.length}
+    <PanelShell icon={ClipboardList} title="Activity log" testid="dr-activity-grid" count={grid.length} step={4}
       badge={
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-slate-500">date: {reportDate}</span>
+          <span className="text-xs text-slate-500">date: {formatDateDisplay(reportDate)}</span>
           {!locked && (
             <button data-testid="dr-refresh-grid" onClick={refreshFromSchedule} disabled={refreshing}
               className="h-7 px-2 rounded border border-slate-200 bg-white text-xs hover:bg-slate-50 flex items-center gap-1 disabled:opacity-50">
@@ -1634,36 +2070,58 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
         <table className="dense-table">
           <thead>
             <tr>
-              <th>Code</th><th>Description</th><th>Loc</th><th>Trade</th>
-              <th>Crew</th><th>SOD %</th><th>EOD %</th><th>Δ</th>
-              <th>Hours</th><th>Status</th>
+              <th>Code</th><th>Description</th><th>Loc</th>
+              <th>SOD %</th><th>EOD %</th><th>Δ</th>
+              <th>Status</th>
               <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
-              <th>Notes</th><th></th>
+              <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
+              <th></th>
             </tr>
           </thead>
           {/* F2 -- the grid is split into 3 sections by work_category.
               Only the Field Work section is editable; Sections 1 & 3
-              are visible but read-only (no editable inputs). */}
+              are visible but read-only (no editable inputs).
+              2026-02-XX (Abhi) -- sections with zero rows for this DR
+              date collapse by default. Section header stays visible so
+              the super still sees the category exists; clicking the
+              header toggles the body. Non-empty sections stay
+              expanded by default. */}
           {GRID_SECTIONS.map((sec) => {
             const secRows = grid.filter((r) => gridSectionOf(r.work_category) === sec.n);
+            const isEmpty = secRows.length === 0;
+            const override = sectionOpenOverride[sec.n];
+            const isOpen = override !== undefined ? override : !isEmpty;
+            const toggle = () => setSectionOpenOverride((m) => ({ ...m, [sec.n]: !isOpen }));
             return (
               <tbody key={sec.n} data-testid={`dr-grid-section-${sec.n}`}>
-                <tr className="bg-slate-100/80 border-y border-slate-200">
-                  <td colSpan="13" className="px-2 py-1.5">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                      {sec.title}
-                    </span>
-                    <span className="ml-2 text-xs text-slate-400 tabular-nums">
-                      {secRows.length} {secRows.length === 1 ? "row" : "rows"}
-                    </span>
-                    {!sec.editable && (
-                      <span className="ml-2 text-xs uppercase tracking-wide text-slate-400">· read-only</span>
-                    )}
+                <tr className="bg-slate-100/80 border-y border-slate-200 cursor-pointer hover:bg-slate-200/60"
+                  onClick={toggle}
+                  data-testid={`dr-grid-section-${sec.n}-toggle`}>
+                  <td colSpan="10" className="px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 text-slate-500 transition-transform ${isOpen ? "" : "-rotate-90"}`}
+                      />
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        {sec.title}
+                      </span>
+                      <span className="text-xs text-slate-400 tabular-nums">
+                        {secRows.length} {secRows.length === 1 ? "row" : "rows"}
+                      </span>
+                      {!sec.editable && (
+                        <span className="text-xs uppercase tracking-wide text-slate-400">· read-only</span>
+                      )}
+                      {!isOpen && isEmpty && (
+                        <span className="text-xs italic text-slate-400 ml-auto">
+                          collapsed — click to expand
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
-                {secRows.length === 0 ? (
+                {isOpen && (isEmpty ? (
                   <tr>
-                    <td colSpan="13" data-testid={`dr-grid-section-${sec.n}-empty`}
+                    <td colSpan="10" data-testid={`dr-grid-section-${sec.n}-empty`}
                       className="text-center py-3 text-xs text-slate-400 italic">
                       {sec.empty}
                     </td>
@@ -1674,7 +2132,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                     submitRowErrors={submitRowErrors} presence={presence}
                     updateRow={updateRow} removeRow={removeRow}
                     dailyReportId={dailyReportId} reload={reload} />
-                ))}
+                )))}
               </tbody>
             );
           })}
@@ -1780,11 +2238,168 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
   );
 }
 
+// ------------------------------------------------------------
+//  Events tabbed card (2026-02-XX)
+//
+//  Consolidates Delays · Safety · QC · RFIs · Deliveries · Notes
+//  into a single tabbed surface so the super can land on the right
+//  event surface in one click instead of scrolling ~1500px. Each
+//  underlying panel keeps its full form / linking / audit behavior
+//  intact -- this is a STRUCTURAL change only, no data is removed.
+//
+//  Activity Grid "Issues" dropdown integration:
+//   - The grid emits `dr-open-event-form` with a `kind` (delay /
+//     safety / qc / rfi / delivery).
+//   - We intercept first; switch the active tab to the matching
+//     surface; then RE-DISPATCH the event with __replayed=true so
+//     the freshly-mounted panel's existing scroll/focus/prelink
+//     listener picks it up after React commits. Re-dispatch is
+//     filtered by __replayed so we don't loop.
+//
+//  Inline "+ Add" button on the tab strip:
+//   - Dispatches the same `dr-open-event-form` event so every panel
+//     reacts identically to the grid-driven flow. Notes is special-
+//     cased (no event) -- focuses the notes textarea instead.
+// ------------------------------------------------------------
+function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
+                          dailyReportId, projectId, reportDate, locked, reload, grid, report }) {
+  const [activeTab, setActiveTab] = useState("delays");
+  const [pendingDetail, setPendingDetail] = useState(null);
+
+  useEffect(() => {
+    const KIND_TO_TAB = {
+      delay: "delays", safety: "safety", qc: "qc",
+      rfi: "rfis", delivery: "deliveries",
+    };
+    const handler = (e) => {
+      const detail = e?.detail || {};
+      if (detail.__replayed) return;
+      const target = KIND_TO_TAB[detail.kind];
+      if (!target) return;
+      if (target !== activeTab) {
+        setActiveTab(target);
+        setPendingDetail(detail);
+      }
+    };
+    window.addEventListener("dr-open-event-form", handler);
+    return () => window.removeEventListener("dr-open-event-form", handler);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!pendingDetail) return;
+    // Wait one tick so the newly-active TabsContent mounts and the
+    // panel's useIssueDropdownListener is registered before we
+    // re-fire the event.
+    const t = setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("dr-open-event-form", {
+        detail: { ...pendingDetail, __replayed: true },
+      }));
+      setPendingDetail(null);
+    }, 30);
+    return () => clearTimeout(t);
+  }, [pendingDetail, activeTab]);
+
+  const addForActiveTab = () => {
+    const TAB_TO_KIND = {
+      delays: "delay", safety: "safety", qc: "qc",
+      rfis: "rfi", deliveries: "delivery",
+    };
+    const kind = TAB_TO_KIND[activeTab];
+    if (kind) {
+      window.dispatchEvent(new CustomEvent("dr-open-event-form", { detail: { kind } }));
+    } else if (activeTab === "notes") {
+      const ta = document.querySelector('[data-testid="dr-notes-textarea"]');
+      if (ta) { ta.scrollIntoView({ behavior: "smooth", block: "center" }); ta.focus(); }
+    }
+  };
+
+  const TABS = [
+    { value: "delays",     label: "Delays",     icon: AlertTriangle,  count: (delays || []).length },
+    { value: "safety",     label: "Safety",     icon: ShieldAlert,    count: (safetyEvents || []).length },
+    { value: "qc",         label: "QC",         icon: ClipboardCheck, count: (qcIssues || []).length },
+    { value: "rfis",       label: "RFIs",       icon: MessageSquare,  count: (rfis || []).length },
+    { value: "deliveries", label: "Deliveries", icon: Truck,          count: (deliveries || []).length },
+    { value: "notes",      label: "Notes",      icon: ClipboardList,  count: null },
+  ];
+
+  return (
+    <div data-testid="dr-events-tabs" className="space-y-3 dr-section">
+      <div className="flex items-center gap-2 -mb-1 px-1">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">5</span>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400 font-semibold">Events</div>
+      </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <div className="surface p-2 flex items-center gap-2 flex-wrap">
+          <TabsList className="bg-white/[0.04] flex flex-wrap h-auto p-1 gap-1">
+            {TABS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <TabsTrigger key={t.value} value={t.value}
+                  data-testid={`dr-events-tab-${t.value}`}
+                  className="gap-1.5 px-3 data-[state=active]:bg-[#34D399]/15 data-[state=active]:text-[#34D399] data-[state=active]:shadow-none">
+                  <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  <span>{t.label}</span>
+                  {typeof t.count === "number" && (
+                    <span className="ml-1 text-[10px] font-medium px-1.5 py-0.5 rounded bg-white/[0.08] text-white/70">
+                      {t.count}
+                    </span>
+                  )}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+          {!locked && (
+            <button
+              data-testid="dr-events-add"
+              onClick={addForActiveTab}
+              title={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
+              aria-label={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
+              className="ml-auto h-8 w-8 grid place-items-center rounded-full bg-emerald-600 text-white hover:bg-emerald-500 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        <TabsContent value="delays" className="mt-3" data-testid="dr-events-tab-content-delays">
+          <DelaysPanel rows={delays} dailyReportId={dailyReportId} projectId={projectId}
+                       reportDate={reportDate} locked={locked} reload={reload} />
+        </TabsContent>
+        <TabsContent value="safety" className="mt-3" data-testid="dr-events-tab-content-safety">
+          <SafetyPanel rows={safetyEvents} dailyReportId={dailyReportId} projectId={projectId}
+                       reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="qc" className="mt-3" data-testid="dr-events-tab-content-qc">
+          <QcPanel rows={qcIssues} dailyReportId={dailyReportId} projectId={projectId}
+                   reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="rfis" className="mt-3" data-testid="dr-events-tab-content-rfis">
+          <RfisPanel rows={rfis} dailyReportId={dailyReportId} projectId={projectId}
+                     locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="deliveries" className="mt-3" data-testid="dr-events-tab-content-deliveries">
+          <DeliveriesPanel rows={deliveries} dailyReportId={dailyReportId} projectId={projectId}
+                           reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </TabsContent>
+        <TabsContent value="notes" className="mt-3" data-testid="dr-events-tab-content-notes">
+          <NotesPanel report={report} dailyReportId={dailyReportId} locked={locked} reload={reload} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
   const [showForm, setShowForm] = useState(false);
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  const [prelinkedTaskId, setPrelinkedTaskId] = useState(null);
+  useIssueDropdownListener("delay", "dr-delays-panel", (detail) => {
+    setShowForm(true);
+    setPrelinkedTaskId(detail.activityId || null);
+  });
 
   return (
     <PanelShell icon={AlertTriangle} title="Delays" testid="dr-delays-panel" count={rows.length}>
@@ -1792,7 +2407,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <DelayRowInline key={r.id} delay={r} reload={reload}
           locked={locked} dailyReportId={dailyReportId} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No delays today.</div>}
+      {!rows.length && <div data-testid="delays-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100">
         {!showForm ? (
           <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
@@ -1809,13 +2424,15 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
               dailyReportId={dailyReportId}
               isLocked={locked}
               lockedAddReason={locked ? addReason : null}
+              prelinkedTaskId={prelinkedTaskId}
               onSaved={() => {
                 setShowForm(false);
                 setAddReason("");
+                setPrelinkedTaskId(null);
                 reload();
                 toast.success(locked ? "Delay logged (post-submit). Audit chain captured." : "Delay logged");
               }}
-              onCancel={() => { setShowForm(false); setAddReason(""); }}
+              onCancel={() => { setShowForm(false); setAddReason(""); setPrelinkedTaskId(null); }}
             />
           </div>
         )}
@@ -2008,6 +2625,15 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("safety", "dr-safety-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
     if (target !== "safety" || !text) return;
@@ -2047,7 +2673,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <SafetyRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No safety events today.</div>}
+      {!rows.length && <div data-testid="safety-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a safety event" testid="safety-add-reason" />}
@@ -2154,6 +2780,15 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   const isRework = draft.severity === "rework_required";
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("qc", "dr-qc-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
 
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
@@ -2210,7 +2845,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         <QcRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No QC issues today.</div>}
+      {!rows.length && <div data-testid="qc-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a QC issue" testid="qc-add-reason" />}
@@ -2377,6 +3012,15 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("rfi", "dr-rfis-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
   const create = async () => {
     if (busy) return;
     if (!draft.subject || !draft.description) return toast.error("Subject + question required");
@@ -2419,7 +3063,7 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         <RfiRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No RFIs raised today.</div>}
+      {!rows.length && <div data-testid="rfis-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="an RFI" testid="rfi-add-reason" />}
@@ -2534,6 +3178,15 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
   const [addReason, setAddReason] = useState("");
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // 2026-05-26 -- Activity Grid Issues dropdown integration.
+  useIssueDropdownListener("delivery", "dr-deliveries-panel", (detail) => {
+    if (!detail.activityId) return;
+    setDraft((d) => ({
+      ...d,
+      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
+        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
+    }));
+  });
   const create = async () => {
     if (busy) return;
     if (!draft.vendor || !draft.description) return toast.error("Vendor + description required");
@@ -2568,7 +3221,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
         <DeliveryRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div className="text-xs text-slate-400 py-2">No deliveries scheduled for {reportDate}.</div>}
+      {!rows.length && <div data-testid="deliveries-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a delivery" testid="delivery-add-reason" />}
@@ -2736,13 +3389,13 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   };
 
   return (
-    <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length}>
-      <div className="grid grid-cols-3 gap-2">
+    <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}>
+      <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
         {rows.map((p) => (
           <AuthPhoto key={p.id} photo={p}
             locked={locked} dailyReportId={dailyReportId} reload={reload} />
         ))}
-        {!rows.length && <div className="col-span-3 text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
+        {!rows.length && <div className="col-span-full text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
       </div>
       {/* Bucket F Phase 4 -- "Preparing tag suggestions…" spinner
           renders inline below the gallery while the upload waits for
@@ -2842,7 +3495,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
             photo card. Saffron pill matches SupplementBadge style. */}
         {photo.is_supplement && (
           <span data-testid={`photo-supplement-${photo.id}`}
-            title={`Supplement to DR ${photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || ""}`}
+            title={`Supplement to DR ${photo.parent_daily_report_date ? formatDateDisplay(photo.parent_daily_report_date) : (photo.parent_daily_report_id?.slice(0, 8) || "")}`}
             className="bg-amber-200 text-amber-900 rounded px-1 text-xs font-mono uppercase">
             SUPP
           </span>
@@ -2925,19 +3578,49 @@ function VoicePanel({ rows }) {
 }
 
 function AuditPanel({ rows, userLabels }) {
+  // 2026-02-XX (Abhi) -- audit trail collapses by default to a single
+  // count chip; the rolling 30-row list expands on click. For most
+  // DRs the trail is 95% empty rows of low-signal events, so the
+  // collapsed default reclaims footer real estate.
+  const [expanded, setExpanded] = useState(false);
+  const count = rows.length;
   return (
-    <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={rows.length}>
-      <div className="space-y-1 max-h-60 overflow-y-auto">
-        {rows.slice(0, 30).map((a) => (
-          <div key={a.id} data-testid={`audit-${a.id}`} className="text-xs text-slate-600 flex gap-2 border-b border-slate-100 py-1">
-            <span className="font-mono text-slate-400 w-32 shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
-            <span className="pill pill-slate">{a.op}</span>
-            <span className="font-mono">{a.table_name}</span>
-            <span className="text-slate-500">by {userLabels[a.actor_id] || (a.actor_id || "—").slice(0, 8)}</span>
+    <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={count} step={7}>
+      {!expanded ? (
+        <button
+          data-testid="dr-audit-expand"
+          onClick={() => setExpanded(true)}
+          className="w-full flex items-center justify-between gap-3 text-left px-3 py-2 rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] transition"
+        >
+          <span className="text-sm text-slate-300">
+            {count === 0
+              ? "No audit entries yet."
+              : <><strong className="tabular-nums">{count}</strong> audit {count === 1 ? "entry" : "entries"} — click to expand</>}
+          </span>
+          {count > 0 && <ChevronDown className="h-4 w-4 text-slate-400 -rotate-90 transition-transform" />}
+        </button>
+      ) : (
+        <>
+          <button
+            data-testid="dr-audit-collapse"
+            onClick={() => setExpanded(false)}
+            className="mb-2 text-xs text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"
+          >
+            <ChevronDown className="h-3.5 w-3.5" /> Collapse
+          </button>
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            {rows.slice(0, 30).map((a) => (
+              <div key={a.id} data-testid={`audit-${a.id}`} className="text-xs text-slate-600 flex gap-2 border-b border-slate-100 py-1">
+                <span className="font-mono text-slate-400 w-32 shrink-0">{new Date(a.created_at).toLocaleTimeString()}</span>
+                <span className="pill pill-slate">{a.op}</span>
+                <span className="font-mono">{a.table_name}</span>
+                <span className="text-slate-500">by {userLabels[a.actor_id] || (a.actor_id || "—").slice(0, 8)}</span>
+              </div>
+            ))}
+            {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
           </div>
-        ))}
-        {!rows.length && <div className="text-xs text-slate-400 text-center py-3">No audit entries yet.</div>}
-      </div>
+        </>
+      )}
     </PanelShell>
   );
 }
@@ -3070,7 +3753,9 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
 // ------------------------------------------------------------
 function SupplementBadge({ row }) {
   if (!row?.is_supplement) return null;
-  const parentDate = row.parent_daily_report_date || row.parent_daily_report_id?.slice(0, 8);
+  const parentDate = row.parent_daily_report_date
+    ? formatDateDisplay(row.parent_daily_report_date)
+    : row.parent_daily_report_id?.slice(0, 8);
   return (
     <span data-testid={`supplement-badge-${row.id}`}
       title="Filed after the parent daily report was submitted"

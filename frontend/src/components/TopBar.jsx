@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, LogOut, User2 } from "lucide-react";
+import { ChevronDown, LogOut, User2, Trash2 } from "lucide-react";
 import { getUser, getTenant, clearAuth } from "../lib/auth";
+import { toast } from "./ui/sonner";
 import { useProjects } from "../lib/projects";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -105,6 +106,37 @@ export default function TopBar() {
               >
                 <LogOut className="h-4 w-4 mr-2.5 opacity-70" /> Sign out
               </DropdownMenuItem>
+              {(user?.role || "").toLowerCase() === "admin" && (
+                <>
+                  <DropdownMenuSeparator className="my-0" />
+                  <DropdownMenuItem
+                    data-testid="close-account-button"
+                    className="text-sm py-2 text-rose-500 focus:text-rose-400"
+                    onClick={async () => {
+                      const tenantName = tenant?.display_name || "this organization";
+                      const ack = window.prompt(
+                        `This will PERMANENTLY close "${tenantName}" and wipe every project, daily report, photo, RFI, delay, team member, audit row, and the tenant itself.\n\nYour email becomes free to sign up a brand-new organization afterwards.\n\nType DELETE to confirm:`,
+                        "",
+                      );
+                      if (ack == null) return;
+                      if ((ack || "").trim().toUpperCase() !== "DELETE") {
+                        toast.error("Confirmation did not match — close cancelled.");
+                        return;
+                      }
+                      try {
+                        await api.post("/auth/close-account");
+                        toast.success("Account closed. Goodbye!");
+                        clearAuth();
+                        window.location.href = "/signup";
+                      } catch (e) {
+                        toast.error(e.response?.data?.detail || "Close failed");
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2.5 opacity-70" /> Close account
+                  </DropdownMenuItem>
+                </>
+              )}
             </div>
           </DropdownMenuContent>
         </DropdownMenu>

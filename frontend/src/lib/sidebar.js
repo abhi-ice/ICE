@@ -3,7 +3,7 @@ import {
   LayoutDashboard, FolderKanban, ClipboardList, Camera, AlertTriangle,
   ShieldAlert, ClipboardCheck, ListChecks, CalendarRange, FileBarChart,
   MapPin, MessagesSquare, Truck, FileText, BookOpen, FileSignature,
-  GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck,
+  GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck, Briefcase,
   CalendarClock, FileUp, Bot, ShoppingBasket, ShieldCheck, History,
   Settings, Layers, Box, Activity, Clock, Building2, KeyRound, Brain,
 } from "lucide-react";
@@ -15,6 +15,7 @@ export const SIDEBAR_SECTIONS = [
       { label: "Dashboard", path: "/", icon: LayoutDashboard, testid: "sidebar-dashboard" },
       { label: "Getting started", path: "/getting-started", icon: BookOpen, testid: "sidebar-getting-started" },
       { label: "Projects", path: "/projects", icon: FolderKanban, testid: "sidebar-projects" },
+      { label: "Vendors", path: "/vendors", icon: Briefcase, testid: "sidebar-vendors" },
       { label: "Master doc", path: "/master-doc", icon: Building2, testid: "sidebar-master-doc" },
       // Bucket H Phase 3 (2026-05-08) -- admin/PM project member
       // management; backs per-project RBAC. Read-tier users can

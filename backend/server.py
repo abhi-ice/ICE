@@ -54,6 +54,7 @@ from routers.auth_router import router as auth_router, team_router  # noqa: E402
 from routers.projects_router import router as projects_router  # noqa: E402
 from routers.tasks_router import router as tasks_router  # noqa: E402
 from routers.daily_reports_router import router as daily_reports_router  # noqa: E402
+from routers.dr_voice_router import router as dr_voice_router  # noqa: E402
 from routers.resources_router import router as resources_router  # noqa: E402
 from routers.field_events_router import router as field_events_router  # noqa: E402
 from routers.docs_router import router as docs_router  # noqa: E402
@@ -80,6 +81,7 @@ from routers.project_members_router import router as project_members_router  # n
 from routers.field_suggestions_router import router as field_suggestions_router  # noqa: E402
 from routers.submittal_sla_router import router as submittal_sla_router  # noqa: E402
 from routers.recovery_reports_router import router as recovery_reports_router  # noqa: E402
+from routers.vendors_router import router as vendors_router  # noqa: E402
 from routers.exhibit_exports_router import router as exhibit_exports_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
@@ -757,6 +759,8 @@ api_router.include_router(team_router)
 api_router.include_router(projects_router)
 api_router.include_router(tasks_router)
 api_router.include_router(daily_reports_router)
+# dr_voice_router declares its own /api prefix, mount on the app root.
+app.include_router(dr_voice_router)
 api_router.include_router(resources_router)
 api_router.include_router(field_events_router)
 api_router.include_router(docs_router)
@@ -783,6 +787,7 @@ api_router.include_router(project_members_router)
 api_router.include_router(field_suggestions_router)
 api_router.include_router(submittal_sla_router)
 api_router.include_router(recovery_reports_router)
+api_router.include_router(vendors_router)
 api_router.include_router(exhibit_exports_router)
 api_router.include_router(ws_router)
 
