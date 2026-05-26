@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
-import { Plus, Pencil } from "lucide-react";
+import { Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
@@ -43,6 +43,31 @@ export default function Projects() {
 
   const load = () => api.get("/projects").then(({ data }) => setProjects(data));
   useEffect(() => { load(); }, []);
+
+  const removeProject = async (p) => {
+    const confirmation = window.prompt(
+      `This will PERMANENTLY delete the project "${p.name}" along with EVERY daily report, delay, RFI, photo, task, and audit record scoped to it. This cannot be undone.\n\nType the project name exactly to confirm:`,
+      "",
+    );
+    if (confirmation == null) return;
+    if (confirmation.trim() !== p.name.trim()) {
+      toast.error("Confirmation text did not match — delete cancelled.");
+      return;
+    }
+    try {
+      await api.delete(`/projects/${p.id}`);
+      toast.success(`Project "${p.name}" deleted.`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  const userRole = (() => {
+    try { return (JSON.parse(localStorage.getItem("ice.user") || "null")?.role || "").toLowerCase(); }
+    catch { return ""; }
+  })();
+  const isAdmin = userRole === "admin";
 
   const openCreate = () => {
     setEditId(null);
@@ -247,10 +272,20 @@ export default function Projects() {
                     <button
                       data-testid={`edit-project-${p.id}`}
                       onClick={() => openEdit(p)}
-                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mr-3"
                     >
                       <Pencil className="h-3 w-3" /> Edit
                     </button>
+                    {isAdmin && (
+                      <button
+                        data-testid={`delete-project-${p.id}`}
+                        onClick={() => removeProject(p)}
+                        title="Permanently delete this project (admin only)"
+                        className="inline-flex items-center gap-1 text-xs text-rose-500 hover:text-rose-400"
+                      >
+                        <Trash2 className="h-3 w-3" /> Delete
+                      </button>
+                    )}
                   </td>
                 </tr>
               );

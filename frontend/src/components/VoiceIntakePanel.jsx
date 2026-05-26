@@ -73,6 +73,11 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
   const [busy, setBusy] = useState(false);
   const [pendingClips, setPendingClips] = useState([]);
   const [lastResult, setLastResult] = useState(null);
+  // 2026-02-XX (Abhi) -- keep a blob URL of the most-recent recording
+  // so the super can play it back before/after the AI extract runs.
+  // Cleared on the next recording start; never persisted across page
+  // reloads (per request: "only visible first time when they recorded").
+  const [lastRecordingUrl, setLastRecordingUrl] = useState(null);
   // 2026-05-25 — live transcription preview using the browser's
   // built-in Web Speech API. This runs IN PARALLEL with MediaRecorder
   // so the super sees text appearing as they speak. Gemini still
@@ -160,6 +165,12 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
         // Capture the live browser-STT transcript as a fallback so we
         // can use it if Gemini transcription failed / returned empty.
         const fallback = (liveFinalRef.current || "").trim();
+        // Expose a playback URL for the super to listen back before
+        // the extract result lands.
+        try {
+          if (lastRecordingUrl) URL.revokeObjectURL(lastRecordingUrl);
+          setLastRecordingUrl(URL.createObjectURL(blob));
+        } catch { /* ignore */ }
         await handleRecordedBlob(blob, mr.mimeType || "audio/webm", fallback);
       };
       // Use a 1-second timeslice so dataavailable fires periodically.
@@ -541,7 +552,12 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
                 + "• NEVER repeat yourself. If you already heard the answer, don't ask again.\n"
                 + "• DO NOT speak your internal reasoning out loud. Just ask the question.\n"
                 + "• Weather is ALREADY pre-filled from the forecast. Do NOT ask weather questions. "
-                + "Only capture weather if the super volunteers a correction unprompted.\n\n"
+                + "Only capture weather if the super volunteers a correction unprompted.\n"
+                + "• If the super says they want to LOG AN RFI / REQUEST FOR INFORMATION / "
+                + "needs clarification from owner or architect or engineer, capture it AS AN RFI, "
+                + "not a delay. Ask which scheduled activity it gates and the priority "
+                + "(low / normal / high / urgent). Only ALSO log a delay if the super explicitly "
+                + "says the RFI cost them days.\n\n"
                 + "ORDER OF QUESTIONS (start with #1, do NOT ask about weather first):\n"
                 + "1. Manpower log — for each trade on site today, capture these fields: "
                 + "Company (contractor name), Trade (e.g. electrical, plumbing, mech, carp), "
@@ -969,8 +985,18 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
           heard so they can compare it to what they actually said,
           and clearly explains why fields weren't filled if Claude
           couldn't extract structured data. */}
-      {(finalTranscript || extractWarning || lastResult?.applied) && (
+      {(finalTranscript || extractWarning || lastResult?.applied || lastRecordingUrl) && (
         <div className="mt-4 pt-3 border-t border-slate-800 space-y-3" data-testid="voice-result-panel">
+          {lastRecordingUrl && (
+            <div className="rounded border border-slate-700 bg-slate-950/60 p-3" data-testid="voice-playback">
+              <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1.5">
+                Playback (your last recording)
+              </div>
+              <audio src={lastRecordingUrl} controls
+                className="w-full h-9"
+                data-testid="voice-playback-audio" />
+            </div>
+          )}
           {extractWarning === "no_speech_detected" ? (
             <div className="rounded border border-rose-700 bg-rose-950/40 p-3">
               <div className="flex items-center gap-2 text-rose-300 text-sm font-medium mb-1">

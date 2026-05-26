@@ -425,3 +425,66 @@ async def admin_reset_password(
         "note": "User must re-login with the new password. Active JWTs "
                 "remain valid until expiry.",
     }
+
+
+
+# ============================================================
+# Close-tenant endpoint (2026-02-XX).
+# Wipes every collection scoped to the tenant_id, including the
+# tenant record + users + memberships + invites. Email addresses
+# of the users in this tenant become eligible to sign up a fresh
+# new organization immediately after. Admin only.
+#
+# Irreversible. Returns deletion counts per collection.
+# ============================================================
+TENANT_SCOPED_COLLECTIONS = [
+    "projects", "tasks", "floors", "locations", "resources",
+    "daily_reports", "daily_report_activities", "daily_presence",
+    "delays", "rfis", "safety_events", "qc_issues", "deliveries",
+    "coordination_events", "photos", "specs", "submittals", "drawings",
+    "schedule_imports", "schedule_revisions", "recovery_reports",
+    "marketplace_listings", "notifications", "approvals", "audit_log",
+    "team_invites", "users", "memberships", "tia_generations",
+    "edit_requests", "photo_tray", "subcontractors", "suppliers",
+]
+
+
+@router.post("/close-account")
+async def close_account(ctx: dict = Depends(require_tenant)):
+    """Permanently close (delete) the current tenant and every
+    collection record scoped to it. Admin only. The user's email +
+    password are removed alongside, so they can sign up again with
+    the same email to start a brand-new organization.
+    """
+    role = (ctx["user"].get("role") or "").lower()
+    if role != "admin":
+        raise HTTPException(403, "Only the tenant admin can close the account")
+    db = get_db()
+    tenant_id = ctx["tenant_id"]
+    tenant = await db.tenants.find_one({"id": tenant_id}, {"_id": 0})
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    # Audit row first so the close intent survives the cascade. We
+    # write it INTO the same audit_log collection that's about to be
+    # wiped — that's fine; the act of closing implies all history goes
+    # too, but the response below captures the deleted_counts for the
+    # admin's records.
+    await write_audit(
+        tenant_id=tenant_id, table_name="tenants", op="CLOSE_TENANT",
+        record_id=tenant_id, before=tenant, after={},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    deleted_counts: dict[str, int] = {}
+    for coll in TENANT_SCOPED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"tenant_id": tenant_id})
+            deleted_counts[coll] = res.deleted_count
+        except Exception:
+            deleted_counts[coll] = -1
+    await db.tenants.delete_one({"id": tenant_id})
+    return {
+        "ok": True,
+        "tenant_id": tenant_id,
+        "cascaded": deleted_counts,
+        "note": "Account closed. Your email is now free to sign up a new organization.",
+    }

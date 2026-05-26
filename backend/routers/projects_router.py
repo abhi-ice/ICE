@@ -178,6 +178,54 @@ async def update_project(project_id: str, payload: ProjectUpdate, ctx: dict = De
 
 
 # ============================================================
+# Hard delete a project (2026-02-XX). Cascades across all collections
+# scoped to this project_id. Admin only. Audit row written before
+# the cascade so the project_id stays referenceable.
+# ============================================================
+PROJECT_SCOPED_COLLECTIONS = [
+    "daily_reports", "daily_report_activities", "daily_presence",
+    "delays", "rfis", "safety_events", "qc_issues", "deliveries",
+    "coordination_events", "photos", "tasks", "floors", "locations",
+    "resources", "specs", "submittals", "drawings", "schedule_imports",
+    "schedule_revisions", "recovery_reports", "marketplace_listings",
+    "notifications", "approvals", "audit_log",
+]
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, ctx: dict = Depends(require_tenant)):
+    """Permanently delete a project and every record scoped to it.
+    Admin only. Irreversible. Writes one audit row pre-cascade so the
+    deletion intent is preserved in the tenant's history.
+    """
+    role = (ctx["user"].get("role") or "").lower()
+    if role != "admin":
+        raise HTTPException(403, "Only project admins can delete a project")
+    db = get_db()
+    project = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0},
+    )
+    if not project:
+        raise HTTPException(404, "Project not found")
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="projects", op="DELETE_PROJECT",
+        record_id=project_id, before=project, after={},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    deleted_counts = {}
+    for coll in PROJECT_SCOPED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"project_id": project_id})
+            deleted_counts[coll] = res.deleted_count
+        except Exception:
+            deleted_counts[coll] = -1
+    await db.projects.delete_one(tenant_filter(ctx["tenant_id"], {"id": project_id}))
+    return {"ok": True, "project_id": project_id, "cascaded": deleted_counts}
+
+
+
+
+# ============================================================
 # Feature Client DR Template Export (2026-05-20)
 # Per-project DR template management. One active template per
 # project; admin or PM can upload / replace / delete via these

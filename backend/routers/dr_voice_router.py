@@ -234,15 +234,32 @@ async def voice_extract(
 
     # Pull activity grid for matching context. We need code + name +
     # trade so Claude can fuzzy-match spoken descriptions like
-    # "electrical rough in" to the right grid row.
+    # "electrical rough in" to the right grid row. Also pulling SOD%,
+    # EOD%, and open_blocker_count so Claude can reason about
+    # "half of today's planned work" with awareness of progress
+    # already booked.
     # NB: daily_report_activities does NOT carry tenant_id directly --
     # tenant scope is enforced by the parent DR lookup above.
     grid = await db.daily_report_activities.find(
         {"daily_report_id": dr_id},
         {"_id": 0, "activity_code": 1, "id": 1, "schedule_activity_id": 1,
          "activity_description": 1, "trade_code": 1, "work_category": 1,
-         "location_name": 1},
+         "location_name": 1, "pct_complete_start_of_day": 1,
+         "pct_complete_end_of_day": 1, "open_blocker_count": 1},
     ).to_list(500)
+
+    # For each grid row, also fetch the linked task's duration / slack
+    # so Claude can scale "half of today's planned work" correctly.
+    schedule_ids = [g.get("schedule_activity_id") for g in grid if g.get("schedule_activity_id")]
+    task_meta_by_id: dict[str, dict] = {}
+    if schedule_ids:
+        async for t in db.tasks.find(
+            {"id": {"$in": schedule_ids}},
+            {"_id": 0, "id": 1, "duration_days": 1, "total_float_days": 1,
+             "open_blocker_count": 1},
+        ):
+            task_meta_by_id[t["id"]] = t
+
     activities_ctx = []
     for g in grid:
         code = g.get("activity_code") or ""
@@ -250,7 +267,25 @@ async def voice_extract(
             continue
         descriptor = g.get("activity_description") or ""
         trade = g.get("trade_code") or g.get("work_category") or ""
-        activities_ctx.append({"code": code, "name": descriptor, "trade": trade})
+        meta = task_meta_by_id.get(g.get("schedule_activity_id") or "", {})
+        dur = meta.get("duration_days")
+        # "Scheduled hours today" is a rough heuristic: 8h shift /
+        # duration_days. Only computed when duration is known.
+        sched_hrs_today = None
+        try:
+            if dur and float(dur) > 0:
+                sched_hrs_today = round(8.0 / float(dur), 1)
+        except (TypeError, ValueError):
+            sched_hrs_today = None
+        activities_ctx.append({
+            "code": code,
+            "name": descriptor,
+            "trade": trade,
+            "sod_pct": g.get("pct_complete_start_of_day"),
+            "duration_days": dur,
+            "scheduled_hours_today": sched_hrs_today,
+            "open_blocker_count": g.get("open_blocker_count") or meta.get("open_blocker_count") or 0,
+        })
     codes = [a["code"] for a in activities_ctx]
     log.info("dr_voice: extract dr=%s grid_rows=%d codes=%s transcript_chars=%d",
              dr_id, len(grid), codes[:10], len(transcript))
@@ -266,6 +301,18 @@ async def voice_extract(
         activities_context=activities_ctx,
         project_name=project.get("name"),
         report_date_iso=dr.get("report_date"),
+        already_logged_crews=[
+            {"trade": p.get("trade"), "company_name": p.get("company_name"),
+             "headcount": p.get("headcount")}
+            for p in await db.daily_presence.find(
+                {"daily_report_id": dr_id},
+                {"_id": 0, "trade": 1, "company_name": 1, "headcount": 1},
+            ).to_list(60)
+        ],
+        known_subcontractors=await db.subcontractors.find(
+            {"tenant_id": tenant_id},
+            {"_id": 0, "name": 1, "trades": 1},
+        ).to_list(100),
     )
     log.info("dr_voice: extract dr=%s parsed_keys=%s "
              "activity_updates=%d crew=%d delays=%d safety=%d",
@@ -280,6 +327,7 @@ async def voice_extract(
         "weather": False, "notes": False, "activity_updates": 0,
         "crew_presence": 0, "delays": 0, "safety_events": 0,
         "qc_issues": 0, "deliveries": 0, "coordination_events": 0,
+        "rfis": 0,
     }
     now = datetime.now(timezone.utc)
 
@@ -570,6 +618,49 @@ async def voice_extract(
         })
         applied["safety_events"] += 1
 
+    # Pull existing RFI subjects for dedupe.
+    existing_rfi_subjects = [r.get("subject") or r.get("description") or ""
+                              for r in await db.rfis.find(
+        {"daily_report_id": dr_id},
+        {"_id": 0, "subject": 1, "description": 1}).to_list(200)]
+    skipped_dupes["rfis"] = 0
+    applied["rfis"] = 0
+
+    for rf in (parsed.get("rfis") or []):
+        if not isinstance(rf, dict):
+            continue
+        subj = (rf.get("subject") or rf.get("description") or "").strip()
+        desc = (rf.get("description") or rf.get("subject") or "").strip()
+        if not subj and not desc:
+            continue
+        if _is_duplicate(subj or desc, existing_rfi_subjects):
+            skipped_dupes["rfis"] += 1
+            continue
+        existing_rfi_subjects.append(subj or desc)
+        linked = await _link_task_ids(rf.get("linked_activity_codes") or [])
+        if not linked:
+            linked = _link_from_hint(desc)
+        priority = str(rf.get("priority") or "normal")
+        if priority not in {"low", "normal", "high", "urgent"}:
+            priority = "normal"
+        await db.rfis.insert_one({
+            "id": _new_id(), "tenant_id": tenant_id, "project_id": dr["project_id"],
+            "subject": (subj or desc)[:200],
+            "description": (desc or subj)[:2000],
+            "priority": priority,
+            "status": "open",
+            "linked_task_ids": linked,
+            "per_task_impacts": [],
+            "daily_report_id": dr_id,
+            "date": dr.get("report_date"),
+            "reported_at": now,
+            "reported_by": actor_id,
+            "source": "voice_intake",
+            "created_at": now, "updated_at": now, "created_by": actor_id,
+        })
+        applied["rfis"] += 1
+        tasks_to_recompute.update(linked)
+
     for q in (parsed.get("qc_issues") or []):
         if not isinstance(q, dict) or not q.get("description"):
             continue
@@ -718,7 +809,8 @@ async def voice_transcribe_and_extract(
             "ok": True,
             "applied": {"weather": False, "notes": False, "activity_updates": 0,
                         "crew_presence": 0, "delays": 0, "safety_events": 0,
-                        "qc_issues": 0, "deliveries": 0, "coordination_events": 0},
+                        "qc_issues": 0, "deliveries": 0, "coordination_events": 0,
+                        "rfis": 0},
             "draft": {},
             "warning": "no_speech_detected",
         }

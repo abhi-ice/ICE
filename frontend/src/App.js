@@ -9,6 +9,7 @@ import AcceptInvite from "./pages/AcceptInvite";
 import Team from "./pages/Team";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
+import Vendors from "./pages/Vendors";
 import Tasks from "./pages/Tasks";
 import Lookahead from "./pages/Lookahead";
 import DailyReports from "./pages/DailyReports";
@@ -81,6 +82,7 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="getting-started" element={<GettingStarted />} />
             <Route path="projects" element={<Projects />} />
+            <Route path="vendors" element={<Vendors />} />
             <Route path="team" element={<Team />} />
 
             {/* Daily ops */}

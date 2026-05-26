@@ -545,6 +545,85 @@ DR" review:
 Verified via screenshot tool: all 7 changes render correctly on a
 freshly-opened DR. No regressions to the Events tabs card (13.4).
 
+### Iter 13.6 — DR polish + Voice AI fixes + Vendor repo (2026-02-XX)
+
+**TIER A — UX polish**
+- Manpower log: removed the always-visible auto-blank draft. Saved
+  rows sit clean; an explicit "+ Add trade" emerald button below the
+  table opens one editable draft, which switches to "Save" once a
+  trade is typed. Delete (Trash2) icon on draft + persisted rows is
+  always clickable now (the `isOnlyRowInPanel` guard was dropped).
+- Weather card slimmed (px-4 py-3 vs surface p-5) and given its own
+  inline header so it doesn't dominate the viewport given that it's
+  auto-filled.
+- Renames: "Activity grid" → "Activity log"; "Field Work" →
+  "Today's planned activity".
+- New section-flow UI: each PanelShell now accepts a `step` prop
+  rendering a numbered emerald badge (1 Project · 2 Weather ·
+  3 Manpower · 4 Activity Log · 5 Events · 6 Photos · 7 Audit).
+  New CSS class `.dr-section` adds a soft hairline border + left
+  accent strip so the page reads as a flowing sequence of cards.
+
+**TIER B — Voice AI fixes**
+- RFI extraction: the system prompt now has an explicit RFI-vs-Delay
+  decision rule + an `rfis[]` array in the extraction schema. Router
+  inserts into `db.rfis` with priority normalization and dedupe.
+- Re-recording dedupe: voice extractor now receives `already_logged_
+  crews` for the DR and the prompt's CRITICAL RULES section tells
+  Claude NOT to re-emit known trade+company pairs as new
+  crew_presence rows.
+- Activity progress nuance: voice extractor receives SOD%,
+  duration_days, scheduled_hours_today, and open_blocker_count per
+  grid row. Prompt's ACTIVITY PROGRESS NUANCE block now explains
+  how to compute pct_complete_end_of_day from a phrase like "half of
+  today's planned work" rather than blindly writing 50.
+- Live voice prompt updated to capture RFI mentions distinctly.
+
+**TIER C — Photo UX**
+- AiAnalysisCard + TagWizard dialogs gained `max-h-[90vh]
+  overflow-y-auto` so the action buttons are always reachable on
+  shorter laptop screens at 100% zoom.
+- Photo thumbnails shrunk: Photos page + PhotoTray now render
+  3-8 columns (was 2-5); DR detail Photos panel renders 4-8 columns
+  (was 3). Click any thumb to open the larger preview/tag wizard.
+
+**TIER D — Bigger features**
+- New EodSlider component: replaces the EOD% numeric input in the
+  Activity log with a range slider (0-100) + live percent readout.
+- Voice memo playback: VoiceIntakePanel keeps a Blob URL of the most-
+  recent recording and renders a native `<audio controls>` in the
+  result panel. URL is revoked + replaced on the next recording start
+  so it never persists across page reloads.
+- Delete project (admin-only): new `DELETE /api/projects/:id` route
+  cascades across 24 project-scoped collections; UI button on
+  /projects with name-confirmation prompt.
+- Close tenant account (admin-only): new
+  `POST /api/auth/close-account` route wipes 31 tenant-scoped
+  collections including the tenant + users + memberships, freeing
+  the email to sign up a brand-new organization. UI button in the
+  user dropdown (`/components/TopBar.jsx`) with DELETE
+  confirmation.
+- Subcontractor / Supplier central repo:
+  - New `vendors_router.py` with CRUD for both collections
+    (`/api/subcontractors`, `/api/suppliers`) — tenant-scoped, name
+    dedupe on insert.
+  - New `/vendors` page with Tabs (Subcontractors / Suppliers),
+    add/edit/delete via a shared dialog.
+  - Sidebar entry "Vendors" added under OVERVIEW.
+  - DR Manpower log "Company" column auto-completes from the
+    subcontractor list (HTML5 `<datalist>`); empty state shows a
+    "+ Add to vendor repo" link.
+  - Voice AI now receives the list of known subcontractor names +
+    their trades; system prompt instructs Claude to use the EXACT
+    stored name on `crew_presence.company_name` when a trade match
+    is found (else leaves it null).
+- Collections `subcontractors` and `suppliers` are listed in the
+  tenant + project cascade-delete arrays so account-close + project-
+  delete wipe them cleanly.
+
+Smoke-tested via screenshot: Vendors page renders, DR detail still
+mounts with all 4 numbered section badges visible, no console errors.
+
 ## Known deferred / substituted
 - **DINOv2** → imagehash pHash
 - **Bluebeam .bax** → deferred (proprietary)

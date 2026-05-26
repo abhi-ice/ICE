@@ -1232,7 +1232,7 @@ function DrAutoHeader({ project, currentUserName }) {
     currentUserName,
   ].filter(Boolean);
   return (
-    <div className="surface px-4 py-2.5" data-testid="dr-auto-header">
+    <div className="surface px-4 py-2.5 dr-section" data-testid="dr-auto-header">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -1243,6 +1243,7 @@ function DrAutoHeader({ project, currentUserName }) {
         <ChevronDown
           className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
         />
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums shrink-0">1</span>
         <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0">
           Project / Contract
         </div>
@@ -1280,10 +1281,15 @@ function KPI({ label, value, testid }) {
   );
 }
 
-function PanelShell({ icon: Icon, title, count, testid, children, badge }) {
+function PanelShell({ icon: Icon, title, count, testid, children, badge, step }) {
   return (
-    <div data-testid={testid} className="surface p-5">
+    <div data-testid={testid} className="surface p-5 dr-section">
       <div className="flex items-center gap-2 mb-4 pb-3 border-b border-white/[0.06]">
+        {typeof step === "number" && (
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">
+            {step}
+          </span>
+        )}
         <Icon className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">{title}</div>
         {typeof count === "number" && (
@@ -1311,16 +1317,21 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
 
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
-    <PanelShell icon={Cloud} title="Weather" testid="dr-weather-panel"
-      badge={fetchedAt && <span className="text-xs text-slate-400 ml-auto">auto-filled {fetchedAt}</span>}>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+    <div data-testid="dr-weather-panel" className="surface px-4 py-3 dr-section">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">2</span>
+        <Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
+        <div className="font-semibold text-sm tracking-tight text-foreground">Weather</div>
+        {fetchedAt && <span className="text-xs text-slate-400 ml-auto">auto-filled {fetchedAt}</span>}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
         <Field label="Low °F" type="number" value={report.weather_temp_low_f ?? ""} onChange={(v) => patch({ weather_temp_low_f: v ? Number(v) : null })} disabled={locked} testid="weather-low" />
         <Field label="Precip in" type="number" value={report.weather_precipitation_in ?? ""} onChange={(v) => patch({ weather_precipitation_in: v ? Number(v) : null })} disabled={locked} testid="weather-precip" />
         <Field label="Wind mph" type="number" value={report.weather_wind_mph ?? ""} onChange={(v) => patch({ weather_wind_mph: v ? Number(v) : null })} disabled={locked} testid="weather-wind" />
       </div>
-    </PanelShell>
+    </div>
   );
 }
 
@@ -1362,7 +1373,12 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   // trade" on the last row's right edge saves the current draft AND
   // appends a new blank draft below. Deleting a row keeps the
   // always-visible blank draft on whichever row is now last.
-  const [draftsCount, setDraftsCount] = useState(1);
+  // 2026-02-XX (Abhi) -- the manpower log no longer auto-shows a
+  // blank draft row. Once the super saves a trade, the table sits
+  // clean; clicking the dedicated "+ Add trade" button below opens
+  // one editable draft. Same button switches to "Save" when the
+  // draft has a trade typed in, then disappears again on success.
+  const [draftsCount, setDraftsCount] = useState(0);
   // Each draft has a stable local id so input components don't lose
   // focus on every keystroke as the array re-mounts.
   const draftIdsRef = useRef([]);
@@ -1371,9 +1387,17 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     }
   }
-  const [drafts, setDrafts] = useState(() => [
-    { trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" },
-  ]);
+  const [drafts, setDrafts] = useState(() => []);
+  // 2026-02-XX (Abhi) -- Subcontractor central repo integration. Pull
+  // the tenant-wide subs so the Company column on the manpower log
+  // gets autocomplete. Empty list also lets the empty-state surface
+  // a "+ Add to repo" link.
+  const [subs, setSubs] = useState([]);
+  useEffect(() => {
+    api.get("/subcontractors")
+      .then(({ data }) => setSubs(Array.isArray(data) ? data : []))
+      .catch(() => setSubs([]));
+  }, []);
   // Keep drafts array length in sync with draftsCount (additions only).
   if (drafts.length < draftsCount) {
     setDrafts((arr) => {
@@ -1423,40 +1447,34 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       setBusySaveIdx(-1);
     }
   };
-  // "+ Add more trade" -- save the current LAST draft (if it has a
-  // trade) and append a fresh blank draft row below.
+  // "+ Add trade" (when drafts is empty) or "Save trade" (when a draft
+  // has a trade typed). Saves the current LAST draft (if filled) and
+  // clears the drafts array — no auto-blank below.
   const addAnotherRow = async () => {
+    if (drafts.length === 0) {
+      // Open one fresh draft.
+      setDrafts([{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
+      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      setDraftsCount((n) => n + 1);
+      return;
+    }
     const lastIdx = drafts.length - 1;
     const last = drafts[lastIdx];
     if (last?.trade?.trim()) {
       const ok = await saveDraft(lastIdx);
       if (!ok) return;
-      // Clear the saved draft (the server row will appear on reload)
-      // and drop the saved draft so we only have a fresh blank below.
-      setDrafts((arr) => {
-        const out = arr.slice(0, lastIdx);
-        out.push({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" });
-        return out;
-      });
-      draftIdsRef.current = draftIdsRef.current.slice(0, lastIdx);
-      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      // Wipe drafts entirely — the saved row will appear via reload().
+      setDrafts([]);
+      draftIdsRef.current = [];
+      setDraftsCount(0);
     } else {
-      // Last draft is empty -- just add another empty one below it.
-      setDrafts((arr) => [...arr, { trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
-      draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
-      setDraftsCount((n) => n + 1);
+      toast.error("Type a trade first, or click the trash icon to discard the empty row.");
     }
   };
   const removeDraft = (idx) => {
-    if (drafts.length <= 1) {
-      // Keep at least one blank draft always visible.
-      setDrafts([{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
-      draftIdsRef.current = [`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`];
-      return;
-    }
     setDrafts((arr) => arr.filter((_, i) => i !== idx));
     draftIdsRef.current = draftIdsRef.current.filter((_, i) => i !== idx);
-    setDraftsCount((n) => Math.max(1, n - 1));
+    setDraftsCount((n) => Math.max(0, n - 1));
   };
 
   const setDraftField = (idx, field, value) => {
@@ -1470,11 +1488,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   // Total column count for empty-state rowspan calc -- header below has:
   // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Notes, actions = 8
   const COL_COUNT = 8;
-  // Last-row marker -- used by the "+ Add more trade" button placement.
-  const totalRowCount = rows.length + drafts.length;
 
   return (
-    <PanelShell icon={Users} title="Manpower log" testid="dr-presence-panel" count={rows.length}
+    <PanelShell icon={Users} title="Manpower log" testid="dr-presence-panel" count={rows.length} step={3}
       badge={
         <div className="ml-2 flex items-center gap-3">
           <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
@@ -1542,9 +1558,8 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
           </thead>
           <tbody>
             {/* Persisted rows (edit-in-place). */}
-            {rows.map((r, rIdx) => {
+            {rows.map((r) => {
               const isAuto = (r.notes || "").startsWith("Auto-created");
-              const isLastOverall = !locked && (rIdx === rows.length - 1) && drafts.length === 0;
               return (
                 <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
                   <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
@@ -1566,17 +1581,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
                   <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 border border-slate-200 rounded text-sm" /></td>
                   <td>
-                    <div className="flex items-center gap-1">
-                      {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
-                      {isLastOverall && (
-                        <button data-testid="presence-add-row" onClick={addAnotherRow}
-                          className="shrink-0 h-8 w-8 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 inline-flex items-center justify-center"
-                          title="Add another trade"
-                          aria-label="Add another trade row">
-                          <Plus className="h-4 w-4" />
-                        </button>
-                      )}
-                    </div>
+                    {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
                   </td>
                 </tr>
               );
@@ -1586,14 +1591,26 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               const localId = draftIdsRef.current[idx] || `d_${idx}`;
               const subtotal = (Number(d.headcount) || 0) * (Number(d.hours_per_person) || 0);
               const isLast = idx === drafts.length - 1;
-              const isOnlyRowInPanel = totalRowCount === 1;
               return (
                 <tr key={localId} data-testid={`presence-draft-${idx}`} className="bg-emerald-50/30">
                   <td>
                     <input data-testid={`presence-draft-company-${idx}`} value={d.company_name}
                       onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
-                      placeholder="Company"
+                      placeholder={subs.length ? "Company (type to pick)" : "Company"}
+                      list={subs.length ? `subs-datalist-${idx}` : undefined}
                       className="w-44 px-2 py-1 border border-emerald-200 rounded text-sm" />
+                    {subs.length > 0 && (
+                      <datalist id={`subs-datalist-${idx}`}>
+                        {subs.map((s) => <option key={s.id} value={s.name} />)}
+                      </datalist>
+                    )}
+                    {subs.length === 0 && (
+                      <a href="/vendors" target="_blank" rel="noreferrer"
+                         className="block mt-0.5 text-[10px] text-emerald-600 hover:underline"
+                         data-testid="presence-add-sub-link">
+                        + Add to vendor repo
+                      </a>
+                    )}
                   </td>
                   <td>
                     <input data-testid={`presence-draft-trade-${idx}`} value={d.trade}
@@ -1628,20 +1645,18 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   </td>
                   <td>
                     <div className="flex items-center gap-1">
-                      {!isOnlyRowInPanel && (
-                        <button data-testid={`presence-draft-delete-${idx}`} onClick={() => removeDraft(idx)}
-                          className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove this draft row">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+                      <button data-testid={`presence-draft-delete-${idx}`} onClick={() => removeDraft(idx)}
+                        className="text-red-600 hover:bg-red-50 p-1 rounded" title="Discard this row">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                       {isLast && (
-                        <button data-testid="presence-add-row" onClick={addAnotherRow} disabled={busySaveIdx === idx}
-                          className="shrink-0 h-8 w-8 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center justify-center"
-                          title={d.trade ? "Save this row and add another" : "Add another empty row"}
-                          aria-label="Add another trade row">
+                        <button data-testid="presence-save-row" onClick={addAnotherRow} disabled={busySaveIdx === idx}
+                          className="shrink-0 h-8 px-2 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-500 disabled:opacity-50 inline-flex items-center justify-center gap-1"
+                          title="Save this row"
+                          aria-label="Save row">
                           {busySaveIdx === idx
-                            ? <Loader2 className="h-4 w-4 animate-spin" />
-                            : <Plus className="h-4 w-4" />}
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : <><CheckCircle2 className="h-3.5 w-3.5" /> Save</>}
                         </button>
                       )}
                     </div>
@@ -1650,11 +1665,20 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               );
             })}
             {!rows.length && drafts.length === 0 && (
-              <tr><td colSpan={COL_COUNT} className="text-center py-4 text-sm text-slate-500">No presence yet.</td></tr>
+              <tr><td colSpan={COL_COUNT} className="text-center py-4 text-sm text-slate-500">No manpower logged yet — click "+ Add trade" below.</td></tr>
             )}
           </tbody>
         </table>
       </div>
+      {!locked && drafts.length === 0 && (
+        <div className="mt-3 flex justify-start">
+          <button data-testid="presence-add-row" onClick={addAnotherRow}
+            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1.5 hover:bg-emerald-500"
+            aria-label="Add a new trade row">
+            <Plus className="h-3.5 w-3.5" /> Add trade
+          </button>
+        </div>
+      )}
     </PanelShell>
   );
 }
@@ -1722,8 +1746,8 @@ function CrewSelector({ row, presence, locked, updateRow }) {
 const GRID_SECTIONS = [
   { n: 1, title: "Preconstruction & Construction Paperwork",
     editable: false, empty: "No paperwork scheduled on this date." },
-  { n: 2, title: "Field Work",
-    editable: true, empty: "No field work scheduled on this date." },
+  { n: 2, title: "Today's planned activity",
+    editable: true, empty: "No activities scheduled on this date." },
   { n: 3, title: "Closeout Paperwork",
     editable: false, empty: "No closeout paperwork scheduled on this date." },
 ];
@@ -1794,6 +1818,32 @@ function useIssueDropdownListener(kind, panelTestid, onOpen) {
   }, [kind, panelTestid, onOpen]);
 }
 
+function EodSlider({ rowId, initialValue, locked, updateRow, activityCode }) {
+  const [val, setVal] = useState(Number(initialValue) || 0);
+  useEffect(() => { setVal(Number(initialValue) || 0); }, [initialValue]);
+  const commit = (v) => {
+    const n = Math.max(0, Math.min(100, Number(v) || 0));
+    setVal(n);
+    if (n !== Number(initialValue)) updateRow(rowId, { pct_complete_end_of_day: n });
+  };
+  return (
+    <div className="flex items-center gap-2 min-w-[180px]" data-testid={`dr-pct-wrap-${activityCode}`}>
+      <input
+        data-testid={`dr-pct-${activityCode}`}
+        type="range" min="0" max="100" step="1"
+        value={val}
+        onChange={(e) => setVal(Number(e.target.value))}
+        onMouseUp={(e) => commit(e.target.value)}
+        onTouchEnd={(e) => commit(e.target.value)}
+        onKeyUp={(e) => commit(e.target.value)}
+        disabled={locked}
+        className="flex-1 accent-emerald-500 cursor-pointer disabled:opacity-50"
+      />
+      <span className="text-xs tabular-nums font-medium text-emerald-300 w-9 text-right">{val}%</span>
+    </div>
+  );
+}
+
 function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
                    submitRowErrors, presence, updateRow, removeRow,
                    dailyReportId, reload }) {
@@ -1838,10 +1888,8 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td>
         {editable ? (
-          <input data-testid={`dr-pct-${r.activity_code}`} type="number" min="0" max="100"
-            defaultValue={r.pct_complete_end_of_day}
-            onBlur={(e) => updateRow(r.id, { pct_complete_end_of_day: Number(e.target.value) })}
-            disabled={locked} className="w-14 tabular-nums" />
+          <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
+            locked={locked} updateRow={updateRow} activityCode={r.activity_code} />
         ) : (
           <span className="text-xs tabular-nums text-slate-500">{r.pct_complete_end_of_day || 0}</span>
         )}
@@ -2006,7 +2054,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
   };
 
   return (
-    <PanelShell icon={ClipboardList} title="Activity grid" testid="dr-activity-grid" count={grid.length}
+    <PanelShell icon={ClipboardList} title="Activity log" testid="dr-activity-grid" count={grid.length} step={4}
       badge={
         <div className="ml-auto flex items-center gap-2">
           <span className="text-xs text-slate-500">date: {formatDateDisplay(reportDate)}</span>
@@ -2275,7 +2323,11 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
   ];
 
   return (
-    <div data-testid="dr-events-tabs" className="space-y-3">
+    <div data-testid="dr-events-tabs" className="space-y-3 dr-section">
+      <div className="flex items-center gap-2 -mb-1 px-1">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">5</span>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400 font-semibold">Events</div>
+      </div>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
           <TabsList className="bg-white/[0.04] flex flex-wrap h-auto p-1 gap-1">
@@ -3337,13 +3389,13 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   };
 
   return (
-    <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length}>
-      <div className="grid grid-cols-3 gap-2">
+    <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}>
+      <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
         {rows.map((p) => (
           <AuthPhoto key={p.id} photo={p}
             locked={locked} dailyReportId={dailyReportId} reload={reload} />
         ))}
-        {!rows.length && <div className="col-span-3 text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
+        {!rows.length && <div className="col-span-full text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
       </div>
       {/* Bucket F Phase 4 -- "Preparing tag suggestions…" spinner
           renders inline below the gallery while the upload waits for
@@ -3533,7 +3585,7 @@ function AuditPanel({ rows, userLabels }) {
   const [expanded, setExpanded] = useState(false);
   const count = rows.length;
   return (
-    <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={count}>
+    <PanelShell icon={ClipboardList} title="Audit trail" testid="dr-audit-panel" count={count} step={7}>
       {!expanded ? (
         <button
           data-testid="dr-audit-expand"

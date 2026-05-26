@@ -394,7 +394,7 @@ function AiOverrideDialog({ open, onOpenChange, data, trayId, onSaved }) {
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Override AI suggestion</DialogTitle></DialogHeader>
         <div className="space-y-2 text-sm">
           <div>
@@ -469,7 +469,7 @@ function AiRejectDialog({ open, onOpenChange, trayId, onSaved }) {
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Reject AI suggestion</DialogTitle></DialogHeader>
         <div className="space-y-2 text-sm">
           <div className="text-xs text-slate-600">
