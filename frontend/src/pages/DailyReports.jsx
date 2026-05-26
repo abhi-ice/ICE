@@ -1434,7 +1434,10 @@ function KPI({ label, value, testid }) {
 function PanelShell({ icon: Icon, title, count, testid, children, badge, step }) {
   return (
     <div data-testid={testid} className="surface p-5 dr-section">
-      <div className="flex items-center gap-2 mb-4 pb-3 border-b border-white/[0.06]">
+      <div
+        className="flex items-center gap-2 mb-4 pb-3"
+        style={{ borderBottom: "1px solid var(--v4-border)" }}
+      >
         {typeof step === "number" && (
           <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#34D399]/15 text-[#34D399] text-[11px] font-semibold tabular-nums">
             {step}
@@ -1443,7 +1446,10 @@ function PanelShell({ icon: Icon, title, count, testid, children, badge, step })
         <Icon className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">{title}</div>
         {typeof count === "number" && (
-          <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-white/[0.06] text-white/60 ml-1">
+          <span
+            className="text-[11px] font-medium px-1.5 py-0.5 rounded ml-1"
+            style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-muted)" }}
+          >
             {count}
           </span>
         )}
