@@ -3041,3 +3041,91 @@ html[data-theme="dark"] .copilot-action-btn {
     color: #b91c1c !important;
 }
 html[data-theme="dark"] .copilot-action-btn--retry { color: #fca5a5 !important; }
+
+/* =========================================================================
+   PT.27 — Claude-style artifact card (only renders when user asked for a
+   downloadable document). Single big download CTA + a content preview.
+   ========================================================================= */
+.copilot-artifact {
+    margin-top: 6px;
+    padding: 10px 12px 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(15, 23, 42, 0.10);
+    box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.10);
+    max-width: 88%;
+}
+html[data-theme="dark"] .copilot-artifact {
+    background: rgba(30, 41, 59, 0.65);
+    border-color: rgba(255, 255, 255, 0.10);
+    box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.4);
+}
+.copilot-artifact-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.copilot-artifact-icon {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--brand-primary), var(--brand-light));
+    color: white;
+    box-shadow: 0 2px 8px -2px rgba(16, 185, 129, 0.45);
+    flex: 0 0 auto;
+}
+.copilot-artifact-meta { min-width: 0; }
+.copilot-artifact-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--v4-fg-primary);
+    letter-spacing: -0.005em;
+}
+.copilot-artifact-sub {
+    font-size: 10.5px;
+    color: var(--v4-fg-muted);
+    margin-top: 1px;
+}
+.copilot-artifact-preview {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.04);
+    border: 1px dashed rgba(15, 23, 42, 0.10);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    line-height: 1.45;
+    color: var(--v4-fg-secondary);
+    max-height: 110px;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+html[data-theme="dark"] .copilot-artifact-preview {
+    background: rgba(0, 0, 0, 0.25);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+.copilot-artifact-download {
+    width: 100%;
+    padding: 9px 14px;
+    border-radius: 8px;
+    border: 0;
+    background: linear-gradient(135deg, var(--brand-primary), var(--brand-hover));
+    color: white !important;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    box-shadow: 0 4px 14px -3px rgba(16, 185, 129, 0.45);
+    transition: transform 120ms, box-shadow 120ms;
+}
+.copilot-artifact-download:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px -3px rgba(16, 185, 129, 0.55);
+}

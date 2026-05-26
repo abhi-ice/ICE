@@ -75,6 +75,29 @@ function looksTabular(text) {
   return tableHits.length >= 2;
 }
 
+// Claude.ai-style document-intent detection. Inspect the user's message to
+// see if they're asking for a downloadable file, and infer the format. If
+// no intent is detected, no download button is shown on the AI reply —
+// just the Copy button. This matches how Claude/ChatGPT behave: artifacts
+// only appear when the user actually asks for one.
+//
+// Returns: null OR { format: 'pdf'|'docx'|'xlsx'|'md', label: 'PDF' }
+function detectDocumentIntent(userMessage) {
+  if (!userMessage) return null;
+  const t = String(userMessage).toLowerCase();
+  // Strong format-specific signals first
+  if (/\b(pdf|\.pdf)\b/.test(t))                                          return { format: "pdf",  label: "PDF" };
+  if (/\b(excel|xlsx|spreadsheet|\.xlsx?|csv|\.csv)\b/.test(t))           return { format: "xlsx", label: "Excel" };
+  if (/\b(word|docx?|\.docx?|google docs?)\b/.test(t))                    return { format: "docx", label: "Word" };
+  if (/\b(markdown|\.md)\b/.test(t))                                      return { format: "md",   label: "Markdown" };
+  // Generic "generate/export/download a document" → default to PDF
+  if (/\b(generate|create|make|prepare|draft|export|download|produce|build)\b.*\b(document|doc|report|file|brief|summary|memo|analysis|whitepaper)\b/.test(t))
+    return { format: "pdf", label: "PDF" };
+  if (/\b(document|report|file)\b.*\b(download|export)\b/.test(t))
+    return { format: "pdf", label: "PDF" };
+  return null;
+}
+
 export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
   const [sessionId] = useState(getOrMakeSessionId);
@@ -160,6 +183,12 @@ export default function CopilotPanel({ open, onClose }) {
       });
       const replyText = data.response || "";
       const isBareTool = looksLikeBareToolName(replyText);
+      // Claude-style: only attach a download artifact when the USER asked
+      // for one. Detection runs against the original user message (msg),
+      // not against the AI reply. Empty/error replies skip artifact.
+      const intent = !isBareTool && replyText && replyText.length > 40
+        ? detectDocumentIntent(msg)
+        : null;
       setThread((t) => [...t, {
         role: "ai",
         text: isBareTool ? `I ran ${replyText}, but the follow-up summary didn't come back. Try asking again or click Retry.` : replyText,
@@ -167,6 +196,8 @@ export default function CopilotPanel({ open, onClose }) {
         tools_only: isBareTool && !replyText,
         bare_tool: isBareTool ? replyText : null,
         retry_payload: isBareTool ? msg : null,
+        artifact: intent,
+        user_prompt: msg,
       }]);
     } catch (e) {
       clearTimeout(timeoutId);
@@ -353,7 +384,16 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
         ) : (
           <>
             {thread.map((m, i) => {
-              const isSubstantial = m.role === "ai" && m.text && m.text.length > 60 && !m.error && !m.bare_tool;
+              // Trigger the correct download handler when the artifact CTA is clicked
+              const handleArtifactDownload = () => {
+                const f = m.artifact?.format;
+                if (f === "pdf")   return downloadPdf(m.text);
+                if (f === "docx")  return downloadDocx(m.text);
+                if (f === "xlsx")  return downloadXlsx(m.text);
+                if (f === "md")    return downloadMarkdown(m.text);
+                return downloadPdf(m.text);
+              };
+              const artifactPreviewLines = m.text ? m.text.split("\n").slice(0, 6).join("\n") : "";
               return (
                 <div key={i} className={`copilot-msg copilot-msg--${m.role}`}>
                   {m.role === "ai" && (
@@ -381,7 +421,35 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
                       })}
                     </div>
                   )}
-                  {/* Action row under AI replies — copy / download / send-to-form / retry */}
+                  {/* CLAUDE-STYLE ARTIFACT CARD — only when the user
+                      explicitly asked for a document. Otherwise no
+                      download clutter. Copy stays always-on below. */}
+                  {m.artifact && (
+                    <div className="copilot-artifact" data-testid={`copilot-artifact-${i}`}>
+                      <div className="copilot-artifact-head">
+                        <div className="copilot-artifact-icon">
+                          {m.artifact.format === "xlsx" ? <FileSpreadsheet className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+                        </div>
+                        <div className="copilot-artifact-meta">
+                          <div className="copilot-artifact-title">
+                            {m.artifact.label} document ready
+                          </div>
+                          <div className="copilot-artifact-sub">
+                            {m.text.length.toLocaleString()} characters · auto-formatted
+                          </div>
+                        </div>
+                      </div>
+                      <pre className="copilot-artifact-preview">{artifactPreviewLines}{m.text.split("\n").length > 6 ? "\n…" : ""}</pre>
+                      <button
+                        onClick={handleArtifactDownload}
+                        className="copilot-artifact-download"
+                        data-testid={`copilot-artifact-download-${i}`}
+                      >
+                        <Download className="h-3.5 w-3.5" /> Download {m.artifact.label}
+                      </button>
+                    </div>
+                  )}
+                  {/* Action row — Copy is always available; Retry only when last turn errored */}
                   {m.role === "ai" && m.text && (
                     <div className="copilot-actions">
                       <button
@@ -391,24 +459,6 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
                       >
                         <Copy className="h-3 w-3" /> Copy
                       </button>
-                      {isSubstantial && (
-                        <>
-                          <button onClick={() => downloadMarkdown(m.text)} className="copilot-action-btn" title="Download as Markdown">
-                            <FileText className="h-3 w-3" /> .md
-                          </button>
-                          <button onClick={() => downloadPdf(m.text)} className="copilot-action-btn" title="Download as PDF">
-                            <FileDown className="h-3 w-3" /> .pdf
-                          </button>
-                          <button onClick={() => downloadDocx(m.text)} className="copilot-action-btn" title="Download as Word">
-                            <FileDown className="h-3 w-3" /> .doc
-                          </button>
-                          {looksTabular(m.text) && (
-                            <button onClick={() => downloadXlsx(m.text)} className="copilot-action-btn" title="Download as Excel">
-                              <FileSpreadsheet className="h-3 w-3" /> .xlsx
-                            </button>
-                          )}
-                        </>
-                      )}
                       {m.retry_payload && (
                         <button
                           onClick={() => send(m.retry_payload)}

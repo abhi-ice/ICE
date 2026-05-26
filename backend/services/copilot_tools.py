@@ -124,8 +124,13 @@ def _strip_markdown(s: str) -> str:
 
 # ---- TOOL IMPLEMENTATIONS ----------------------------------------------
 async def _tool_search(ctx: dict, args: dict) -> dict:
-    from routers.iter5_router import search as _search  # type: ignore
-    res = await _search(args.get("query", ""), ctx)  # type: ignore
+    # The iter5 router exports this as `global_search`, not `search` —
+    # the prior `from routers.iter5_router import search as _search`
+    # blew up with ImportError, surfaced to the user in Mason as
+    # "cannot import name 'search'". Also fixed the call signature:
+    # global_search(q: str, limit: int = 10, ctx: dict). pt.27 fix.
+    from routers.iter5_router import global_search as _search  # type: ignore
+    res = await _search(q=args.get("query", ""), ctx=ctx)  # type: ignore
     return {"results": (res.get("results") or [])[:10]}
 
 
