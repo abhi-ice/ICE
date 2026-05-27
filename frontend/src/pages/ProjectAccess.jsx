@@ -112,7 +112,10 @@ export default function ProjectAccess() {
   };
 
   return (
-    <div data-testid="project-access-page" className="p-4 sm:p-6">
+    /* pt.36: dropped p-4 sm:p-6 -- AppLayout main already pads p-6.
+       Earlier pt.35 sweep only caught `p-6`; the `p-4 sm:p-6` and
+       similar variants escaped the grep. */
+    <div data-testid="project-access-page">
       <header className="mb-4 flex items-center gap-2">
         <ShieldCheck className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">Project Access</h1>

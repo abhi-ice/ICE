@@ -90,7 +90,9 @@ export default function DrTemplate() {
   };
 
   return (
-    <div data-testid="dr-template-page" className="p-6 space-y-4 max-w-3xl">
+    /* pt.36: dropped p-6 -- AppLayout main already pads p-6. Kept
+       space-y-4 + max-w-3xl since those control inner layout. */
+    <div data-testid="dr-template-page" className="space-y-4 max-w-3xl">
       <Link to="/daily-reports"
         className="text-sm text-blue-600 hover:underline inline-flex items-center gap-1"
         data-testid="dr-template-back">
