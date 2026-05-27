@@ -224,6 +224,26 @@ export default function DailyReports() {
     if (target) setOpenId(target);
   }, []);
 
+  // pt.39 (2026-05-27): write openId back to the URL so refreshing
+  // while inside a DR detail keeps that DR open (the bug being fixed
+  // here was: refresh /daily-reports?openId=abc would re-render the
+  // list because openId state reset to null on the second render, and
+  // nothing pushed the param back). Uses replaceState so we don't
+  // bloat browser history with every row click; means browser back
+  // skips through the SPA-internal nav and returns the user to
+  // wherever they came from before this page -- predictable enough,
+  // matches how Linear / Notion handle detail-via-search-param.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const have = params.get("openId");
+    if (openId === have) return;
+    if (openId) params.set("openId", openId);
+    else params.delete("openId");
+    const qs = params.toString();
+    const newUrl = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+    window.history.replaceState(null, "", newUrl);
+  }, [openId]);
+
   const load = useCallback(() => {
     if (!activeId) return;
     api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => setReports(data));
@@ -304,18 +324,19 @@ export default function DailyReports() {
               to every user (so they SEE the feature exists), but the
               navigate only happens for admin / PM; other roles get a
               toast pointing them at their project admin. */}
+          {/* pt.39 button-system sweep: secondary + primary (28px). */}
           <button data-testid="dr-upload-template-button"
             onClick={handleUploadTemplate}
             title={isAdminOrPm
               ? "Upload your client's xlsx daily report template"
               : "Only project admins can upload a client template"}
-            className="h-9 px-3 rounded border border-slate-200 bg-white text-sm flex items-center gap-2 hover:bg-slate-50">
-            <Upload className="h-4 w-4" /> Upload DR Template
+            className="sbtn sbtn-sm sbtn-secondary">
+            <Upload /> Upload DR Template
           </button>
           <button data-testid="dr-new-button"
             onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
-            className="h-9 px-3 rounded bg-primary text-primary-foreground text-sm flex items-center gap-2">
-            <FilePlus2 className="h-4 w-4" /> New daily report
+            className="sbtn sbtn-sm sbtn-primary">
+            <FilePlus2 /> New daily report
           </button>
         </div>
       </div>
@@ -403,7 +424,7 @@ export default function DailyReports() {
                 </tr>
               );
             })}
-            {!reports.length && <tr><td colSpan="4" className="text-center py-6 text-sm text-muted-foreground">No reports yet — click "+ New daily report" to start one for any date.</td></tr>}
+            {!reports.length && <tr><td colSpan="4" className="text-center py-6 text-sm text-muted-foreground">No reports yet — click "New daily report" to start one for any date.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -994,11 +1015,14 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       )}
       {activeIntakeMode === "manual" && !locked && (
         <div className="flex justify-end -mt-2">
+          {/* pt.39 button-system sweep: secondary 24px compact (sbtn-xs).
+              Inline action inside a section panel — should not compete
+              with the page-header primary buttons. */}
           <button data-testid="dr-open-voice-intake"
             onClick={() => setActiveIntakeMode("voice_memo")}
-            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs font-medium inline-flex items-center gap-1.5 hover:bg-emerald-500 transition"
+            className="sbtn sbtn-xs sbtn-secondary"
           >
-            <Mic className="h-3 w-3" /> Add via voice
+            <Mic /> Add via voice
           </button>
         </div>
       )}
@@ -1216,13 +1240,16 @@ function StickySubmitBar({ completeCount, total, progressPct, remainingLabels, o
         missingLabels={remainingLabels}
       />
       <div style={{ flex: 1 }} />
+      {/* pt.39: emerald → primary silver/dark-grey (sbtn-md). This is
+          THE action on this surface so it gets the primary treatment
+          (32px), not emerald. */}
       <button
         data-testid="dr-sticky-submit-btn"
         onClick={onSubmit}
         disabled={busy}
-        className="h-8 px-4 rounded text-sm font-semibold bg-[#10b981] text-white hover:bg-[#059669] disabled:opacity-50 inline-flex items-center gap-2"
+        className="sbtn sbtn-md sbtn-primary"
       >
-        Submit Report
+        Submit report
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
       </button>
     </div>
@@ -1264,19 +1291,24 @@ function Header({ report, project, userLabels, ppc, totalHours,
               "show me" popover (pt.37 Option C). One source of truth
               for what's blocking the submit; no more long wall of
               text at the top of the page. */}
+          {/* pt.39 button-system sweep: header secondaries (Coordination,
+              Export) drop emerald, drop "+" prefix, shrink to 28px
+              sbtn-sm. Submit below stays 32px primary (silver/dark-grey)
+              as THE action on this surface. Emerald reserved for
+              elsewhere (per the button plan). */}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
-              className="h-9 px-3 rounded bg-emerald-600 text-white text-sm flex items-center gap-1.5 hover:bg-emerald-500 transition">
-              <MessageSquare className="h-4 w-4" />
-              {locked ? "+ Coordination (post-submit)" : "+ Coordination"}
+              className="sbtn sbtn-sm sbtn-secondary">
+              <MessageSquare />
+              {locked ? "Coordination (post-submit)" : "Coordination"}
             </button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button data-testid="dr-export-menu" disabled={busy}
-                className="h-9 px-3 rounded bg-emerald-600 text-white text-sm flex items-center gap-1.5 hover:bg-emerald-500 transition disabled:opacity-50">
-                <Download className="h-4 w-4" /> Export
-                <ChevronDown className="h-3.5 w-3.5 -mr-1" />
+                className="sbtn sbtn-sm sbtn-secondary">
+                <Download /> Export
+                <ChevronDown className="h-3 w-3 -mr-1 opacity-60" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">
@@ -1328,14 +1360,14 @@ function Header({ report, project, userLabels, ppc, totalHours,
           </DropdownMenu>
           {report.status === "draft" && (
             <button data-testid="dr-submit" onClick={onSubmit} disabled={busy}
-              className="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition disabled:opacity-50">
+              className="sbtn sbtn-md sbtn-primary">
               Submit
             </button>
           )}
           {report.status === "submitted" && (
             <button data-testid="dr-approve" onClick={onApprove} disabled={busy}
-              className="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition disabled:opacity-50 flex items-center gap-1.5">
-              <CheckCircle2 className="h-4 w-4" /> Approve
+              className="sbtn sbtn-md sbtn-primary">
+              <CheckCircle2 /> Approve
             </button>
           )}
         </div>

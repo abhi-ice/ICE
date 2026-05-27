@@ -120,10 +120,11 @@ export default function DelayList() {
           </h1>
           <p className="text-sm text-slate-500">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
-        <Button data-testid="delays-add" onClick={startCreate} disabled={routing}
-          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
-          <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "New on today's DR"}
-        </Button>
+        {/* pt.39: primary 28px, no "+" prefix (icon conveys "add"). */}
+        <button data-testid="delays-add" onClick={startCreate} disabled={routing}
+          className="sbtn sbtn-sm sbtn-primary">
+          <Plus /> {routing ? "Opening today's DR…" : "New on today's DR"}
+        </button>
       </div>
 
       {/* pt.36: slate brick removed -- long explanation moved to

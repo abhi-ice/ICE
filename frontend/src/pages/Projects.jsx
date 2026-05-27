@@ -215,7 +215,10 @@ export default function Projects() {
         </div>
         <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditId(null); setForm(EMPTY_FORM); } }}>
           <DialogTrigger asChild>
-            <Button data-testid="new-project-button" onClick={openCreate}><Plus className="h-4 w-4 mr-1" /> New project</Button>
+            {/* pt.39: primary 28px, "+" prefix dropped (icon conveys "add"). */}
+            <button data-testid="new-project-button" onClick={openCreate} className="sbtn sbtn-sm sbtn-primary">
+              <Plus /> New project
+            </button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>{editId ? "Edit project" : "New project"}</DialogTitle></DialogHeader>

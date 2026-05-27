@@ -129,10 +129,11 @@ export default function Photos() {
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* pt.39 button-system sweep: secondary 28px sbtn-sm. */}
           <button data-testid="photos-ai-help"
             onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
-            className="h-9 px-2 rounded border border-slate-300 bg-white text-slate-600 text-sm inline-flex items-center gap-1 hover:bg-slate-50">
-            <HelpCircle className="h-3.5 w-3.5" /> AI help
+            className="sbtn sbtn-sm sbtn-secondary">
+            <HelpCircle /> AI help
           </button>
           {/* Bucket K Phase 3 (2026-05-11) -- photo evidence pack
               export. Project-scoped; respects the current filter row. */}
@@ -143,10 +144,11 @@ export default function Photos() {
               below is preserved for users who want to go straight
               to the tray. */}
           <PhotoNewButton projectId={activeId} />
+          {/* pt.39: secondary 28px. */}
           <Link to="/photo-tray"
             data-testid="photos-go-to-tray"
-            className="h-9 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300 inline-flex items-center gap-1">
-            <Upload className="h-3.5 w-3.5" /> Photo tray
+            className="sbtn sbtn-sm sbtn-secondary">
+            <Upload /> Photo tray
           </Link>
         </div>
       </header>

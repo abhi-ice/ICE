@@ -354,14 +354,16 @@ export default function Tasks() {
             filenameHint={(fmt) => `tasks_${(activeId || "").slice(0, 8)}.${fmt}`}
             disabled={!activeId}
           />
-          <button data-testid="cpm-recompute" onClick={recompute} className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+          {/* pt.39 button-system sweep: secondary 28px + primary 28px,
+              "+" prefix dropped (icon already conveys "add"). */}
+          <button data-testid="cpm-recompute" onClick={recompute} className="sbtn sbtn-sm sbtn-secondary">
             Recompute CPM
           </button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button data-testid="new-activity" onClick={openNew} className="bg-blue-600 hover:bg-blue-700">
-                <Plus className="h-4 w-4 mr-1" /> New activity
-              </Button>
+              <button data-testid="new-activity" onClick={openNew} className="sbtn sbtn-sm sbtn-primary">
+                <Plus /> New activity
+              </button>
             </DialogTrigger>
             <DialogContent className="max-w-xl">
               <DialogHeader><DialogTitle>{editing ? `Edit ${editing.activity_code}` : "New activity"}</DialogTitle></DialogHeader>
