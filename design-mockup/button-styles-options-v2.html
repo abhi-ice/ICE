@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SiteOps — Button styles round 2 (6 fresh options)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;700&family=JetBrains+Mono:wght@400;500&family=Fraunces:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0b; color: #f4f4f5; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .serif { font-family: 'Fraunces', Georgia, serif; }
+
+  .opt { border: 1px solid #2a2a30; border-radius: 14px; overflow: hidden; background: #131316; }
+  .opt-head { padding: 14px 18px; border-bottom: 1px solid #26262b; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .opt-title { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+  .opt-pattern { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #71717a; font-weight: 500; }
+  .opt-rec { margin-left: auto; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.3); font-weight: 500; }
+  .opt-rec.warn  { background: rgba(245,158,11,0.10); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
+  .opt-rec.niche { background: rgba(139,92,246,0.10); color: #c4b5fd; border-color: rgba(139,92,246,0.3); }
+  .opt-rec.skip  { background: rgba(244,63,94,0.10); color: #f87171; border-color: rgba(244,63,94,0.3); }
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #26262b; }
+  .opt-pane { padding: 24px; min-height: 240px; }
+  .pane-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #71717a; margin-bottom: 16px; font-weight: 600; }
+  .panel-cream { background: #f5f1ea; color: #1a1814; }     /* SiteOps "warm concrete" light */
+  .panel-noir  { background: #18181b; color: #f4f4f5; }
+  .panel-cream .pane-label { color: #8a8275; }
+  .opt-notes { padding: 12px 18px 14px; background: #0e0e10; border-top: 1px solid #26262b; font-size: 12px; color: #a1a1aa; line-height: 1.55; }
+  .opt-notes b { color: #d4d4d8; }
+  .opt-notes .when { color: #fbbf24; }
+  .opt-notes .avoid { color: #f87171; }
+  .opt-notes code { background: #1f1f24; padding: 1px 5px; border-radius: 3px; color: #e4e4e7; font-size: 11px; }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn-row + .btn-row { margin-top: 14px; }
+  .btn-label { font-size: 10px; color: #8a8275; min-width: 78px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .panel-noir .btn-label { color: #71717a; }
+
+  /* shared palette tokens used in some options */
+  :root {
+    --paper:        #f5f1ea;
+    --ink:          #1a1814;
+    --ink-2:        #3f3a32;
+    --paper-line:   #d9d0bf;
+    --noir-bg:      #18181b;
+    --noir-card:    #1f1f24;
+    --noir-line:    #2f2f37;
+    --emerald-600:  #10b981;
+    --emerald-700:  #047857;
+    --emerald-900:  #064e3b;
+    --navy:         #1a2845;
+    --saffron:      #d97757;
+  }
+</style>
+</head>
+<body class="min-h-screen p-8">
+  <div class="max-w-[1500px] mx-auto mb-10">
+    <h1 class="text-3xl font-semibold tracking-tight">Button styles — round 2</h1>
+    <p class="text-zinc-400 mt-2 text-sm leading-relaxed max-w-3xl">
+      Six fresh patterns sourced from <i>outside</i> the standard enterprise-SaaS canon
+      (Stripe / Linear / Notion / etc. were in round 1). These lean editorial,
+      architectural, and tool-native — sources include Read.cv, Pitch, Cron, Are.na,
+      Apple Music, Things 3, Mirror, Vercel docs, and the new macOS Tahoe controls.
+      Light panel uses the actual SiteOps cream-paper background (<code class="mono text-emerald-300 text-[11px]">#f5f1ea</code>);
+      dark panel uses the noir surface — so the comparison is honest to where these
+      buttons will actually live.
+    </p>
+  </div>
+
+  <!-- =================================================================
+       OPTION G — Editorial / typography-led (Read.cv / Pitch / Vercel docs)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option G</span>
+      <span class="opt-title">Editorial typography — Read.cv / Pitch / Vercel docs</span>
+      <span class="opt-rec">Most aesthetic / most subtle</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Cream paper (light)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3.5 rounded text-[12.5px]" style="background: var(--ink); color: var(--paper); font-weight: 500; letter-spacing: -0.005em;">Submit report</button>
+          <button class="h-8 px-3.5 rounded text-[12.5px]" style="background: var(--ink); color: var(--paper); font-weight: 500;">New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3.5 text-[12.5px]" style="background: transparent; border-bottom: 1px solid var(--ink-2); color: var(--ink-2); font-weight: 450; border-radius: 0;">Export</button>
+          <button class="h-8 px-3.5 text-[12.5px]" style="background: transparent; border-bottom: 1px solid var(--ink-2); color: var(--ink-2); font-weight: 450; border-radius: 0;">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3.5 rounded text-[12.5px]" style="background: var(--emerald-700); color: white; font-weight: 500;">Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3.5 text-[12.5px]" style="background: transparent; border-bottom: 1px solid #be123c; color: #be123c; font-weight: 500; border-radius: 0;">Delete row</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 text-[12px]" style="background: transparent; color: var(--ink-2); text-decoration: none;">Cancel</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Noir (dark)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3.5 rounded text-[12.5px]" style="background: #f4f4f5; color: #18181b; font-weight: 500; letter-spacing: -0.005em;">Submit report</button>
+          <button class="h-8 px-3.5 rounded text-[12.5px]" style="background: #f4f4f5; color: #18181b; font-weight: 500;">New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3.5 text-[12.5px]" style="background: transparent; border-bottom: 1px solid #71717a; color: #d4d4d8; font-weight: 450; border-radius: 0;">Export</button>
+          <button class="h-8 px-3.5 text-[12.5px]" style="background: transparent; border-bottom: 1px solid #71717a; color: #d4d4d8; font-weight: 450; border-radius: 0;">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3.5 rounded text-[12.5px]" style="background: var(--emerald-600); color: white; font-weight: 500;">Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3.5 text-[12.5px]" style="background: transparent; border-bottom: 1px solid #fb7185; color: #fda4af; font-weight: 500; border-radius: 0;">Delete row</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 text-[12px]" style="background: transparent; color: #a1a1aa;">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> primary actions get a solid filled rounded button (high contrast,
+      no shouting). Secondary actions become typographic — a thin <i>underline</i> instead of
+      a border-box, so the button visually behaves like an inline text element. Tighter type
+      (<code>letter-spacing: -0.005em</code>, <code>font-weight: 450/500</code> mid-weights)
+      reads as <i>editorial</i> rather than UI-kit. Used by Read.cv, Pitch app, and the
+      newer Vercel docs. <b>Pairs naturally with the cream-paper warm-concrete palette</b> —
+      the underline secondaries look like footnote refs in a printed report.
+      <br><br>
+      <b class="when">Use for:</b> the whole app, as the default. Construction-tool +
+      cream-paper palette aligns with this aesthetic better than the saturated solids do.
+      <b class="avoid">Avoid if:</b> users need very strong visual hierarchy on dense
+      action bars (the underline secondaries are quieter than border-box outlines).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION H — Mac-native (Cron / Things 3 / Sketch toolbar)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option H</span>
+      <span class="opt-title">Mac-native — Cron / Things 3 / Sketch toolbar</span>
+      <span class="opt-rec warn">Best "tool-feels-like-an-app" alternative</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Cream paper (light)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #2f2f3a 0%, #1a1a22 100%); color: white; font-weight: 550;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.15) inset, 0 1px 2px rgba(0,0,0,0.2), 0 1px 1px rgba(0,0,0,0.15);">
+            Submit report
+          </button>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #2f2f3a 0%, #1a1a22 100%); color: white; font-weight: 550;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.15) inset, 0 1px 2px rgba(0,0,0,0.2);">
+            New activity
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #fafaf7 0%, #ebe6db 100%); color: var(--ink); font-weight: 500;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 1px 1px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.08);">
+            Export
+          </button>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #fafaf7 0%, #ebe6db 100%); color: var(--ink); font-weight: 500;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 1px 1px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.08);">
+            Recompute CPM
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #34d399 0%, #059669 100%); color: white; font-weight: 600;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 1px 2px rgba(5,150,105,0.4);">
+            Coordination
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #fda4af 0%, #e11d48 100%); color: white; font-weight: 600;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 1px 2px rgba(225,29,72,0.35);">
+            Delete row
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 text-[12px]" style="background: transparent; color: var(--ink-2);">Cancel</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Noir (dark)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #fafafa 0%, #d4d4d8 100%); color: #18181b; font-weight: 550;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 1px 2px rgba(0,0,0,0.4);">
+            Submit report
+          </button>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #fafafa 0%, #d4d4d8 100%); color: #18181b; font-weight: 550;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.5) inset, 0 1px 2px rgba(0,0,0,0.4);">
+            New activity
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #3a3a44 0%, #27272a 100%); color: #e4e4e7; font-weight: 500;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.07) inset, 0 1px 1px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);">
+            Export
+          </button>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #3a3a44 0%, #27272a 100%); color: #e4e4e7; font-weight: 500;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.07) inset, 0 1px 1px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.06);">
+            Recompute CPM
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #34d399 0%, #059669 100%); color: white; font-weight: 600;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 2px 4px rgba(16,185,129,0.35);">
+            Coordination
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-7 px-3 text-[12px] rounded-[5px]"
+            style="background: linear-gradient(180deg, #fb7185 0%, #be123c 100%); color: white; font-weight: 600;
+                   box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset, 0 2px 4px rgba(225,29,72,0.35);">
+            Delete row
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 text-[12px]" style="background: transparent; color: #a1a1aa;">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> subtle top-to-bottom <i>gradient</i> + faint inset highlight on
+      top + tiny drop shadow gives each button a <i>tactile</i>, almost-pressable feel —
+      like buttons on a native Mac app (Cron, Things 3, Sketch). Doesn't shout, but rewards
+      hover and feels solid. The destructive + brand variants get a richer gradient so they
+      stand out even more.
+      <br><br>
+      <b class="when">Use for:</b> users who want SiteOps to feel like a <i>tool</i>
+      (CAD-style app feel) more than a web dashboard. Pairs well with the precision of
+      construction work.
+      <b class="avoid">Avoid:</b> if you want the UI to feel flat / fully modern web —
+      gradients read as ~2015 to some.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION I — Color-pop monochrome (Cron / Linear sidebar)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option I</span>
+      <span class="opt-title">Color-pop monochrome — Cron / Linear sidebar / Things</span>
+      <span class="opt-rec">Most "efficient" — one accent per screen</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Cream paper (light) · everything grayscale except ONE pop</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: rgba(26,24,20,0.92); color: var(--paper); font-weight: 500;">Submit report</button>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: rgba(26,24,20,0.07); color: var(--ink); font-weight: 500;">New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: transparent; color: var(--ink-2); font-weight: 500;">Export</button>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: transparent; color: var(--ink-2); font-weight: 500;">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">The ONE pop</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md inline-flex items-center gap-1.5" style="background: var(--emerald-600); color: white; font-weight: 600; box-shadow: 0 0 0 3px rgba(16,185,129,0.18);">
+            <span class="h-1.5 w-1.5 rounded-full bg-white/80"></span>
+            Coordination
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: transparent; color: #be123c; font-weight: 500;">Delete row</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Noir (dark) · everything grayscale except ONE pop</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: #f4f4f5; color: #18181b; font-weight: 500;">Submit report</button>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: rgba(255,255,255,0.08); color: #f4f4f5; font-weight: 500;">New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: transparent; color: #d4d4d8; font-weight: 500;">Export</button>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: transparent; color: #d4d4d8; font-weight: 500;">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">The ONE pop</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md inline-flex items-center gap-1.5" style="background: var(--emerald-600); color: white; font-weight: 600; box-shadow: 0 0 0 3px rgba(16,185,129,0.18), 0 1px 2px rgba(0,0,0,0.4);">
+            <span class="h-1.5 w-1.5 rounded-full bg-white/80"></span>
+            Coordination
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 text-[12.5px] rounded-md" style="background: transparent; color: #fda4af; font-weight: 500;">Delete row</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> the rule is rigid — <i>everything</i> in the UI is monochrome.
+      Only ONE button per screen gets the emerald accent + a faint emerald glow ring. The
+      eye knows immediately where to land. Cron does this strictly; Linear's sidebar new-issue
+      button is the same idea. Tonal grayscale primary (white-on-dark / dark-on-light) plus
+      barely-there grayscale secondary (transparent + slight tint on hover).
+      <br><br>
+      <b class="when">Use if:</b> you want a strong "what should I do next" signal on every
+      page without visual noise. Most respectful of users' eyes.
+      <b class="avoid">Avoid if:</b> some pages legitimately need two equally-weighted CTAs
+      (e.g. "Approve" and "Reject" on the Approvals queue — neither one "wins").
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION J — Saffron-accent (palette-native, brand-warm)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option J</span>
+      <span class="opt-title">Saffron accent — your existing Palette B warm-concrete tone</span>
+      <span class="opt-rec warn">Most palette-native</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Cream paper (light)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: #1a2845; color: #f5f1ea; font-weight: 500;">Submit report</button>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: #1a2845; color: #f5f1ea; font-weight: 500;">New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: transparent; border: 1px solid #d9d0bf; color: var(--ink-2); font-weight: 450;">Export</button>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: transparent; border: 1px solid #d9d0bf; color: var(--ink-2); font-weight: 450;">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: var(--saffron); color: white; font-weight: 600;">Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Subtle accent</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: rgba(217,119,87,0.12); color: #9a3a1a; border: 1px solid rgba(217,119,87,0.3); font-weight: 500;">Tag photo</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: transparent; border: 1px solid #fda4af; color: #be123c; font-weight: 500;">Delete row</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Noir (dark)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: #f5f1ea; color: #1a2845; font-weight: 600;">Submit report</button>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: #f5f1ea; color: #1a2845; font-weight: 600;">New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: transparent; border: 1px solid rgba(245,241,234,0.18); color: #d4d4d8; font-weight: 450;">Export</button>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: transparent; border: 1px solid rgba(245,241,234,0.18); color: #d4d4d8; font-weight: 450;">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: var(--saffron); color: white; font-weight: 600;">Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Subtle accent</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: rgba(217,119,87,0.12); color: #fdba9b; border: 1px solid rgba(217,119,87,0.3); font-weight: 500;">Tag photo</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded" style="background: transparent; border: 1px solid rgba(251,113,133,0.4); color: #fda4af; font-weight: 500;">Delete row</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this is your palette:</b> uses navy (<code class="mono text-emerald-300 text-[11px]">#1a2845</code>)
+      as primary instead of black, saffron (<code class="mono text-emerald-300 text-[11px]">#d97757</code>)
+      as the warm-accent brand CTA — both straight from the Palette B "Warm Concrete"
+      direction documented in your CLAUDE.md. Reads as a <i>federal-construction</i> tool
+      rather than a tech startup. Drops emerald entirely OR keeps it for status pills only
+      (not buttons).
+      <br><br>
+      <b class="when">Use if:</b> you want the app's identity to lean federal-paper-and-ink
+      (matches the GSA / NYCHA client world). The warm cream + navy + saffron triad reads
+      like a well-designed printed report.
+      <b class="avoid">Avoid if:</b> Sid wants the brand-emerald front-and-center.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION K — Pressed inset (Apple Music / Linear settings)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option K</span>
+      <span class="opt-title">Pressed inset — Apple Music / Linear settings panel</span>
+      <span class="opt-rec niche">Polished secondary buttons</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Cream paper (light)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: var(--ink); color: var(--paper); font-weight: 500; box-shadow: 0 1px 2px rgba(0,0,0,0.15);">Submit report</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: rgba(0,0,0,0.04); color: var(--ink); font-weight: 500; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06), inset 0 1px 2px rgba(0,0,0,0.04);">Export</button>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: rgba(0,0,0,0.04); color: var(--ink); font-weight: 500; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06), inset 0 1px 2px rgba(0,0,0,0.04);">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: var(--emerald-700); color: white; font-weight: 500; box-shadow: 0 1px 2px rgba(4,120,87,0.4);">Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: rgba(225,29,72,0.06); color: #be123c; font-weight: 500; box-shadow: inset 0 0 0 1px rgba(225,29,72,0.15);">Delete row</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Noir (dark)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: #f4f4f5; color: #18181b; font-weight: 500; box-shadow: 0 1px 2px rgba(0,0,0,0.4);">Submit report</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: rgba(255,255,255,0.06); color: #e4e4e7; font-weight: 500; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 2px rgba(0,0,0,0.3);">Export</button>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: rgba(255,255,255,0.06); color: #e4e4e7; font-weight: 500; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08), inset 0 1px 2px rgba(0,0,0,0.3);">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: var(--emerald-600); color: white; font-weight: 500; box-shadow: 0 1px 2px rgba(16,185,129,0.4);">Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3.5 text-[12.5px] rounded-md" style="background: rgba(244,63,94,0.10); color: #fda4af; font-weight: 500; box-shadow: inset 0 0 0 1px rgba(244,63,94,0.3);">Delete row</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> secondary buttons use <i>inset</i> shadow (light from above
+      casts shadow inward) — they look "carved into" the surface rather than sitting on
+      top. Primary stays flat with a single drop shadow. Subtle but rewarding to look at.
+      Apple Music and Linear's settings tabs both do this. Less "bouncy" than Mac-native
+      gradients (Option H) but still has a tactile presence.
+      <br><br>
+      <b class="when">Use as:</b> a refinement layer on top of Option G or I — the
+      inset secondary detail elevates the polish.
+      <b class="avoid">Avoid:</b> as a standalone — needs a clear primary style paired
+      with it.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION L — Brutalist / mono / raw (Are.na / Mirror / Pirsch)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option L</span>
+      <span class="opt-title">Brutalist / mono — Are.na / Mirror / Pirsch / Browser Co.</span>
+      <span class="opt-rec niche">Bold, opinionated, niche</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Cream paper (light)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: var(--ink); color: var(--paper); font-weight: 500; letter-spacing: -0.01em;">SUBMIT REPORT</button>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: var(--ink); color: var(--paper); font-weight: 500;">NEW ACTIVITY</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: transparent; border: 1px solid var(--ink); color: var(--ink); font-weight: 500;">EXPORT</button>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: transparent; border: 1px solid var(--ink); color: var(--ink); font-weight: 500;">RECOMPUTE CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: #be123c; color: white; font-weight: 600;">DELETE ROW</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Noir (dark)</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: #f4f4f5; color: #18181b; font-weight: 500;">SUBMIT REPORT</button>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: #f4f4f5; color: #18181b; font-weight: 500;">NEW ACTIVITY</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: transparent; border: 1px solid #f4f4f5; color: #f4f4f5; font-weight: 500;">EXPORT</button>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: transparent; border: 1px solid #f4f4f5; color: #f4f4f5; font-weight: 500;">RECOMPUTE CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 text-[12px] mono rounded-none" style="background: #fb7185; color: #18181b; font-weight: 600;">DELETE ROW</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this is niche:</b> all-caps mono labels + sharp corners + flat solid fills.
+      Reads as <i>raw / opinionated / designer-led</i>. Used by Are.na, Mirror.xyz, Browser
+      Company's Arc. Pairs with a brutalist site layout (mono everywhere). Construction
+      data has a natural "shop drawing" / blueprint aesthetic that could read here, but it's
+      a strong stylistic commitment.
+      <br><br>
+      <b class="when">Use only if:</b> Sid wants the WHOLE app to lean blueprint-mono
+      aesthetic — partial adoption looks like a glitch.
+      <b class="avoid">Avoid:</b> if the rest of the UI is staying conventional. The
+      all-caps mono buttons would clash with proportional-sans body text.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       RECOMMENDATION SUMMARY
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mt-12 mb-12 p-6 rounded-2xl border border-emerald-700/40 bg-emerald-900/10">
+    <h2 class="text-lg font-semibold text-emerald-300 mb-3">My new picks: <span class="serif">G</span> (editorial) or <span class="serif">J</span> (saffron palette-native)</h2>
+    <p class="text-sm text-zinc-300 leading-relaxed mb-4">
+      Of these six, two genuinely fit the brief "<i>subtle, classy, sober, modern, efficient,
+      aesthetic, palette-aware</i>":
+    </p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+      <div class="p-4 rounded-lg border border-emerald-600/40 bg-emerald-900/15">
+        <div class="text-emerald-300 font-semibold mb-1">Option G — Editorial typography</div>
+        <div class="text-zinc-300 text-xs leading-relaxed mb-2">
+          Most aesthetic. Underline-link secondaries make the page read like a printed report.
+          Primary is solid dark (paper-on-ink) so the hierarchy is unmistakable. Emerald
+          reserved for ONE brand action per screen.
+        </div>
+        <div class="text-zinc-400 text-[11px]">
+          <b class="text-zinc-200">Best if:</b> SiteOps is documents-and-records-first.
+          GSA / NYCHA contracts have a natural editorial feel — this pattern earns its
+          keep on every page.
+        </div>
+      </div>
+      <div class="p-4 rounded-lg border border-amber-700/50 bg-amber-900/15">
+        <div class="text-amber-300 font-semibold mb-1">Option J — Saffron palette-native</div>
+        <div class="text-zinc-300 text-xs leading-relaxed mb-2">
+          Drops emerald-on-everything for navy primaries + saffron brand CTA — both pulled
+          from the Palette B "Warm Concrete" direction in your own CLAUDE.md. Reads as
+          federal-construction, not Y Combinator.
+        </div>
+        <div class="text-zinc-400 text-[11px]">
+          <b class="text-zinc-200">Best if:</b> you want the visual identity to lean into
+          the cream-paper warm-concrete brand you already documented but never fully
+          applied to buttons.
+        </div>
+      </div>
+    </div>
+
+    <p class="text-sm text-zinc-300 leading-relaxed mt-4">
+      <b class="text-zinc-100">Two ways to hybrid:</b> use Option G's button <i>shapes</i>
+      with Option J's <i>colors</i> (navy primary, saffron brand, editorial underlines).
+      Or pair Option I (color-pop monochrome) with Option H's pressed-inset secondary
+      buttons for a Cron / Things 3 feel that still has tactile polish.
+    </p>
+
+    <div class="mt-4 p-3 rounded border border-zinc-700 bg-zinc-900/40 text-xs text-zinc-300 leading-relaxed">
+      <b class="text-zinc-100">Quick reminder noted:</b> next sweep of button labels also
+      drops the leading "<span class="mono text-emerald-300">+</span>" — "New daily report"
+      instead of "<span class="mono text-zinc-500">+ New daily report</span>", since the
+      icon (when present) already says "add". Cleaner + more meaningful.
+    </div>
+  </div>
+
+</body>
+</html>
