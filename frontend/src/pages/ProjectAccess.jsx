@@ -186,7 +186,7 @@ export default function ProjectAccess() {
                 <div className="font-medium text-sm">{members.project_name}</div>
                 <Button data-testid="pa-add-trigger" onClick={() => setAddOpen(true)}
                   className="bg-blue-600 hover:bg-blue-700 h-8 px-3 text-xs gap-1">
-                  <Plus className="h-3.5 w-3.5" /> Add member
+                  Add member
                 </Button>
               </div>
               {!members.members.length ? (

@@ -289,9 +289,10 @@ function RegisterTab() {
           </button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button data-testid="new-submittal" className="bg-blue-600 hover:bg-blue-700 h-8 gap-1">
-                <Plus className="h-3.5 w-3.5" /> New
-              </Button>
+              {/* pt.40: primary sbtn, no Plus icon, meaningful label. */}
+              <button data-testid="new-submittal" className="sbtn sbtn-sm sbtn-primary">
+                New submittal
+              </button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader><DialogTitle>New submittal</DialogTitle></DialogHeader>

@@ -354,15 +354,14 @@ export default function Tasks() {
             filenameHint={(fmt) => `tasks_${(activeId || "").slice(0, 8)}.${fmt}`}
             disabled={!activeId}
           />
-          {/* pt.39 button-system sweep: secondary 28px + primary 28px,
-              "+" prefix dropped (icon already conveys "add"). */}
-          <button data-testid="cpm-recompute" onClick={recompute} className="sbtn sbtn-sm sbtn-secondary">
+          {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
+          <button data-testid="cpm-recompute" onClick={recompute} className="sbtn sbtn-md sbtn-secondary">
             Recompute CPM
           </button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <button data-testid="new-activity" onClick={openNew} className="sbtn sbtn-sm sbtn-primary">
-                <Plus /> New activity
+              <button data-testid="new-activity" onClick={openNew} className="sbtn sbtn-md sbtn-primary">
+                New activity
               </button>
             </DialogTrigger>
             <DialogContent className="max-w-xl">

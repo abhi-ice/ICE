@@ -324,19 +324,20 @@ export default function DailyReports() {
               to every user (so they SEE the feature exists), but the
               navigate only happens for admin / PM; other roles get a
               toast pointing them at their project admin. */}
-          {/* pt.39 button-system sweep: secondary + primary (28px). */}
+          {/* pt.40 button-system sweep: page-header tier means sbtn-md
+              (32px) since these sit on the DR-list page header. */}
           <button data-testid="dr-upload-template-button"
             onClick={handleUploadTemplate}
             title={isAdminOrPm
               ? "Upload your client's xlsx daily report template"
               : "Only project admins can upload a client template"}
-            className="sbtn sbtn-sm sbtn-secondary">
+            className="sbtn sbtn-md sbtn-secondary">
             <Upload /> Upload DR Template
           </button>
           <button data-testid="dr-new-button"
             onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
-            className="sbtn sbtn-sm sbtn-primary">
-            <FilePlus2 /> New daily report
+            className="sbtn sbtn-md sbtn-primary">
+            New daily report
           </button>
         </div>
       </div>
@@ -1291,14 +1292,16 @@ function Header({ report, project, userLabels, ppc, totalHours,
               "show me" popover (pt.37 Option C). One source of truth
               for what's blocking the submit; no more long wall of
               text at the top of the page. */}
-          {/* pt.39 button-system sweep: header secondaries (Coordination,
-              Export) drop emerald, drop "+" prefix, shrink to 28px
-              sbtn-sm. Submit below stays 32px primary (silver/dark-grey)
-              as THE action on this surface. Emerald reserved for
-              elsewhere (per the button plan). */}
+          {/* pt.40 button-system sweep: page-header tier means BIGGER
+              (sbtn-md 32px). Coordination/Export sit on the DR detail
+              page header alongside the primary Submit action -- they
+              should match Submit's tier visually, not the inline
+              section buttons (which use sbtn-sm 28px). User
+              specifically asked for header buttons to be relatively
+              bigger than non-header buttons. */}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
-              className="sbtn sbtn-sm sbtn-secondary">
+              className="sbtn sbtn-md sbtn-secondary">
               <MessageSquare />
               {locked ? "Coordination (post-submit)" : "Coordination"}
             </button>
@@ -1306,7 +1309,7 @@ function Header({ report, project, userLabels, ppc, totalHours,
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button data-testid="dr-export-menu" disabled={busy}
-                className="sbtn sbtn-sm sbtn-secondary">
+                className="sbtn sbtn-md sbtn-secondary">
                 <Download /> Export
                 <ChevronDown className="h-3 w-3 -mr-1 opacity-60" />
               </button>
@@ -1913,10 +1916,11 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       </div>
       {!locked && drafts.length === 0 && (
         <div className="mt-3 flex justify-start">
+          {/* pt.40: inline section button -> sbtn-sm (28px). */}
           <button data-testid="presence-add-row" onClick={addAnotherRow}
-            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1.5 hover:bg-emerald-500"
+            className="sbtn sbtn-sm sbtn-primary"
             aria-label="Add a new trade row">
-            <Plus className="h-3.5 w-3.5" /> Add trade
+            Add trade
           </button>
         </div>
       )}
@@ -2447,13 +2451,14 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
           </div>
+          {/* pt.40: inline section button -> sbtn-sm (28px). */}
           <button data-testid="unplanned-add" onClick={createUnplanned}
             disabled={creatingUnplanned || (locked && !isAddReasonValid(addReason))}
             title={locked && !isAddReasonValid(addReason)
               ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
               : undefined}
-            className="h-7 px-3 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1">
-            <Plus className="h-3 w-3" /> {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
+            className="sbtn sbtn-sm sbtn-primary">
+            {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
           </button>
         </div>
       </div>
@@ -2701,9 +2706,10 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
       {!rows.length && <div data-testid="delays-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100">
         {!showForm ? (
+          {/* pt.40: inline section button -> sbtn-sm (28px). */}
           <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
-            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 flex items-center gap-1">
-            <Plus className="h-3.5 w-3.5" /> {locked ? "Log a delay (post-submit)" : "Log a delay"}
+            className="sbtn sbtn-sm sbtn-primary">
+            {locked ? "Log a delay (post-submit)" : "Log a delay"}
           </button>
         ) : (
           <div className="space-y-2">
@@ -2986,13 +2992,14 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
             {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {/* pt.40: inline section button -> sbtn-sm (28px). */}
         <button data-testid="safety-add" onClick={create}
           disabled={busy || (locked && !isAddReasonValid(addReason))}
           title={locked && !isAddReasonValid(addReason)
             ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
             : undefined}
-          className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1">
-          <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Add (post-submit)" : "Add"}
+          className="sbtn sbtn-sm sbtn-primary">
+          {busy ? "Saving…" : locked ? "Add (post-submit)" : "Add safety event"}
         </button>
       </div>
     </PanelShell>
@@ -3212,13 +3219,14 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
           )}
 
           <div className="flex justify-end">
+            {/* pt.40: inline section button -> sbtn-sm (28px). */}
             <button data-testid="qc-add" onClick={create}
               disabled={busy || (locked && !isAddReasonValid(addReason))}
               title={locked && !isAddReasonValid(addReason)
                 ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
                 : undefined}
-              className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1">
-              <Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Add QC (post-submit)" : "Add QC issue"}
+              className="sbtn sbtn-sm sbtn-primary">
+              {busy ? "Saving…" : locked ? "Add QC (post-submit)" : "Add QC issue"}
             </button>
           </div>
         </div>
@@ -3397,7 +3405,7 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
             title={locked && !isAddReasonValid(addReason)
               ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
               : undefined}
-            className="h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Open RFI (post-submit)" : "Open RFI"}</button>
+            className="sbtn sbtn-sm sbtn-primary">{busy ? "Saving…" : locked ? "Open RFI (post-submit)" : "Open RFI"}</button>
         </div>
       </div>
     </PanelShell>
@@ -3525,7 +3533,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
             title={locked && !isAddReasonValid(addReason)
               ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
               : undefined}
-            className="col-span-2 h-8 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"><Plus className="h-3.5 w-3.5" /> {busy ? "Saving…" : locked ? "Log delivery (post-submit)" : "Log delivery"}</button>
+            className="sbtn sbtn-sm sbtn-primary col-span-2">{busy ? "Saving…" : locked ? "Log delivery (post-submit)" : "Log delivery"}</button>
         </div>
         <TaskPicker projectId={projectId}
           value={draft.linked_task_ids}

@@ -120,10 +120,10 @@ export default function DelayList() {
           </h1>
           <p className="text-sm text-slate-500">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
-        {/* pt.39: primary 28px, no "+" prefix (icon conveys "add"). */}
+        {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
         <button data-testid="delays-add" onClick={startCreate} disabled={routing}
-          className="sbtn sbtn-sm sbtn-primary">
-          <Plus /> {routing ? "Opening today's DR…" : "New on today's DR"}
+          className="sbtn sbtn-md sbtn-primary">
+          {routing ? "Opening today's DR…" : "New on today's DR"}
         </button>
       </div>
 

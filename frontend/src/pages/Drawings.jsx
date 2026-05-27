@@ -64,7 +64,8 @@ export default function Drawings() {
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="new-drawing" className="bg-blue-600 hover:bg-blue-700"><Plus className="h-4 w-4 mr-1" /> New drawing</Button>
+            {/* pt.40: primary sbtn, no Plus icon. */}
+            <button data-testid="new-drawing" className="sbtn sbtn-sm sbtn-primary">New drawing</button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>New drawing</DialogTitle></DialogHeader>

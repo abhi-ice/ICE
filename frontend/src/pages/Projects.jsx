@@ -215,9 +215,9 @@ export default function Projects() {
         </div>
         <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditId(null); setForm(EMPTY_FORM); } }}>
           <DialogTrigger asChild>
-            {/* pt.39: primary 28px, "+" prefix dropped (icon conveys "add"). */}
-            <button data-testid="new-project-button" onClick={openCreate} className="sbtn sbtn-sm sbtn-primary">
-              <Plus /> New project
+            {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
+            <button data-testid="new-project-button" onClick={openCreate} className="sbtn sbtn-md sbtn-primary">
+              New project
             </button>
           </DialogTrigger>
           <DialogContent>
@@ -348,7 +348,8 @@ export default function Projects() {
                 </div>
               </details>
 
-              <Button data-testid="np-submit" onClick={submit} disabled={!form.name || busy}>{busy ? "Saving…" : (editId ? "Save" : "Create")}</Button>
+              {/* pt.40: modal primary action -> sbtn-md (32px). */}
+              <button data-testid="np-submit" onClick={submit} disabled={!form.name || busy} className="sbtn sbtn-md sbtn-primary">{busy ? "Saving…" : (editId ? "Save" : "Create")}</button>
             </div>
           </DialogContent>
         </Dialog>

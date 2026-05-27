@@ -145,7 +145,8 @@ export default function MarketplaceFull() {
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="new-posting-btn" className="bg-blue-600 hover:bg-blue-700"><Plus className="h-4 w-4 mr-1" /> New posting</Button>
+            {/* pt.40: primary sbtn, no Plus icon. */}
+            <button data-testid="new-posting-btn" className="sbtn sbtn-sm sbtn-primary">New posting</button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>New marketplace posting</DialogTitle></DialogHeader>

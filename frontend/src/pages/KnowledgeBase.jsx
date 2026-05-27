@@ -65,7 +65,8 @@ export default function KnowledgeBase() {
           </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button data-testid="kb-new" className="bg-blue-600 hover:bg-blue-700 gap-1"><Plus className="h-4 w-4" /> New entry</Button>
+              {/* pt.40: primary sbtn, no Plus icon. */}
+              <button data-testid="kb-new" className="sbtn sbtn-sm sbtn-primary">New entry</button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader><DialogTitle>New KB entry</DialogTitle></DialogHeader>

@@ -129,10 +129,10 @@ export default function Photos() {
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* pt.39 button-system sweep: secondary 28px sbtn-sm. */}
+          {/* pt.40: page-header tier = sbtn-md (32px). */}
           <button data-testid="photos-ai-help"
             onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
-            className="sbtn sbtn-sm sbtn-secondary">
+            className="sbtn sbtn-md sbtn-secondary">
             <HelpCircle /> AI help
           </button>
           {/* Bucket K Phase 3 (2026-05-11) -- photo evidence pack
@@ -144,10 +144,10 @@ export default function Photos() {
               below is preserved for users who want to go straight
               to the tray. */}
           <PhotoNewButton projectId={activeId} />
-          {/* pt.39: secondary 28px. */}
+          {/* pt.40: page-header tier = sbtn-md (32px). */}
           <Link to="/photo-tray"
             data-testid="photos-go-to-tray"
-            className="sbtn sbtn-sm sbtn-secondary">
+            className="sbtn sbtn-md sbtn-secondary">
             <Upload /> Photo tray
           </Link>
         </div>
@@ -324,7 +324,7 @@ function PhotoNewButton({ projectId }) {
   return (
     <button data-testid="photos-add-via-dr" onClick={click} disabled={routing}
       className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 inline-flex items-center gap-1">
-      <Plus className="h-3.5 w-3.5" /> {routing ? "Opening today's DR…" : "New on today's DR"}
+      {routing ? "Opening today's DR…" : "New on today's DR"}
     </button>
   );
 }

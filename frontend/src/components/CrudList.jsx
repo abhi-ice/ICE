@@ -257,7 +257,7 @@ export default function CrudList({
           {extraActions}
           {customAddButton ? customAddButton : createEndpoint && (
             <Button data-testid={`${testidPrefix}-add`} onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 gap-1">
-              <Plus className="h-4 w-4" /> Add
+              Add {title.toLowerCase().replace(/s$/, "")}
             </Button>
           )}
         </div>

@@ -605,6 +605,91 @@ html[data-theme="dark"] .sbtn-ghost:hover {
 .sbtn-lg svg  { height: 16px; width: 16px; }
 
 /* ============================================================
+   pt.40 (2026-05-27) — catch-all overrides for buttons that
+   still use the old utility-class pattern (bg-emerald-600 /
+   bg-blue-600 / h-9 / h-8). Maps them to the new SiteOps
+   silver-grey primary look + correct size tier WITHOUT having
+   to touch every JSX call site. Pills, badges, and chips keep
+   their colors -- the selector is button/a/label-scoped only.
+   Per-file explicit migrations to .sbtn will still happen
+   page-by-page; these rules are the safety net.
+   ============================================================ */
+
+/* Primary: emerald + blue solids → silver/dark-grey */
+button.bg-emerald-600:not(.copilot-fab):not(.sbtn),
+button.bg-emerald-500:not(.sbtn),
+button.bg-emerald-700:not(.sbtn),
+button.bg-blue-600:not(.sbtn),
+button.bg-blue-700:not(.sbtn),
+a.bg-emerald-600:not(.sbtn),
+a.bg-blue-600:not(.sbtn),
+label.bg-emerald-600 > span,
+label.bg-blue-600 > span {
+    background-color: #27272a !important;
+    color: white !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.005em;
+    border-radius: 6px !important;
+}
+button.bg-emerald-600:not(.copilot-fab):not(.sbtn):hover,
+button.bg-emerald-500:not(.sbtn):hover,
+button.bg-emerald-700:not(.sbtn):hover,
+button.bg-blue-600:not(.sbtn):hover,
+button.bg-blue-700:not(.sbtn):hover,
+a.bg-emerald-600:not(.sbtn):hover,
+a.bg-blue-600:not(.sbtn):hover {
+    background-color: #18181b !important;
+}
+html[data-theme="dark"] button.bg-emerald-600:not(.copilot-fab):not(.sbtn),
+html[data-theme="dark"] button.bg-emerald-500:not(.sbtn),
+html[data-theme="dark"] button.bg-emerald-700:not(.sbtn),
+html[data-theme="dark"] button.bg-blue-600:not(.sbtn),
+html[data-theme="dark"] button.bg-blue-700:not(.sbtn),
+html[data-theme="dark"] a.bg-emerald-600:not(.sbtn),
+html[data-theme="dark"] a.bg-blue-600:not(.sbtn),
+html[data-theme="dark"] label.bg-emerald-600 > span,
+html[data-theme="dark"] label.bg-blue-600 > span {
+    background-color: #e4e4e7 !important;
+    color: #18181b !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3) !important;
+}
+html[data-theme="dark"] button.bg-emerald-600:not(.copilot-fab):not(.sbtn):hover,
+html[data-theme="dark"] button.bg-blue-600:not(.sbtn):hover,
+html[data-theme="dark"] a.bg-emerald-600:not(.sbtn):hover,
+html[data-theme="dark"] a.bg-blue-600:not(.sbtn):hover {
+    background-color: #f4f4f5 !important;
+}
+
+/* Size tier shrinks: h-9 (36) → 32 primary, h-8 (32) → 28 default, h-7 (28) → 24 compact.
+   Skip topbar (.v4-topbar-select keeps 32) and pills/badges. */
+button.h-9:not(.sbtn):not(.v4-topbar-select):not(.copilot-fab),
+a.h-9:not(.sbtn) {
+    height: 32px !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+button.h-8:not(.sbtn):not(.v4-topbar-select),
+a.h-8:not(.sbtn) {
+    height: 28px !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+/* Header-row context: when a button sits in a header / action-row
+   under an <h1>, bump back up to 32px primary tier. Selector
+   targets the common "page header flex wrap" pattern used by
+   most pages -- the header div has both items-center and the
+   page title nearby. We catch this via the .surface > .flex
+   pattern that DR detail uses. Otherwise small/compact wins. */
+button.sbtn-page-header,
+a.sbtn-page-header {
+    height: 32px !important;
+    padding: 0 12px !important;
+    font-size: 13px !important;
+}
+
+/* ============================================================
    STATUS PILLS â€” semantic colors preserved (legibility on dark bg)
    ============================================================ */
 .pill {

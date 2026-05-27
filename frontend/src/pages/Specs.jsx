@@ -78,7 +78,8 @@ export default function Specs() {
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="new-spec" className="bg-blue-600 hover:bg-blue-700"><Plus className="h-4 w-4 mr-1" /> New spec</Button>
+            {/* pt.40: primary sbtn, no Plus icon. */}
+            <button data-testid="new-spec" className="sbtn sbtn-sm sbtn-primary">New spec</button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>New spec</DialogTitle></DialogHeader>

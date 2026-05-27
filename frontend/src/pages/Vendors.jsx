@@ -237,13 +237,13 @@ function VendorTable({ kind }) {
             style={{ display: "none" }}
             data-testid={`vendors-import-input-${kind}`}
           />
-          {/* pt.39: primary 28px, no "+" prefix (icon conveys "add"). */}
+          {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
           <button
             data-testid={`vendors-add-${kind}`}
             onClick={openNew}
-            className="sbtn sbtn-sm sbtn-primary"
+            className="sbtn sbtn-md sbtn-primary"
           >
-            <Plus /> Add {titleSingular}
+            Add {titleSingular}
           </button>
         </div>
       </div>

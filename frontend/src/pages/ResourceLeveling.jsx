@@ -216,7 +216,7 @@ export default function ResourceLeveling() {
             <Link to="/resources/crews"
               data-testid="rl-add-crew"
               className="h-8 px-3 rounded bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm inline-flex items-center gap-1">
-              <Plus className="h-3.5 w-3.5" /> Add crew
+              Add crew
             </Link>
             <button data-testid="rl-refresh" onClick={onRecompute} disabled={recomputing}
               className="h-8 px-3 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50 inline-flex items-center gap-1">
@@ -1046,7 +1046,7 @@ function EmptyState({ testid, title, message, cta }) {
       {cta && (
         <Link to={cta.to}
           className="inline-flex items-center gap-1 h-8 px-3 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">
-          <Plus className="h-3.5 w-3.5" /> {cta.label}
+          {cta.label}
         </Link>
       )}
     </div>

@@ -181,14 +181,14 @@ export default function PhotoTray() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* pt.39 button-system sweep: secondary 28px + primary 28px. */}
+          {/* pt.40: page-header tier = sbtn-md (32px). */}
           <button data-testid="photo-tray-ai-help"
             onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
-            className="sbtn sbtn-sm sbtn-secondary">
+            className="sbtn sbtn-md sbtn-secondary">
             <HelpCircle /> AI help
           </button>
           <label data-testid="photo-tray-upload" className="block">
-            <span className="sbtn sbtn-sm sbtn-primary cursor-pointer">
+            <span className="sbtn sbtn-md sbtn-primary cursor-pointer">
               <Upload /> {uploading ? "Uploading…" : "Upload photo"}
             </span>
             <input type="file" accept="image/*" onChange={onUpload} className="hidden" />

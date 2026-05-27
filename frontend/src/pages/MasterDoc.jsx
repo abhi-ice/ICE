@@ -64,9 +64,10 @@ export default function MasterDoc() {
           </div>
           <p className="text-sm text-slate-500">{project?.name} — drives project-type gating for every AI agent.</p>
         </div>
-        <Button data-testid="md-save" onClick={save} disabled={busy} className="bg-blue-600 hover:bg-blue-700 gap-1">
-          <Save className="h-4 w-4" /> {busy ? "Saving…" : "Save"}
-        </Button>
+        {/* pt.40: page-header primary -> sbtn-md (32px). */}
+        <button data-testid="md-save" onClick={save} disabled={busy} className="sbtn sbtn-md sbtn-primary">
+          <Save /> {busy ? "Saving…" : "Save"}
+        </button>
       </div>
 
       <div className="surface p-4 space-y-3">
