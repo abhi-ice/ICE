@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SiteOps — Sidebar color options (6 paired light + dark)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0b; color: #f4f4f5; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+
+  .opt { border: 1px solid #2a2a30; border-radius: 14px; overflow: hidden; background: #131316; }
+  .opt-head { padding: 14px 18px; border-bottom: 1px solid #26262b; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .opt-title { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+  .opt-pattern { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #71717a; font-weight: 500; }
+  .opt-rec { margin-left: auto; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.3); font-weight: 500; }
+  .opt-rec.warn  { background: rgba(245,158,11,0.10); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
+  .opt-rec.niche { background: rgba(139,92,246,0.10); color: #c4b5fd; border-color: rgba(139,92,246,0.3); }
+  .opt-rec.skip  { background: rgba(244,63,94,0.10); color: #f87171; border-color: rgba(244,63,94,0.3); }
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #26262b; }
+  .opt-pane { padding: 0; min-height: 420px; position: relative; overflow: hidden; }
+  .pane-label { position: absolute; top: 10px; right: 10px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 4px; font-weight: 600; z-index: 5; }
+  .pane-label.light { background: rgba(0,0,0,0.08); color: #18181b; }
+  .pane-label.dark  { background: rgba(255,255,255,0.08); color: #d4d4d8; }
+
+  .opt-notes { padding: 12px 18px 14px; background: #0e0e10; border-top: 1px solid #26262b; font-size: 12px; color: #a1a1aa; line-height: 1.55; }
+  .opt-notes b { color: #d4d4d8; }
+  .opt-notes code { background: #1f1f24; padding: 1px 5px; border-radius: 3px; color: #e4e4e7; font-size: 11px; }
+
+  /* Sidebar + content layout */
+  .frame { display: flex; height: 100%; min-height: 420px; }
+  .sb { width: 188px; flex-shrink: 0; padding: 14px 8px; font-size: 12px; }
+  .sb-brand { display: flex; align-items: center; gap: 8px; padding: 0 6px 14px; }
+  .sb-brand-icon { width: 22px; height: 22px; border-radius: 5px; display: grid; place-items: center; flex-shrink: 0; }
+  .sb-brand-name { font-weight: 600; font-size: 13px; letter-spacing: -0.01em; }
+  .sb-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 12px 8px 4px; font-weight: 600; }
+  .sb-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 5px; font-size: 12px; margin: 1px 2px; transition: background 100ms; cursor: pointer; }
+  .sb-item-active { font-weight: 500; }
+  .sb-item svg, .sb-item .dot { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.8; }
+  .sb-item .dot { background: currentColor; border-radius: 2px; opacity: 0.5; }
+
+  .content { flex: 1; padding: 16px 22px; }
+  .topbar { height: 38px; border-radius: 6px; display: flex; align-items: center; padding: 0 12px; gap: 10px; font-size: 11px; margin-bottom: 16px; }
+  .topbar-chip { padding: 4px 10px; border-radius: 4px; font-size: 10px; }
+  .topbar-search { flex: 1; padding: 4px 8px; border-radius: 4px; font-size: 10px; opacity: 0.6; max-width: 240px; }
+  .page-title { font-size: 18px; font-weight: 600; letter-spacing: -0.015em; margin-bottom: 4px; }
+  .page-subtitle { font-size: 11px; margin-bottom: 12px; opacity: 0.7; }
+  .card { padding: 10px 14px; border-radius: 8px; font-size: 11px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .card-icon { width: 24px; height: 24px; border-radius: 5px; }
+
+  /* Standard icon proxies for sidebar items */
+  .ic-dash::before    { content: "▦"; }
+  .ic-projects::before{ content: "▤"; }
+  .ic-vendors::before { content: "▢"; }
+  .ic-reports::before { content: "≣"; }
+  .ic-photos::before  { content: "◫"; }
+  .ic-tasks::before   { content: "☰"; }
+</style>
+</head>
+<body class="min-h-screen p-8">
+  <div class="max-w-[1600px] mx-auto mb-10">
+    <h1 class="text-3xl font-semibold tracking-tight">Sidebar color options — 6 paired schemes</h1>
+    <p class="text-zinc-400 mt-2 text-sm leading-relaxed max-w-3xl">
+      Each option below shows BOTH light and dark theme variants of the sidebar paired with
+      the page surface they sit against. Both halves use realistic SiteOps content (brand,
+      sections, items, topbar, page header). Current setup is shown last as <b>Option F</b>
+      for direct comparison — same near-black sidebar in both themes, which makes the dark
+      theme almost indistinguishable from the page.
+    </p>
+  </div>
+
+  <!-- =================================================================
+       OPTION A — Pure white / Deep noir (Linear / Notion / Vercel)
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option A</span>
+      <span class="opt-title">Pure white / Deep noir — Linear / Notion / Vercel</span>
+      <span class="opt-rec">Recommended primary</span>
+    </div>
+    <div class="opt-grid">
+      <!-- LIGHT: white sidebar on grey page -->
+      <div class="opt-pane">
+        <span class="pane-label light">Light</span>
+        <div class="frame" style="background: #f7f7f8;">
+          <div class="sb" style="background: #ffffff; color: #18181b; border-right: 1px solid #e4e4e7;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #71717a;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.12); color: #047857;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #3f3f46;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #3f3f46;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #3f3f46;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #71717a;">Daily Operations</div>
+            <div class="sb-item" style="color: #3f3f46;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #3f3f46;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #3f3f46;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #18181b;">
+            <div class="topbar" style="background: #ffffff; border: 1px solid #e4e4e7;">
+              <div class="topbar-chip" style="background: #f4f4f5;">ICE</div>
+              <div class="topbar-chip" style="background: #f4f4f5;">MSU</div>
+              <div class="topbar-search" style="background: #f4f4f5;">Search…</div>
+              <div class="topbar-chip" style="background: #f4f4f5;">Dark</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #71717a;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #e0f2fe;"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #fef3c7;"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #ddd6fe;"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+      <!-- DARK: deep noir sidebar -->
+      <div class="opt-pane">
+        <span class="pane-label dark">Dark</span>
+        <div class="frame" style="background: #18181b;">
+          <div class="sb" style="background: #0a0a0b; color: #f4f4f5; border-right: 1px solid #27272a;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #71717a;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.16); color: #34d399;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #71717a;">Daily Operations</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #f4f4f5;">
+            <div class="topbar" style="background: #1f1f24; border: 1px solid #2f2f37;">
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">ICE</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">MSU</div>
+              <div class="topbar-search" style="background: #27272a; color: #a1a1aa;">Search…</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">Light</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #a1a1aa;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(59,130,246,0.2);"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(245,158,11,0.2);"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(139,92,246,0.2);"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Light:</b> sidebar <code>#ffffff</code> on page <code>#f7f7f8</code> with a 1px
+      <code>#e4e4e7</code> divider — sidebar gets a subtle paper-on-paper lift.
+      <b>Dark:</b> sidebar <code>#0a0a0b</code> (deeper than page <code>#18181b</code>)
+      with <code>#27272a</code> divider — high-contrast separation, sidebar reads as the
+      "primary" surface. Brand emerald accent for active item in both.
+      <br><br>
+      <b>Why it works:</b> the pattern almost every modern serious SaaS converges on.
+      Light sidebar in light theme + deeper-than-page sidebar in dark theme — both correct
+      directions. Pages feel airy, no muddiness. Linear, Notion, Vercel Dashboard, GitHub
+      all do this.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION B — Soft cream / Warm noir (Apple Notes / Things)
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option B</span>
+      <span class="opt-title">Soft cream / Warm noir — Apple Notes / Things / editorial</span>
+      <span class="opt-rec warn">Pair with Palette B "Warm Concrete"</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane">
+        <span class="pane-label light">Light</span>
+        <div class="frame" style="background: #f5f1ea;">
+          <div class="sb" style="background: #faf8f3; color: #1a1814; border-right: 1px solid #e7e0d1;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #d97757;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #8a8275;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(217,119,87,0.14); color: #9a3a1a;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #3f3a32;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #3f3a32;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #3f3a32;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #8a8275;">Daily Operations</div>
+            <div class="sb-item" style="color: #3f3a32;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #3f3a32;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #3f3a32;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #1a1814;">
+            <div class="topbar" style="background: #faf8f3; border: 1px solid #e7e0d1;">
+              <div class="topbar-chip" style="background: #ebe6db; color: #3f3a32;">ICE</div>
+              <div class="topbar-chip" style="background: #ebe6db; color: #3f3a32;">MSU</div>
+              <div class="topbar-search" style="background: #ebe6db; color: #8a8275;">Search…</div>
+              <div class="topbar-chip" style="background: #ebe6db; color: #3f3a32;">Dark</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #8a8275;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #faf8f3; border: 1px solid #e7e0d1;"><div class="card-icon" style="background: #e7e0d1;"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #faf8f3; border: 1px solid #e7e0d1;"><div class="card-icon" style="background: #e7e0d1;"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #faf8f3; border: 1px solid #e7e0d1;"><div class="card-icon" style="background: #e7e0d1;"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane">
+        <span class="pane-label dark">Dark</span>
+        <div class="frame" style="background: #1c1917;">
+          <div class="sb" style="background: #14110f; color: #f5f1ea; border-right: 1px solid #2c2620;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #d97757;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #71717a;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(217,119,87,0.20); color: #fdba9b;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #d6cfc1;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #d6cfc1;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #d6cfc1;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #71717a;">Daily Operations</div>
+            <div class="sb-item" style="color: #d6cfc1;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #d6cfc1;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #d6cfc1;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #f5f1ea;">
+            <div class="topbar" style="background: #22201c; border: 1px solid #2c2620;">
+              <div class="topbar-chip" style="background: #2c2620; color: #d6cfc1;">ICE</div>
+              <div class="topbar-chip" style="background: #2c2620; color: #d6cfc1;">MSU</div>
+              <div class="topbar-search" style="background: #2c2620; color: #a1a1aa;">Search…</div>
+              <div class="topbar-chip" style="background: #2c2620; color: #d6cfc1;">Light</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #a8a098;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #22201c; border: 1px solid #2c2620;"><div class="card-icon" style="background: rgba(217,119,87,0.20);"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #22201c; border: 1px solid #2c2620;"><div class="card-icon" style="background: rgba(217,119,87,0.20);"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #22201c; border: 1px solid #2c2620;"><div class="card-icon" style="background: rgba(217,119,87,0.20);"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Light:</b> cream sidebar <code>#faf8f3</code> on paper page <code>#f5f1ea</code>.
+      <b>Dark:</b> warm noir <code>#14110f</code> (warm stone, not cool zinc) on
+      <code>#1c1917</code>. Accent is saffron <code>#d97757</code> instead of emerald.
+      <br><br>
+      <b>Why it works:</b> aligns with Palette B "Warm Concrete" already documented in
+      CLAUDE.md but never fully applied. Reads as federal-construction documents
+      (GSA / NYCHA contracts) rather than a tech startup. Editorial / records-first vibe.
+      <b>Trade-off:</b> commits the brand to saffron-warm — drop emerald from sidebar
+      accent (keep emerald for buttons / status pills).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION C — Soft grey / Elevated zinc (Stripe / Vercel app)
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option C</span>
+      <span class="opt-title">Soft grey / Elevated zinc — Stripe Dashboard / Vercel app</span>
+      <span class="opt-rec">Strong second pick</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane">
+        <span class="pane-label light">Light</span>
+        <div class="frame" style="background: #ffffff;">
+          <div class="sb" style="background: #f3f4f6; color: #1f2937; border-right: 1px solid #e5e7eb;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #6b7280;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: #ffffff; color: #047857; box-shadow: 0 0 0 1px #d1d5db;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #374151;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #374151;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #374151;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #6b7280;">Daily Operations</div>
+            <div class="sb-item" style="color: #374151;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #374151;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #374151;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #1f2937;">
+            <div class="topbar" style="background: #f9fafb; border: 1px solid #e5e7eb;">
+              <div class="topbar-chip" style="background: #ffffff; color: #374151; box-shadow: 0 0 0 1px #e5e7eb;">ICE</div>
+              <div class="topbar-chip" style="background: #ffffff; color: #374151; box-shadow: 0 0 0 1px #e5e7eb;">MSU</div>
+              <div class="topbar-search" style="background: #ffffff; color: #9ca3af; box-shadow: 0 0 0 1px #e5e7eb;">Search…</div>
+              <div class="topbar-chip" style="background: #ffffff; color: #374151; box-shadow: 0 0 0 1px #e5e7eb;">Dark</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #6b7280;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #f9fafb; border: 1px solid #e5e7eb;"><div class="card-icon" style="background: #dbeafe;"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #f9fafb; border: 1px solid #e5e7eb;"><div class="card-icon" style="background: #fef3c7;"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #f9fafb; border: 1px solid #e5e7eb;"><div class="card-icon" style="background: #ede9fe;"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane">
+        <span class="pane-label dark">Dark</span>
+        <div class="frame" style="background: #18181b;">
+          <div class="sb" style="background: #1f1f24; color: #e4e4e7; border-right: 1px solid #2f2f37;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #71717a;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: #2a2a30; color: #34d399; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #71717a;">Daily Operations</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #f4f4f5;">
+            <div class="topbar" style="background: #1f1f24; border: 1px solid #2f2f37;">
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">ICE</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">MSU</div>
+              <div class="topbar-search" style="background: #27272a; color: #a1a1aa;">Search…</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">Light</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #a1a1aa;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(59,130,246,0.2);"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(245,158,11,0.2);"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(139,92,246,0.2);"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Light:</b> light grey sidebar <code>#f3f4f6</code> on white page <code>#ffffff</code>
+      (Stripe pattern — sidebar SLIGHTLY DARKER than the content area so it recedes).
+      <b>Dark:</b> sidebar <code>#1f1f24</code> SLIGHTLY LIGHTER than page <code>#18181b</code>
+      — opposite direction from light, but same visual outcome: gentle 1-step separation.
+      <br><br>
+      <b>Why it works:</b> sober, professional, never competes with content. Active item
+      is a "pop-out" tile in light (white-on-grey) and an "inset" tile in dark
+      (slightly-lighter zinc with subtle ring). Used by Stripe Dashboard, Vercel app,
+      Notion's settings.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION D — Navy in both themes (brand-forward)
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option D</span>
+      <span class="opt-title">Deep navy in both themes — Procore / federal-construction</span>
+      <span class="opt-rec warn">Brand-identity strong</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane">
+        <span class="pane-label light">Light</span>
+        <div class="frame" style="background: #f7f7f8;">
+          <div class="sb" style="background: #1a2845; color: #e8ecf3; border-right: 1px solid #0f1a2e;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #94a3b8;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.18); color: #6ee7b7;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #94a3b8;">Daily Operations</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #18181b;">
+            <div class="topbar" style="background: #ffffff; border: 1px solid #e4e4e7;">
+              <div class="topbar-chip" style="background: #f4f4f5;">ICE</div>
+              <div class="topbar-chip" style="background: #f4f4f5;">MSU</div>
+              <div class="topbar-search" style="background: #f4f4f5;">Search…</div>
+              <div class="topbar-chip" style="background: #f4f4f5;">Dark</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #71717a;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #e0f2fe;"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #fef3c7;"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #ddd6fe;"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane">
+        <span class="pane-label dark">Dark</span>
+        <div class="frame" style="background: #18181b;">
+          <div class="sb" style="background: #1a2845; color: #e8ecf3; border-right: 1px solid #0f1a2e;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #94a3b8;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.18); color: #6ee7b7;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #94a3b8;">Daily Operations</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #cbd5e1;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #f4f4f5;">
+            <div class="topbar" style="background: #1f1f24; border: 1px solid #2f2f37;">
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">ICE</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">MSU</div>
+              <div class="topbar-search" style="background: #27272a; color: #a1a1aa;">Search…</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">Light</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #a1a1aa;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(59,130,246,0.2);"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(245,158,11,0.2);"></div> GSA Office Test · Harrison, NJ</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(139,92,246,0.2);"></div> SBD FLOORINH · BELLEVILLE, NJ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Same navy sidebar in both themes</b> — <code>#1a2845</code>. Procore uses
+      this pattern: a single brand-color sidebar that anchors the app's identity. Like
+      a colored "rail" on the left that doesn't change with theme.
+      <br><br>
+      <b>Why it works:</b> strong brand presence, federal-construction tone (navy +
+      emerald reads professional/government). Works in both themes because the navy is
+      dark enough to provide structure on a light page AND distinct enough to separate
+      from a noir page. <b>Trade-off:</b> heavier visual commitment than a neutral sidebar
+      — the navy is always present, even on the lightest page surface.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION E — Emerald-tinted sidebar (brand-loud)
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option E</span>
+      <span class="opt-title">Deep emerald-tint — brand-loud, construction-green</span>
+      <span class="opt-rec niche">Bold / branded</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane">
+        <span class="pane-label light">Light</span>
+        <div class="frame" style="background: #f7f7f8;">
+          <div class="sb" style="background: #0c2818; color: #d1fae5; border-right: 1px solid #064e3b;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #6ee7b7;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.22); color: #ffffff;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #6ee7b7;">Daily Operations</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #18181b;">
+            <div class="topbar" style="background: #ffffff; border: 1px solid #e4e4e7;">
+              <div class="topbar-chip" style="background: #f4f4f5;">ICE</div>
+              <div class="topbar-chip" style="background: #f4f4f5;">MSU</div>
+              <div class="topbar-search" style="background: #f4f4f5;">Search…</div>
+              <div class="topbar-chip" style="background: #f4f4f5;">Dark</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #71717a;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #e0f2fe;"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #fef3c7;"></div> GSA Office Test · Harrison, NJ</div>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane">
+        <span class="pane-label dark">Dark</span>
+        <div class="frame" style="background: #18181b;">
+          <div class="sb" style="background: #022c22; color: #d1fae5; border-right: 1px solid #064e3b;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #6ee7b7;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.25); color: #ffffff;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #6ee7b7;">Daily Operations</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Photos</div>
+            <div class="sb-item" style="color: #a7f3d0;"><span class="dot"></span> Delays</div>
+          </div>
+          <div class="content" style="color: #f4f4f5;">
+            <div class="topbar" style="background: #1f1f24; border: 1px solid #2f2f37;">
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">ICE</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">MSU</div>
+              <div class="topbar-search" style="background: #27272a; color: #a1a1aa;">Search…</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">Light</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #a1a1aa;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(59,130,246,0.2);"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(245,158,11,0.2);"></div> GSA Office Test · Harrison, NJ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Light:</b> deep forest-emerald sidebar <code>#0c2818</code> on light page.
+      <b>Dark:</b> emerald-tinted noir <code>#022c22</code> on dark page. Item text and
+      section labels carry emerald-tinged colors (<code>#a7f3d0</code>, <code>#6ee7b7</code>).
+      <br><br>
+      <b>Why it might work:</b> doubles down on the brand emerald. Reads as "construction +
+      green = SiteOps". Strong visual identity. <b>Why it's niche:</b> sidebar is loud and
+      always-present. Some users find a colored sidebar tiring after a long workday. Less
+      "sober" than Options A/C.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION F — Current (black/zinc-900 in both)
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Current</span>
+      <span class="opt-title">Black sidebar in both themes — what ships today</span>
+      <span class="opt-rec skip">Dark theme: sidebar blurs into page</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane">
+        <span class="pane-label light">Light</span>
+        <div class="frame" style="background: #f7f7f8;">
+          <div class="sb" style="background: #18181b; color: #f4f4f5;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #71717a;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.16); color: #34d399;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #71717a;">Daily Operations</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Photos</div>
+          </div>
+          <div class="content" style="color: #18181b;">
+            <div class="topbar" style="background: #2f3437; color: #f4f4f5;">
+              <div class="topbar-chip" style="background: rgba(255,255,255,0.08); color: #f4f4f5;">ICE</div>
+              <div class="topbar-chip" style="background: rgba(255,255,255,0.08); color: #f4f4f5;">MSU</div>
+              <div class="topbar-search" style="background: rgba(255,255,255,0.10); color: #d4d4d8;">Search…</div>
+              <div class="topbar-chip" style="background: rgba(255,255,255,0.08); color: #f4f4f5;">Dark</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #71717a;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #e0f2fe;"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #ffffff; border: 1px solid #e4e4e7;"><div class="card-icon" style="background: #fef3c7;"></div> GSA Office Test · Harrison, NJ</div>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane">
+        <span class="pane-label dark">Dark</span>
+        <div class="frame" style="background: #18181b;">
+          <div class="sb" style="background: #18181b; color: #f4f4f5;">
+            <div class="sb-brand"><div class="sb-brand-icon" style="background: #10b981;"></div><div class="sb-brand-name">SiteOps</div></div>
+            <div class="sb-section-title" style="color: #71717a;">Overview</div>
+            <div class="sb-item sb-item-active" style="background: rgba(16,185,129,0.16); color: #34d399;"><span class="dot"></span> Dashboard</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Projects</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Vendors</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Project Access</div>
+            <div class="sb-section-title" style="color: #71717a;">Daily Operations</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Daily reports</div>
+            <div class="sb-item" style="color: #d4d4d8;"><span class="dot"></span> Photos</div>
+          </div>
+          <div class="content" style="color: #f4f4f5;">
+            <div class="topbar" style="background: #1f1f24; border: 1px solid #2f2f37;">
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">ICE</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">MSU</div>
+              <div class="topbar-search" style="background: #27272a; color: #a1a1aa;">Search…</div>
+              <div class="topbar-chip" style="background: #27272a; color: #d4d4d8;">Light</div>
+            </div>
+            <div class="page-title">Projects</div>
+            <div class="page-subtitle" style="color: #a1a1aa;">All federal contracts in this tenant.</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(59,130,246,0.2);"></div> MSU · MONTCLAIR, New Jersey</div>
+            <div class="card" style="background: #1f1f24; border: 1px solid #2f2f37;"><div class="card-icon" style="background: rgba(245,158,11,0.2);"></div> GSA Office Test · Harrison, NJ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this needs replacing:</b> dark sidebar in dark theme is the same color as the
+      page (<code>#18181b</code> on <code>#18181b</code>) — no visible boundary unless you
+      stare. In light theme it works OK but the abrupt black-on-light contrast can feel
+      heavy. The single-color-both-themes approach saves implementation effort but loses
+      the natural separation a proper theme-paired sidebar gives you.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       RECOMMENDATION
+       ================================================================= -->
+  <div class="max-w-[1600px] mx-auto mt-12 mb-12 p-6 rounded-2xl border border-emerald-700/40 bg-emerald-900/10">
+    <h2 class="text-lg font-semibold text-emerald-300 mb-3">Recommendation: Option A (Pure white / Deep noir)</h2>
+    <p class="text-sm text-zinc-300 leading-relaxed mb-4">
+      <b class="text-emerald-300">Option A</b> is the strongest "sober + modern + works
+      in both themes" pick. White sidebar in light → airy, modern. Deep-noir sidebar in
+      dark → high contrast vs the page surface so the sidebar reads as the primary
+      navigation surface (current setup blurs into the page). Both halves use the same
+      emerald accent for active items so the brand stays consistent.
+    </p>
+    <p class="text-sm text-zinc-300 leading-relaxed mb-4">
+      <b class="text-amber-300">Option C</b> is the close runner-up if you want
+      something even more subdued — light-grey sidebar in light, slightly-elevated zinc
+      in dark. Stripe Dashboard pattern, very SaaS-standard.
+      <br><br>
+      <b class="text-amber-300">Option D</b> (navy in both) is worth considering if you
+      want the brand identity to stay strong on every page — same navy rail anchors the
+      app in both themes. Heavier but distinctive.
+      <br><br>
+      Skip B unless you're committing to the warm-concrete saffron palette across the
+      whole app. Skip E unless brand-loud green sidebar is the intentional aesthetic
+      (most users prefer neutral sidebars).
+    </p>
+    <div class="mt-4 p-3 rounded border border-zinc-700 bg-zinc-900/40 text-xs text-zinc-300 leading-relaxed">
+      <b class="text-zinc-100">Implementation cost:</b> ~30 minutes. Update the
+      <code class="mono text-emerald-300 text-[11px]">--v4-bg-sidebar</code> CSS variable
+      in <code class="mono text-emerald-300 text-[11px]">index.css</code> for each theme +
+      adjust sidebar item text + section-title colors to match. Active-item background
+      stays emerald-tinted. No JSX changes needed (the sidebar already reads color from
+      the CSS var).
+    </div>
+  </div>
+
+</body>
+</html>
