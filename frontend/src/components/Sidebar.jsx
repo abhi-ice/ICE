@@ -172,7 +172,11 @@ export default function Sidebar() {
                 <button
                   onClick={() => toggle(section.title)}
                   data-testid={`sidebar-section-${section.title.replace(/\s+/g, '-').toLowerCase()}`}
-                  className="w-full flex items-center gap-1.5 px-4 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
+                  /* pt.33 (2026-05-26): px-4 -> px-3 reclaims 8px for
+                     long titles ("Procurement & Documents",
+                     "Planning & Tracking") that were truncating after
+                     the pt.32 width tighten. */
+                  className="w-full flex items-center gap-1.5 px-3 pt-5 pb-1 text-left text-slate-500 hover:text-slate-300 transition-colors"
                 >
                   {isCollapsed
                     ? <ChevronRight className="h-3 w-3 shrink-0" />
@@ -187,7 +191,15 @@ export default function Sidebar() {
                 <div className="mx-2 mt-3 mb-1 border-t border-white/10" />
               )}
               {showItems && (
-                <div className={`space-y-0.5 ${rail ? "px-2" : "pl-6"}`}>
+                /* pt.33: pl-6 -> pl-2 so non-nested item icons sit
+                   ~directly under the section title text (Linear /
+                   Notion / Slack pattern) instead of being indented
+                   inside the section as if the header were a parent.
+                   Daily-Operations children still get extra depth via
+                   .sidebar-link-nested (pl-7) so Sid's "Photos / Photo
+                   tray / Delays / Safety / QC issues / Coordination
+                   live UNDER Daily reports" structure is preserved. */
+                <div className={`space-y-0.5 ${rail ? "px-2" : "pl-2"}`}>
                   {section.items.map((item) => {
                     const Icon = item.icon;
                     const badge = item.badgeKey ? badges[item.badgeKey] : 0;
