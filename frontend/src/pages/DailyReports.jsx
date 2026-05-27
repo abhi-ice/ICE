@@ -1909,7 +1909,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               );
             })}
             {!rows.length && drafts.length === 0 && (
-              <tr><td colSpan={COL_COUNT} className="text-center py-4 text-sm text-slate-500">No manpower logged yet — click "+ Add trade" below.</td></tr>
+              <tr><td colSpan={COL_COUNT} className="text-center py-4 text-sm text-slate-500">No manpower logged yet — click "Add trade" below.</td></tr>
             )}
           </tbody>
         </table>
@@ -2645,14 +2645,17 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
             })}
           </TabsList>
           {!locked && (
+            // pt.42: was a round Plus-icon button; switched to a
+            // text-label primary sbtn ("Add") so no "+" remains on
+            // the tab strip per the user's rule.
             <button
               data-testid="dr-events-add"
               onClick={addForActiveTab}
               title={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
               aria-label={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
-              className="ml-auto h-8 w-8 grid place-items-center rounded-full bg-emerald-600 text-white hover:bg-emerald-500 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              className="sbtn sbtn-xs sbtn-primary ml-auto"
             >
-              <Plus className="h-4 w-4" />
+              Add
             </button>
           )}
         </div>

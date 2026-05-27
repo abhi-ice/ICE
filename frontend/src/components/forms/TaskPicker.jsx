@@ -132,12 +132,14 @@ export default function TaskPicker({
               </option>
             ))}
           </select>
+          {/* pt.42: was a round Plus-icon button; switched to a
+              text-label primary sbtn ("Add"). */}
           <button type="button" onClick={add} disabled={!picker}
             data-testid={`${testidPrefix}-add`}
             title="Add selected task as linked"
-            className="shrink-0 h-8 w-8 rounded bg-blue-600 text-white text-sm disabled:opacity-50 hover:bg-blue-700 inline-flex items-center justify-center"
+            className="sbtn sbtn-sm sbtn-primary shrink-0"
             aria-label="Add task">
-            <Plus className="h-4 w-4" />
+            Add
           </button>
         </div>
       </div>

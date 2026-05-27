@@ -534,26 +534,25 @@ html[data-theme="dark"] .sbtn-primary {
 }
 html[data-theme="dark"] .sbtn-primary:hover { background: #34d399; }
 
-/* === Secondary (outline on light / translucent w/ blur on dark) === */
+/* === Secondary (GREY on light / SILVER on dark) ===
+   pt.42 (2026-05-27): light theme previously rendered nearly black
+   (#27272a) which user correctly flagged as "black, not grey".
+   Now medium grey #6b7280 (zinc-500-ish) with white text in light,
+   silver #e4e4e7 with dark text in dark. Same glass treatment
+   (rounded, inset highlight, subtle shadow) on both. */
 .sbtn-secondary {
-    background: white;
-    color: #3f3f46;
-    box-shadow: 0 0 0 1px #d4d4d8, 0 1px 1px rgba(0,0,0,0.03);
+    background: #6b7280;
+    color: white;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.12);
 }
-.sbtn-secondary:hover {
-    background: #fafafa;
-    box-shadow: 0 0 0 1px #a1a1aa, 0 1px 1px rgba(0,0,0,0.05);
-}
+.sbtn-secondary:hover { background: #4b5563; }
 html[data-theme="dark"] .sbtn-secondary {
-    background: rgba(255,255,255,0.06);
-    color: #e4e4e7;
-    box-shadow: 0 0 0 1px rgba(255,255,255,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
-    backdrop-filter: blur(8px);
+    background: #e4e4e7;
+    color: #18181b;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3);
+    backdrop-filter: none;
 }
-html[data-theme="dark"] .sbtn-secondary:hover {
-    background: rgba(255,255,255,0.10);
-    box-shadow: 0 0 0 1px rgba(255,255,255,0.20), inset 0 1px 0 rgba(255,255,255,0.06);
-}
+html[data-theme="dark"] .sbtn-secondary:hover { background: #f4f4f5; }
 
 /* === CTA (emerald — reserved for THE brand action; one per surface) === */
 .sbtn-cta {
@@ -672,16 +671,19 @@ html[data-theme="dark"] a.bg-emerald-600:not(.sbtn):hover {
     background-color: #34d399 !important;
 }
 
-/* Blue buttons -- silver (dark) / dark-grey (light), new style. */
+/* Blue buttons → GREY (light) / SILVER (dark), new style.
+   pt.42: light theme was previously #27272a (basically black) which
+   user correctly flagged. Now medium grey #6b7280, matching the
+   .sbtn-secondary variant exactly. */
 button.bg-blue-600:not(.sbtn),
 button.bg-blue-700:not(.sbtn),
 a.bg-blue-600:not(.sbtn),
 a.bg-blue-700:not(.sbtn),
 label.bg-blue-600 > span,
 label.bg-blue-700 > span {
-    background-color: #27272a !important;
+    background-color: #6b7280 !important;
     color: white !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.10), inset 0 1px 0 rgba(255,255,255,0.12) !important;
     font-weight: 500 !important;
     letter-spacing: -0.005em;
     border-radius: 6px !important;
@@ -689,7 +691,7 @@ label.bg-blue-700 > span {
 button.bg-blue-600:not(.sbtn):hover,
 button.bg-blue-700:not(.sbtn):hover,
 a.bg-blue-600:not(.sbtn):hover {
-    background-color: #18181b !important;
+    background-color: #4b5563 !important;
 }
 html[data-theme="dark"] button.bg-blue-600:not(.sbtn),
 html[data-theme="dark"] button.bg-blue-700:not(.sbtn),

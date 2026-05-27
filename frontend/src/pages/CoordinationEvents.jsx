@@ -229,9 +229,10 @@ function CoordinationNewButton({ projectId, fallbackOpen }) {
     } finally { setRouting(false); }
   };
   return (
-    <Button data-testid="coord-new" onClick={click} disabled={routing}
-      className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 gap-1">
-      <Plus className="h-4 w-4" /> {routing ? "Opening today's DR…" : "New on today's DR"}
-    </Button>
+    {/* pt.42: primary sbtn, no Plus icon (text label is enough). */}
+    <button data-testid="coord-new" onClick={click} disabled={routing}
+      className="sbtn sbtn-md sbtn-primary">
+      {routing ? "Opening today's DR…" : "New on today's DR"}
+    </button>
   );
 }

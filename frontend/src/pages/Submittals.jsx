@@ -377,7 +377,7 @@ function RegisterTab() {
           <FileSignature className="h-5 w-5 mx-auto mb-1 text-slate-400" />
           <div className="font-medium">No submittals match these filters.</div>
           <div className="text-xs mt-1">
-            Use "+ New" above or upload a spec PDF — submittals auto-generate
+            Use "New submittal" above or upload a spec PDF — submittals auto-generate
             from "1.4 SUBMITTALS" paragraphs.
           </div>
         </div>
