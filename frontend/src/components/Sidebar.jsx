@@ -100,9 +100,14 @@ export default function Sidebar() {
 
   // Keep a CSS variable in sync with the current sidebar width so the
   // fixed-position sidebar can offset the main column without relying
-  // on flexbox math. 56px in rail mode, 256px expanded.
+  // on flexbox math. 56px in rail mode, 224px expanded.
+  // pt.32 (2026-05-26) -- tightened from 256px -> 224px after user
+  // flagged ~40% of the expanded sidebar was empty space on the right.
+  // All labels fit at 224px; "Calendar reconciliation" (longest at 23
+  // chars) lightly truncates and recovers via the new title tooltip on
+  // each NavLink below.
   useLayoutEffect(() => {
-    document.documentElement.style.setProperty("--sidebar-w", rail ? "56px" : "256px");
+    document.documentElement.style.setProperty("--sidebar-w", rail ? "56px" : "224px");
   }, [rail]);
 
   const Brand = APP_BRAND.icon;
@@ -110,7 +115,7 @@ export default function Sidebar() {
     <aside
       data-testid="app-sidebar"
       data-collapsed={rail ? "true" : "false"}
-      className={`${rail ? "w-14" : "w-64"} app-sidebar fixed left-0 top-0 bottom-0 h-screen overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out z-30`}
+      className={`${rail ? "w-14" : "w-56"} app-sidebar fixed left-0 top-0 bottom-0 h-screen overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out z-30`}
     >
       <div className={`${rail ? "px-2" : "px-4"} py-4 border-b border-white/10 flex items-center ${rail ? "justify-center" : "gap-2.5"}`}>
         <button
@@ -225,6 +230,11 @@ export default function Sidebar() {
                         to={item.path}
                         end={item.path === "/"}
                         data-testid={item.testid}
+                        /* pt.32: native tooltip so the rare label that
+                           truncates at the tighter w-56 width (e.g.
+                           "Calendar reconciliation") still reveals its
+                           full text on hover. */
+                        title={item.label + (badge > 0 ? ` (${badge}${badgeMore ? "+" : ""} pending)` : "")}
                         className={({ isActive }) =>
                           `sidebar-link ${isActive ? "active" : ""}${
                             item.nested ? " sidebar-link-nested" : ""

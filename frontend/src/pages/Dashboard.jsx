@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  FolderKanban, AlertTriangle, BadgeCheck, Wrench, ShieldAlert, Activity,
+  FolderKanban, AlertTriangle, ShieldAlert, Activity, Clock, Truck,
 } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -8,16 +8,17 @@ import { useProjects } from "../lib/projects";
 // the lib/dateUtil chokepoint.
 import { formatDateDisplay } from "../lib/dateUtil";
 
-// V4 (2026-05-26): Tile now supports an optional `delta` chip
-// ({ value: '+1' | '-2' | '·', direction: 'up' | 'down' | 'flat' })
-// rendered next to the headline value to surface trend vs. prior period.
+// pt.32: Tighter KPI tile — was p-4 / text-3xl which felt too big for
+// single-number content. Now px-3 py-2.5 / text-2xl with row-rhythm
+// label so the 6-tile band reads as a compact scoreboard instead of 6
+// dashboard cards.
 const Tile = ({ label, value, icon: Icon, tone = "slate", testid, delta }) => (
-  <div data-testid={testid} className="bg-card border border-border rounded-lg p-4">
-    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-      <Icon className="h-4 w-4" /> {label}
+  <div data-testid={testid} className="bg-card border border-border rounded-md px-3 py-2.5">
+    <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+      <Icon className="h-3.5 w-3.5" /> {label}
     </div>
-    <div className="mt-2 flex items-baseline gap-2">
-      <div className={`text-3xl font-semibold tracking-tight tabular-nums text-${tone}-700`}>{value}</div>
+    <div className="mt-1 flex items-baseline gap-1.5">
+      <div className={`text-2xl font-semibold tracking-tight tabular-nums leading-none text-${tone}-700`}>{value}</div>
       {delta && (
         <span className={`kpi-delta ${delta.direction || "flat"}`}>{delta.value}</span>
       )}
@@ -47,11 +48,14 @@ export default function Dashboard() {
       </div>
 
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
           <Tile testid="kpi-active-projects" label="Active projects" value={summary.active_projects} icon={FolderKanban} />
           <Tile testid="kpi-open-rfis" label="Open RFIs" value={summary.open_rfis} icon={AlertTriangle} tone="amber" />
-          <Tile testid="kpi-pending-approvals" label="Pending approvals" value={summary.pending_approvals} icon={BadgeCheck} tone="amber" />
-          <Tile testid="kpi-open-work-items" label="Field issues" value={summary.open_work_items} icon={Wrench} tone="red" />
+          {/* pt.32: swapped "Pending approvals" + "Field issues" out for
+              "Delays" + "Deliveries" per request — more operationally
+              relevant for the federal-construction supers who live here. */}
+          <Tile testid="kpi-open-delays" label="Open delays" value={summary.open_delays ?? 0} icon={Clock} tone="amber" />
+          <Tile testid="kpi-pending-deliveries" label="Pending deliveries" value={summary.pending_deliveries ?? 0} icon={Truck} tone="amber" />
           <Tile testid="kpi-safety" label="Open safety events" value={summary.open_safety_events} icon={ShieldAlert} tone="red" />
           <Tile testid="kpi-schedule-health" label="Schedule health" value={`${summary.schedule_health_pct}%`} icon={Activity} tone="emerald" />
         </div>

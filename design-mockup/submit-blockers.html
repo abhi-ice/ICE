@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SiteOps — Submit blockers · 4 patterns</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0c0c0f; color: #e8e8eb;
+    padding: 28px 24px; min-height: 100vh;
+  }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub { color: #8e8e98; font-size: 13px; margin: 0 0 22px; max-width: 900px; line-height: 1.55; }
+
+  .row {
+    display: grid; grid-template-columns: 1fr; gap: 22px;
+  }
+  .card {
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card-title { padding: 14px 18px 4px; font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em; }
+  .card-desc { padding: 0 18px 14px; color: #8e8e98; font-size: 11.5px; line-height: 1.55; }
+  .card-desc b { color: #c0c0c8; }
+
+  /* Mockup stage = the DR header strip */
+  .stage {
+    background: #ffffff; padding: 16px 22px;
+    border-top: 1px solid #28282f;
+    border-bottom: 1px solid #28282f;
+  }
+  .stage.dark { background: #1a1a1f; }
+
+  .hdr-row {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .back-btn {
+    color: #10b981; font-size: 13px; font-weight: 500;
+    display: inline-flex; align-items: center; gap: 4px;
+    border: 0; background: transparent; cursor: pointer;
+  }
+  .spacer { flex: 1; }
+
+  .btn {
+    height: 36px; padding: 0 14px;
+    border-radius: 6px; border: 0;
+    font-size: 13px; font-weight: 500;
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer; transition: all 120ms;
+  }
+  .btn-primary {
+    background: #10b981; color: white;
+    box-shadow: 0 2px 8px -2px rgba(16,185,129,0.4);
+  }
+  .btn-primary:hover { background: #059669; }
+  .btn-primary[disabled] {
+    background: #d1d5db; cursor: not-allowed; box-shadow: none; color: #6b7280;
+  }
+  .stage.dark .btn-primary[disabled] { background: #404048; color: #6b7280; }
+  .btn-ghost {
+    background: transparent; color: inherit;
+    border: 1px solid #d8dce0;
+  }
+  .stage.dark .btn-ghost { border-color: #404048; color: #c0c0c8; }
+
+  /* ============================================================
+     CURRENT (what we ship today)
+     ============================================================ */
+  .v-now {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 12px; color: #b45309;
+    background: #fef3c7; border: 1px solid #fde68a;
+    border-radius: 5px; padding: 4px 9px;
+  }
+  .stage.dark .v-now { background: rgba(245,158,11,0.10); border-color: rgba(245,158,11,0.30); color: #fcd34d; }
+
+  /* ============================================================
+     A: Inline checklist popover (Linear / Figma pattern)
+     ============================================================ */
+  .v-A-trigger {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(245,158,11,0.10);
+    border: 1px solid rgba(245,158,11,0.32);
+    color: #b45309;
+    padding: 6px 11px 6px 9px;
+    border-radius: 7px;
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    position: relative;
+  }
+  .stage.dark .v-A-trigger { color: #fcd34d; }
+  .v-A-count {
+    background: #b45309; color: white;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 700;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+  }
+  .stage.dark .v-A-count { background: #fcd34d; color: #1f1f24; }
+  .v-A-pop {
+    position: absolute; top: calc(100% + 6px); right: 0;
+    background: white; color: #181d1f;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    box-shadow: 0 12px 32px -8px rgba(15,23,42,0.18);
+    padding: 10px 12px;
+    min-width: 280px;
+    z-index: 10;
+  }
+  .stage.dark .v-A-pop { background: #2a2a30; color: #ececf0; border-color: #404048; box-shadow: 0 12px 32px -8px rgba(0,0,0,0.5); }
+  .v-A-pop-head {
+    font-size: 11px; font-weight: 700; color: #b45309;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .stage.dark .v-A-pop-head { color: #fcd34d; }
+  .v-A-pop-list { list-style: none; }
+  .v-A-pop-list li {
+    display: flex; align-items: flex-start; gap: 7px;
+    padding: 5px 0;
+    font-size: 12px; line-height: 1.4;
+  }
+  .v-A-pop-list li svg { color: #ef4444; flex: 0 0 auto; margin-top: 1px; }
+  .v-A-pop-jump {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid #e2e8f0;
+    font-size: 11px; color: #6b7280;
+  }
+  .stage.dark .v-A-pop-jump { border-top-color: #404048; color: #8e8e98; }
+
+  /* ============================================================
+     B: Disabled submit with tooltip (Stripe / GitHub PR pattern)
+     ============================================================ */
+  .v-B-tooltip {
+    position: absolute; bottom: calc(100% + 8px); right: 0;
+    background: #1f1f24; color: #ececf0;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-size: 11.5px; line-height: 1.5;
+    min-width: 240px;
+    z-index: 10;
+    box-shadow: 0 8px 22px -4px rgba(0,0,0,0.4);
+  }
+  .v-B-tooltip::after {
+    content: ""; position: absolute;
+    bottom: -5px; right: 14px;
+    width: 10px; height: 10px;
+    background: #1f1f24; transform: rotate(45deg);
+  }
+  .v-B-tooltip-head {
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: #fcd34d; margin-bottom: 4px;
+  }
+  .v-B-tooltip ul { list-style: none; }
+  .v-B-tooltip li { padding: 2px 0; }
+  .v-B-tooltip li::before { content: "× "; color: #fca5a5; font-weight: 700; }
+
+  /* ============================================================
+     C: Progress meter integrated (Notion / Figma checklist)
+     ============================================================ */
+  .v-C-meter {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: #f8fafc; border: 1px solid #e2e8f0;
+    border-radius: 7px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: #475569;
+  }
+  .stage.dark .v-C-meter { background: #2a2a30; border-color: #404048; color: #c0c0c8; }
+  .v-C-circle {
+    position: relative; width: 22px; height: 22px;
+  }
+  .v-C-circle svg { transform: rotate(-90deg); }
+  .v-C-circle svg circle.track { stroke: #e2e8f0; }
+  .stage.dark .v-C-circle svg circle.track { stroke: #404048; }
+  .v-C-circle svg circle.fill { stroke: #f59e0b; stroke-linecap: round; }
+  .v-C-circle-text {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; font-weight: 700;
+    color: #475569;
+  }
+  .stage.dark .v-C-circle-text { color: #c0c0c8; }
+  .v-C-label { font-weight: 500; }
+  .v-C-detail { color: #94a3b8; font-size: 11px; }
+  .stage.dark .v-C-detail { color: #6b7280; }
+  .v-C-jump {
+    margin-left: 4px;
+    color: #f59e0b; font-weight: 600;
+    background: transparent; border: 0; cursor: pointer;
+    font-size: 11.5px;
+  }
+
+  /* ============================================================
+     D: Inline section-pip integration (USE WHAT WE ALREADY HAVE)
+     ============================================================ */
+  .v-D-bar {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%;
+  }
+  .v-D-pips {
+    display: flex; gap: 4px;
+  }
+  .v-D-pip {
+    height: 6px; min-width: 36px; flex: 1;
+    background: #e2e8f0; border-radius: 3px;
+    cursor: pointer; position: relative;
+  }
+  .stage.dark .v-D-pip { background: #404048; }
+  .v-D-pip.done { background: #10b981; }
+  .v-D-pip.partial { background: #f59e0b; }
+  .v-D-pip.error { background: #ef4444; }
+  .v-D-pip:hover::after {
+    content: attr(data-label);
+    position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: #1f1f24; color: white;
+    padding: 3px 7px; border-radius: 4px;
+    font-size: 10.5px; white-space: nowrap;
+    z-index: 10;
+  }
+  .v-D-status {
+    font-size: 12px; color: #475569;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .stage.dark .v-D-status { color: #c0c0c8; }
+  .v-D-status-icon {
+    width: 6px; height: 6px; border-radius: 50%; background: #f59e0b;
+  }
+
+  .note {
+    margin-top: 26px;
+    padding: 16px 18px;
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 10px;
+    font-size: 12px; line-height: 1.7;
+    color: #c0c0c8;
+  }
+  .note h3 { margin: 0 0 8px; font-size: 13px; color: white; }
+  .note ul { margin: 6px 0 0 18px; padding: 0; }
+  .note li { margin-bottom: 6px; }
+  .note b { color: white; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>"Blocking submit" indicator · 4 patterns + current</h1>
+  <p class="sub">Same DR header strip rendered five ways. <b>Light + dark in each card.</b> Hover the popovers in A and the pips in D to see the interactive states.</p>
+
+  <div class="row">
+
+    <!-- ============== CURRENT ============== -->
+    <div class="card">
+      <div class="card-title">Current — amber chip with first error inline</div>
+      <div class="card-desc">Shows the first error inline (the rest are hidden). <b>User feedback: "looks odd."</b> The mix of icon + count + truncated error makes it visually noisy in the action row.</div>
+      <div class="stage">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-now">⚠ 1 item blocking submit: Activity log must have at least one row</div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary">Submit</button>
+        </div>
+      </div>
+      <div class="stage dark">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-now">⚠ 1 item blocking submit: Activity log must have at least one row</div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary">Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== A: Inline checklist popover ============== -->
+    <div class="card">
+      <div class="card-title">A · Compact pill + popover checklist (Linear / Figma)</div>
+      <div class="card-desc">Tiny "3 blockers" pill with a count badge. Hover or click → popover lists ALL blockers as a checklist with jump-to-section. <b>Vibe: focused, doesn't crowd the header. Power users see the count, casual users click for detail.</b></div>
+      <div class="stage">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-A-trigger">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+            3 blockers <span class="v-A-count">3</span>
+            <div class="v-A-pop">
+              <div class="v-A-pop-head">BEFORE YOU CAN SUBMIT</div>
+              <ul class="v-A-pop-list">
+                <li><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Activity log must have at least one row</li>
+                <li><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Manpower log: at least one trade row required</li>
+                <li><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Weather conditions not filled in</li>
+              </ul>
+              <div class="v-A-pop-jump">Click any item → jump to that section</div>
+            </div>
+          </div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary" disabled>Submit</button>
+        </div>
+      </div>
+      <div class="stage dark">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-A-trigger">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+            3 blockers <span class="v-A-count">3</span>
+          </div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary" disabled>Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== B: Disabled submit + tooltip ============== -->
+    <div class="card">
+      <div class="card-title">B · Disabled submit + hover tooltip (Stripe / GitHub PR Merge)</div>
+      <div class="card-desc">No separate validation chip at all. Submit button is grayed out — hover/focus shows the tooltip listing what's missing. <b>Vibe: cleanest header, zero noise, but blockers are invisible until the user tries to submit.</b></div>
+      <div class="stage">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <div style="position:relative">
+            <button class="btn btn-primary" disabled>Submit ▲</button>
+            <div class="v-B-tooltip">
+              <div class="v-B-tooltip-head">3 ITEMS BLOCKING</div>
+              <ul>
+                <li>Activity log empty</li>
+                <li>Manpower log empty</li>
+                <li>Weather not filled</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="stage dark">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <div style="position:relative">
+            <button class="btn btn-primary" disabled>Submit</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== C: Progress meter circle ============== -->
+    <div class="card">
+      <div class="card-title">C · Mini progress circle + status text</div>
+      <div class="card-desc">Small circular meter showing fraction complete (4/7 sections), text shows what's missing. <b>Vibe: gamified-but-grown-up, immediate sense of "how close am I."</b> The fill arc fills toward the right as more sections complete.</div>
+      <div class="stage">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-C-meter">
+            <div class="v-C-circle">
+              <svg width="22" height="22"><circle class="track" cx="11" cy="11" r="9" fill="none" stroke-width="2.5"/><circle class="fill" cx="11" cy="11" r="9" fill="none" stroke-width="2.5" stroke-dasharray="56.5" stroke-dashoffset="24"/></svg>
+              <div class="v-C-circle-text">4/7</div>
+            </div>
+            <div>
+              <div class="v-C-label">Almost ready</div>
+              <div class="v-C-detail">3 items left — <button class="v-C-jump">show me</button></div>
+            </div>
+          </div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary" disabled>Submit</button>
+        </div>
+      </div>
+      <div class="stage dark">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-C-meter">
+            <div class="v-C-circle">
+              <svg width="22" height="22"><circle class="track" cx="11" cy="11" r="9" fill="none" stroke-width="2.5"/><circle class="fill" cx="11" cy="11" r="9" fill="none" stroke-width="2.5" stroke-dasharray="56.5" stroke-dashoffset="24"/></svg>
+              <div class="v-C-circle-text">4/7</div>
+            </div>
+            <div>
+              <div class="v-C-label">Almost ready</div>
+              <div class="v-C-detail">3 items left — <button class="v-C-jump">show me</button></div>
+            </div>
+          </div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary" disabled>Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== D: Section-pip integration ============== -->
+    <div class="card">
+      <div class="card-title">D · Section-pip integration (use what we already have)</div>
+      <div class="card-desc">We already render the 7 section pips in the progress card. Color them: green=done, amber=in-progress, red=blocker. The "3 items blocking" chip is replaced entirely by the pip strip — <b>hover any red/amber pip to see what's wrong + jump to it.</b> No new chip needed.</div>
+      <div class="stage">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-D-bar" style="max-width:340px;">
+            <div class="v-D-pips">
+              <div class="v-D-pip done" data-label="01 Project · done"></div>
+              <div class="v-D-pip done" data-label="02 Weather · done"></div>
+              <div class="v-D-pip partial" data-label="03 Manpower · 0 trades"></div>
+              <div class="v-D-pip error" data-label="04 Activity · empty"></div>
+              <div class="v-D-pip done" data-label="05 Events · ok"></div>
+              <div class="v-D-pip done" data-label="06 Photos · 3"></div>
+              <div class="v-D-pip done" data-label="07 Audit · auto"></div>
+            </div>
+            <div class="v-D-status"><span class="v-D-status-icon"></span>4/7</div>
+          </div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary" disabled>Submit</button>
+        </div>
+      </div>
+      <div class="stage dark">
+        <div class="hdr-row">
+          <button class="back-btn">‹ Back</button>
+          <div class="spacer"></div>
+          <div class="v-D-bar" style="max-width:340px;">
+            <div class="v-D-pips">
+              <div class="v-D-pip done" data-label="01 Project"></div>
+              <div class="v-D-pip done" data-label="02 Weather"></div>
+              <div class="v-D-pip partial" data-label="03 Manpower"></div>
+              <div class="v-D-pip error" data-label="04 Activity"></div>
+              <div class="v-D-pip done" data-label="05 Events"></div>
+              <div class="v-D-pip done" data-label="06 Photos"></div>
+              <div class="v-D-pip done" data-label="07 Audit"></div>
+            </div>
+            <div class="v-D-status"><span class="v-D-status-icon"></span>4/7</div>
+          </div>
+          <button class="btn btn-ghost">+ Coordination</button>
+          <button class="btn btn-ghost">Export ▾</button>
+          <button class="btn btn-primary" disabled>Submit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h3>Honest take — what modern SaaS actually does in 2026</h3>
+    <ul>
+      <li><b>Linear, Figma, GitHub PR merge</b> → all use pattern <b>A or B</b>. Compact indicator with detail-on-demand. Don't shout the error inline in the action row.</li>
+      <li><b>Stripe Checkout, Vercel deploy</b> → pattern <b>B</b>. Submit button itself says "Add card to continue" / "Resolve 3 errors". The button IS the validator.</li>
+      <li><b>Notion, Asana</b> → pattern <b>C</b>. Progress meter or checklist gauge that gamifies completion. Works because their forms are long.</li>
+      <li><b>Airtable, Linear cycle review</b> → pattern <b>D</b>. The existing structure (sections, fields) carries the status — no separate indicator at all.</li>
+    </ul>
+    <h3 style="margin-top:14px">My recommendation for SiteOps DR</h3>
+    <ul>
+      <li><b>Pattern D + bits of A.</b> You already render the 7 section pips in the progress card. Repurpose them: green=done / amber=partial / red=blocker. Eliminate the chip entirely. Add the small "3 items blocking" pill ONLY as a hover-popover on the Submit button (pattern A) so users get the full list with one hover when they're about to click Submit and can't.</li>
+      <li><b>Why this is cleanest:</b> the header becomes [Back] [spacer] [+ Coord] [Export] [Submit] — zero validation noise unless the user hovers the disabled Submit. The validation lives where it semantically belongs — on the sections themselves (pips) and on the Submit button (hover detail).</li>
+      <li><b>Bonus:</b> on Submit hover when blocked, the popover lists the blockers AND lets the user click each one to jump-scroll to that section. Closes the loop.</li>
+    </ul>
+    <h3 style="margin-top:14px">Once you pick, I'll bundle it with the Vendors green-strip fix + table-line decision as one push.</h3>
+  </div>
+
+  <script>
+    // Tiny hover demo for option A popover
+    document.querySelectorAll('.v-A-trigger').forEach(t => {
+      const pop = t.querySelector('.v-A-pop');
+      if (!pop) return;
+      pop.style.display = 'none';
+      t.addEventListener('mouseenter', () => pop.style.display = 'block');
+      t.addEventListener('mouseleave', () => pop.style.display = 'none');
+    });
+    // Hover popover for option B tooltip in light stage only
+    document.querySelectorAll('.v-B-tooltip').forEach(t => { t.style.display = 'none'; });
+    document.querySelectorAll('.btn-primary[disabled]').forEach(btn => {
+      btn.addEventListener('mouseenter', e => {
+        const tip = btn.parentElement.querySelector('.v-B-tooltip');
+        if (tip) tip.style.display = 'block';
+      });
+      btn.addEventListener('mouseleave', e => {
+        const tip = btn.parentElement.querySelector('.v-B-tooltip');
+        if (tip) tip.style.display = 'none';
+      });
+    });
+  </script>
+</body>
+</html>

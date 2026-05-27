@@ -2397,8 +2397,14 @@ html[data-theme="light"] [data-radix-popper-content-wrapper] > * {
     background-color: var(--v4-bg-surface-2);
     border: 1px solid var(--v4-border);
     padding: 4px;
-    display: inline-flex;
+    /* pt.32: lock to its content width so the strip can never stretch
+       to fill the row (cause of the Vendors green-strip bug where the
+       tabs surface visually bled past the right edge of the tab pills). */
+    display: inline-flex !important;
+    width: fit-content !important;
+    max-width: fit-content;
     gap: 2px;
+    border-radius: 6px;
 }
 .v4-tab {
     color: var(--v4-fg-secondary) !important;

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SiteOps — Table column lines · 4 styles</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0c0c0f; color: #e8e8eb;
+    padding: 28px 24px; min-height: 100vh;
+  }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub { color: #8e8e98; font-size: 13px; margin: 0 0 24px; max-width: 880px; line-height: 1.55; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+  }
+  .card {
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card-title {
+    padding: 14px 18px 4px;
+    font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em;
+  }
+  .card-desc {
+    padding: 0 18px 14px;
+    color: #8e8e98; font-size: 11.5px; line-height: 1.55;
+  }
+  .card-desc b { color: #c0c0c8; }
+
+  .preview {
+    background: #0a0a0c;
+    padding: 18px;
+    border-top: 1px solid #28282f;
+  }
+  .preview h4 {
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #6e6e76;
+    margin: 0 0 8px;
+  }
+  .preview + .preview { border-top: 1px solid #28282f; }
+
+  /* ============================================================
+     SHARED TABLE BASE — same shape as the live SiteOps tables
+     ============================================================ */
+  .tbl {
+    width: 100%;
+    font-size: 12px;
+    background: var(--surface, #ffffff);
+    color: var(--fg, #181d1f);
+    border: 1px solid var(--border, #d8dce0);
+    border-radius: 6px;
+    border-collapse: separate;
+    border-spacing: 0;
+    overflow: hidden;
+  }
+  .tbl thead th {
+    text-align: left;
+    padding: 7px 11px;
+    background: var(--head-bg, #f1f3f5);
+    color: var(--head-fg, #4a5256);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.01em;
+    border-bottom: 1px solid var(--border, #d8dce0);
+  }
+  .tbl tbody td {
+    padding: 7px 11px;
+    border-bottom: 1px solid var(--border, #d8dce0);
+    color: var(--fg, #181d1f);
+  }
+  .tbl tbody tr:last-child td { border-bottom: 0; }
+  .tbl tbody tr:hover td { background: var(--hover, #f8fafc); }
+  .pill {
+    font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: rgba(120,130,140,0.18); color: #6b7280;
+    font-weight: 500;
+  }
+  .pill.green { background: rgba(16,185,129,0.14); color: #047857; }
+  .pill.amber { background: rgba(245,158,11,0.14); color: #b45309; }
+
+  /* Dark variant tokens */
+  .dark {
+    --surface: #1f1f24;
+    --fg: #ececf0;
+    --border: #404048;
+    --head-bg: #2a2a30;
+    --head-fg: #c0c0c8;
+    --hover: #2d2d33;
+  }
+  .dark .pill { color: #c0c0c8; }
+  .dark .pill.green { color: #6ee7b7; }
+  .dark .pill.amber { color: #fcd34d; }
+
+  /* ============================================================
+     VARIATIONS — only difference is how columns separate
+     ============================================================ */
+
+  /* Current (NO vertical lines — what we ship today) */
+  .v0 { /* nothing extra */ }
+
+  /* A: Thin solid vertical lines (1px) — most "table-like" */
+  .vA th + th,
+  .vA td + td { border-left: 1px solid var(--border); }
+
+  /* B: Ultra-subtle dotted vertical lines (0.5px-feel) */
+  .vB th + th,
+  .vB td + td { border-left: 1px dashed var(--border); }
+  .vB.dark th + th, .vB.dark td + td { border-left-color: rgba(255,255,255,0.08); }
+
+  /* C: Only HEADER columns separated, rows free-flowing (Linear pattern) */
+  .vC thead th + th { border-left: 1px solid var(--border); }
+
+  /* D: Alternating column tint (zebra-but-vertical) */
+  .vD td:nth-child(even),
+  .vD th:nth-child(even) {
+    background: rgba(15, 23, 42, 0.025);
+  }
+  .vD.dark td:nth-child(even),
+  .vD.dark th:nth-child(even) {
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .frame-pair {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+  @media (max-width: 1300px) { .frame-pair { grid-template-columns: 1fr; } }
+  .frame-pane { background: transparent; border-radius: 6px; overflow: hidden; }
+  .frame-pane.dark { background: #15151a; padding: 1px; }
+
+  .note {
+    margin-top: 30px;
+    padding: 16px 18px;
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 10px;
+    font-size: 12px; line-height: 1.7;
+    color: #c0c0c8;
+  }
+  .note h3 { margin: 0 0 8px; font-size: 13px; color: white; }
+  .note ul { margin: 6px 0 0 18px; padding: 0; }
+  .note li { margin-bottom: 6px; }
+  .note b { color: white; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>Table column lines · 4 styles + current</h1>
+  <p class="sub">Same 4-row Projects table rendered five ways: <b>current</b> (no vertical lines), <b>A</b> (thin solid), <b>B</b> (dashed/ultra-subtle), <b>C</b> (header-only), <b>D</b> (alternating column tint). Light + dark side-by-side under each.</p>
+
+  <div class="grid">
+
+    <!-- ============== CURRENT (what we ship today) ============== -->
+    <div class="card">
+      <div class="card-title">Current — no vertical lines</div>
+      <div class="card-desc">Only horizontal row dividers. Modern SaaS standard (Linear, Notion, Stripe Dashboard). <b>Cleaner, less visual weight, scans faster.</b></div>
+      <div class="preview">
+        <h4>Light</h4>
+        <table class="tbl v0">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="preview">
+        <h4>Dark</h4>
+        <table class="tbl v0 dark">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== A: SOLID 1PX ============== -->
+    <div class="card">
+      <div class="card-title">A · Thin solid vertical lines</div>
+      <div class="card-desc">Full grid look — every cell bordered. <b>Vibe: spreadsheet, Excel, classic enterprise.</b> Strongest "this is a table" signal. Can feel heavier on tables with many columns (the 15-col Tasks page will look busy).</div>
+      <div class="preview">
+        <h4>Light</h4>
+        <table class="tbl vA">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="preview">
+        <h4>Dark</h4>
+        <table class="tbl vA dark">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== B: DASHED ULTRA-SUBTLE ============== -->
+    <div class="card">
+      <div class="card-title">B · Dashed ultra-subtle vertical lines</div>
+      <div class="card-desc">Hint of columns without the spreadsheet weight. <b>Vibe: Airtable-lite, Notion database view.</b> Compromise — feels like a table without committing to a grid.</div>
+      <div class="preview">
+        <h4>Light</h4>
+        <table class="tbl vB">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="preview">
+        <h4>Dark</h4>
+        <table class="tbl vB dark">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== C: HEADER ONLY ============== -->
+    <div class="card">
+      <div class="card-title">C · Header-only column separators (Linear/Vercel)</div>
+      <div class="card-desc">Lines just in the header row. Body rows flow free — <b>the columns are implied by the header dividers</b>, not enforced everywhere. Best balance: scans like a list but you still know where columns are.</div>
+      <div class="preview">
+        <h4>Light</h4>
+        <table class="tbl vC">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="preview">
+        <h4>Dark</h4>
+        <table class="tbl vC dark">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============== D: ALTERNATING COLUMN TINT ============== -->
+    <div class="card">
+      <div class="card-title">D · Alternating column tint (zebra-vertical)</div>
+      <div class="card-desc">Even columns get a 2.5% tint. <b>No lines at all — column separation by background.</b> Eye reads columns by tone difference instead of borders. Used by Airtable and some Notion DB views.</div>
+      <div class="preview">
+        <h4>Light</h4>
+        <table class="tbl vD">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="preview">
+        <h4>Dark</h4>
+        <table class="tbl vD dark">
+          <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Status</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>MSU</td><td>#24608733</td><td>MSU</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>GSA Office Test</td><td>12356</td><td>GSA</td><td><span class="pill green">active</span></td><td>$0.00M</td></tr>
+            <tr><td>MSU1</td><td>#269088</td><td>gsa</td><td><span class="pill">planning</span></td><td>$1.00M</td></tr>
+            <tr><td>SBD FLOORING</td><td>123456</td><td>SBD</td><td><span class="pill amber">on hold</span></td><td>$1.00M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <h3>Honest take from looking at modern B2B SaaS in 2026</h3>
+    <ul>
+      <li><b>Almost nobody uses option A</b> (full grid lines) anymore. Procore, Autodesk Construction Cloud, PlanGrid all dropped it 2-3 years ago. The "Excel look" reads as old-school enterprise.</li>
+      <li><b>Linear, Notion, Stripe, Vercel, Airtable, Asana</b> all use the <b>current pattern</b> (no vertical lines, only horizontal row dividers). The reason: with ~10+ columns and 50+ rows, vertical lines create visual clutter and slow row-scan.</li>
+      <li><b>C (header-only)</b> is the modern compromise — implies columns without enforcing them. Used by Linear's issue lists and Vercel's deployment tables.</li>
+      <li><b>D (alternating column tint)</b> is the Notion DB / Airtable approach — best when columns have very different content widths (a short number + a long description).</li>
+      <li><b>SiteOps has 10-15 column tables</b> (Tasks, Lookahead, Submittals, Activity Log). Option A would make them feel cramped and old. Option C is the upgrade that adds "table feel" without the heaviness.</li>
+    </ul>
+    <h3 style="margin-top:14px">My recommendation</h3>
+    <ul>
+      <li><b>Stay on current</b> for the 10+ column workhorse tables (Tasks, Lookahead, Submittals, DR Activity Log, Resource Leveling) — they're scanning surfaces where horizontal lines are enough.</li>
+      <li><b>Switch to C (header-only)</b> for the small-column tables (Projects, Vendors, RFIs list, Delays list, Photos AI stats — 4-7 columns). Adds the "structured" feel without choking the layout.</li>
+      <li><b>Skip A and D</b> — A is dated, D is gimmicky for our column counts.</li>
+    </ul>
+    <h3 style="margin-top:14px">If you pick a style I'll ship it bundled with the Vendors green-strip fix as pt.32 (~1 commit, ~30 lines of CSS).</h3>
+  </div>
+</body>
+</html>
