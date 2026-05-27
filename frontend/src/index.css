@@ -512,19 +512,27 @@ html[data-theme="dark"] .surface {
 .sbtn-icon    { height: 28px; width: 28px; padding: 0; }
 .sbtn-icon-sm { height: 24px; width: 24px; padding: 0; border-radius: 5px; }
 
-/* === Primary (silver on dark / dark-grey on light) === */
+/* === Primary (GREEN — emerald in both themes) ===
+   pt.41 (2026-05-27): flipped from silver/dark-grey back to green
+   per user clarification. They wanted TWO colors per theme:
+   GREEN (primary actions) + silver/grey (secondary). My pt.39/40
+   made everything silver/grey which was too monochrome. Now:
+     sbtn-primary  = GREEN (emerald)            -- "the action"
+     sbtn-secondary = silver/grey (theme-aware) -- "supporting"
+   Same .sbtn-cta lives on as an alias for the same green so any
+   call site that explicitly picked CTA still works. */
 .sbtn-primary {
-    background: #27272a;
+    background: #10b981;
     color: white;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06);
+    box-shadow: 0 1px 2px rgba(16,185,129,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
 }
-.sbtn-primary:hover { background: #18181b; }
+.sbtn-primary:hover { background: #059669; }
 html[data-theme="dark"] .sbtn-primary {
-    background: #e4e4e7;
-    color: #18181b;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3);
+    background: #10b981;
+    color: white;
+    box-shadow: 0 1px 2px rgba(16,185,129,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
 }
-html[data-theme="dark"] .sbtn-primary:hover { background: #f4f4f5; }
+html[data-theme="dark"] .sbtn-primary:hover { background: #34d399; }
 
 /* === Secondary (outline on light / translucent w/ blur on dark) === */
 .sbtn-secondary {
@@ -615,19 +623,28 @@ html[data-theme="dark"] .sbtn-ghost:hover {
    page-by-page; these rules are the safety net.
    ============================================================ */
 
-/* Primary: emerald + blue solids → silver/dark-grey */
+/* pt.41 (2026-05-27): two-color palette per theme.
+   - Emerald buttons (bg-emerald-X) STAY green but get the new
+     glass-style treatment (rounded, inset highlight, subtle shadow).
+     These represent the "primary action" tier in both themes.
+   - Blue buttons (bg-blue-X) get the SILVER (dark) / GREY (light)
+     treatment in the new glass style. These are demoted to the
+     "supporting action" tier since blue was previously misused as
+     a competing primary.
+   Pills (.pill, .v4-pill) and the Mason FAB are excluded so their
+   semantic colors stay intact. */
+
+/* Emerald buttons -- keep green, apply new style. */
 button.bg-emerald-600:not(.copilot-fab):not(.sbtn),
 button.bg-emerald-500:not(.sbtn),
 button.bg-emerald-700:not(.sbtn),
-button.bg-blue-600:not(.sbtn),
-button.bg-blue-700:not(.sbtn),
 a.bg-emerald-600:not(.sbtn),
-a.bg-blue-600:not(.sbtn),
+a.bg-emerald-500:not(.sbtn),
 label.bg-emerald-600 > span,
-label.bg-blue-600 > span {
-    background-color: #27272a !important;
+label.bg-emerald-500 > span {
+    background-color: #10b981 !important;
     color: white !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+    box-shadow: 0 1px 2px rgba(16,185,129,0.25), inset 0 1px 0 rgba(255,255,255,0.15) !important;
     font-weight: 500 !important;
     letter-spacing: -0.005em;
     border-radius: 6px !important;
@@ -635,28 +652,56 @@ label.bg-blue-600 > span {
 button.bg-emerald-600:not(.copilot-fab):not(.sbtn):hover,
 button.bg-emerald-500:not(.sbtn):hover,
 button.bg-emerald-700:not(.sbtn):hover,
-button.bg-blue-600:not(.sbtn):hover,
-button.bg-blue-700:not(.sbtn):hover,
 a.bg-emerald-600:not(.sbtn):hover,
-a.bg-blue-600:not(.sbtn):hover {
-    background-color: #18181b !important;
+label.bg-emerald-600:hover > span {
+    background-color: #059669 !important;
 }
 html[data-theme="dark"] button.bg-emerald-600:not(.copilot-fab):not(.sbtn),
 html[data-theme="dark"] button.bg-emerald-500:not(.sbtn),
 html[data-theme="dark"] button.bg-emerald-700:not(.sbtn),
+html[data-theme="dark"] a.bg-emerald-600:not(.sbtn),
+html[data-theme="dark"] a.bg-emerald-500:not(.sbtn),
+html[data-theme="dark"] label.bg-emerald-600 > span,
+html[data-theme="dark"] label.bg-emerald-500 > span {
+    background-color: #10b981 !important;
+    color: white !important;
+    box-shadow: 0 1px 2px rgba(16,185,129,0.4), inset 0 1px 0 rgba(255,255,255,0.15) !important;
+}
+html[data-theme="dark"] button.bg-emerald-600:not(.copilot-fab):not(.sbtn):hover,
+html[data-theme="dark"] a.bg-emerald-600:not(.sbtn):hover {
+    background-color: #34d399 !important;
+}
+
+/* Blue buttons -- silver (dark) / dark-grey (light), new style. */
+button.bg-blue-600:not(.sbtn),
+button.bg-blue-700:not(.sbtn),
+a.bg-blue-600:not(.sbtn),
+a.bg-blue-700:not(.sbtn),
+label.bg-blue-600 > span,
+label.bg-blue-700 > span {
+    background-color: #27272a !important;
+    color: white !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.005em;
+    border-radius: 6px !important;
+}
+button.bg-blue-600:not(.sbtn):hover,
+button.bg-blue-700:not(.sbtn):hover,
+a.bg-blue-600:not(.sbtn):hover {
+    background-color: #18181b !important;
+}
 html[data-theme="dark"] button.bg-blue-600:not(.sbtn),
 html[data-theme="dark"] button.bg-blue-700:not(.sbtn),
-html[data-theme="dark"] a.bg-emerald-600:not(.sbtn),
 html[data-theme="dark"] a.bg-blue-600:not(.sbtn),
-html[data-theme="dark"] label.bg-emerald-600 > span,
-html[data-theme="dark"] label.bg-blue-600 > span {
+html[data-theme="dark"] a.bg-blue-700:not(.sbtn),
+html[data-theme="dark"] label.bg-blue-600 > span,
+html[data-theme="dark"] label.bg-blue-700 > span {
     background-color: #e4e4e7 !important;
     color: #18181b !important;
     box-shadow: 0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3) !important;
 }
-html[data-theme="dark"] button.bg-emerald-600:not(.copilot-fab):not(.sbtn):hover,
 html[data-theme="dark"] button.bg-blue-600:not(.sbtn):hover,
-html[data-theme="dark"] a.bg-emerald-600:not(.sbtn):hover,
 html[data-theme="dark"] a.bg-blue-600:not(.sbtn):hover {
     background-color: #f4f4f5 !important;
 }
