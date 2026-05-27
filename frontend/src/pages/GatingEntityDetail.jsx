@@ -5,6 +5,7 @@
 // daily-reports lens on top.
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import BackButton from "../components/BackButton";
 import { ChevronLeft, AlertTriangle, Clock, FileText, Calendar } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
@@ -55,14 +56,16 @@ export default function GatingEntityDetail() {
 
   return (
     <div data-testid="gating-entity-detail-page" className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Link to={ge.entity_type === "rfi" ? "/rfis"
-                : ge.entity_type === "submittal" ? "/submittals"
-                : ge.entity_type === "field_issue" ? "/work-items" : "/"}
-          className="text-sm text-blue-600 hover:underline flex items-center gap-1">
-          <ChevronLeft className="h-4 w-4" /> Back
-        </Link>
-      </div>
+      {/* pt.37: Option E back-button pill — destination matches the
+          gating entity's source list. */}
+      <BackButton
+        to={ge.entity_type === "rfi" ? "/rfis"
+          : ge.entity_type === "submittal" ? "/submittals"
+          : ge.entity_type === "field_issue" ? "/work-items" : "/"}
+        label={ge.entity_type === "rfi" ? "RFIs"
+          : ge.entity_type === "submittal" ? "Submittals"
+          : ge.entity_type === "field_issue" ? "Field issues" : "Dashboard"}
+      />
 
       {/* Header */}
       <div className="surface p-4">

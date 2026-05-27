@@ -77,9 +77,8 @@ export default function ScheduleDiffDetail() {
   return (
     /* pt.36: dropped p-6 -- AppLayout main already pads p-6. */
     <div data-testid="schedule-diff-detail">
-      <Link to="/schedule-updates" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
-        <ChevronLeft className="h-3 w-3" /> Back to updates
-      </Link>
+      {/* pt.37: Option E back-button pill. */}
+      <div className="mb-3"><BackButton to="/schedule-updates" label="Schedule updates" /></div>
       <header className="flex items-start justify-between mb-4">
         <div>
           <div className="flex items-center gap-2">

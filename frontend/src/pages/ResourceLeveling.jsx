@@ -10,6 +10,7 @@
 // whatever the user can see.
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { confirmAction } from "../lib/confirmAction";
 import {
   Users, RefreshCw, Plus, AlertTriangle, AlertCircle, CheckCircle2,
   Calendar, Filter, ChevronRight, X, Info, ShieldCheck, FileBarChart,
@@ -832,8 +833,15 @@ function ReallocationForm({ onClose, onCommitted }) {
         return Math.max(1, Math.round((b - a) / 86400000) + 1);
       } catch { return 1; }
     })();
-    const msg = `Reallocate ${form.headcount} from "${crewName}" to "${toName}" for ${dayCount} day${dayCount === 1 ? "" : "s"} (from "${fromName}")?\n\nThis writes to the audit log and updates committed headcount on each affected date.`;
-    if (!window.confirm(msg)) return;
+    // pt.37: themed modal (was window.confirm). Destructive write
+    // (not delete) — danger=false renders neutral/primary styling.
+    const ok = await confirmAction({
+      title: `Reallocate ${form.headcount} headcount?`,
+      message: `From "${crewName}" → "${toName}" for ${dayCount} day${dayCount === 1 ? "" : "s"} (source project "${fromName}"). This writes to the audit log and updates committed headcount on each affected date.`,
+      confirmText: "Commit reallocation",
+      danger: false,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const r = await api.post(`/resource-leveling/commit-reallocation`, {

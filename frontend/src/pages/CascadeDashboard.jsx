@@ -7,6 +7,7 @@ import { Activity, RefreshCw, ChevronRight } from "lucide-react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
+import PageHelp from "../components/PageHelp";
 
 const SEVERITY_TONE = {
   green: "bg-emerald-50 border-l-4 border-emerald-400",
@@ -130,7 +131,25 @@ export default function CascadeDashboard() {
         <div>
           <div className="flex items-center gap-2">
             <Activity className="h-5 w-5 text-slate-700" />
-            <h1 className="text-xl font-semibold text-slate-800">Open gates by projected critical-path impact</h1>
+            <h1 className="text-xl font-semibold text-slate-800 inline-flex items-baseline">
+              Open gates by projected critical-path impact
+              {/* pt.37: PageHelp explains the CPM N-walk projection
+                  thresholds since "Slip @ N5/N10/N20" needs context. */}
+              <PageHelp title="How the cascade is computed">
+                Each open gating entity (RFI, submittal, field issue) is run forward
+                through the CPM walk for N working days from today.
+                <br/><br/>
+                <b>Slip @ N5/N10/N20</b> projects how many working days the directly
+                + transitively gated tasks would push by, assuming the gate stays open
+                that many more days.
+                <br/><br/>
+                <b>CP impact @ N10</b> isolates how many of those projected days would
+                hit the critical path — i.e. push the project finish.
+                <br/><br/>
+                <b>Severity band</b> escalates green → yellow → orange → red as
+                CP impact grows. Click any row to open the gating entity detail.
+              </PageHelp>
+            </h1>
           </div>
           <div className="text-xs text-slate-500 mt-1">
             {lastComputed

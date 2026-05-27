@@ -462,6 +462,24 @@ html[data-theme="dark"] .surface {
 }
 .dense-table tbody tr:last-child td { border-bottom: 0; }
 
+/* pt.37 (2026-05-27) — header-only column dividers (Option C from
+   design-mockup/table-column-lines.html). Add .dense-table-bordered
+   to small-column tables (Projects, Vendors, RFIs, Delays list, etc.
+   4-7 columns) to give them a more "structured" feel without choking
+   the layout the way full-grid borders would. The 10+ column
+   workhorse tables (Tasks, Lookahead, Submittals, DR Activity Log,
+   Resource Leveling) intentionally STAY on the horizontal-only
+   pattern -- they're scanning surfaces where vertical lines clutter.
+   Selector intentionally NOT chained with .dense-table so the same
+   class can attach to bespoke <table> elements (e.g. Vendors uses
+   custom utility classes, not .dense-table). */
+.dense-table-bordered thead th {
+    border-right: 1px solid var(--v4-border);
+}
+.dense-table-bordered thead th:last-child {
+    border-right: 0;
+}
+
 /* ============================================================
    STATUS PILLS â€” semantic colors preserved (legibility on dark bg)
    ============================================================ */

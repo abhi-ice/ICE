@@ -16,6 +16,7 @@ import { formatDateDisplay, slipDays, formatPredecessors } from "../lib/dateUtil
 // are no longer surfaced as blockers.
 import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X, FileText } from "lucide-react";
 import ExportDropdown from "../components/ExportDropdown";
+import { confirmAction } from "../lib/confirmAction";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -286,7 +287,14 @@ export default function Tasks() {
   };
 
   const remove = async (t) => {
-    if (!window.confirm(`Delete activity ${t.activity_code}?`)) return;
+    // pt.37: themed modal (was window.confirm).
+    const ok = await confirmAction({
+      title: `Delete activity ${t.activity_code}?`,
+      message: t.description ? `"${t.description}" will be removed from the schedule.` : undefined,
+      confirmText: "Delete activity",
+      icon: "trash",
+    });
+    if (!ok) return;
     await api.delete(`/tasks/${t.id}`);
     toast.success("Deleted");
     load();

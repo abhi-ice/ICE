@@ -10,6 +10,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/
 import { getUser } from "../lib/auth";
 // CPM Part G (2026-05-15) -- date_range columns rendered MM/DD/YYYY.
 import { formatDateDisplay } from "../lib/dateUtil";
+import { confirmAction } from "../lib/confirmAction";
+import BackButton from "../components/BackButton";
 
 export default function TIAGenerationDetail() {
   const { id } = useParams();
@@ -50,7 +52,16 @@ export default function TIAGenerationDetail() {
   };
 
   const reflag = async () => {
-    if (!window.confirm("Reflag this TIA as privileged? Downloads will be restricted to the generator and admins again.")) return;
+    // pt.37: themed modal (was window.confirm). Not a delete, but
+    // destructive in the sense that it tightens access — danger=false
+    // gets the neutral icon and primary button instead of red.
+    const ok = await confirmAction({
+      title: "Reflag this TIA as privileged?",
+      message: "Downloads will be restricted to the generator and admins again.",
+      confirmText: "Reflag as privileged",
+      danger: false,
+    });
+    if (!ok) return;
     try {
       await api.post(`/tia/generations/${id}/reflag-privilege`);
       toast.success("Privilege reflagged");
@@ -84,9 +95,8 @@ export default function TIAGenerationDetail() {
   return (
     /* pt.36: dropped p-6 -- AppLayout main already pads p-6. */
     <div data-testid="tia-detail">
-      <Link to="/tia/history" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
-        <ChevronLeft className="h-3 w-3" /> Back to history
-      </Link>
+      {/* pt.37: Option E back-button pill. */}
+      <div className="mb-3"><BackButton to="/tia/history" label="History" /></div>
       <header className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-800">TIA generation detail</h1>
         <div className="flex items-center gap-2">

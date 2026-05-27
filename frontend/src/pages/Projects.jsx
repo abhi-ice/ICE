@@ -352,7 +352,9 @@ export default function Projects() {
       </div>
 
       <div className="bg-card border border-border rounded-lg overflow-hidden">
-        <table className="w-full dense-table">
+        {/* pt.37: dense-table-bordered → header-only vertical
+            dividers, small-column table per Option C. */}
+        <table className="w-full dense-table dense-table-bordered">
           <thead>
             <tr><th>Name</th><th>Contract #</th><th>Client</th><th>Location</th><th>Status</th><th>Value</th><th>Plan finish</th><th></th></tr>
           </thead>

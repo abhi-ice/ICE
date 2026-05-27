@@ -21,6 +21,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Mic, Square, Wifi, WifiOff, Trash2, Upload, Loader2, AlertCircle, CheckCircle2, Radio, KeyboardIcon, Headphones } from "lucide-react";
+import { deleteWithUndo } from "../lib/deleteWithUndo";
 
 /**
  * Live state pill -- shows whether the AI is currently speaking
@@ -371,10 +372,16 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
     } finally { setBusy(false); }
   };
 
-  const removePending = async (id) => {
-    if (!window.confirm("Delete this queued voice memo permanently?")) return;
-    await removeClip(id);
-    await refreshPending();
+  const removePending = (id) => {
+    // pt.37: Tier-1 toast + Undo (was window.confirm). User can
+    // re-record in seconds, so instant-feel UX wins.
+    deleteWithUndo({
+      label: "Queued voice memo deleted",
+      onCommit: async () => {
+        await removeClip(id);
+        await refreshPending();
+      },
+    });
   };
 
   // Live conversational mode -- Phase A places a "Coming online" stub

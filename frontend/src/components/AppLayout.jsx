@@ -3,6 +3,7 @@ import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
 import CopilotPanel from "./ai/CopilotPanel";
+import ConfirmActionDialog from "./ConfirmActionDialog";
 import { Bot } from "lucide-react";
 
 // AppLayout (2026-05-24 rev 3) — fixed-sidebar shell.
@@ -42,6 +43,14 @@ export default function AppLayout() {
       </button>
 
       <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} />
+
+      {/* pt.37: themed replacement for window.confirm(). Mounted once
+          at the layout root; opens whenever code calls confirmAction()
+          from lib/confirmAction.js. See ConfirmActionDialog.jsx for
+          the implementation and Option C in
+          design-mockup/delete-confirmation-options.html for the design
+          source. */}
+      <ConfirmActionDialog />
     </div>
   );
 }

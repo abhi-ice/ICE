@@ -16,6 +16,10 @@ import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { localTodayISO, formatDateDisplay } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
+import { confirmAction } from "../lib/confirmAction";
+import { deleteWithUndo } from "../lib/deleteWithUndo";
+import BackButton from "../components/BackButton";
+import SubmitProgress from "../components/SubmitProgress";
 import { getUser } from "../lib/auth";
 import DelayForm from "../components/forms/DelayForm";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
@@ -267,7 +271,15 @@ export default function DailyReports() {
 
   const removeReport = async (r) => {
     if (r.status !== "draft") return;
-    if (!window.confirm(`Delete the draft daily report for ${formatDateDisplay(r.report_date)}? Linked delays/QC/safety/RFIs/photos will keep their records but their daily_report_id will be cleared.`)) return;
+    // pt.37: themed modal (was window.confirm). Medium-stakes since
+    // it touches child records' daily_report_id.
+    const ok = await confirmAction({
+      title: `Delete draft daily report for ${formatDateDisplay(r.report_date)}?`,
+      message: "Linked delays / QC / safety / RFIs / photos keep their records, but their daily_report_id will be cleared.",
+      confirmText: "Delete draft",
+      icon: "trash",
+    });
+    if (!ok) return;
     try {
       await api.delete(`/daily-reports/${r.id}`);
       toast.success(`Deleted daily report for ${formatDateDisplay(r.report_date)}`);
@@ -1192,19 +1204,17 @@ function StickySubmitBar({ completeCount, total, progressPct, remainingLabels, o
   }, []);
   return (
     <div className="sticky-submit" data-testid="dr-sticky-submit">
-      <div className="sticky-submit-meta">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
-        </svg>
-        <span><span className="num">{completeCount} / {total}</span> sections complete</span>
-      </div>
-      <div className="sticky-submit-fill"><div style={{ width: `${progressPct}%` }} /></div>
-      {remainingLabels.length > 0 && (
-        <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>
-          {remainingLabels.length === 1 ? "1 to go — " : `${remainingLabels.length} to go — `}
-          {remainingLabels.join(", ")}
-        </div>
-      )}
+      {/* pt.37: replaced the linear progress bar + "X to go — A, B, C"
+          inline list with Option C: mini progress circle + status text
+          + "show me" popover. Same data, ~60% less horizontal weight,
+          and the missing-items list moves into a popover so the
+          sticky bar stays readable when there are many incomplete
+          sections. */}
+      <SubmitProgress
+        completeCount={completeCount}
+        total={total}
+        missingLabels={remainingLabels}
+      />
       <div style={{ flex: 1 }} />
       <button
         data-testid="dr-sticky-submit-btn"
@@ -1244,9 +1254,9 @@ function Header({ report, project, userLabels, ppc, totalHours,
           moved ABOVE the KPI band to match the v4 mockup. Header now
           reads: [Back] [actions on right] above [KPI band 8-wide]. */}
       <div className="flex flex-wrap items-center gap-3 mb-3">
-        <button onClick={onBack} className="text-sm text-emerald-600 hover:underline flex items-center gap-1 shrink-0">
-          <ChevronLeft className="h-4 w-4" /> Back
-        </button>
+        {/* pt.37: Option E back-button pill (BackButton component). */}
+        <BackButton onClick={onBack} label="Daily Reports" />
+
         <div className="ml-auto flex gap-2 items-center">
           {!v.ok && !locked && (
             <div data-testid="dr-validation-warning" className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center gap-1 mr-1">
@@ -1604,9 +1614,17 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     try { await api.patch(`/daily-presence/${rid}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
   };
-  const remove = async (rid) => {
-    if (!window.confirm("Remove this presence row?")) return;
-    await api.delete(`/daily-presence/${rid}`); reload();
+  const remove = (rid) => {
+    // pt.37: Tier-1 toast + Undo (was window.confirm). Cheap delete —
+    // a manpower row can be re-added in seconds, so Gmail/Slack-style
+    // instant-feel UX wins over a confirmation modal.
+    deleteWithUndo({
+      label: "Manpower row deleted",
+      onCommit: async () => {
+        await api.delete(`/daily-presence/${rid}`);
+        reload();
+      },
+    });
   };
   // Save a single draft row. Returns true on success.
   const [busySaveIdx, setBusySaveIdx] = useState(-1);
@@ -2230,10 +2248,17 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
     setStaleRows(new Set());
     reload();
   };
-  const removeRow = async (rowId) => {
-    if (!window.confirm("Remove from grid?")) return;
-    try { await api.delete(`/daily-report-activities/${rowId}`); reload(); }
-    catch (e) { toast.error(formatErr(e, "Remove row")); }
+  const removeRow = (rowId) => {
+    // pt.37: Tier-1 toast + Undo (was window.confirm). Activity grid
+    // row is auto-populated from schedule and easy to re-add — same
+    // reasoning as the manpower row above.
+    deleteWithUndo({
+      label: "Activity row removed from grid",
+      onCommit: async () => {
+        try { await api.delete(`/daily-report-activities/${rowId}`); reload(); }
+        catch (e) { toast.error(formatErr(e, "Remove row")); }
+      },
+    });
   };
   // 2026-05-19 -- the "Add planned activity" picker was removed from
   // the UI. The grid auto-populates from the master schedule for the

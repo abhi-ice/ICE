@@ -12,6 +12,7 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 // CPM Part G (2026-05-15) -- added_at displayed MM/DD/YYYY.
 import { formatDateDisplay } from "../lib/dateUtil";
+import { confirmAction } from "../lib/confirmAction";
 
 // Bucket J Phase 3 (2026-05-11) -- specialty roles join the dropdown.
 // submittal_tech + scheduling_engineer carry write power on their
@@ -88,7 +89,13 @@ export default function ProjectAccess() {
   };
 
   const onRemove = async (member) => {
-    if (!window.confirm(`Remove ${member.user_full_name || member.user_email} from this project?`)) return;
+    // pt.37: themed modal (was window.confirm).
+    const ok = await confirmAction({
+      title: "Remove member?",
+      message: `${member.user_full_name || member.user_email} will lose access to this project. They keep their organization membership.`,
+      confirmText: "Remove member",
+    });
+    if (!ok) return;
     try {
       await api.delete(`/projects/${selectedId}/members/${member.user_id}`);
       toast.success("Member removed");

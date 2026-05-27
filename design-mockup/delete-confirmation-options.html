@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SiteOps — Delete confirmation patterns (6 options)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0b; color: #f4f4f5; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+
+  /* shared option container */
+  .opt {
+    border: 1px solid #2a2a30;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #131316;
+  }
+  .opt-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid #26262b;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .opt-title    { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+  .opt-pattern  { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #71717a; font-weight: 500; }
+  .opt-rec {
+    margin-left: auto; font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    background: rgba(16,185,129,0.12); color: #34d399;
+    border: 1px solid rgba(16,185,129,0.3); font-weight: 500;
+  }
+  .opt-rec.warn { background: rgba(245,158,11,0.10); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
+  .opt-rec.skip { background: rgba(244,63,94,0.10); color: #f87171; border-color: rgba(244,63,94,0.3); }
+  .opt-rec.niche { background: rgba(139,92,246,0.10); color: #c4b5fd; border-color: rgba(139,92,246,0.3); }
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #26262b; }
+  .opt-pane { padding: 22px 24px 28px 24px; min-height: 280px; position: relative; }
+  .pane-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #71717a; margin-bottom: 14px; font-weight: 600; }
+  .panel-light { background: #f7f7f8; color: #18181b; }
+  .panel-dark  { background: #18181b; color: #f4f4f5; }
+  .panel-light .pane-label { color: #a1a1aa; }
+  .opt-notes {
+    padding: 12px 18px 14px;
+    background: #0e0e10;
+    border-top: 1px solid #26262b;
+    font-size: 12px; color: #a1a1aa; line-height: 1.55;
+  }
+  .opt-notes b { color: #d4d4d8; }
+  .opt-notes .when { color: #fbbf24; }
+  .opt-notes .avoid { color: #f87171; }
+
+  /* example table row */
+  .mp-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .mp-table th { text-align: left; font-weight: 500; padding: 4px 8px; color: #71717a; border-bottom: 1px solid; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .mp-table td { padding: 6px 8px; border-bottom: 1px solid; }
+  .panel-light .mp-table th, .panel-light .mp-table td { border-color: #e4e4e7; }
+  .panel-dark  .mp-table th, .panel-dark  .mp-table td { border-color: #2f2f37; }
+  .input-light { background: #fff; border: 1px solid #d4d4d8; border-radius: 4px; padding: 3px 7px; font-size: 12px; color: #18181b; width: 100%; }
+  .input-dark  { background: #27272d; border: 1px solid #3f3f46; border-radius: 4px; padding: 3px 7px; font-size: 12px; color: #f4f4f5; width: 100%; }
+  .trash-light { color: #ef4444; cursor: pointer; padding: 4px; border-radius: 4px; }
+  .trash-light:hover { background: #fee2e2; }
+  .trash-dark  { color: #f87171; cursor: pointer; padding: 4px; border-radius: 4px; }
+  .trash-dark:hover  { background: rgba(244,63,94,0.15); }
+
+  /* dim layer for modal overlays */
+  .modal-dim-light { position: absolute; inset: 0; background: rgba(15,23,42,0.45); display: grid; place-items: center; backdrop-filter: blur(2px); }
+  .modal-dim-dark  { position: absolute; inset: 0; background: rgba(0,0,0,0.6); display: grid; place-items: center; backdrop-filter: blur(2px); }
+</style>
+</head>
+<body class="min-h-screen p-8">
+  <!-- HEADER -->
+  <div class="max-w-[1500px] mx-auto mb-10">
+    <h1 class="text-3xl font-semibold tracking-tight">Delete confirmation — 6 SaaS patterns</h1>
+    <p class="text-zinc-400 mt-2 text-sm leading-relaxed max-w-3xl">
+      Currently every destructive action on SiteOps fires
+      <span class="mono px-1.5 py-0.5 rounded bg-zinc-800/80 text-rose-300 text-xs">window.confirm()</span> —
+      the native browser dialog that breaks the v4 design system, blocks the main thread, and
+      offers no Undo. <b>15 files</b> in the frontend rely on it (Vendors, DelayList,
+      PhotoTray, Tasks, ProjectAccess, etc.). Replacing it with one of these patterns
+      standardises the whole app. Each option below shows the SaaS app it's borrowed from in
+      light + dark theme, with the recommendation badge at the top right.
+    </p>
+  </div>
+
+  <!-- =================================================================
+       OPTION A — Toast with Undo (Gmail / Slack / Linear)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option A</span>
+      <span class="opt-title">Optimistic delete + toast with Undo — Gmail / Slack / Linear</span>
+      <span class="opt-rec">Recommended for low-stakes (manpower rows, tray photos, drafts)</span>
+    </div>
+    <div class="opt-grid">
+      <!-- light -->
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · row vanished, toast at bottom</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th><th>Hrs/person</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GKM</td><td>DEMO</td><td>5</td><td>8</td><td><span class="trash-light">🗑</span></td></tr>
+          </tbody>
+        </table>
+        <!-- toast bottom-right -->
+        <div class="absolute bottom-4 right-4 flex items-center gap-3 px-3.5 py-2.5 rounded-lg bg-zinc-900 text-zinc-100 text-xs shadow-xl">
+          <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+          <span>Manpower row deleted</span>
+          <button class="font-semibold text-emerald-300 hover:text-emerald-200 underline underline-offset-2">Undo</button>
+          <button class="text-zinc-500 hover:text-zinc-300 ml-1">×</button>
+        </div>
+      </div>
+      <!-- dark -->
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · row vanished, toast at bottom</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th><th>Hrs/person</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GKM</td><td>DEMO</td><td>5</td><td>8</td><td><span class="trash-dark">🗑</span></td></tr>
+          </tbody>
+        </table>
+        <div class="absolute bottom-4 right-4 flex items-center gap-3 px-3.5 py-2.5 rounded-lg bg-zinc-800 text-zinc-100 text-xs shadow-xl border border-zinc-700">
+          <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+          <span>Manpower row deleted</span>
+          <button class="font-semibold text-emerald-400 hover:text-emerald-300 underline underline-offset-2">Undo</button>
+          <button class="text-zinc-500 hover:text-zinc-300 ml-1">×</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> zero clicks to delete (click → done). The Undo button lives in
+      the toast for ~6 seconds. This is the dominant pattern in modern productivity SaaS
+      because it's faster than a confirm dialog AND safer — if you misclick you have a
+      generous window to back out. Backend pattern: <i>soft-delete with TTL</i> — mark
+      <span class="mono text-emerald-400 text-xs">deleted_at = now()</span> on click, run a
+      hard-delete cleanup job after 24h. Undo just clears <span class="mono text-emerald-400 text-xs">deleted_at</span>.
+      <br><br>
+      <b class="when">Use for:</b> manpower rows, photo tray entries, draft DRs, tasks,
+      RFI drafts, anything where re-creating from scratch would take &lt;30 sec.
+      <b class="avoid">Avoid for:</b> account deletion, project deletion, anything that
+      cascades to many child records.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION B — Inline row-replace confirm (Linear / Notion)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option B</span>
+      <span class="opt-title">Inline row-replace confirm — Linear / Notion / Asana</span>
+      <span class="opt-rec">Recommended for medium-stakes (records, vendors, members)</span>
+    </div>
+    <div class="opt-grid">
+      <!-- light -->
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · row swaps to confirmation in-place</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th><th>Hrs/person</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td colspan="5" class="!p-2 !border-b-0">
+                <div class="flex items-center justify-between bg-rose-50 border border-rose-300 rounded p-2">
+                  <span class="text-xs text-rose-900">Delete <b>GKM · DEMO · 5×8</b>?</span>
+                  <div class="flex items-center gap-2">
+                    <button class="h-7 px-3 rounded bg-rose-600 text-white text-xs hover:bg-rose-700">Delete</button>
+                    <button class="h-7 px-3 rounded border border-zinc-300 bg-white text-zinc-700 text-xs hover:bg-zinc-50">Cancel</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr><td>—</td><td>ELEC</td><td>2</td><td>8</td><td><span class="trash-light">🗑</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- dark -->
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · row swaps to confirmation in-place</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th><th>Hrs/person</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td colspan="5" class="!p-2 !border-b-0">
+                <div class="flex items-center justify-between bg-rose-950/40 border border-rose-800 rounded p-2">
+                  <span class="text-xs text-rose-200">Delete <b>GKM · DEMO · 5×8</b>?</span>
+                  <div class="flex items-center gap-2">
+                    <button class="h-7 px-3 rounded bg-rose-600 text-white text-xs hover:bg-rose-700">Delete</button>
+                    <button class="h-7 px-3 rounded border border-zinc-700 bg-zinc-800 text-zinc-300 text-xs hover:bg-zinc-700">Cancel</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr><td>—</td><td>ELEC</td><td>2</td><td>8</td><td><span class="trash-dark">🗑</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> the confirmation appears exactly where the user clicked, with
+      the row context still visible. No modal jumps into the center of the screen. Fast
+      keyboard flow: <span class="mono text-zinc-300 text-xs">Enter</span> = delete,
+      <span class="mono text-zinc-300 text-xs">Esc</span> = cancel. Lower cognitive load
+      than a modal because the user's mouse is already in the right place.
+      <br><br>
+      <b class="when">Use for:</b> table-row deletes that are slightly riskier than tray
+      photos — vendor rows, project members, locked manpower rows, RFI rows.
+      <b class="avoid">Avoid for:</b> any action that affects more than the visible row
+      (e.g. delete-with-cascade).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION C — Compact modal (Stripe / GitHub default)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option C</span>
+      <span class="opt-title">Compact destructive modal — Stripe / GitHub / Vercel</span>
+      <span class="opt-rec warn">Use only for high-stakes single records</span>
+    </div>
+    <div class="opt-grid">
+      <!-- light -->
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · centered modal, dim page</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GKM</td><td>DEMO</td><td>5</td></tr>
+            <tr><td>—</td><td>ELEC</td><td>2</td></tr>
+          </tbody>
+        </table>
+
+        <div class="modal-dim-light">
+          <div class="bg-white border border-zinc-200 rounded-lg shadow-2xl w-80 p-5">
+            <div class="flex items-start gap-3">
+              <div class="h-9 w-9 rounded-full bg-rose-100 grid place-items-center shrink-0">
+                <svg class="h-4 w-4 text-rose-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+              </div>
+              <div class="flex-1">
+                <div class="font-semibold text-sm text-zinc-900 mb-1">Delete manpower row?</div>
+                <div class="text-xs text-zinc-600 leading-relaxed">
+                  <b>GKM · DEMO · 5 × 8h</b> will be removed from today's daily report. You
+                  can't undo this once the report is submitted.
+                </div>
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-4">
+              <button class="h-8 px-3 rounded border border-zinc-300 bg-white text-zinc-700 text-xs hover:bg-zinc-50">Cancel</button>
+              <button class="h-8 px-3 rounded bg-rose-600 text-white text-xs font-medium hover:bg-rose-700">Delete row</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- dark -->
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · centered modal, dim page</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GKM</td><td>DEMO</td><td>5</td></tr>
+            <tr><td>—</td><td>ELEC</td><td>2</td></tr>
+          </tbody>
+        </table>
+
+        <div class="modal-dim-dark">
+          <div class="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl w-80 p-5">
+            <div class="flex items-start gap-3">
+              <div class="h-9 w-9 rounded-full bg-rose-900/40 border border-rose-800/50 grid place-items-center shrink-0">
+                <svg class="h-4 w-4 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+              </div>
+              <div class="flex-1">
+                <div class="font-semibold text-sm text-zinc-100 mb-1">Delete manpower row?</div>
+                <div class="text-xs text-zinc-400 leading-relaxed">
+                  <b>GKM · DEMO · 5 × 8h</b> will be removed from today's daily report. You
+                  can't undo this once the report is submitted.
+                </div>
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-4">
+              <button class="h-8 px-3 rounded border border-zinc-700 bg-zinc-800 text-zinc-300 text-xs hover:bg-zinc-700">Cancel</button>
+              <button class="h-8 px-3 rounded bg-rose-600 text-white text-xs font-medium hover:bg-rose-700">Delete row</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> the modal makes the action feel deliberate — page dims,
+      focus locks to the dialog, primary button is red. Includes a one-line consequence
+      explanation ("can't undo once submitted"). This is the right pattern when the user
+      genuinely needs to pause and read.
+      <br><br>
+      <b class="when">Use for:</b> RFI/Delay deletion after they're sent, project member
+      removal, vendor archival (where removing breaks downstream references).
+      <b class="avoid">Avoid for:</b> high-frequency low-stakes operations like tray
+      cleanup — friction adds up.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION D — Two-step in-place button (GitHub edit settings)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option D</span>
+      <span class="opt-title">Two-step in-place button — GitHub settings / Vercel danger zones</span>
+      <span class="opt-rec niche">Compact action menus, not table rows</span>
+    </div>
+    <div class="opt-grid">
+      <!-- light -->
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · click 1 → button transforms</div>
+        <div class="text-sm font-medium text-zinc-800 mb-3">Vendor: GKM Demolition Inc</div>
+        <div class="text-xs text-zinc-500 mb-4">Archives this vendor across all projects. Past records stay readable.</div>
+        <div class="flex items-center gap-2">
+          <button class="h-8 px-3 rounded border border-rose-300 bg-rose-50 text-rose-700 text-xs font-medium hover:bg-rose-100 inline-flex items-center gap-1.5">
+            <span>🗑</span>
+            Click again to confirm
+          </button>
+          <span class="text-[10px] text-rose-700">Cancels in 3s</span>
+        </div>
+      </div>
+      <!-- dark -->
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · click 1 → button transforms</div>
+        <div class="text-sm font-medium text-zinc-100 mb-3">Vendor: GKM Demolition Inc</div>
+        <div class="text-xs text-zinc-400 mb-4">Archives this vendor across all projects. Past records stay readable.</div>
+        <div class="flex items-center gap-2">
+          <button class="h-8 px-3 rounded border border-rose-800/60 bg-rose-900/30 text-rose-300 text-xs font-medium hover:bg-rose-900/50 inline-flex items-center gap-1.5">
+            <span>🗑</span>
+            Click again to confirm
+          </button>
+          <span class="text-[10px] text-rose-400">Cancels in 3s</span>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> single-click is cheap, second click is intentional. Auto-resets
+      after 3s if the user doesn't follow through. No dim, no modal, no row swap — just the
+      button's own state changes. Heavy on text → "Click again to confirm" is unambiguous.
+      <br><br>
+      <b class="when">Use for:</b> standalone destructive buttons in detail pages or
+      settings panels (vendor detail page, project settings, account settings).
+      <b class="avoid">Avoid for:</b> table-row trash icons — the icon is too small to
+      house the "click again" affordance clearly.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION E — Popover tooltip confirmation (Notion / Figma)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option E</span>
+      <span class="opt-title">Small popover next to the trash icon — Notion / Figma</span>
+      <span class="opt-rec warn">Strong B alternative for table rows</span>
+    </div>
+    <div class="opt-grid">
+      <!-- light -->
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · popover anchored to trash icon</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th><th>Hrs/person</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GKM</td><td>DEMO</td><td>5</td><td>8</td>
+              <td class="relative">
+                <span class="trash-light bg-rose-100">🗑</span>
+                <!-- popover -->
+                <div class="absolute right-2 top-full mt-1 w-52 bg-white border border-zinc-200 rounded-lg shadow-lg p-3 z-10">
+                  <div class="text-xs text-zinc-700 mb-2">Delete this manpower row?</div>
+                  <div class="flex justify-end gap-1.5">
+                    <button class="h-6 px-2 rounded border border-zinc-300 bg-white text-zinc-700 text-[11px] hover:bg-zinc-50">Cancel</button>
+                    <button class="h-6 px-2 rounded bg-rose-600 text-white text-[11px] font-medium hover:bg-rose-700">Delete</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr><td>—</td><td>ELEC</td><td>2</td><td>8</td><td><span class="trash-light">🗑</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- dark -->
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · popover anchored to trash icon</div>
+        <table class="mp-table">
+          <thead>
+            <tr><th>Company</th><th>Trade</th><th>Headcount</th><th>Hrs/person</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>GKM</td><td>DEMO</td><td>5</td><td>8</td>
+              <td class="relative">
+                <span class="trash-dark bg-rose-900/30">🗑</span>
+                <div class="absolute right-2 top-full mt-1 w-52 bg-zinc-900 border border-zinc-700 rounded-lg shadow-lg p-3 z-10">
+                  <div class="text-xs text-zinc-300 mb-2">Delete this manpower row?</div>
+                  <div class="flex justify-end gap-1.5">
+                    <button class="h-6 px-2 rounded border border-zinc-700 bg-zinc-800 text-zinc-300 text-[11px] hover:bg-zinc-700">Cancel</button>
+                    <button class="h-6 px-2 rounded bg-rose-600 text-white text-[11px] font-medium hover:bg-rose-700">Delete</button>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            <tr><td>—</td><td>ELEC</td><td>2</td><td>8</td><td><span class="trash-dark">🗑</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> contextual — popover anchors to the exact icon clicked. No
+      layout reflow (vs Option B which swaps the row). Other rows stay interactive. Quick
+      keyboard: <span class="mono text-zinc-300 text-xs">Enter</span> confirms.
+      <br><br>
+      <b class="when">Use as alternative to B</b> when the table has frequent row deletes
+      and you don't want the layout to reflow on each click.
+      <b class="avoid">Avoid when:</b> the page has lots of overlapping floating elements
+      (DR detail, with the floating Copilot FAB nearby — popovers can collide).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION F — Type-to-confirm modal (GitHub repo / AWS console)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option F</span>
+      <span class="opt-title">Type-to-confirm modal — GitHub repo delete / AWS console</span>
+      <span class="opt-rec niche">Only for irreversible cascade deletes</span>
+    </div>
+    <div class="opt-grid">
+      <!-- light -->
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · type project name to enable Delete</div>
+        <div class="modal-dim-light">
+          <div class="bg-white border border-zinc-200 rounded-lg shadow-2xl w-96 p-5">
+            <div class="font-semibold text-sm text-zinc-900 mb-1">Delete project "MSU"?</div>
+            <div class="text-xs text-zinc-600 mb-3 leading-relaxed">
+              This will permanently remove <b>247 daily reports</b>,
+              <b>3 RFIs</b>, <b>12 delays</b>, <b>89 photos</b>, and all linked records.
+              <span class="text-rose-700 font-medium">This cannot be undone.</span>
+            </div>
+            <label class="text-xs text-zinc-500 block mb-1">
+              Type <span class="mono text-rose-700 px-1 py-0.5 bg-rose-50 rounded">MSU</span> to confirm
+            </label>
+            <input type="text" placeholder="MSU" class="input-light mb-3" />
+            <div class="flex justify-end gap-2">
+              <button class="h-8 px-3 rounded border border-zinc-300 bg-white text-zinc-700 text-xs hover:bg-zinc-50">Cancel</button>
+              <button disabled class="h-8 px-3 rounded bg-rose-300 text-white text-xs font-medium cursor-not-allowed">Delete project</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- dark -->
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · type project name to enable Delete</div>
+        <div class="modal-dim-dark">
+          <div class="bg-zinc-900 border border-zinc-700 rounded-lg shadow-2xl w-96 p-5">
+            <div class="font-semibold text-sm text-zinc-100 mb-1">Delete project "MSU"?</div>
+            <div class="text-xs text-zinc-400 mb-3 leading-relaxed">
+              This will permanently remove <b>247 daily reports</b>,
+              <b>3 RFIs</b>, <b>12 delays</b>, <b>89 photos</b>, and all linked records.
+              <span class="text-rose-400 font-medium">This cannot be undone.</span>
+            </div>
+            <label class="text-xs text-zinc-500 block mb-1">
+              Type <span class="mono text-rose-300 px-1 py-0.5 bg-rose-900/30 rounded">MSU</span> to confirm
+            </label>
+            <input type="text" placeholder="MSU" class="input-dark mb-3" />
+            <div class="flex justify-end gap-2">
+              <button class="h-8 px-3 rounded border border-zinc-700 bg-zinc-800 text-zinc-300 text-xs hover:bg-zinc-700">Cancel</button>
+              <button disabled class="h-8 px-3 rounded bg-rose-900/40 text-rose-300/50 text-xs font-medium cursor-not-allowed border border-rose-800/40">Delete project</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> Delete button stays disabled until the user types the exact
+      name. This is the strongest safety guarantee — accidental Enter-press can't trigger
+      destruction. SiteOps already does something like this for "Close account" (typing
+      <span class="mono text-emerald-400 text-xs">DELETE</span>).
+      <br><br>
+      <b class="when">Use for:</b> entire-project delete, tenant/account close, hard-delete
+      of submitted DRs (admin only). Anything irreversible with downstream cascade.
+      <b class="avoid">Avoid for:</b> 95% of confirmations — adds enormous friction.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       CURRENT — native window.confirm() for comparison
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Current</span>
+      <span class="opt-title">Native browser window.confirm() — what's there today (15 files)</span>
+      <span class="opt-rec skip">Replace everywhere</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · OS-styled, not our design</div>
+        <div class="modal-dim-light">
+          <div class="bg-white border-2 border-zinc-400 rounded shadow-xl w-96 p-4">
+            <div class="text-xs text-zinc-500 mb-2">field-ops-hub-21.preview.emergentagent.com says</div>
+            <div class="text-sm text-zinc-900 mb-4">Remove this presence row?</div>
+            <div class="flex justify-end gap-2">
+              <button class="h-8 px-4 rounded bg-zinc-800 text-white text-sm font-medium">OK</button>
+              <button class="h-8 px-4 rounded border border-zinc-300 bg-white text-zinc-700 text-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · still light because OS owns the chrome</div>
+        <div class="modal-dim-dark">
+          <div class="bg-white border-2 border-zinc-400 rounded shadow-xl w-96 p-4">
+            <div class="text-xs text-zinc-500 mb-2">field-ops-hub-21.preview.emergentagent.com says</div>
+            <div class="text-sm text-zinc-900 mb-4">Remove this presence row?</div>
+            <div class="flex justify-end gap-2">
+              <button class="h-8 px-4 rounded bg-zinc-800 text-white text-sm font-medium">OK</button>
+              <button class="h-8 px-4 rounded border border-zinc-300 bg-white text-zinc-700 text-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this fails:</b> doesn't respect light/dark theme, has the browser's own
+      header ("field-ops-hub-21.preview.emergentagent.com says") which looks like a
+      phishing-ish notification, blocks the main thread, can't be styled, and offers no
+      Undo. Power users learn to hit Enter blindly which defeats the safety purpose.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       RECOMMENDATION SUMMARY
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mt-12 mb-12 p-6 rounded-2xl border border-emerald-700/40 bg-emerald-900/10">
+    <h2 class="text-lg font-semibold text-emerald-300 mb-3">Recommendation: tiered by reversibility, not "always one pattern"</h2>
+    <p class="text-sm text-zinc-300 leading-relaxed mb-4">
+      One pattern doesn't fit every destructive action. The right system uses 2-3 patterns
+      keyed on <b class="text-zinc-100">how reversible</b> the action is. Below is the
+      proposed mapping for the 15 files currently using
+      <span class="mono text-rose-300 text-xs">window.confirm()</span>.
+    </p>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+      <div class="p-3 rounded border border-emerald-700/50 bg-emerald-900/15">
+        <div class="font-semibold text-emerald-300 mb-1 text-sm">Tier 1 — Cheap (Option A: Toast + Undo)</div>
+        <div class="text-zinc-300 leading-relaxed mb-2">Optimistic delete + 6s undo toast. No friction.</div>
+        <div class="text-zinc-400 font-mono leading-relaxed text-[11px]">
+          • Manpower row delete<br>
+          • Photo tray cleanup<br>
+          • Draft DR delete<br>
+          • Task delete (draft)<br>
+          • Voice intake purge<br>
+          • Copilot conversation clear
+        </div>
+      </div>
+      <div class="p-3 rounded border border-amber-700/50 bg-amber-900/15">
+        <div class="font-semibold text-amber-300 mb-1 text-sm">Tier 2 — Medium (Option B: Inline confirm)</div>
+        <div class="text-zinc-300 leading-relaxed mb-2">Row swaps in-place. One click + one confirm.</div>
+        <div class="text-zinc-400 font-mono leading-relaxed text-[11px]">
+          • Vendor delete<br>
+          • Project member remove<br>
+          • RFI delete (open)<br>
+          • Delay delete (open)<br>
+          • Edit request reject<br>
+          • Schedule diff dismiss<br>
+          • TIA generation delete
+        </div>
+      </div>
+      <div class="p-3 rounded border border-rose-700/50 bg-rose-900/15">
+        <div class="font-semibold text-rose-300 mb-1 text-sm">Tier 3 — Heavy (Option F: Type-to-confirm)</div>
+        <div class="text-zinc-300 leading-relaxed mb-2">Type the resource name. No accidental click.</div>
+        <div class="text-zinc-400 font-mono leading-relaxed text-[11px]">
+          • Project delete (cascade)<br>
+          • Tenant close (already does this)<br>
+          • Hard-delete submitted DR<br>
+          • Bulk delete (10+ rows at once)
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-5 p-3 rounded border border-zinc-700 bg-zinc-900/40 text-xs text-zinc-300 leading-relaxed">
+      <b class="text-zinc-100">Implementation note:</b> build ONE reusable
+      <span class="mono text-emerald-400 text-[11px]">&lt;DeleteConfirm /&gt;</span>
+      component that switches mode by prop:
+      <span class="mono text-emerald-400 text-[11px]">{`<DeleteConfirm mode="toast" | "inline" | "type">`}</span>.
+      Pair with a global toast/undo provider (we already have <span class="mono text-zinc-400 text-[11px]">sonner</span>
+      installed). The 15 current call sites become ~6 lines each. Backend pattern: add
+      <span class="mono text-zinc-300 text-[11px]">deleted_at</span> to soft-delete-able
+      collections (start with the Tier 1 set) + a nightly cleanup cron.
+    </div>
+  </div>
+
+</body>
+</html>

@@ -30,9 +30,8 @@ export default function TIAGenerationsList() {
   return (
     /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
     <div data-testid="tia-history">
-      <Link to="/tia" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
-        <ChevronLeft className="h-3 w-3" /> Back to generator
-      </Link>
+      {/* pt.37: Option E back-button pill. */}
+      <div className="mb-3"><BackButton to="/tia" label="Generator" /></div>
       <header className="mb-4 flex items-center gap-2">
         <History className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">TIA generation history</h1>

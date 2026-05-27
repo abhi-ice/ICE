@@ -9,6 +9,8 @@ import { ChevronLeft, Upload, Trash2, FileSpreadsheet } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { getUser } from "../lib/auth";
+import { confirmAction } from "../lib/confirmAction";
+import BackButton from "../components/BackButton";
 
 const ADMIN_OR_PM = new Set(["admin", "pm"]);
 
@@ -71,7 +73,14 @@ export default function DrTemplate() {
       toast.error("Only project admins or PMs can remove the template.");
       return;
     }
-    if (!window.confirm("Remove the saved client DR template? Client-format exports will be disabled until a new one is uploaded.")) return;
+    // pt.37: themed modal (was window.confirm).
+    const ok = await confirmAction({
+      title: "Remove the saved client DR template?",
+      message: "Client-format exports will be disabled until a new one is uploaded.",
+      confirmText: "Remove template",
+      icon: "trash",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await api.delete(`/projects/${projectId}/dr-template`);
@@ -93,11 +102,8 @@ export default function DrTemplate() {
     /* pt.36: dropped p-6 -- AppLayout main already pads p-6. Kept
        space-y-4 + max-w-3xl since those control inner layout. */
     <div data-testid="dr-template-page" className="space-y-4 max-w-3xl">
-      <Link to="/daily-reports"
-        className="text-sm text-blue-600 hover:underline inline-flex items-center gap-1"
-        data-testid="dr-template-back">
-        <ChevronLeft className="h-4 w-4" /> Back to Daily Reports
-      </Link>
+      {/* pt.37: Option E back-button pill. */}
+      <BackButton to="/daily-reports" label="Daily Reports" testid="dr-template-back" />
 
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Client DR Template</h1>

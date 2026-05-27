@@ -16,6 +16,7 @@ import { toast } from "../components/ui/sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import api from "../lib/api";
+import { confirmAction } from "../lib/confirmAction";
 
 const BLANK = {
   name: "", trades: [], contact_name: "", contact_email: "",
@@ -185,7 +186,14 @@ function VendorTable({ kind }) {
   };
 
   const remove = async (v) => {
-    if (!window.confirm(`Delete "${v.name}"? This cannot be undone.`)) return;
+    // pt.37: themed modal via confirmAction (was window.confirm).
+    const ok = await confirmAction({
+      title: `Delete "${v.name}"?`,
+      message: "This cannot be undone.",
+      confirmText: "Delete vendor",
+      icon: "trash",
+    });
+    if (!ok) return;
     try {
       await api.delete(`${path}/${v.id}`);
       toast.success("Deleted.");
@@ -239,7 +247,10 @@ function VendorTable({ kind }) {
         </div>
       </div>
       <div className="surface p-0 overflow-hidden">
-        <table className="w-full text-sm">
+        {/* pt.37: header-only vertical dividers via
+            .dense-table-bordered. Vendors is 5 columns (small-table
+            tier) per the table-column-lines mockup recommendation. */}
+        <table className="w-full text-sm dense-table-bordered">
           <thead className="bg-white/[0.03] border-b border-white/[0.06]">
             <tr className="text-xs text-slate-400">
               <th className="text-left px-3 py-2 font-semibold">Name</th>

@@ -16,6 +16,7 @@ import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 // CPM Part G (2026-05-15) -- delay.date rendered MM/DD/YYYY via chokepoint.
 import { formatDateDisplay } from "../lib/dateUtil";
 import PageHelp from "../components/PageHelp";
+import { confirmAction } from "../lib/confirmAction";
 
 export default function DelayList() {
   // ALL hooks must come before any conditional return per the Rules
@@ -79,7 +80,14 @@ export default function DelayList() {
   const startEdit = (r) => { setEditing(r); setOpen(true); };
   const remove = async (r) => {
     if (deleting.has(r.id)) return;
-    if (!window.confirm(`Delete this delay? This is permanent and the audit log will record it.`)) return;
+    // pt.37: themed modal (was window.confirm).
+    const ok = await confirmAction({
+      title: "Delete this delay?",
+      message: "This is permanent and the audit log will record it.",
+      confirmText: "Delete delay",
+      icon: "trash",
+    });
+    if (!ok) return;
     setDeleting((prev) => new Set(prev).add(r.id));
     try {
       await api.delete(`/delays/${r.id}`);
@@ -140,7 +148,9 @@ export default function DelayList() {
       </div>
 
       <div className="surface overflow-hidden">
-        <table className="dense-table">
+        {/* pt.37: dense-table-bordered → header-only vertical
+            dividers, small-column table per Option C. */}
+        <table className="dense-table dense-table-bordered">
           <thead>
             <tr>
               <th>Date</th>

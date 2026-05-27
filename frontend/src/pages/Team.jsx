@@ -3,6 +3,8 @@ import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { Users, Mail, Trash2, Copy, ShieldAlert } from "lucide-react";
+import { confirmAction } from "../lib/confirmAction";
+import { deleteWithUndo } from "../lib/deleteWithUndo";
 
 // Bug #38 fix (2026-05-13): expanded to include the specialty roles
 // added by migration 015 (submittal_tech + scheduling_engineer) and
@@ -78,14 +80,28 @@ export default function Team() {
     } finally { setBusy(false); }
   };
 
-  const revoke = async (id) => {
-    if (!window.confirm("Revoke this pending invite?")) return;
-    try { await api.delete(`/team/invites/${id}`); reload(); }
-    catch (e) { toast.error(e.response?.data?.detail || "Revoke failed"); }
+  const revoke = (id) => {
+    // pt.37: Tier-1 toast + Undo (was window.confirm). Cheap — the
+    // user can re-send the invite from the same form in seconds.
+    deleteWithUndo({
+      label: "Pending invite revoked",
+      onCommit: async () => {
+        try { await api.delete(`/team/invites/${id}`); reload(); }
+        catch (e) { toast.error(e.response?.data?.detail || "Revoke failed"); }
+      },
+    });
   };
 
   const remove = async (id) => {
-    if (!window.confirm("Remove this member from your organization?")) return;
+    // pt.37: themed modal (was window.confirm). Higher stakes than
+    // revoking an invite — removing an active member is something
+    // we want the admin to pause and confirm.
+    const ok = await confirmAction({
+      title: "Remove this member from your organization?",
+      message: "They will lose access immediately. Their historical records (DRs, RFIs, audit rows) stay intact and attributed to them.",
+      confirmText: "Remove member",
+    });
+    if (!ok) return;
     try { await api.delete(`/team/members/${id}`); toast.success("Member removed"); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Remove failed"); }
   };

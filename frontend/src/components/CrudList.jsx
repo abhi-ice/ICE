@@ -8,6 +8,7 @@ import api from "../lib/api";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { toast } from "./ui/sonner";
+import { confirmAction } from "../lib/confirmAction";
 
 /**
  * Props:
@@ -219,7 +220,20 @@ export default function CrudList({
   };
   const remove = async (row) => {
     if (deletingIds.has(row.id)) return;
-    if (!window.confirm(`Delete ${title.toLowerCase().replace(/s$/, "")}?`)) return;
+    // pt.37: themed modal (was window.confirm). CrudList backs many
+    // resource pages (crews, equipment, rfis, deliveries, work-items,
+    // change-orders, etc.) — each gets the generic "Delete X?" wording
+    // driven by the page title prop.
+    const singular = title.toLowerCase().replace(/s$/, "");
+    const ok = await confirmAction({
+      title: `Delete ${singular}?`,
+      message: row.name || row.description || row.label
+        ? `"${row.name || row.description || row.label}" will be removed.`
+        : undefined,
+      confirmText: `Delete ${singular}`,
+      icon: "trash",
+    });
+    if (!ok) return;
     setDeletingIds((prev) => new Set(prev).add(row.id));
     try {
       await api.delete(deleteEndpoint(row));
@@ -252,7 +266,14 @@ export default function CrudList({
       {help && <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-2">{help}</div>}
 
       <div className="surface overflow-hidden">
-        <table className="dense-table">
+        {/* pt.37: dense-table-bordered → header-only vertical
+            dividers (Option C). CrudList backs RFIs, Deliveries,
+            Crews, Equipment, People, Certifications, Availability,
+            Specs etc. — all 4-7 column tables, the right tier for
+            this treatment. The 10+ col workhorse tables (Tasks,
+            Lookahead, Submittals, DR Activity Log, Resource
+            Leveling) don't use CrudList. */}
+        <table className="dense-table dense-table-bordered">
           <thead>
             <tr>
               {columns.map((c) => <th key={c.key}>{c.label}</th>)}

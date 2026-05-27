@@ -9,6 +9,8 @@ import {
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
+import { confirmAction } from "../lib/confirmAction";
+import { deleteWithUndo } from "../lib/deleteWithUndo";
 // CPM Part G (2026-05-15) -- weekly report period_start/end and
 // recovery action due_date rendered MM/DD/YYYY via the lib/dateUtil
 // chokepoint. Budget reset_at (toLocaleDateString) is a datetime
@@ -1716,10 +1718,15 @@ function ReportsGeneratorTab() {
   };
 
   const finalize = async (report) => {
-    if (!window.confirm(
-      `Finalize "${report.audit_op_label || report.id.slice(0, 8)}"? `
-      + "This locks the report and writes it to the audit chain.",
-    )) return;
+    // pt.37: themed modal (was window.confirm). Finalize locks the
+    // report — irreversible audit-chain write, so explicit confirm.
+    const ok = await confirmAction({
+      title: `Finalize "${report.audit_op_label || report.id.slice(0, 8)}"?`,
+      message: "This locks the report and writes it to the audit chain. Cannot be edited after.",
+      confirmText: "Finalize report",
+      danger: false,
+    });
+    if (!ok) return;
     try {
       await api.post(`/recovery-reports/${report.id}/finalize`);
       toast.success("Finalized");
@@ -1734,15 +1741,20 @@ function ReportsGeneratorTab() {
     }
   };
 
-  const archive = async (report) => {
-    if (!window.confirm("Archive this report?")) return;
-    try {
-      await api.post(`/recovery-reports/${report.id}/archive`);
-      toast.success("Archived");
-      load();
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Archive failed");
-    }
+  const archive = (report) => {
+    // pt.37: Tier-1 toast + Undo (was window.confirm). Archive is
+    // soft (recoverable), low-stakes — instant-feel UX.
+    deleteWithUndo({
+      label: "Report archived",
+      onCommit: async () => {
+        try {
+          await api.post(`/recovery-reports/${report.id}/archive`);
+          load();
+        } catch (e) {
+          toast.error(e.response?.data?.detail || "Archive failed");
+        }
+      },
+    });
   };
 
   // First-run guidance.

@@ -18,6 +18,9 @@ import { AiHelpPanel } from "./SystemPages";
 // via the chokepoint. The badge already truncated datetime to date
 // via .slice(0,10); formatDateDisplay does the same plus format.
 import { formatDateDisplay } from "../lib/dateUtil";
+import { confirmAction } from "../lib/confirmAction";
+import { deleteWithUndo } from "../lib/deleteWithUndo";
+import PageHelp from "../components/PageHelp";
 
 // Bucket F Phase 3 -- first-run tooltip dismissable per user via
 // localStorage. Shown the first time a user opens the tray modal
@@ -94,12 +97,18 @@ export default function PhotoTray() {
     }
   };
 
-  const archive = async (id) => {
-    if (!window.confirm("Archive this tray entry? It will hide from the default view.")) return;
-    try {
-      await api.post(`/photo-tray/${id}/archive`);
-      load();
-    } catch (e) { toast.error(e.response?.data?.detail || "Archive failed"); }
+  const archive = (id) => {
+    // pt.37: Tier-1 toast + Undo (was window.confirm). Archive is a
+    // soft action — it just hides from the default view, so cheap.
+    deleteWithUndo({
+      label: "Tray entry archived",
+      onCommit: async () => {
+        try {
+          await api.post(`/photo-tray/${id}/archive`);
+          load();
+        } catch (e) { toast.error(e.response?.data?.detail || "Archive failed"); }
+      },
+    });
   };
 
   // pt.31: delete from tray. Hard-delete is intentional here because tray
@@ -110,7 +119,17 @@ export default function PhotoTray() {
   // rewrite). Backend endpoint will need to error if the photo is
   // already tagged → in that case the user must delete from DR/Photos.
   const remove = async (id) => {
-    if (!window.confirm("Delete this photo? This cannot be undone. (If it's already tagged to a daily report, delete it from the DR instead so the audit chain stays intact.)")) return;
+    // pt.37: themed modal (was window.confirm). NOT toast+undo here
+    // because hard-delete from the tray is irreversible (it removes
+    // the underlying blob, not just a flag) — user needs the explicit
+    // confirm step.
+    const ok = await confirmAction({
+      title: "Delete this photo?",
+      message: "This cannot be undone. If it's already tagged to a daily report, delete it from the DR instead so the audit chain stays intact.",
+      confirmText: "Delete photo",
+      icon: "trash",
+    });
+    if (!ok) return;
     try {
       await api.delete(`/photo-tray/${id}`);
       load();
@@ -136,11 +155,29 @@ export default function PhotoTray() {
     /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
     <div data-testid="photo-tray-page">
       <header className="mb-4 flex items-center justify-between">
+        {/* pt.37: PageHelp houses the audit-chain + supplement rules
+            (long-form) -- the inline "Untagged + partially-tagged
+            staging. Tag photos to events from here." stays as the
+            short A-style subtitle. */}
         <div className="flex items-center gap-2">
           <Camera className="h-5 w-5 text-slate-700" />
-          <h1 className="text-xl font-semibold text-slate-800">Photo tray</h1>
+          <h1 className="text-xl font-semibold text-slate-800 inline-flex items-baseline">
+            Photo tray
+            <PageHelp title="Photo tray rules">
+              Tray entries are <b>untagged or partially-tagged photos</b> — staging before
+              they belong to a daily report. Tag a photo to an event from here to commit
+              it to that DR.
+              <br/><br/>
+              <b>Once tagged</b>, the photo leaves the tray automatically (planned in the
+              photo-lifecycle rewrite). To delete a tagged photo, go to the DR or Photos
+              page — the audit chain captures the reason.
+              <br/><br/>
+              <b>Archive</b> hides a tray entry from the default view without deleting
+              the underlying blob.
+            </PageHelp>
+          </h1>
           <span className="text-xs text-slate-400 ml-2">
-            Untagged + partially-tagged staging. Tag photos to events from here.
+            Untagged + partially-tagged staging. Tag to events from here.
           </span>
         </div>
         <div className="flex items-center gap-2">

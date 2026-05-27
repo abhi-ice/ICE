@@ -9,6 +9,7 @@ import { useProjects } from "../../lib/projects";
 import { subscribeDailyReportId, emitDescriptionInsert } from "../../lib/copilotContext";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
+import { deleteWithUndo } from "../../lib/deleteWithUndo";
 
 // v4 pt.26 (2026-05-26) — Mason robustness pass:
 //   1) Conversation memory: thread persisted to localStorage AND last 8
@@ -330,9 +331,23 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
 
   const clearConversation = () => {
     if (thread.length <= 1) return;
-    if (!window.confirm("Clear this conversation with Mason? Cannot be undone.")) return;
-    setThread([{ role: "ai", text: GREETING }]);
-    try { window.localStorage.removeItem(`mason.thread.${sessionId}`); } catch {}
+    // pt.37: Tier-1 toast + Undo (was window.confirm). Conversation
+    // is local-only state — instant clear with 5s undo window beats
+    // a confirmation modal here. Snapshot the thread so Undo restores
+    // it exactly; reset to greeting on commit.
+    const snapshot = thread;
+    deleteWithUndo({
+      label: "Conversation cleared",
+      onOptimisticHide: () => {
+        setThread([{ role: "ai", text: GREETING }]);
+      },
+      onCommit: async () => {
+        try { window.localStorage.removeItem(`mason.thread.${sessionId}`); } catch {}
+      },
+      onRestore: () => {
+        setThread(snapshot);
+      },
+    });
   };
 
   if (!open) return null;

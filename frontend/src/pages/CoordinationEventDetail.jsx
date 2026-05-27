@@ -12,6 +12,8 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ChevronLeft, Pencil, Trash2, Lock } from "lucide-react";
 import api from "../lib/api";
+import { confirmAction } from "../lib/confirmAction";
+import BackButton from "../components/BackButton";
 import { Button } from "../components/ui/button";
 // CPM Part G (2026-05-15) -- last_edited_at displayed MM/DD/YYYY.
 import { formatDateDisplay } from "../lib/dateUtil";
@@ -65,7 +67,14 @@ export default function CoordinationEventDetail() {
   if (!ev) return <div className="p-4 text-sm text-slate-500">Loading…</div>;
 
   const remove = async () => {
-    if (!window.confirm("Delete this coordination event? This is a soft-delete; the audit trail keeps the record.")) return;
+    // pt.37: themed modal (was window.confirm).
+    const ok = await confirmAction({
+      title: "Delete coordination event?",
+      message: "This is a soft-delete — the audit trail keeps the record.",
+      confirmText: "Delete event",
+      icon: "trash",
+    });
+    if (!ok) return;
     try {
       await api.delete(`/coordination-events/${id}`);
       toast.success("Coordination event deleted");
@@ -90,11 +99,8 @@ export default function CoordinationEventDetail() {
 
   return (
     <div data-testid="coordination-event-detail-page" className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Link to="/coordination" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
-          <ChevronLeft className="h-4 w-4" /> Back to coordination log
-        </Link>
-      </div>
+      {/* pt.37: Option E back-button pill. */}
+      <BackButton to="/coordination" label="Coordination log" />
 
       <div className="surface p-4">
         <div className="flex items-start gap-3">

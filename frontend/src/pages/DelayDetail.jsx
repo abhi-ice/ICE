@@ -9,6 +9,8 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, Sparkles, FileDown, Pencil, RefreshCw, Lightbulb, ChevronDown, ChevronUp, CheckCircle2, RotateCcw } from "lucide-react";
 import api from "../lib/api";
+import { confirmAction } from "../lib/confirmAction";
+import BackButton from "../components/BackButton";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
@@ -80,11 +82,8 @@ export default function DelayDetail() {
 
   return (
     <div data-testid="delay-detail-page" className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Link to="/delays" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
-          <ChevronLeft className="h-4 w-4" /> Back to delays
-        </Link>
-      </div>
+      {/* pt.37: Option E back-button pill. */}
+      <BackButton to="/delays" label="Delays" />
 
       <div className="surface p-4">
         <div className="flex flex-wrap items-start gap-3">
@@ -346,7 +345,14 @@ function ScenariosSection({ delayId, delayStatus }) {
   };
 
   const unchoose = async (m) => {
-    if (!window.confirm("Revert the chosen scenario? The delay's per-task impacts and the projected finish dates will go back to what they were before you chose.")) return;
+    // pt.37: themed modal (was window.confirm).
+    const ok = await confirmAction({
+      title: "Revert the chosen scenario?",
+      message: "The delay's per-task impacts and the projected finish dates will go back to what they were before you chose.",
+      confirmText: "Revert scenario",
+      danger: false,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await api.post(`/mitigations/${m.id}/unchoose`);
