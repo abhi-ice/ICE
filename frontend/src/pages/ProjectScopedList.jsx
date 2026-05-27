@@ -420,17 +420,21 @@ export default function ProjectScopedList({ kind }) {
         <AiFlaggedSafetyPhotosBanner projectId={activeId} />
       )}
       {cfg.galleryEventKind && (
-        <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900">
-          <strong>Gallery view.</strong> {cfg.title} live on their parent daily report; this page
-          aggregates across all DRs in the project. Click a date or affected-activity chip to
-          jump to the parent DR.
-          <div className="mt-2 flex items-center gap-2">
+        /* pt.36: gallery-view amber brick collapsed -- the "this page
+           aggregates across all DRs" description is now redundant once
+           we trust the page title + the muted subtitle to communicate
+           the view. Filter row stays but renders as a neutral slate
+           strip so it doesn't read as a warning. CrudList parent
+           wraps long-form help via its own title; this row is just
+           the filter affordance. */
+        <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">
+          <div className="flex items-center gap-2">
             <label className="uppercase tracking-wide text-xs">Filter by activity id</label>
             <input data-testid={`${kind}-affected-activity-filter`}
               value={affectedActivityId}
               onChange={(e) => setAffectedActivityId(e.target.value)}
               placeholder="paste a daily_report_activity.id"
-              className="h-7 px-2 rounded border border-amber-300 bg-white text-xs flex-1" />
+              className="h-7 px-2 rounded border border-slate-300 bg-white text-xs flex-1" />
             {affectedActivityId && (
               <button onClick={() => setAffectedActivityId("")}
                 className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">

@@ -130,10 +130,11 @@ export default function PhotoTray() {
   );
   const [helpOpen, setHelpOpen] = useState(false);
 
-  if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see the photo tray.</div>;
+  if (!activeId) return <div className="text-sm text-slate-500">Pick a project to see the photo tray.</div>;
 
   return (
-    <div className="p-6" data-testid="photo-tray-page">
+    /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
+    <div data-testid="photo-tray-page">
       <header className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Camera className="h-5 w-5 text-slate-700" />

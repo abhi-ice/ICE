@@ -38,11 +38,12 @@ export default function ScheduleDiffs() {
   }, [activeId]);
 
   if (!activeId) {
-    return <div className="p-6 text-sm text-slate-500">Pick a project to see schedule diffs.</div>;
+    return <div className="text-sm text-slate-500">Pick a project to see schedule diffs.</div>;
   }
 
   return (
-    <div className="p-6" data-testid="schedule-diffs-page">
+    /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
+    <div data-testid="schedule-diffs-page">
       <header className="mb-4 flex items-center gap-2">
         <GitPullRequest className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">Schedule updates</h1>

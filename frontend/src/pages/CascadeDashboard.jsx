@@ -117,10 +117,15 @@ export default function CascadeDashboard() {
     } finally { setRefreshing(false); }
   };
 
-  if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to view cascade dashboard.</div>;
+  if (!activeId) return <div className="text-sm text-slate-500">Pick a project to view cascade dashboard.</div>;
 
   return (
-    <div className="p-6" data-testid="cascade-dashboard">
+    // pt.35 (2026-05-27): dropped the outer p-6. AppLayout's <main>
+    // already applies p-6 to every page; doubling it pushed the
+    // content ~48px off the sidebar edge on Cascade / Photos /
+    // PhotoTray / TIA pages while well-laid pages (Dashboard,
+    // Projects, Vendors) sat at the correct 24px. Now uniform.
+    <div data-testid="cascade-dashboard">
       <header className="mb-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">

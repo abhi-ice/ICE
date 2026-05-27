@@ -25,10 +25,11 @@ export default function TIAGenerationsList() {
       .finally(() => setLoading(false));
   }, [activeId]);
 
-  if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project.</div>;
+  if (!activeId) return <div className="text-sm text-slate-500">Pick a project.</div>;
 
   return (
-    <div className="p-6" data-testid="tia-history">
+    /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
+    <div data-testid="tia-history">
       <Link to="/tia" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
         <ChevronLeft className="h-3 w-3" /> Back to generator
       </Link>

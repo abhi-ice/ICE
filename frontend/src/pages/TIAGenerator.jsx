@@ -120,10 +120,11 @@ export default function TIAGenerator() {
     }
   };
 
-  if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to generate a TIA.</div>;
+  if (!activeId) return <div className="text-sm text-slate-500">Pick a project to generate a TIA.</div>;
 
   return (
-    <div className="p-6" data-testid="tia-generator">
+    /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
+    <div data-testid="tia-generator">
       <header className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <FileText className="h-5 w-5 text-slate-700" />

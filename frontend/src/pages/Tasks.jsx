@@ -484,8 +484,17 @@ export default function Tasks() {
               const cliffTint = (
                 remaining != null && remaining <= 0
               ) ? "bg-rose-100" : "";
+              // pt.35 (2026-05-27): was bg-red-50/40 -- the /40 alpha
+              // made the critical-path tint translucent, which on the
+              // sticky col-pin-1 / col-pin-2 cells caused scrolled-
+              // under date columns to bleed through the # and
+              // Description columns during horizontal scroll. Dropping
+              // the /40 modifier so the row tint is fully opaque
+              // (still visually subtle vs the cliff bg-rose-100 and
+              // slip bg-rose-50 below). Sticky behaviour now correctly
+              // masks the scrolled content.
               const rowClass = t.is_critical_path
-                ? "bg-red-50/40"
+                ? "bg-red-50"
                 : (cliffTint || slipTint);
               return (
               <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={rowClass}>

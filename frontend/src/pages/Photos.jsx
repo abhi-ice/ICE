@@ -16,6 +16,7 @@ import { getToken, getUser } from "../lib/auth";
 import GalleryActivityChips from "../components/photos/GalleryActivityChips";
 import { localTodayISO } from "../lib/dateUtil";
 import { AiHelpPanel } from "./SystemPages";
+import PageHelp from "../components/PageHelp";
 
 const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
                         "safety", "coordination", "closeout"];
@@ -102,15 +103,28 @@ export default function Photos() {
   const budgetPausedCount = (aiStats?.by_status?.budget_paused) || 0;
   const [helpOpen, setHelpOpen] = useState(false);
 
-  if (!activeId) return <div className="p-6 text-sm text-slate-500">Pick a project to see photos.</div>;
+  if (!activeId) return <div className="text-sm text-slate-500">Pick a project to see photos.</div>;
 
   return (
-    <div className="p-6" data-testid="photos-page">
+    /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
+    <div data-testid="photos-page">
       <header className="mb-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
             <Camera className="h-5 w-5 text-slate-700" />
-            <h1 className="text-xl font-semibold text-slate-800">Photos</h1>
+            <h1 className="text-xl font-semibold text-slate-800 inline-flex items-baseline">
+              Photos
+              {/* pt.36: PageHelp (?) houses the long multi-tag rule
+                  explanation that previously lived in a yellow brick
+                  below. Subtitle keeps the short A-style line. */}
+              <PageHelp title="Photos gallery">
+                Each card here is a <b>tag</b> — it connects one photo to one event on one
+                daily report. The same image may appear multiple times if it's tagged to
+                multiple events (e.g. a delay AND a safety concern).
+                <br/><br/>
+                Upload + tag new photos from the <Link to="/photo-tray" className="text-emerald-700 underline">Photo tray</Link>.
+              </PageHelp>
+            </h1>
           </div>
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
@@ -155,11 +169,10 @@ export default function Photos() {
         </div>
       )}
 
-      <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-900 mb-4">
-        <strong>Gallery view.</strong> Each card is a tag connecting a photo to one event on
-        a specific daily report. The same image may appear multiple times if tagged to
-        multiple events. Upload + tag from the <Link to="/photo-tray" className="underline">Photo tray</Link>.
-      </div>
+      {/* pt.36: yellow Gallery-view brick removed — content now lives
+          in the PageHelp (?) on the title (Option B) + the muted
+          subtitle (Option A). Stops the page from looking like a PDF
+          with a thick header band on every visit. */}
 
       {/* Bucket F Phase 3 -- AI stats card (admin / PM only). */}
       {showAiStats && (
@@ -335,69 +348,70 @@ function AiStatsCard({ stats, loading }) {
       </div>
     );
   }
+  // pt.36 (2026-05-27): shrunk from ~140px tall to ~60px. Outer
+  // padding p-3 -> px-3 py-2, header mb-2 -> mb-1.5, tile padding
+  // p-2 -> px-2 py-1.5, tile layout switched from stacked (label
+  // above / value below) to horizontal (label · value on one line)
+  // for ~50% vertical savings. Safety + failure rows now inline
+  // pills with no border-top section break, separated by a hairline.
   return (
     <div data-testid="ai-stats-card"
-      className="bg-white border border-slate-200 rounded p-3 mb-4">
-      <div className="flex items-center gap-2 mb-2">
-        <Sparkles className="h-4 w-4 text-blue-700" />
-        <div className="font-medium text-sm">AI usage · last 30 days</div>
-        <div className="ml-auto text-xs text-slate-500">
-          Window: {stats.window_days}d · {stats.uploaded_in_window} uploaded
+      className="bg-white border border-slate-200 rounded px-3 py-2 mb-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <Sparkles className="h-3.5 w-3.5 text-blue-700" />
+        <div className="font-medium text-xs">AI usage · last 30 days</div>
+        <div className="ml-auto text-[11px] text-slate-500">
+          {stats.window_days}d · {stats.uploaded_in_window} uploaded
         </div>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1.5">
         <StatTile label="Analyzed" value={stats.analyzed_in_window} />
-        <StatTile label="Avg confidence"
+        <StatTile label="Avg conf"
           value={`${Math.round((stats.avg_confidence_score || 0) * 100)}%`} />
-        <StatTile label="Override rate"
+        <StatTile label="Override"
           value={`${Math.round((stats.override_rate || 0) * 100)}%`} />
-        <StatTile label="Rejection rate"
+        <StatTile label="Rejected"
           value={`${Math.round((stats.rejection_rate || 0) * 100)}%`} />
-        <StatTile label="Tokens (out/in)"
+        <StatTile label="Tokens o/i"
           value={`${stats.output_tokens_total || 0}/${stats.input_tokens_total || 0}`} />
-        <StatTile label="Est cost"
+        <StatTile label="Cost"
           value={`$${(stats.estimated_cost_usd || 0).toFixed(2)}`} />
       </div>
       {Array.isArray(stats.top_safety_concerns) && stats.top_safety_concerns.length > 0 && (
-        <div className="mt-2 pt-2 border-t border-slate-100">
-          <div className="text-xs text-slate-500 mb-1">
-            Top safety concerns
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {stats.top_safety_concerns.map((c, i) => (
-              <span key={i} data-testid={`ai-stats-safety-${i}`}
-                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-200">
-                <AlertTriangle className="h-2.5 w-2.5" />
-                {c.concern} <span className="text-rose-700">({c.count})</span>
-              </span>
-            ))}
-          </div>
+        <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500 font-medium shrink-0">Safety</span>
+          {stats.top_safety_concerns.map((c, i) => (
+            <span key={i} data-testid={`ai-stats-safety-${i}`}
+              className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-rose-50 text-rose-900 border border-rose-200">
+              <AlertTriangle className="h-2.5 w-2.5" />
+              {c.concern} <span className="text-rose-700">({c.count})</span>
+            </span>
+          ))}
         </div>
       )}
       {Object.keys(stats.failure_reasons || {}).length > 0 && (
-        <div className="mt-2 pt-2 border-t border-slate-100">
-          <div className="text-xs text-slate-500 mb-1">
-            Failed analyses by reason
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {Object.entries(stats.failure_reasons).map(([reason, count]) => (
-              <span key={reason}
-                className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                {reason} <span className="text-slate-500">({count})</span>
-              </span>
-            ))}
-          </div>
+        <div className="mt-1.5 pt-1.5 border-t border-slate-100 flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500 font-medium shrink-0">Failed</span>
+          {Object.entries(stats.failure_reasons).map(([reason, count]) => (
+            <span key={reason}
+              className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+              {reason} <span className="text-slate-500">({count})</span>
+            </span>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
+// pt.36: horizontal label · value layout (was vertical stack). Halves
+// the tile height while still reading cleanly because the values are
+// short (mostly 1-4 chars + %).
 function StatTile({ label, value }) {
   return (
-    <div className="p-2 rounded border border-slate-200 bg-slate-50">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="text-sm font-semibold text-slate-900 tabular-nums">{value}</div>
+    <div className="px-2 py-1.5 rounded border border-slate-200 bg-slate-50 flex items-baseline justify-between gap-2">
+      <div className="text-[10px] text-slate-500 uppercase tracking-wide truncate">{label}</div>
+      <div className="text-xs font-semibold text-slate-900 tabular-nums whitespace-nowrap">{value}</div>
     </div>
   );
 }

@@ -324,11 +324,27 @@ async def dashboard_summary(
     pf = {**f}
     if project_id:
         pf["project_id"] = project_id
-    active_projects = await db.projects.count_documents({**f, "status": {"$in": ["active", "mobilization"]}})
+    # pt.35 (2026-05-26): "Active projects" was previously $in: [active,
+    # mobilization] which excluded "planning" + "closeout" -- so a brand
+    # new project (status defaults to "planning" per models.py:204) didn't
+    # count even though the user was actively running it. The semantic
+    # meaning of the KPI is "projects you're currently working on", which
+    # is everything that isn't terminally complete or cancelled. Switched
+    # to the same exclude-list pattern used by delays / deliveries /
+    # work_items elsewhere on this endpoint.
+    active_projects = await db.projects.count_documents({**f, "status": {"$nin": ["complete", "cancelled"]}})
     open_rfis = await db.rfis.count_documents({**pf, "status": {"$in": ["sent", "in_review"]}})
     pending_approvals = await db.approvals.count_documents({**pf, "status": "pending"})
     open_work_items = await db.work_items.count_documents({**pf, "status": {"$nin": ["closed", "resolved"]}})
-    open_safety = await db.safety_events.count_documents({**pf, "status": "open"})
+    # pt.35: safety_events query was status == "open" (exact match), which
+    # missed any event that drifted to a non-default status during edits.
+    # SafetyEvent.status defaults to "open" (models.py:1954) and only
+    # transitions to "closed" via STATUS_TRANSITION_CONFIGS["safety"], so
+    # the established convention (copilot_tools.py:376) is "not closed".
+    # The /projects/{id}/safety-events list endpoint also filters out
+    # status == "deleted" -- mirror that here so soft-deleted events
+    # don't inflate the KPI.
+    open_safety = await db.safety_events.count_documents({**pf, "status": {"$nin": ["closed", "deleted"]}})
     open_delays = await db.delays.count_documents({**pf, "status": {"$nin": ["resolved", "closed"]}})
     pending_deliveries = await db.deliveries.count_documents({**pf, "status": {"$nin": ["delivered", "received", "rejected"]}})
     # schedule health: % of critical-path tasks with pct_complete < expected

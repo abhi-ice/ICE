@@ -78,7 +78,8 @@ export default function EditRequestsQueue() {
   };
 
   return (
-    <div className="p-6" data-testid="edit-requests-page">
+    /* pt.35: dropped outer p-6 -- AppLayout main already pads p-6. */
+    <div data-testid="edit-requests-page">
       <header className="mb-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">

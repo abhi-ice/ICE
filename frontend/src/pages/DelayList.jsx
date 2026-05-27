@@ -15,6 +15,7 @@ import { useUrlState } from "../lib/useUrlState";
 import { navigateToTodaysDrForCreate } from "../lib/todaysDr";
 // CPM Part G (2026-05-15) -- delay.date rendered MM/DD/YYYY via chokepoint.
 import { formatDateDisplay } from "../lib/dateUtil";
+import PageHelp from "../components/PageHelp";
 
 export default function DelayList() {
   // ALL hooks must come before any conditional return per the Rules
@@ -95,7 +96,20 @@ export default function DelayList() {
     <div data-testid="delays-page" className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Delays</h1>
+          <h1 className="text-2xl font-semibold tracking-tight inline-flex items-baseline">
+            Delays
+            {/* pt.36: PageHelp houses the longer explanation about
+                per-task impact + reminder cards on the DR; previously
+                lived in two stacked bricks (slate + amber) above the
+                table. Subtitle keeps the short A-style summary. */}
+            <PageHelp title="Delays">
+              Each delay can link to multiple schedule tasks and capture per-task projected
+              impact in days. Open delays whose tasks are scheduled today appear as reminder
+              cards on the daily report.
+              <br/><br/>
+              Click any row's date or activity chip to jump to the parent daily report.
+            </PageHelp>
+          </h1>
           <p className="text-sm text-slate-500">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
         <Button data-testid="delays-add" onClick={startCreate} disabled={routing}
@@ -104,19 +118,19 @@ export default function DelayList() {
         </Button>
       </div>
 
-      <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-2">
-        Each delay can link multiple schedule tasks and capture per-task projected impact in days. Open delays whose tasks are scheduled today appear as reminder cards on the daily report.
-      </div>
+      {/* pt.36: slate brick removed -- long explanation moved to
+          PageHelp (?) on the title. Yellow gallery brick collapsed
+          to a neutral filter row below since the "Gallery view"
+          description is redundant once the title carries the help. */}
 
       {/* Bucket D Phase 3 -- gallery filter. */}
-      <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs text-amber-900 flex items-center gap-2">
-        <span><strong>Gallery view.</strong> Click a date or chip to jump to the parent DR.</span>
+      <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600 flex items-center gap-2">
         <label className="uppercase tracking-wide text-xs">Filter by activity id</label>
         <input data-testid="delays-affected-activity-filter"
           value={affectedActivityId}
           onChange={(e) => setAffectedActivityId(e.target.value)}
           placeholder="paste a daily_report_activity.id"
-          className="h-7 px-2 rounded border border-amber-300 bg-white text-xs flex-1" />
+          className="h-7 px-2 rounded border border-slate-300 bg-white text-xs flex-1" />
         {affectedActivityId && (
           <button onClick={() => setAffectedActivityId("")}
             className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">

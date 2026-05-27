@@ -370,6 +370,15 @@ html[data-theme="dark"] .page-shell::after { display: none; }
     left: 0;
     background-color: inherit;
     z-index: 3;
+    /* pt.35 (2026-05-27): belt-and-suspenders -- if a future row tint
+       gets added with low alpha, the background-image gradient below
+       paints a solid --v4-bg-surface beneath the Tailwind bg-color
+       so scrolled-under columns can't bleed through the pinned
+       cells during horizontal scroll. Tailwind's bg-color still wins
+       visually because it paints in the same layer as the gradient
+       (both background-image / background-color). The gradient just
+       guarantees a solid base layer when alpha < 1. */
+    background-image: linear-gradient(var(--v4-bg-surface), var(--v4-bg-surface));
 }
 .dense-table-frozen td.col-pin-2,
 .dense-table-frozen th.col-pin-2 {
@@ -378,6 +387,7 @@ html[data-theme="dark"] .page-shell::after { display: none; }
     background-color: inherit;
     z-index: 3;
     box-shadow: 2px 0 0 -1px var(--v4-border);
+    background-image: linear-gradient(var(--v4-bg-surface), var(--v4-bg-surface));
 }
 .dense-table-frozen thead th.col-pin-1,
 .dense-table-frozen thead th.col-pin-2 {
