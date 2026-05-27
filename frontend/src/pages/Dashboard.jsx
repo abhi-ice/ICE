@@ -32,11 +32,23 @@ export default function Dashboard() {
   const [recentTasks, setRecentTasks] = useState([]);
   const [recentRfis, setRecentRfis] = useState([]);
 
+  // pt.34 (2026-05-26): project-scope the summary fetch. Previously
+  // this fired once on mount with no deps and ignored the project
+  // dropdown entirely, so switching projects left the KPI band stale
+  // and showing tenant-wide aggregates. Now we re-fetch whenever
+  // activeId changes and pass it as ?project_id= so the backend
+  // narrows every per-project KPI. When no project is active (e.g.
+  // first paint before useProjects resolves, or an "All projects"
+  // mode) we fall back to the tenant-wide aggregate so the tiles
+  // aren't blank.
   useEffect(() => {
-    api.get("/dashboard/summary").then(({ data }) => setSummary(data)).catch(() => {});
-  }, []);
+    const q = activeId ? `?project_id=${encodeURIComponent(activeId)}` : "";
+    api.get(`/dashboard/summary${q}`)
+      .then(({ data }) => setSummary(data))
+      .catch(() => {});
+  }, [activeId]);
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId) { setRecentTasks([]); setRecentRfis([]); return; }
     api.get(`/projects/${activeId}/tasks`).then(({ data }) => setRecentTasks(data.slice(0, 8)));
     api.get(`/projects/${activeId}/rfis`).then(({ data }) => setRecentRfis(data.slice(0, 5)));
   }, [activeId]);

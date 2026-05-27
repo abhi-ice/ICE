@@ -67,12 +67,19 @@ export default function TopBar() {
         </SelectContent>
       </Select>
 
-      {/* Search sits next to the project picker, with a flex spacer
-          AFTER it. Matches v4 layout (was right-anchored with all
-          actions together — v4 splits search from the actions). */}
+      {/* pt.34 (2026-05-26): center the search between the project
+          picker and the right-cluster ("All changes saved" + theme +
+          bell + avatar). Previously it sat glued to the project
+          dropdown with a wide ml-auto void before the right side. Two
+          flex-1 spacers — one before, one after — float the 280px
+          search in the middle of whatever horizontal space is left,
+          which scales nicely as the window resizes. (Pattern matches
+          GitHub / Notion top-bar search placement.) */}
+      <div className="flex-1" aria-hidden="true" />
       <GlobalSearch />
+      <div className="flex-1" aria-hidden="true" />
 
-      <div className="ml-auto flex items-center gap-2.5">
+      <div className="flex items-center gap-2.5">
         {/* v4: subtle save-state indicator (placeholder until wired to
             DR autosave state — for now indicates the app is healthy). */}
         <div className="v4-save-state hidden lg:inline-flex" title="Your work is auto-saved">

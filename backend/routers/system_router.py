@@ -296,23 +296,43 @@ async def ai_rfi_draft(payload: RfiDraftRequest, ctx: dict = Depends(require_ten
 
 # --- Dashboard summary ---
 @router.get("/dashboard/summary")
-async def dashboard_summary(ctx: dict = Depends(require_tenant)):
+async def dashboard_summary(
+    project_id: str | None = None,
+    ctx: dict = Depends(require_tenant),
+):
     """pt.32: KPI band swap — Field issues + Pending approvals dropped
     in favor of Open delays + Pending deliveries (more operationally
     relevant for the federal-construction supers using this dashboard).
     Old fields kept on the response for any other surface still wired
-    to them so nothing else breaks."""
+    to them so nothing else breaks.
+
+    pt.34 (2026-05-26): project-scoping. The frontend dashboard sits
+    above the project dropdown, so when a project is picked we must
+    narrow every per-project KPI (RFIs, delays, deliveries, safety,
+    work items, approvals, schedule health) to that project. The
+    "Active projects" tile stays tenant-wide on purpose — it counts
+    how many projects you have running, which doesn't have a per-
+    project meaning. When no project_id is supplied (e.g. an "All
+    projects" view or first load before activeId resolves) we fall
+    back to the prior tenant-wide aggregates so nothing breaks for
+    callers that haven't passed the param yet.
+    """
     db = get_db()
     f = tenant_filter(ctx["tenant_id"])
+    # `pf` (project filter) narrows tenant scope to one project when
+    # the dashboard is bound to a specific project_id.
+    pf = {**f}
+    if project_id:
+        pf["project_id"] = project_id
     active_projects = await db.projects.count_documents({**f, "status": {"$in": ["active", "mobilization"]}})
-    open_rfis = await db.rfis.count_documents({**f, "status": {"$in": ["sent", "in_review"]}})
-    pending_approvals = await db.approvals.count_documents({**f, "status": "pending"})
-    open_work_items = await db.work_items.count_documents({**f, "status": {"$nin": ["closed", "resolved"]}})
-    open_safety = await db.safety_events.count_documents({**f, "status": "open"})
-    open_delays = await db.delays.count_documents({**f, "status": {"$nin": ["resolved", "closed"]}})
-    pending_deliveries = await db.deliveries.count_documents({**f, "status": {"$nin": ["delivered", "received", "rejected"]}})
+    open_rfis = await db.rfis.count_documents({**pf, "status": {"$in": ["sent", "in_review"]}})
+    pending_approvals = await db.approvals.count_documents({**pf, "status": "pending"})
+    open_work_items = await db.work_items.count_documents({**pf, "status": {"$nin": ["closed", "resolved"]}})
+    open_safety = await db.safety_events.count_documents({**pf, "status": "open"})
+    open_delays = await db.delays.count_documents({**pf, "status": {"$nin": ["resolved", "closed"]}})
+    pending_deliveries = await db.deliveries.count_documents({**pf, "status": {"$nin": ["delivered", "received", "rejected"]}})
     # schedule health: % of critical-path tasks with pct_complete < expected
-    cp_tasks = await db.tasks.find({**f, "is_critical_path": True, "status": {"$ne": "deleted"}}, {"_id": 0, "pct_complete": 1}).to_list(2000)
+    cp_tasks = await db.tasks.find({**pf, "is_critical_path": True, "status": {"$ne": "deleted"}}, {"_id": 0, "pct_complete": 1}).to_list(2000)
     schedule_health = 100
     if cp_tasks:
         avg_pct = sum(float(t.get("pct_complete") or 0) for t in cp_tasks) / len(cp_tasks)
@@ -326,6 +346,7 @@ async def dashboard_summary(ctx: dict = Depends(require_tenant)):
         "open_delays": open_delays,
         "pending_deliveries": pending_deliveries,
         "schedule_health_pct": schedule_health,
+        "scoped_to_project_id": project_id,        # echo for debugging
     }
 
 

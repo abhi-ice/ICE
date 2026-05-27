@@ -2321,6 +2321,38 @@ html[data-theme="light"] .v4-topbar input[type="search"] {
 }
 html[data-theme="light"] .v4-topbar input::placeholder { color: rgba(255,255,255,0.40) !important; }
 
+/* pt.34 (2026-05-26): search bar in light theme was rendering with a
+   white background + invisible white icon. The pre-existing
+   .v4-topbar-search-input rule (above) sets an 8% white tint that
+   works against the dark topbar, but in light theme some upstream
+   light-theme reset was winning the specificity fight and forcing the
+   input bg to white -- which then hid the white-65% search icon and
+   made the kbd hint disappear too. Pin all three pieces below with
+   the html[data-theme="light"] + .v4-topbar parent qualifier so they
+   beat the rest of the cascade with no doubt. */
+html[data-theme="light"] .v4-topbar .v4-topbar-search-input {
+    background-color: rgba(255, 255, 255, 0.10) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    color: rgba(255, 255, 255, 0.95) !important;
+}
+html[data-theme="light"] .v4-topbar .v4-topbar-search-input::placeholder {
+    color: rgba(255, 255, 255, 0.55) !important;
+}
+html[data-theme="light"] .v4-topbar .v4-topbar-search-input:focus {
+    background-color: rgba(255, 255, 255, 0.14) !important;
+    border-color: rgba(16, 185, 129, 0.55) !important;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.18) !important;
+    outline: none !important;
+}
+html[data-theme="light"] .v4-topbar .v4-topbar-search-icon {
+    color: rgba(255, 255, 255, 0.80) !important;
+}
+html[data-theme="light"] .v4-topbar .v4-topbar-search-kbd {
+    background: rgba(255, 255, 255, 0.14) !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
+    color: rgba(255, 255, 255, 0.72) !important;
+}
+
 /* --- Dropdown surface elevation: SelectContent + DropdownMenu in
        dark theme were blending with topbar. Lift them with stronger
        background + ring. Light theme already reads OK. --------------- */
