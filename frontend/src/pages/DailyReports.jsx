@@ -356,41 +356,19 @@ export default function DailyReports() {
                 onChange={(e) => setPickerDate(e.target.value)}
                 className="mt-1 h-9 px-2 dr-mp-input rounded text-sm" />
             </label>
-            <label className="text-xs">
-              <div className="text-slate-500 flex items-center gap-1.5">
-                Intake mode
-                {online ? null : <span className="text-amber-600 normal-case">(offline — Live Voice disabled)</span>}
-              </div>
-              <select
-                data-testid="dr-new-mode"
-                value={pickerMode}
-                onChange={(e) => setPickerMode(e.target.value)}
-                className="mt-1 h-9 px-2 dr-mp-input rounded text-sm bg-white min-w-[140px]"
-              >
-                {DR_INTAKE_MODES.map((m) => {
-                  const offlineBlocked = m.requiresOnline && !online;
-                  const geminiBlocked = m.requiresGemini && !voiceConfig.gemini_configured;
-                  const disabled = offlineBlocked || geminiBlocked;
-                  let suffix = "";
-                  if (offlineBlocked) suffix = " (offline)";
-                  else if (geminiBlocked) suffix = " (not configured)";
-                  return (
-                    <option key={m.value} value={m.value} disabled={disabled} data-testid={`dr-new-mode-${m.value}`}>
-                      {m.label}{suffix}
-                    </option>
-                  );
-                })}
-              </select>
-              <div className="mt-1 text-[10px] text-slate-400 max-w-[220px] leading-tight">
-                {DR_INTAKE_MODES.find((m) => m.value === pickerMode)?.hint}
-              </div>
-            </label>
+            {/* pt.43 (2026-05-27): removed the "Intake mode" dropdown
+                from the DR open/create picker. Manual is the default
+                entry path and is ALWAYS available; the user can
+                switch to voice memo from inside the DR via the
+                "Add via voice" button. Live Voice (Gemini) is
+                planned for v2 -- the backend stays wired up but the
+                option is hidden from the frontend for v1. */}
             <button data-testid="dr-new-confirm" onClick={createForDate}
-              className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">
-              Open / create
+              className="sbtn sbtn-md sbtn-primary">
+              Open
             </button>
             <button data-testid="dr-new-cancel" onClick={() => setPickerOpen(false)}
-              className="h-9 px-3 rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+              className="sbtn sbtn-md sbtn-secondary">
               Cancel
             </button>
           </div>
@@ -2372,8 +2350,9 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
               <span className="meta">cleared before today's activity began</span>
             </div>
 
-            {/* TODAY · ACTION REQUIRED divider + always-expanded table */}
-            <div className="phase-divider now">Today · Action Required</div>
+            {/* pt.43: dropped "Today ·" prefix per user — just
+                "Action Required" centered. */}
+            <div className="phase-divider now">Action Required</div>
             <div className="phase-now" data-testid="dr-grid-section-2">
               <div className="phase-now-head">
                 <span className="phase-now-badge">

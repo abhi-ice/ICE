@@ -67,7 +67,16 @@ const MODES = [
 ];
 
 export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, initialMode }) {
-  const [mode, setMode] = useState(initialMode || "manual");
+  // pt.43: for v1 we force the mode to voice_async (or offline_voice
+  // when navigator.onLine is false). The MODES array still has the
+  // other entries because the live-voice code paths reference them
+  // and we want the backend integration intact for v2 -- but the
+  // user can't pick anything else from the UI.
+  const _initialOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
+  const _v1Mode = initialMode === "voice_live"
+    ? "voice_async"   // live held for v2; downgrade transparently
+    : (initialMode || (_initialOnline ? "voice_async" : "offline_voice"));
+  const [mode, setMode] = useState(_v1Mode);
   const [online, setOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [recording, setRecording] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -104,6 +113,18 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
       window.removeEventListener("offline", setOff);
     };
   }, []);
+
+  // pt.43: now that the intake-mode dropdown is hidden (v1 only ships
+  // voice memo), auto-flip between voice_async and offline_voice as
+  // connectivity changes so the user doesn't get stranded in a mode
+  // they can't switch out of via UI.
+  useEffect(() => {
+    if (recording || busy) return; // don't disturb an in-flight recording
+    if (mode === "manual" || mode === "voice_live") return; // legacy/v2 paths -- ignore
+    const wanted = online ? "voice_async" : "offline_voice";
+    if (mode !== wanted) setMode(wanted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online]);
 
   // Drain queue when online OR when DR id changes (avoids stale list).
   const refreshPending = async () => {
@@ -788,27 +809,27 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
 
   return (
     <div className="surface p-4 mb-4" data-testid="voice-intake-panel">
+      {/* pt.43 (2026-05-27): v1 release ships ONLY the voice-memo
+          intake (online async upload + offline IndexedDB queue that
+          syncs when connection returns). Manual entry is always
+          available below this panel so no need to surface it as a
+          dropdown option. Live conversational (Gemini Live) is held
+          for v2 -- the MODES array still includes it and the live
+          code path stays wired so backend changes don't drift, but
+          the dropdown is hidden so the user can't pick it. The
+          rendered body below auto-picks voice_async / offline_voice
+          based on connection state. */}
       <div className="flex items-center gap-3 mb-3">
         <div className="flex items-center gap-1 text-xs">
           {online ? <Wifi className="h-3 w-3 text-emerald-500" /> : <WifiOff className="h-3 w-3 text-amber-500" />}
           <span className="text-slate-400">{online ? "Online" : "Offline"}</span>
         </div>
-        <div className="text-xs text-slate-500">Intake mode:</div>
-        <select
-          data-testid="voice-intake-mode"
-          value={mode}
-          onChange={(e) => setMode(e.target.value)}
-          disabled={recording || busy || locked}
-          className="h-8 px-2 rounded border border-slate-700 bg-slate-900 text-sm text-slate-200"
-        >
-          {MODES.map((m) => (
-            <option key={m.value} value={m.value}>{m.label}</option>
-          ))}
-        </select>
-        {blocked && currentMode?.requiresOnline && !online && (
-          <span className="text-xs text-amber-400">Needs connection -- switch to an offline mode below.</span>
-        )}
-        {locked && <span className="text-xs text-rose-400">DR is locked -- intake disabled.</span>}
+        <div className="text-xs text-slate-500">
+          Voice memo — {online
+            ? "uploads on stop; AI fills the DR from your speech."
+            : "recording queues to this device and syncs when connection returns."}
+        </div>
+        {locked && <span className="text-xs text-rose-400 ml-auto">DR is locked — intake disabled.</span>}
       </div>
 
       {/* Mode-specific body */}
