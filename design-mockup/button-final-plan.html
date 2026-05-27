@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SiteOps — Final button plan (silver/grey + emerald, sized per location)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0b; color: #f4f4f5; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .opt { border: 1px solid #2a2a30; border-radius: 14px; overflow: hidden; background: #131316; }
+  .opt-head { padding: 14px 18px; border-bottom: 1px solid #26262b; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .opt-title { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+  .opt-pattern { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #71717a; font-weight: 500; }
+  .opt-rec { margin-left: auto; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.3); font-weight: 500; }
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #26262b; }
+  .opt-pane { padding: 24px; min-height: 200px; }
+  .pane-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #71717a; margin-bottom: 16px; font-weight: 600; }
+  /* Use ACTUAL SiteOps page backgrounds */
+  .panel-cream { background: #f7f7f8; color: #18181b; }    /* current light page bg */
+  .panel-noir  { background: #18181b; color: #f4f4f5; }    /* current dark page bg */
+  .panel-cream .pane-label { color: #a1a1aa; }
+  .opt-notes { padding: 12px 18px 14px; background: #0e0e10; border-top: 1px solid #26262b; font-size: 12px; color: #a1a1aa; line-height: 1.55; }
+  .opt-notes b { color: #d4d4d8; }
+  .opt-notes code { background: #1f1f24; padding: 1px 5px; border-radius: 3px; color: #e4e4e7; font-size: 11px; }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .btn-row + .btn-row { margin-top: 10px; }
+  .btn-label { font-size: 10px; color: #8a8275; min-width: 70px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .panel-noir .btn-label { color: #71717a; }
+  .btn-size { font-size: 9px; color: #a1a1aa; font-family: 'JetBrains Mono', monospace; }
+  .panel-noir .btn-size { color: #71717a; }
+
+  /* SiteOps final button system */
+  /* === LIGHT === */
+  .b-light-primary {
+    background: #27272a;             /* zinc-800 — soft dark, not pure black */
+    color: white;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .b-light-primary:hover { background: #18181b; }
+  .b-light-secondary {
+    background: white;
+    color: #3f3f46;
+    box-shadow: 0 0 0 1px #d4d4d8, 0 1px 1px rgba(0,0,0,0.03);
+  }
+  .b-light-secondary:hover { background: #fafafa; box-shadow: 0 0 0 1px #a1a1aa, 0 1px 1px rgba(0,0,0,0.05); }
+  .b-light-cta {
+    background: #10b981;
+    color: white;
+    box-shadow: 0 1px 2px rgba(16,185,129,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+  .b-light-cta:hover { background: #059669; }
+  .b-light-danger {
+    background: #e11d48;
+    color: white;
+    box-shadow: 0 1px 2px rgba(225,29,72,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+  .b-light-ghost { background: transparent; color: #52525b; }
+  .b-light-ghost:hover { background: rgba(0,0,0,0.04); color: #18181b; }
+  .b-light-outline-danger {
+    background: white;
+    color: #be123c;
+    box-shadow: 0 0 0 1px #fda4af;
+  }
+  .b-light-outline-danger:hover { background: #fff1f2; }
+
+  /* === DARK === */
+  .b-dark-primary {
+    background: #e4e4e7;             /* zinc-200 — silvery, not pure white */
+    color: #18181b;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.3);
+  }
+  .b-dark-primary:hover { background: #f4f4f5; }
+  .b-dark-secondary {
+    background: rgba(255,255,255,0.06);
+    color: #e4e4e7;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12), inset 0 1px 0 rgba(255,255,255,0.04);
+    backdrop-filter: blur(8px);
+  }
+  .b-dark-secondary:hover { background: rgba(255,255,255,0.10); box-shadow: 0 0 0 1px rgba(255,255,255,0.20), inset 0 1px 0 rgba(255,255,255,0.06); }
+  .b-dark-cta {
+    background: #10b981;
+    color: white;
+    box-shadow: 0 1px 2px rgba(16,185,129,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+  .b-dark-cta:hover { background: #34d399; }
+  .b-dark-danger {
+    background: #f43f5e;
+    color: white;
+    box-shadow: 0 1px 2px rgba(244,63,94,0.35), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+  .b-dark-ghost { background: transparent; color: #a1a1aa; }
+  .b-dark-ghost:hover { background: rgba(255,255,255,0.06); color: #f4f4f5; }
+  .b-dark-outline-danger {
+    background: rgba(244,63,94,0.06);
+    color: #fda4af;
+    box-shadow: 0 0 0 1px rgba(244,63,94,0.35);
+  }
+  .b-dark-outline-danger:hover { background: rgba(244,63,94,0.12); }
+
+  /* shared button base */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: 6px;
+    font-weight: 500;
+    transition: all 120ms ease-out;
+    letter-spacing: -0.005em;
+    border: 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  /* === SIZE TIERS === */
+  .btn-hero    { height: 40px; padding: 0 18px; font-size: 14px; font-weight: 600; border-radius: 8px; }
+  .btn-primary { height: 32px; padding: 0 12px; font-size: 13px; }
+  .btn-default { height: 28px; padding: 0 10px; font-size: 12.5px; }
+  .btn-compact { height: 24px; padding: 0 8px;  font-size: 11.5px; }
+  .btn-icon    { height: 28px; width: 28px; padding: 0; border-radius: 6px; }
+  .btn-icon-sm { height: 24px; width: 24px; padding: 0; border-radius: 5px; }
+
+  /* fake panel framing for the "real surface" demo */
+  .surf-card-light { background: white; border: 1px solid #e4e4e7; border-radius: 10px; padding: 14px; }
+  .surf-card-dark  { background: #1f1f24; border: 1px solid #2f2f37; border-radius: 10px; padding: 14px; }
+</style>
+</head>
+<body class="min-h-screen p-8">
+  <div class="max-w-[1500px] mx-auto mb-10">
+    <h1 class="text-3xl font-semibold tracking-tight">Final button plan — silver/grey + emerald CTA, sized per location</h1>
+    <p class="text-zinc-400 mt-2 text-sm leading-relaxed max-w-3xl">
+      Built from your pick: <b>silver primary in dark theme, grey primary in light theme,
+      emerald only for THE brand CTA</b>. Plus a per-location size tier (hero / primary /
+      default / compact / icon) so the same 36px button isn't used for both "Submit Report"
+      and "Export". Backgrounds are your <i>actual current</i> page colors
+      (<code class="mono text-emerald-300 text-[11px]">#f7f7f8</code> /
+      <code class="mono text-emerald-300 text-[11px]">#18181b</code>) — no surface changes.
+    </p>
+  </div>
+
+  <!-- =================================================================
+       HONEST ASSESSMENT BLOCK
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 p-5 rounded-2xl border border-amber-700/50 bg-amber-900/10">
+    <h2 class="text-amber-300 font-semibold text-lg mb-2">Honest assessment of your pick</h2>
+    <p class="text-zinc-300 text-sm leading-relaxed">
+      Your <b>colors are exactly right</b> — silver-on-dark / dark-on-light primary with
+      emerald reserved for the brand CTA is the strongest pattern in modern SaaS
+      (Stripe / Linear / Vercel all use this). It will look classy and sober on both themes
+      and ages well.
+      <br><br>
+      The <b>"glass / backdrop-blur" effect</b> from Option D, however, won't deliver here.
+      Glass needs visual texture <i>behind</i> the button (gradient, photo, particles) to
+      look like glass. On the current flat-color backgrounds the blur is imperceptible —
+      users will just see a slightly translucent rectangle, which can read as
+      "is this button broken?".
+      <br><br>
+      <b>My take:</b> take the silver/grey/emerald palette you picked from Option D, drop
+      the literal glass blur, and add a very subtle <code class="mono text-amber-200 text-[11px]">inset 0 1px 0 rgba(255,255,255,0.X)</code>
+      highlight + <code class="mono text-amber-200 text-[11px]">0 1px 2px rgba(0,0,0,0.X)</code>
+      shadow. That gives the same tactile / premium feel as glass but is honest about being
+      a solid button on a flat surface. Backdrop-blur stays available on a single variant
+      (dark secondary) because the noir surface has just enough texture to show it.
+      Showing the full system below — judge whether this is what you wanted.
+    </p>
+  </div>
+
+  <!-- =================================================================
+       1) FULL SIZE TIER — light & dark side by side
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">The system</span>
+      <span class="opt-title">5 size tiers × 5 variants — light + dark</span>
+      <span class="opt-rec">Final plan</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Light · page bg #f7f7f8</div>
+        <div class="btn-row">
+          <span class="btn-label">Hero</span>
+          <button class="btn btn-hero b-light-primary">Get started</button>
+          <span class="btn-size">40px / 14px / 600</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="btn btn-primary b-light-primary">Submit report</button>
+          <button class="btn btn-primary b-light-cta">Coordination</button>
+          <span class="btn-size">32px / 13px / 500</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Default</span>
+          <button class="btn btn-default b-light-secondary">Export</button>
+          <button class="btn btn-default b-light-secondary">Recompute CPM</button>
+          <button class="btn btn-default b-light-primary">New activity</button>
+          <span class="btn-size">28px / 12.5px / 500</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Compact</span>
+          <button class="btn btn-compact b-light-secondary">Edit</button>
+          <button class="btn btn-compact b-light-outline-danger">Delete</button>
+          <button class="btn btn-compact b-light-ghost">Open</button>
+          <span class="btn-size">24px / 11.5px / 500</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Icon</span>
+          <button class="btn btn-icon b-light-secondary" title="Edit">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="btn btn-icon b-light-secondary" title="Refresh">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          </button>
+          <button class="btn btn-icon-sm b-light-outline-danger" title="Delete">
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14H7L5 6"/></svg>
+          </button>
+          <span class="btn-size">28×28 / 24×24</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="btn btn-default b-light-ghost">Cancel</button>
+          <button class="btn btn-default b-light-ghost">Skip</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">Dark · page bg #18181b</div>
+        <div class="btn-row">
+          <span class="btn-label">Hero</span>
+          <button class="btn btn-hero b-dark-primary">Get started</button>
+          <span class="btn-size">40px / 14px / 600</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="btn btn-primary b-dark-primary">Submit report</button>
+          <button class="btn btn-primary b-dark-cta">Coordination</button>
+          <span class="btn-size">32px / 13px / 500</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Default</span>
+          <button class="btn btn-default b-dark-secondary">Export</button>
+          <button class="btn btn-default b-dark-secondary">Recompute CPM</button>
+          <button class="btn btn-default b-dark-primary">New activity</button>
+          <span class="btn-size">28px / 12.5px / 500</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Compact</span>
+          <button class="btn btn-compact b-dark-secondary">Edit</button>
+          <button class="btn btn-compact b-dark-outline-danger">Delete</button>
+          <button class="btn btn-compact b-dark-ghost">Open</button>
+          <span class="btn-size">24px / 11.5px / 500</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Icon</span>
+          <button class="btn btn-icon b-dark-secondary" title="Edit">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="btn btn-icon b-dark-secondary" title="Refresh">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+          </button>
+          <button class="btn btn-icon-sm b-dark-outline-danger" title="Delete">
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14H7L5 6"/></svg>
+          </button>
+          <span class="btn-size">28×28 / 24×24</span>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="btn btn-default b-dark-ghost">Cancel</button>
+          <button class="btn btn-default b-dark-ghost">Skip</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =================================================================
+       2) DR DETAIL — before / after using real header
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">In context</span>
+      <span class="opt-title">DR detail header — current vs new</span>
+      <span class="opt-rec">Biggest visible win</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Current — all 36px competing</div>
+        <div class="surf-card-light">
+          <div class="flex items-center gap-3 mb-2">
+            <button class="btn btn-compact b-light-secondary">‹ Back to Daily Reports</button>
+            <div class="ml-auto flex gap-2">
+              <button style="height:36px;padding:0 12px;background:rgb(5,150,105);color:white;font-size:13px;font-weight:600;border-radius:4px;border:0;">+ Coordination</button>
+              <button style="height:36px;padding:0 12px;background:white;color:#3f3f46;font-size:13px;font-weight:500;border-radius:4px;border:1px solid #e4e4e7;">⤓ Export ⌄</button>
+              <button style="height:36px;padding:0 12px;background:rgb(5,150,105);color:white;font-size:13px;font-weight:600;border-radius:4px;border:0;">Submit</button>
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500">3 / 7 sections done</div>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">New — 28px default + 32px the ONE primary + emerald reserved</div>
+        <div class="surf-card-dark">
+          <div class="flex items-center gap-3 mb-2">
+            <button class="btn btn-compact b-dark-secondary">‹ Back to Daily Reports</button>
+            <div class="ml-auto flex gap-2">
+              <button class="btn btn-default b-dark-secondary">Coordination</button>
+              <button class="btn btn-default b-dark-secondary">Export <span class="text-zinc-500">▾</span></button>
+              <button class="btn btn-primary b-dark-primary">Submit report</button>
+            </div>
+          </div>
+          <div class="text-xs text-zinc-500">3 / 7 sections done</div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>What changed:</b> three 36px emerald-or-grey buttons all reading at the same weight
+      become one 32px primary (silver "Submit report" — clearly THE action) + two 28px
+      secondaries (Coordination / Export — supporting). Emerald is dropped entirely from
+      this header because Submit IS the brand action here and silver-on-dark wins more
+      attention than yet-another-emerald-rectangle. Total vertical chrome down ~22% on
+      the header band.
+      <br><br>
+      Coordination becomes emerald only when it's <i>the</i> primary action on its own
+      surface (e.g. the standalone Coordination page).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       3) Table row actions — Projects / Vendors / Delays
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">In context</span>
+      <span class="opt-title">Table row Edit / Delete — current vs new</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-cream">
+        <div class="pane-label">Current — text-link "Edit" / "Delete" with no hit target</div>
+        <div class="surf-card-light">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-xs text-zinc-500 border-b border-zinc-200">
+                <th class="text-left py-2">Name</th>
+                <th class="text-left py-2">Status</th>
+                <th class="text-right py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="border-b border-zinc-100">
+                <td class="py-2 text-zinc-700">MSU</td>
+                <td class="py-2">planning</td>
+                <td class="py-2 text-right">
+                  <a class="text-xs text-zinc-500 mr-3 underline">✏ Edit</a>
+                  <a class="text-xs text-rose-600 underline">🗑 Delete</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="opt-pane panel-noir">
+        <div class="pane-label">New — 24px icon cluster, clear hit targets, no underline noise</div>
+        <div class="surf-card-dark">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-xs text-zinc-500 border-b border-zinc-700">
+                <th class="text-left py-2">Name</th>
+                <th class="text-left py-2">Status</th>
+                <th class="text-right py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="border-b border-zinc-800">
+                <td class="py-2 text-zinc-200">MSU</td>
+                <td class="py-2 text-zinc-300">planning</td>
+                <td class="py-2 text-right">
+                  <span class="inline-flex items-center gap-0.5 p-0.5 rounded-md" style="background: rgba(255,255,255,0.04); box-shadow: 0 0 0 1px rgba(255,255,255,0.08);">
+                    <button class="btn btn-icon-sm b-dark-ghost" title="Edit">
+                      <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                    <button class="btn btn-icon-sm" style="color: #fda4af;" title="Delete">
+                      <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14H7L5 6"/></svg>
+                    </button>
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>What changed:</b> two underlined text links become an icon cluster in a single
+      bordered container (Option F pattern from round 1). Clear hit targets, no underlines
+      cluttering the row, scales to 3+ actions (Edit / Duplicate / Delete) without crowding.
+      Saves horizontal space too — was ~95px wide, now ~55px.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       SIZE PLAN — per-location table
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mt-12 mb-12 p-6 rounded-2xl border border-emerald-700/40 bg-emerald-900/10">
+    <h2 class="text-lg font-semibold text-emerald-300 mb-3">Size plan — per location</h2>
+    <p class="text-zinc-300 text-sm leading-relaxed mb-4">
+      Research basis: <b>Linear</b> 28/32 · <b>Stripe</b> 32/36 · <b>Vercel</b> 32/40/48 ·
+      <b>Notion</b> 28/32 · <b>GitHub Primer</b> 28/32/40 · <b>Apple macOS</b> 22/28 ·
+      <b>Material 3</b> 40/48 (mobile). Desktop-dense apps lean smaller; SiteOps is desktop
+      first so we live in the 24–32 band, reserving 40 only for the landing page.
+    </p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+      <div class="p-3 rounded border border-zinc-700 bg-zinc-900/40">
+        <div class="font-semibold text-zinc-100 mb-2 text-sm">Per location → size + variant</div>
+        <table class="w-full text-[11.5px] leading-relaxed">
+          <thead>
+            <tr class="text-zinc-500 border-b border-zinc-700">
+              <th class="text-left py-1">Location</th>
+              <th class="text-left py-1">Size</th>
+              <th class="text-left py-1">Variant</th>
+            </tr>
+          </thead>
+          <tbody class="text-zinc-300">
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Landing hero (Sign in)</td><td>40px</td><td>Primary</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Topbar selects (Tenant / Project)</td><td>32px</td><td>Secondary</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Topbar theme toggle</td><td>32px</td><td>Secondary</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5"><b>DR Submit report</b> (sticky bottom)</td><td><b>32px</b></td><td><b>Primary</b></td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">DR header (Coordination / Export)</td><td><b>28px</b></td><td>Secondary</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Page-header CTAs (New project, New activity)</td><td>28px</td><td>Default</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Modal Cancel / Confirm</td><td>32px</td><td>Sec / Primary</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Form Save / Apply</td><td>32px</td><td>Primary</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5"><b>Table row actions</b> (Edit / Delete)</td><td><b>24px</b></td><td>Icon cluster</td></tr>
+            <tr class="border-b border-zinc-800/60"><td class="py-1.5">Inline form add (Add trade, Add row)</td><td>28px</td><td>Default</td></tr>
+            <tr><td class="py-1.5">Cancel / Skip (anywhere)</td><td>28px</td><td>Ghost</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="p-3 rounded border border-zinc-700 bg-zinc-900/40">
+        <div class="font-semibold text-zinc-100 mb-2 text-sm">Variant → color mapping</div>
+        <div class="space-y-2 text-zinc-300">
+          <div><b class="text-zinc-100">Primary (silver / dark-grey):</b><br>
+            <span class="text-zinc-400">The page's main action. ONE per surface. Silver
+            <code class="mono text-emerald-300 text-[11px]">#e4e4e7</code> on dark, dark-grey
+            <code class="mono text-emerald-300 text-[11px]">#27272a</code> on light. Subtle
+            inset highlight + 1px shadow gives the premium feel without literal glass.</span>
+          </div>
+          <div><b class="text-zinc-100">Secondary (translucent / outline):</b><br>
+            <span class="text-zinc-400">Supporting actions. Dark uses 6% white +
+            <code class="mono text-emerald-300 text-[11px]">backdrop-filter: blur(8px)</code>
+            — only place the glass effect actually shows because dark surfaces have just
+            enough tonal variation behind. Light uses solid white with a hairline ring.</span>
+          </div>
+          <div><b class="text-zinc-100">CTA (emerald):</b><br>
+            <span class="text-zinc-400">Reserved for the brand action when Submit is NOT
+            the right word — "Coordination" on its own page, landing-page "Get started",
+            top-of-funnel actions. Limit: one emerald per visible surface.</span>
+          </div>
+          <div><b class="text-zinc-100">Danger / Destructive:</b><br>
+            <span class="text-zinc-400">Solid rose for in-modal "Delete X"; outlined-rose
+            for inline row Delete that hasn't been confirmed yet.</span>
+          </div>
+          <div><b class="text-zinc-100">Ghost (Cancel / Skip):</b><br>
+            <span class="text-zinc-400">Transparent, no border, muted text. Hover tints
+            with 4% black/white. Used for non-actions that need to be present but quiet.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-4 p-3 rounded border border-zinc-700 bg-zinc-900/40 text-xs text-zinc-300 leading-relaxed">
+      <b class="text-zinc-100">Implementation:</b> shadcn's
+      <code class="mono text-emerald-300 text-[11px]">components/ui/button.jsx</code> gets a
+      new <code class="mono text-emerald-300 text-[11px]">cva</code> config with
+      <code class="mono text-emerald-300 text-[11px]">variant</code> = primary | secondary |
+      cta | danger | outline-danger | ghost AND
+      <code class="mono text-emerald-300 text-[11px]">size</code> = hero | primary | default |
+      compact | icon | icon-sm. Then sweep the ~30 hard-coded
+      <code class="mono text-emerald-300 text-[11px]">bg-emerald-600 text-white</code>
+      and <code class="mono text-emerald-300 text-[11px]">h-9 px-3</code> buttons to use
+      the proper variant + size combo. Plus drop "+" prefix from labels per your
+      standing rule.
+    </div>
+  </div>
+
+</body>
+</html>
