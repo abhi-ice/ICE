@@ -1258,12 +1258,12 @@ function Header({ report, project, userLabels, ppc, totalHours,
         <BackButton onClick={onBack} label="Daily Reports" />
 
         <div className="ml-auto flex gap-2 items-center">
-          {!v.ok && !locked && (
-            <div data-testid="dr-validation-warning" className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 flex items-center gap-1 mr-1">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              {v.errors.length} item{v.errors.length === 1 ? "" : "s"} blocking submit: {v.errors[0]}
-            </div>
-          )}
+          {/* pt.38: removed the duplicate "N items blocking submit:
+              ..." amber brick that lived here in the header. The same
+              info is now in the sticky-bottom SubmitProgress circle +
+              "show me" popover (pt.37 Option C). One source of truth
+              for what's blocking the submit; no more long wall of
+              text at the top of the page. */}
           {onQuickLogCoordination && (
             <button data-testid="dr-quick-log-coord" onClick={onQuickLogCoordination}
               className="h-9 px-3 rounded bg-emerald-600 text-white text-sm flex items-center gap-1.5 hover:bg-emerald-500 transition">

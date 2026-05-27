@@ -17,6 +17,7 @@ import { formatDateDisplay, slipDays, formatPredecessors } from "../lib/dateUtil
 import { Plus, Pencil, Trash2, AlertTriangle, MessageSquare, AlertCircle, Users, Sparkles, Check, Loader2, X, FileText } from "lucide-react";
 import ExportDropdown from "../components/ExportDropdown";
 import { confirmAction } from "../lib/confirmAction";
+import PageHelp from "../components/PageHelp";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
@@ -313,7 +314,32 @@ export default function Tasks() {
       )}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Schedule activities</h1>
+          <h1 className="text-2xl font-semibold tracking-tight inline-flex items-baseline">
+            Schedule activities
+            {/* pt.38: legend (CP / CP* / Float / Rem Float definitions)
+                moved from the bottom of the page into this PageHelp
+                popover -- it was eating ~50px of vertical space the
+                schedule table could use. Power users don't need the
+                legend every visit; new users get it one click away. */}
+            <PageHelp title="Schedule activities — column glossary">
+              <div className="space-y-2">
+                <div>
+                  <span className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-rose-100 text-rose-800 border border-rose-300 font-semibold mr-1.5">CP</span>
+                  <b>Critical Path</b> — zero structural float, any slip delays the project finish.
+                </div>
+                <div>
+                  <span className="inline-block px-1.5 py-0.5 text-[10px] rounded bg-amber-100 text-amber-900 border border-amber-300 font-semibold mr-1.5">CP*</span>
+                  <b>Effectively critical</b> — all float consumed by delays/cascade; driving the project finish.
+                </div>
+                <div>
+                  <b>Float (slack)</b> — working days an activity can slip without delaying the project. High floats (e.g. 40+) usually mean the source schedule has no predecessor links between activities.
+                </div>
+                <div>
+                  <b>Rem Float</b> — structural float minus working-day cascade slip. Negative (red) = task is past its slack and driving the finish.
+                </div>
+              </div>
+            </PageHelp>
+          </h1>
           <p className="text-sm text-slate-500">{project?.name}</p>
         </div>
         <div className="flex gap-2">
@@ -658,17 +684,10 @@ export default function Tasks() {
         </div>
       </div>
 
-      {/* CP / Float legend */}
-      {tasks.length > 0 && (
-        <div className="text-xs text-slate-500 mt-2 flex flex-wrap gap-4">
-          <span><span className="pill pill-red">CP</span> Critical Path — zero structural float, any slip delays the project finish.</span>
-          <span><span className="pill bg-amber-100 text-amber-900 border border-amber-300">CP*</span> Effectively critical — all float consumed by delays/cascade; driving the project finish.</span>
-          {/* CPM Bug 3.B/3.G (2026-05-16) -- float is WORKING days
-              (Mon-Fri), not calendar. */}
-          <span><strong>Float</strong> (slack) — working days an activity can slip without delaying the project. High floats (e.g. 40+) usually mean the source schedule has no predecessor links between activities.</span>
-          <span><strong>Rem Float</strong> — structural float minus working-day cascade slip. Negative (red) = task is past its slack and driving the finish.</span>
-        </div>
-      )}
+      {/* pt.38: removed the bottom CP/CP*/Float/Rem-Float legend.
+          Same content now lives in the PageHelp (?) on the title --
+          gives the schedule table the full vertical real estate it
+          deserves as the page's primary content. */}
     </div>
   );
 }

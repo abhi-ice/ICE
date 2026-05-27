@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SiteOps — Button styles (6 options + current)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0b; color: #f4f4f5; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+
+  .opt { border: 1px solid #2a2a30; border-radius: 14px; overflow: hidden; background: #131316; }
+  .opt-head { padding: 14px 18px; border-bottom: 1px solid #26262b; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .opt-title { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+  .opt-pattern { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #71717a; font-weight: 500; }
+  .opt-rec { margin-left: auto; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.3); font-weight: 500; }
+  .opt-rec.warn  { background: rgba(245,158,11,0.10); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
+  .opt-rec.skip  { background: rgba(244,63,94,0.10); color: #f87171; border-color: rgba(244,63,94,0.3); }
+  .opt-rec.niche { background: rgba(139,92,246,0.10); color: #c4b5fd; border-color: rgba(139,92,246,0.3); }
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #26262b; }
+  .opt-pane { padding: 22px 24px 28px 24px; min-height: 220px; }
+  .pane-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #71717a; margin-bottom: 14px; font-weight: 600; }
+  .panel-light { background: #f7f7f8; color: #18181b; }
+  .panel-dark  { background: #18181b; color: #f4f4f5; }
+  .panel-light .pane-label { color: #a1a1aa; }
+  .opt-notes { padding: 12px 18px 14px; background: #0e0e10; border-top: 1px solid #26262b; font-size: 12px; color: #a1a1aa; line-height: 1.55; }
+  .opt-notes b { color: #d4d4d8; }
+  .opt-notes .when { color: #fbbf24; }
+  .opt-notes .avoid { color: #f87171; }
+
+  /* button rows */
+  .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn-row + .btn-row { margin-top: 12px; }
+  .btn-label { font-size: 10px; color: #71717a; min-width: 80px; }
+  .panel-light .btn-label { color: #a1a1aa; }
+</style>
+</head>
+<body class="min-h-screen p-8">
+  <div class="max-w-[1500px] mx-auto mb-10">
+    <h1 class="text-3xl font-semibold tracking-tight">Button styles — 6 options + current</h1>
+    <p class="text-zinc-400 mt-2 text-sm leading-relaxed max-w-3xl">
+      Current SiteOps uses saturated emerald + saturated rose buttons everywhere. With ~30
+      action buttons per page (Submit, Export, +Coordination, Edit, Delete, Refresh, etc.)
+      the screen reads loud. The patterns below are sourced from <b>Stripe, Linear, Notion,
+      Vercel, GitHub Primer, Apple HIG, Material 3</b> — each shown in light + dark with
+      Primary / Secondary / Destructive / Ghost variants so we can compare like-for-like.
+    </p>
+  </div>
+
+  <!-- =================================================================
+       OPTION A — Neutral solid + outline (Stripe / GitHub Primer)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option A</span>
+      <span class="opt-title">Neutral solid + outline — Stripe / GitHub Primer</span>
+      <span class="opt-rec">Recommended primary</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 rounded-md bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 transition">Submit Report</button>
+          <button class="h-8 px-3 rounded-md bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 transition inline-flex items-center gap-1.5">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New activity
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-300 bg-white text-zinc-700 text-xs font-medium hover:bg-zinc-50 transition">Export</button>
+          <button class="h-8 px-3 rounded-md border border-zinc-300 bg-white text-zinc-700 text-xs font-medium hover:bg-zinc-50 transition">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 rounded-md bg-rose-600 text-white text-xs font-medium hover:bg-rose-700 transition">Delete row</button>
+          <button class="h-8 px-3 rounded-md border border-rose-300 bg-white text-rose-600 text-xs font-medium hover:bg-rose-50 transition">Archive</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 rounded text-zinc-600 text-xs hover:bg-zinc-100 transition">Cancel</button>
+          <button class="h-7 px-2 rounded text-zinc-500 text-xs hover:text-zinc-800 hover:bg-zinc-100 transition">Skip</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition">+ Coordination</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 rounded-md bg-zinc-100 text-zinc-900 text-xs font-medium hover:bg-white transition">Submit Report</button>
+          <button class="h-8 px-3 rounded-md bg-zinc-100 text-zinc-900 text-xs font-medium hover:bg-white transition inline-flex items-center gap-1.5">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New activity
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-700 bg-zinc-800 text-zinc-200 text-xs font-medium hover:bg-zinc-700 transition">Export</button>
+          <button class="h-8 px-3 rounded-md border border-zinc-700 bg-zinc-800 text-zinc-200 text-xs font-medium hover:bg-zinc-700 transition">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 rounded-md bg-rose-600 text-white text-xs font-medium hover:bg-rose-700 transition">Delete row</button>
+          <button class="h-8 px-3 rounded-md border border-rose-800/60 bg-rose-900/30 text-rose-300 text-xs font-medium hover:bg-rose-900/50 transition">Archive</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 rounded text-zinc-400 text-xs hover:bg-zinc-800 transition">Cancel</button>
+          <button class="h-7 px-2 rounded text-zinc-500 text-xs hover:text-zinc-200 hover:bg-zinc-800 transition">Skip</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Brand CTA</span>
+          <button class="h-8 px-3 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 transition">+ Coordination</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> primary = high-contrast monochrome (near-black on light, near-white
+      on dark). Outline secondary lets the page breathe. Emerald is <i>reserved</i> for one
+      single brand CTA per screen — the action you most want the user to take. Reduces the
+      "button soup" feel where everything competes for attention. Stripe ships this pattern
+      across their entire dashboard.
+      <br><br>
+      <b class="when">Use for:</b> the whole app, as the default standard.
+      <b class="avoid">Avoid:</b> if you want the brand color to dominate the page — this
+      pattern intentionally restrains emerald to ~1 button per screen.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION B — Soft tonal (Material 3 / Asana)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option B</span>
+      <span class="opt-title">Soft tonal — Material 3 / Asana / Tailwind UI Soft</span>
+      <span class="opt-rec warn">Strong alternative for friendly tone</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 rounded-md bg-emerald-100 text-emerald-800 text-xs font-semibold hover:bg-emerald-200 transition">Submit Report</button>
+          <button class="h-8 px-3 rounded-md bg-emerald-100 text-emerald-800 text-xs font-semibold hover:bg-emerald-200 transition inline-flex items-center gap-1.5">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New activity
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 rounded-md bg-zinc-100 text-zinc-700 text-xs font-medium hover:bg-zinc-200 transition">Export</button>
+          <button class="h-8 px-3 rounded-md bg-zinc-100 text-zinc-700 text-xs font-medium hover:bg-zinc-200 transition">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 rounded-md bg-rose-100 text-rose-700 text-xs font-semibold hover:bg-rose-200 transition">Delete row</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 rounded text-zinc-600 text-xs hover:bg-zinc-100 transition">Cancel</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 rounded-md bg-emerald-900/40 text-emerald-300 border border-emerald-800/60 text-xs font-semibold hover:bg-emerald-900/60 transition">Submit Report</button>
+          <button class="h-8 px-3 rounded-md bg-emerald-900/40 text-emerald-300 border border-emerald-800/60 text-xs font-semibold hover:bg-emerald-900/60 transition inline-flex items-center gap-1.5">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New activity
+          </button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 rounded-md bg-zinc-800 text-zinc-300 text-xs font-medium hover:bg-zinc-700 transition">Export</button>
+          <button class="h-8 px-3 rounded-md bg-zinc-800 text-zinc-300 text-xs font-medium hover:bg-zinc-700 transition">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 rounded-md bg-rose-900/30 text-rose-300 border border-rose-800/60 text-xs font-semibold hover:bg-rose-900/50 transition">Delete row</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 rounded text-zinc-400 text-xs hover:bg-zinc-800 transition">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> all buttons use a pale tinted bg + saturated text. Softer overall
+      tone than saturated solids. Material 3 ("filled tonal") and Asana use this universally.
+      Feels friendly + approachable; ages well as theme tokens shift.
+      <br><br>
+      <b class="when">Use if:</b> you want a softer, more approachable tone everywhere AND
+      keep emerald as the visual primary.
+      <b class="avoid">Avoid if:</b> you want a single dominant CTA per screen (Option A
+      handles that better).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION C — Outline-default (Linear / Notion)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option C</span>
+      <span class="opt-title">Outline-default — Linear / Notion</span>
+      <span class="opt-rec warn">Most subtle / most "classy"</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-900 bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-800 transition">Submit Report</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-200 bg-transparent text-zinc-700 text-xs font-medium hover:bg-zinc-50 transition">Export</button>
+          <button class="h-8 px-3 rounded-md border border-zinc-200 bg-transparent text-zinc-700 text-xs font-medium hover:bg-zinc-50 transition">Recompute</button>
+          <button class="h-8 px-3 rounded-md border border-zinc-200 bg-transparent text-zinc-700 text-xs font-medium hover:bg-zinc-50 transition">+ Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-200 bg-transparent text-rose-600 text-xs font-medium hover:bg-rose-50 hover:border-rose-200 transition">Delete row</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 rounded text-zinc-500 text-xs hover:text-zinc-800 transition">Cancel</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-100 bg-zinc-100 text-zinc-900 text-xs font-medium hover:bg-white transition">Submit Report</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-700 bg-transparent text-zinc-200 text-xs font-medium hover:bg-zinc-800/60 transition">Export</button>
+          <button class="h-8 px-3 rounded-md border border-zinc-700 bg-transparent text-zinc-200 text-xs font-medium hover:bg-zinc-800/60 transition">Recompute</button>
+          <button class="h-8 px-3 rounded-md border border-zinc-700 bg-transparent text-zinc-200 text-xs font-medium hover:bg-zinc-800/60 transition">+ Coordination</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-8 px-3 rounded-md border border-zinc-700 bg-transparent text-rose-400 text-xs font-medium hover:bg-rose-900/20 hover:border-rose-800/60 transition">Delete row</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Ghost</span>
+          <button class="h-7 px-2 rounded text-zinc-400 text-xs hover:text-zinc-100 transition">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this works:</b> every button is an outline by default — only the primary action
+      gets a filled background. Maximally subtle. Linear and Notion both use this. Reads
+      as a tool for serious work, not a marketing site.
+      <br><br>
+      <b class="when">Use if:</b> "classy and sober" is the goal and you're OK with the
+      visual language being almost monochrome.
+      <b class="avoid">Avoid if:</b> you want destructive actions to have stronger visual
+      weight (they look identical to secondary here).
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION D — Glass / blur (Apple / Vercel hero)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option D</span>
+      <span class="opt-title">Glass / backdrop-blur — Apple HIG / Vercel hero</span>
+      <span class="opt-rec niche">Hero areas only</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light" style="background: linear-gradient(135deg, #fef3c7 0%, #ddd6fe 100%);">
+        <div class="pane-label" style="color: rgba(0,0,0,0.5);">Light · works on visual bg</div>
+        <div class="btn-row">
+          <span class="btn-label" style="color: rgba(0,0,0,0.5);">Primary</span>
+          <button class="h-9 px-4 rounded-lg bg-zinc-900/80 backdrop-blur text-white text-xs font-medium hover:bg-zinc-900 transition shadow-lg">Get started</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label" style="color: rgba(0,0,0,0.5);">Secondary</span>
+          <button class="h-9 px-4 rounded-lg bg-white/60 backdrop-blur border border-white/40 text-zinc-800 text-xs font-medium hover:bg-white/80 transition shadow">Learn more</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark" style="background: radial-gradient(circle at top right, rgba(16,185,129,0.15) 0%, transparent 50%), #0a0a0b;">
+        <div class="pane-label">Dark · works on visual bg</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-9 px-4 rounded-lg bg-white/90 backdrop-blur text-zinc-900 text-xs font-medium hover:bg-white transition shadow-lg">Get started</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-9 px-4 rounded-lg bg-white/5 backdrop-blur border border-white/10 text-zinc-200 text-xs font-medium hover:bg-white/10 transition shadow">Learn more</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this is niche:</b> glass buttons need a visually interesting background to look
+      right (gradient, photo, blurred backdrop). On a flat surface card they look weirdly
+      translucent. Great for the landing page hero and the Mason Copilot panel; bad for
+      a table row's Edit button.
+      <br><br>
+      <b class="when">Use for:</b> landing page CTAs only — leave the dashboard alone.
+      <b class="avoid">Avoid:</b> as the default app pattern.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION E — Pill + heavy radius (Apple / Vercel marketing)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option E</span>
+      <span class="opt-title">Pill + heavy radius — Apple / Vercel marketing</span>
+      <span class="opt-rec skip">Too consumer for a federal-construction tool</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-9 px-5 rounded-full bg-zinc-900 text-white text-xs font-semibold hover:bg-zinc-800 transition">Submit Report</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-9 px-5 rounded-full border border-zinc-200 bg-white text-zinc-700 text-xs font-semibold hover:bg-zinc-50 transition">Export</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-9 px-5 rounded-full bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition">Delete row</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-9 px-5 rounded-full bg-zinc-100 text-zinc-900 text-xs font-semibold hover:bg-white transition">Submit Report</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-9 px-5 rounded-full border border-zinc-700 bg-zinc-800 text-zinc-200 text-xs font-semibold hover:bg-zinc-700 transition">Export</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-9 px-5 rounded-full bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition">Delete row</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this fails for SiteOps:</b> pill buttons read as marketing / consumer apps
+      (Apple Store, Vercel sign-up). A federal-construction productivity tool needs to
+      feel "tool" not "store". Pill shape also takes more horizontal space which is bad
+      in a dense table row with Edit/Delete buttons.
+      <br><br>
+      <b class="avoid">Avoid:</b> as the app standard. Could work for the landing page
+      sign-up CTA only.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       OPTION F — Mono-icon + subtle (Notion sidebar / Figma toolbar)
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Option F</span>
+      <span class="opt-title">Mono icon-first toolbar — Notion sidebar / Figma toolbar</span>
+      <span class="opt-rec niche">Pair with A/C for icon-heavy spots</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light · table row actions</div>
+        <div class="btn-row">
+          <span class="btn-label">Inline row</span>
+          <div class="inline-flex items-center gap-0.5 p-0.5 rounded-md border border-zinc-200 bg-white">
+            <button class="h-7 w-7 grid place-items-center rounded text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100 transition" title="Edit">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="h-7 w-7 grid place-items-center rounded text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100 transition" title="Duplicate">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+            <div class="w-px h-4 bg-zinc-200"></div>
+            <button class="h-7 w-7 grid place-items-center rounded text-rose-500 hover:bg-rose-50 transition" title="Delete">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14H7L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Header toolbar</span>
+          <div class="inline-flex items-center gap-1 p-1 rounded-lg border border-zinc-200 bg-white">
+            <button class="h-7 px-2 rounded text-xs text-zinc-600 hover:bg-zinc-100 transition inline-flex items-center gap-1">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add
+            </button>
+            <button class="h-7 px-2 rounded text-xs text-zinc-600 hover:bg-zinc-100 transition inline-flex items-center gap-1">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export
+            </button>
+            <button class="h-7 px-2 rounded text-xs text-zinc-600 hover:bg-zinc-100 transition inline-flex items-center gap-1">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark · table row actions</div>
+        <div class="btn-row">
+          <span class="btn-label">Inline row</span>
+          <div class="inline-flex items-center gap-0.5 p-0.5 rounded-md border border-zinc-700 bg-zinc-900">
+            <button class="h-7 w-7 grid place-items-center rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition" title="Edit">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="h-7 w-7 grid place-items-center rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition" title="Duplicate">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+            <div class="w-px h-4 bg-zinc-700"></div>
+            <button class="h-7 w-7 grid place-items-center rounded text-rose-400 hover:bg-rose-900/30 transition" title="Delete">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14H7L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Header toolbar</span>
+          <div class="inline-flex items-center gap-1 p-1 rounded-lg border border-zinc-700 bg-zinc-900">
+            <button class="h-7 px-2 rounded text-xs text-zinc-300 hover:bg-zinc-800 transition inline-flex items-center gap-1">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add
+            </button>
+            <button class="h-7 px-2 rounded text-xs text-zinc-300 hover:bg-zinc-800 transition inline-flex items-center gap-1">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export
+            </button>
+            <button class="h-7 px-2 rounded text-xs text-zinc-300 hover:bg-zinc-800 transition inline-flex items-center gap-1">
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this is niche:</b> grouping icon buttons inside a single bordered container
+      tells the eye "these are related actions". Used by Figma's top toolbar and Notion's
+      block menus. Doesn't replace primary buttons — it complements them.
+      <br><br>
+      <b class="when">Pair with A/C:</b> primary CTAs use Option A; per-row Edit/Duplicate/
+      Delete clusters use this grouped pattern.
+      <b class="avoid">Avoid:</b> as a standalone — the page still needs a clear Submit/
+      Save primary.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       CURRENT — saturated emerald/rose for comparison
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mb-8 opt">
+    <div class="opt-head">
+      <span class="opt-pattern">Current</span>
+      <span class="opt-title">Saturated emerald + rose — what's there today</span>
+      <span class="opt-rec skip">Loud at scale</span>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-pane panel-light">
+        <div class="pane-label">Light</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-semibold">Submit Report</button>
+          <button class="h-9 px-3 rounded bg-emerald-600 text-white text-sm">+ Coordination</button>
+          <button class="h-9 px-3 rounded bg-emerald-600 text-white text-sm">+ New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-9 px-3 rounded border border-slate-200 bg-white text-sm">Export</button>
+          <button class="h-9 px-3 rounded border border-slate-200 bg-white text-sm">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-9 px-3 rounded bg-rose-600 text-white text-sm">Delete row</button>
+        </div>
+      </div>
+      <div class="opt-pane panel-dark">
+        <div class="pane-label">Dark</div>
+        <div class="btn-row">
+          <span class="btn-label">Primary</span>
+          <button class="h-9 px-3 rounded bg-emerald-600 text-white text-sm font-semibold">Submit Report</button>
+          <button class="h-9 px-3 rounded bg-emerald-600 text-white text-sm">+ Coordination</button>
+          <button class="h-9 px-3 rounded bg-emerald-600 text-white text-sm">+ New activity</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Secondary</span>
+          <button class="h-9 px-3 rounded border border-zinc-700 bg-zinc-800 text-zinc-200 text-sm">Export</button>
+          <button class="h-9 px-3 rounded border border-zinc-700 bg-zinc-800 text-zinc-200 text-sm">Recompute CPM</button>
+        </div>
+        <div class="btn-row">
+          <span class="btn-label">Destructive</span>
+          <button class="h-9 px-3 rounded bg-rose-600 text-white text-sm">Delete row</button>
+        </div>
+      </div>
+    </div>
+    <div class="opt-notes">
+      <b>Why this needs replacing:</b> emerald is used for ~3-5 primary buttons per page
+      (Submit + Coordination + New activity + + Whatever). When everything is the
+      brand-saturated color, nothing stands out — the user's eye has nowhere to land. A
+      tool for serious daily work needs visual hierarchy: one button shouting "do this",
+      others quietly supporting.
+    </div>
+  </div>
+
+  <!-- =================================================================
+       RECOMMENDATION SUMMARY
+       ================================================================= -->
+  <div class="max-w-[1500px] mx-auto mt-12 mb-12 p-6 rounded-2xl border border-emerald-700/40 bg-emerald-900/10">
+    <h2 class="text-lg font-semibold text-emerald-300 mb-3">Recommendation: Option A (Stripe pattern) + Option F for table row clusters</h2>
+    <p class="text-sm text-zinc-300 leading-relaxed mb-4">
+      <b>Default for the whole app: Option A</b> — primary = monochrome (near-black light /
+      near-white dark), secondary = outline, emerald reserved for one brand CTA per screen.
+      This is the most "classy and sober" pattern that still gives action buttons clear
+      visual hierarchy. It's what Stripe, GitHub, and Vercel Pro all ship.
+      <br><br>
+      <b>For table row Edit/Duplicate/Delete clusters: pair with Option F</b> — group them
+      inside a small bordered container with icon-only buttons. Reads as a single
+      "actions" affordance instead of three competing buttons per row.
+    </p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+      <div class="p-3 rounded border border-zinc-700 bg-zinc-900/40">
+        <div class="font-semibold text-zinc-100 mb-1.5">Button → Style mapping</div>
+        <div class="space-y-1 text-zinc-400">
+          <div><b class="text-zinc-200">Submit Report</b> → primary (mono)</div>
+          <div><b class="text-zinc-200">+ Coordination</b> → brand CTA (emerald) — <i>only one per screen</i></div>
+          <div><b class="text-zinc-200">+ New activity / + New project</b> → primary (mono) <span class="text-zinc-500">(was emerald)</span></div>
+          <div><b class="text-zinc-200">Export / Recompute / Refresh</b> → secondary (outline)</div>
+          <div><b class="text-zinc-200">Cancel / Skip</b> → ghost</div>
+          <div><b class="text-zinc-200">Delete (in modal)</b> → destructive solid (rose)</div>
+          <div><b class="text-zinc-200">Edit / Duplicate / Delete (table row)</b> → grouped icon cluster (Option F)</div>
+        </div>
+      </div>
+      <div class="p-3 rounded border border-zinc-700 bg-zinc-900/40">
+        <div class="font-semibold text-zinc-100 mb-1.5">Implementation plan</div>
+        <div class="text-zinc-400 leading-relaxed">
+          1. Update <span class="mono text-emerald-400 text-[11px]">components/ui/button.jsx</span>
+             shadcn variant config: add <span class="mono text-emerald-400 text-[11px]">primary</span> (mono),
+             <span class="mono text-emerald-400 text-[11px]">brand</span> (emerald, sparing use),
+             <span class="mono text-emerald-400 text-[11px]">secondary</span> (outline),
+             <span class="mono text-emerald-400 text-[11px]">destructive</span> (rose),
+             <span class="mono text-emerald-400 text-[11px]">ghost</span> (text-only).
+          <br><br>
+          2. Sweep the ~30 hard-coded
+             <span class="mono text-emerald-400 text-[11px]">bg-emerald-600 text-white</span>
+             buttons and reclassify: most become primary (mono), <i>only the "the action you
+             most want them to take"</i> stays emerald.
+          <br><br>
+          3. Per-row Edit / Delete clusters: build a small
+             <span class="mono text-emerald-400 text-[11px]">&lt;RowActions /&gt;</span>
+             component (Option F pattern) and use across CrudList, Vendors, DelayList,
+             Projects, Tasks rows.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
