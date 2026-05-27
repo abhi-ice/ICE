@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "../lib/api";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -37,17 +37,48 @@ const EMPTY_FORM = {
   supplier_ids: [],
 };
 
-// 2026-02-XX (Abhi) -- compact vendor multi-select for the Project
-// form. Shows a chip grid for picking subs / suppliers out of the
-// tenant-wide central repo; empty state surfaces a link to the
-// Vendors page so the user can add the first record without leaving
-// the project flow.
+// pt.44 (2026-05-27) — rebuilt vendor picker.
+// Before: every vendor rendered as a chip showing "Name · trade1,
+// trade2, trade3" — with 12+ vendors this turned into a messy wall
+// of text in the project create modal. Now: standard multi-select
+// pattern (Notion tags / Linear labels / GitHub assignees):
+//   - Selected items render as small chips up top, names only, "×" to remove
+//   - Searchable dropdown below to add more; dropdown shows name as
+//     primary text + trades as muted secondary line (useful when
+//     picking but doesn't clutter the form)
+//   - Empty-state link to Vendors page is preserved
 function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
   const isSub = kind === "sub";
   const title = isSub ? "Subcontractors on this project" : "Suppliers on this project";
+  const singular = isSub ? "subcontractor" : "supplier";
   const empty = isSub
     ? "No subcontractors in the repo yet."
     : "No suppliers in the repo yet.";
+
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef(null);
+
+  // Close dropdown on outside click.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onClickAway = (e) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClickAway);
+    return () => document.removeEventListener("mousedown", onClickAway);
+  }, [open]);
+
+  const selectedSet = new Set(selectedIds || []);
+  const selectedVendors = vendors.filter((v) => selectedSet.has(v.id));
+  const q = search.trim().toLowerCase();
+  const available = vendors.filter((v) => {
+    if (selectedSet.has(v.id)) return false;
+    if (!q) return true;
+    return v.name.toLowerCase().includes(q)
+      || (v.trades || []).some((t) => String(t).toLowerCase().includes(q));
+  });
+
   return (
     <div className="border-t border-border pt-3 mt-3">
       <div className="flex items-center justify-between mb-2">
@@ -57,6 +88,7 @@ function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
           Manage repo ↗
         </a>
       </div>
+
       {vendors.length === 0 ? (
         <div className="text-xs text-muted-foreground rounded border border-dashed border-border px-3 py-2">
           {empty}{" "}
@@ -66,24 +98,80 @@ function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
           </a>
         </div>
       ) : (
-        <div className="flex flex-wrap gap-1.5">
-          {vendors.map((v) => {
-            const selected = selectedIds?.includes(v.id);
-            return (
-              <button
-                type="button"
-                key={v.id}
-                data-testid={`np-${kind}-chip-${v.id}`}
-                onClick={() => onToggle(v.id)}
-                className={`text-xs px-2.5 py-1 rounded-full border transition ${selected
-                  ? "bg-emerald-600/20 border-emerald-500 text-emerald-300"
-                  : "border-border text-muted-foreground hover:border-emerald-600/60 hover:text-foreground"}`}
-              >
-                {v.name}
-                {v.trades?.length ? ` · ${v.trades.join(", ")}` : ""}
-              </button>
-            );
-          })}
+        <div ref={wrapperRef} className="relative">
+          {/* Selected chips (names only, × to remove) */}
+          {selectedVendors.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {selectedVendors.map((v) => (
+                <button
+                  type="button"
+                  key={v.id}
+                  data-testid={`np-${kind}-chip-${v.id}`}
+                  onClick={() => onToggle(v.id)}
+                  title={v.trades?.length ? `Trades: ${v.trades.join(", ")}` : "Remove"}
+                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-600/15 border border-emerald-600/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600/25 transition"
+                >
+                  <span>{v.name}</span>
+                  <span className="opacity-60 hover:opacity-100">×</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Dropdown trigger — opens a searchable list of unselected vendors */}
+          <button
+            type="button"
+            data-testid={`np-${kind}-add-trigger`}
+            onClick={() => setOpen((o) => !o)}
+            className="w-full text-left text-xs px-3 py-1.5 rounded border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground transition inline-flex items-center justify-between"
+          >
+            <span>
+              {selectedVendors.length === 0
+                ? `Add ${singular}…`
+                : `Add another ${singular}…`}
+            </span>
+            <span className="text-[10px] opacity-60">
+              {available.length} available
+            </span>
+          </button>
+
+          {open && (
+            <div className="absolute left-0 right-0 mt-1 z-20 rounded-md border border-border bg-popover shadow-lg overflow-hidden">
+              <input
+                type="text"
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={`Search ${singular}s…`}
+                data-testid={`np-${kind}-search`}
+                className="w-full px-3 py-2 text-xs border-b border-border bg-transparent focus:outline-none"
+              />
+              <div className="max-h-56 overflow-y-auto">
+                {available.length === 0 ? (
+                  <div className="text-xs text-muted-foreground px-3 py-3 text-center">
+                    {q ? `No matches for "${search}".` : "All vendors already added."}
+                  </div>
+                ) : (
+                  available.map((v) => (
+                    <button
+                      type="button"
+                      key={v.id}
+                      data-testid={`np-${kind}-option-${v.id}`}
+                      onClick={() => { onToggle(v.id); setSearch(""); }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-muted transition"
+                    >
+                      <div className="text-xs font-medium text-foreground">{v.name}</div>
+                      {v.trades?.length > 0 && (
+                        <div className="text-[10px] text-muted-foreground truncate">
+                          {v.trades.join(", ")}
+                        </div>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
