@@ -2688,7 +2688,6 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
       {!rows.length && <div data-testid="delays-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
       <div className="mt-3 pt-3 border-t border-slate-100">
         {!showForm ? (
-          {/* pt.40: inline section button -> sbtn-sm (28px). */}
           <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
             className="sbtn sbtn-sm sbtn-primary">
             {locked ? "Log a delay (post-submit)" : "Log a delay"}
