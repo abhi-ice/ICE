@@ -685,7 +685,7 @@ export default function Tasks() {
         </div>
       </div>
 
-      {/* pt.38: removed the bottom CP/CP*/Float/Rem-Float legend.
+      {/* pt.38: removed the bottom CP/CP-star/Float/Rem-Float legend.
           Same content now lives in the PageHelp (?) on the title --
           gives the schedule table the full vertical real estate it
           deserves as the page's primary content. */}
