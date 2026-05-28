@@ -2727,20 +2727,6 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
     return () => clearTimeout(t);
   }, [pendingDetail, activeTab]);
 
-  const addForActiveTab = () => {
-    const TAB_TO_KIND = {
-      delays: "delay", safety: "safety", qc: "qc",
-      rfis: "rfi", deliveries: "delivery",
-    };
-    const kind = TAB_TO_KIND[activeTab];
-    if (kind) {
-      window.dispatchEvent(new CustomEvent("dr-open-event-form", { detail: { kind } }));
-    } else if (activeTab === "notes") {
-      const ta = document.querySelector('[data-testid="dr-notes-textarea"]');
-      if (ta) { ta.scrollIntoView({ behavior: "smooth", block: "center" }); ta.focus(); }
-    }
-  };
-
   const TABS = [
     { value: "delays",     label: "Delays",     icon: AlertTriangle,  count: (delays || []).length },
     { value: "safety",     label: "Safety",     icon: ShieldAlert,    count: (safetyEvents || []).length },
@@ -2775,20 +2761,6 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
               );
             })}
           </TabsList>
-          {!locked && (
-            // pt.42: was a round Plus-icon button; switched to a
-            // text-label primary sbtn ("Add") so no "+" remains on
-            // the tab strip per the user's rule.
-            <button
-              data-testid="dr-events-add"
-              onClick={addForActiveTab}
-              title={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
-              aria-label={`Add ${TABS.find((t) => t.value === activeTab)?.label || ""}`}
-              className="sbtn sbtn-xs sbtn-primary ml-auto"
-            >
-              Add
-            </button>
-          )}
         </div>
         <TabsContent value="delays" className="mt-3" data-testid="dr-events-tab-content-delays">
           <DelaysPanel rows={delays} dailyReportId={dailyReportId} projectId={projectId}
@@ -4135,7 +4107,6 @@ function AuthPhoto({ photo, locked, dailyReportId, reload, onPreview }) {
       .catch(() => { /* ignore — show placeholder */ });
     return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, [photo.id]);
-  const cls = PHOTO_CLASS_BY_VALUE[photo.photo_class] || PHOTO_CLASS_BY_VALUE.progress;
   return (
     <div data-testid={`photo-${photo.id}`} data-event-row-id={photo.id} data-event-row-type="photo"
       className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200 group">
@@ -4143,9 +4114,27 @@ function AuthPhoto({ photo, locked, dailyReportId, reload, onPreview }) {
         className="w-full h-full object-cover cursor-zoom-in" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">
-        <span data-testid={`photo-class-${photo.id}`} className={`text-xs leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
-          {cls.label}
-        </span>
+        {/* pt.56: photo_class label dropped (the Photo tray shows full
+            metadata) — replaced with a small delete control on the left. */}
+        {!locked && (
+          <button data-testid={`photo-delete-${photo.id}`}
+            onClick={async (e) => {
+              e.preventDefault(); e.stopPropagation();
+              const ok = await confirmAction({
+                title: "Delete this photo?",
+                message: "It's removed from this daily report; the original stays in the Photo tray.",
+                confirmText: "Delete photo",
+                icon: "trash",
+              });
+              if (!ok) return;
+              try { await api.delete(`/photo-tags/${photo.id}`); reload(); }
+              catch (err) { toast.error(err.response?.data?.detail || "Delete failed"); }
+            }}
+            title="Delete photo from this report"
+            className="bg-black/55 hover:bg-red-600 text-white rounded p-1 transition">
+            <Trash2 className="h-3 w-3" />
+          </button>
+        )}
         {photo.evidentiary_flag && (
           <span data-testid={`photo-evidentiary-${photo.id}`} title="Evidentiary — locked record" className="bg-black/70 text-white rounded p-0.5">
             <Lock className="h-2.5 w-2.5" />
