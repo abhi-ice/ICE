@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  Bot, Send, X, CheckCircle2, FileSpreadsheet, ClipboardCheck,
-  ShieldAlert, Sparkles, MessageSquare, ListChecks, BookOpen, AlertCircle,
+  Bot, Send, X, CheckCircle2, FileSpreadsheet,
+  Sparkles, MessageSquare, ListChecks, BookOpen, AlertCircle,
   Download, FileText, Copy, Loader2, RotateCcw, Wrench, FileDown,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useProjects } from "../../lib/projects";
-import { subscribeDailyReportId, emitDescriptionInsert } from "../../lib/copilotContext";
+import { subscribeDailyReportId } from "../../lib/copilotContext";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 import { deleteWithUndo } from "../../lib/deleteWithUndo";
@@ -509,33 +509,6 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
                           disabled={busy}
                         >
                           <RotateCcw className="h-3 w-3" /> Retry
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  {/* pt.30: Send-to-form buttons only show when the user
-                      actually asked Mason to DRAFT a QC issue or safety
-                      event. If they asked for QC → show only QC button.
-                      If safety → only Safety button. Eliminates the
-                      previous always-on noise on every DR-scoped reply. */}
-                  {m.role === "ai" && activeDrId && m.text && !m.error && m.form_insert && (
-                    <div className="copilot-send-to">
-                      {m.form_insert === "qc" && (
-                        <button
-                          data-testid={`copilot-send-qc-${i}`}
-                          onClick={() => { emitDescriptionInsert("qc", m.text); toast.success("Sent to QC description"); }}
-                          className="copilot-send-to-btn copilot-send-to-btn--qc"
-                        >
-                          <ClipboardCheck className="h-3 w-3" /> Send to QC
-                        </button>
-                      )}
-                      {m.form_insert === "safety" && (
-                        <button
-                          data-testid={`copilot-send-safety-${i}`}
-                          onClick={() => { emitDescriptionInsert("safety", m.text); toast.success("Sent to Safety description"); }}
-                          className="copilot-send-to-btn copilot-send-to-btn--safety"
-                        >
-                          <ShieldAlert className="h-3 w-3" /> Send to Safety
                         </button>
                       )}
                     </div>
