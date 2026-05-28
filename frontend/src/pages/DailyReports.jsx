@@ -13,7 +13,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
+import { setActiveDailyReportId, subscribeDescriptionInsert, emitDescriptionInsert } from "../lib/copilotContext";
 import { localTodayISO, formatDateDisplay } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import { confirmAction } from "../lib/confirmAction";
@@ -57,7 +57,7 @@ import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
   Lock, CheckCircle2, ChevronLeft, ChevronRight, Trash2, Wand2, Pencil, Sparkles, Loader2,
-  Upload, FileSpreadsheet,
+  Upload, FileSpreadsheet, Pin, Copy as CopyIcon,
 } from "lucide-react";
 // Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
 // AI analysis lands (3-5s wait). Imported as a default export from
@@ -3728,6 +3728,51 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   // includes it on the /photo-tags POST.
   const [addReason, setAddReason] = useState("");
 
+  // pt.54 (2026-05-28): Photo AI Review — pin uploaded photos, run a
+  // Safety / QC review (POST /photo-tray/review), and get one short
+  // narrative + severity back. Newest review shows in full; older ones
+  // collapse to a single line, re-openable in a dialog to edit / copy /
+  // send into a Safety event or QC issue (via emitDescriptionInsert,
+  // the same pub/sub the events panels subscribe to).
+  const [pinned, setPinned] = useState(() => new Set());
+  const [reviews, setReviews] = useState([]);       // {id,lens,severity,label,text,n,ids,time}
+  const [runningLens, setRunningLens] = useState(null);
+  const [collapsedIds, setCollapsedIds] = useState(() => new Set());
+  const [dialogId, setDialogId] = useState(null);
+  const pinnedIds = [...pinned];
+  const togglePin = (id) => setPinned((s) => {
+    const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const runReview = async (lens) => {
+    if (!pinnedIds.length || runningLens) return;
+    setRunningLens(lens);
+    try {
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: pinnedIds, lens });
+      setReviews((r) => [{
+        id: `${Date.now()}`, lens, severity: data.severity, label: data.label,
+        text: data.text, n: data.photo_count, ids: pinnedIds,
+        time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      }, ...r]);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Review failed — try again.");
+    } finally { setRunningLens(null); }
+  };
+  const setReviewText = (id, text) => setReviews((r) => r.map((x) => x.id === id ? { ...x, text } : x));
+  const sendReview = (rev) => {
+    const tag = `[${rev.lens === "safety" ? "Safety" : "QC"} review${rev.label ? ` · ${rev.label}` : ""}] `;
+    emitDescriptionInsert(rev.lens, tag + (rev.text || ""));
+    toast.success(rev.lens === "safety"
+      ? "Sent to Safety — text added to the event description below."
+      : "Sent to QC — text added to the issue description below.");
+    setDialogId(null);
+  };
+  const sevStyle = (s) => s === "clear"
+    ? { color: "#7ee0bf", background: "rgba(16,185,129,.14)" }
+    : (s === "critical" || s === "major")
+      ? { color: "#fda4af", background: "rgba(251,113,133,.14)" }
+      : { color: "#fcd9a1", background: "rgba(245,158,11,.14)" };
+  const dialogReview = reviews.find((r) => r.id === dialogId) || null;
+
   // Poll the tray's /ai-analysis until status leaves "pending"/"analyzing"
   // or we hit the time cap. We never fail the upload on AI errors;
   // worst case the wizard opens without AI defaults and the user tags
@@ -3823,12 +3868,125 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   return (
     <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}>
       <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
-        {rows.map((p) => (
-          <AuthPhoto key={p.id} photo={p}
-            locked={locked} dailyReportId={dailyReportId} reload={reload} />
-        ))}
+        {rows.map((p) => {
+          const isPinned = pinned.has(p.id);
+          return (
+            <div key={p.id} className={`relative rounded ${isPinned ? "ring-2 ring-emerald-500" : ""}`}>
+              <AuthPhoto photo={p}
+                locked={locked} dailyReportId={dailyReportId} reload={reload} />
+              <button type="button" data-testid={`photo-pin-${p.id}`}
+                onClick={() => togglePin(p.id)}
+                title={isPinned ? "Unpin from review" : "Pin for AI review"}
+                className="absolute top-1 right-1 h-6 w-6 grid place-items-center rounded-full transition z-10"
+                style={isPinned
+                  ? { background: "#10b981", color: "#06281d", border: "1px solid transparent" }
+                  : { background: "rgba(10,10,11,.6)", color: "#fff", border: "1px solid rgba(255,255,255,.28)" }}>
+                <Pin className="h-3 w-3" />
+              </button>
+            </div>
+          );
+        })}
         {!rows.length && <div className="col-span-full text-xs text-slate-400 py-4 text-center">No photos yet.</div>}
       </div>
+
+      {rows.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: "var(--v4-fg-primary)" }}>
+              <span className="h-2 w-2 rounded-full" style={{ background: pinnedIds.length ? "#10b981" : "var(--v4-fg-faint)" }} />
+              {pinnedIds.length} pinned
+            </span>
+            <button type="button" className="text-[11px] px-2 py-1 rounded border"
+              style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
+              onClick={() => setPinned(new Set(rows.map((p) => p.id)))}>Pin all</button>
+            <button type="button" className="text-[11px] px-2 py-1 rounded border"
+              style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
+              onClick={() => setPinned(new Set())}>Clear</button>
+            <span className="flex-1" />
+            <button type="button" data-testid="photo-review-safety" disabled={!pinnedIds.length || !!runningLens}
+              onClick={() => runReview("safety")}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
+              style={{ background: "rgba(245,158,11,.14)", color: "#fcd9a1", border: "1px solid rgba(245,158,11,.35)" }}>
+              {runningLens === "safety" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />} Safety review
+            </button>
+            <button type="button" data-testid="photo-review-qc" disabled={!pinnedIds.length || !!runningLens}
+              onClick={() => runReview("qc")}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
+              style={{ background: "rgba(56,189,248,.14)", color: "#bce6fb", border: "1px solid rgba(56,189,248,.35)" }}>
+              {runningLens === "qc" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ClipboardCheck className="h-3.5 w-3.5" />} QC review
+            </button>
+          </div>
+
+          {(reviews.length > 0 || runningLens) && (
+            <div className="mt-3 space-y-2">
+              {runningLens && (
+                <div className="flex items-center gap-2 text-xs px-3 py-2 rounded"
+                  style={{ color: "var(--v4-fg-muted)", background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)" }}>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Foreman is reviewing {pinnedIds.length} photo{pinnedIds.length !== 1 ? "s" : ""} for {runningLens === "safety" ? "safety" : "QC"}…
+                </div>
+              )}
+              {reviews.map((rev, idx) => {
+                const full = idx === 0 && !collapsedIds.has(rev.id);
+                const isSafety = rev.lens === "safety";
+                const accent = isSafety ? "#fcd9a1" : "#bce6fb";
+                const sendStyle = isSafety
+                  ? { background: "rgba(245,158,11,.14)", color: "#fcd9a1", border: "1px solid rgba(245,158,11,.35)" }
+                  : { background: "rgba(56,189,248,.14)", color: "#bce6fb", border: "1px solid rgba(56,189,248,.35)" };
+                if (!full) {
+                  return (
+                    <button key={rev.id} type="button" onClick={() => setDialogId(rev.id)}
+                      data-testid={`photo-review-mini-${rev.id}`}
+                      className="w-full flex items-center gap-2 text-left px-3 py-2 rounded text-xs"
+                      style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)" }}>
+                      <span className="inline-flex items-center gap-1 font-semibold shrink-0" style={{ color: accent }}>
+                        {isSafety ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{isSafety ? "Safety" : "QC"}
+                      </span>
+                      <span className="rounded-full px-2 py-0.5 font-semibold shrink-0" style={sevStyle(rev.severity)}>{rev.label}</span>
+                      <span className="flex-1 truncate" style={{ color: "var(--v4-fg-muted)" }}>{rev.text}</span>
+                      <span className="shrink-0" style={{ color: "var(--v4-fg-faint)" }}>{rev.n} photo{rev.n !== 1 ? "s" : ""} · {rev.time}</span>
+                      <span className="font-semibold shrink-0" style={{ color: "#10b981" }}>Open ›</span>
+                    </button>
+                  );
+                }
+                return (
+                  <div key={rev.id} className="rounded overflow-hidden"
+                    style={{ background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)", borderLeft: `3px solid ${isSafety ? "#f59e0b" : "#38bdf8"}` }}>
+                    <div className="flex items-center gap-2 px-3 py-2 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
+                      <span className="inline-flex items-center gap-1.5 text-xs font-bold" style={{ color: accent }}>
+                        {isSafety ? <ShieldAlert className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}{isSafety ? "Safety review" : "QC review"}
+                      </span>
+                      <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {rev.n} photo{rev.n !== 1 ? "s" : ""}</span>
+                      <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={sevStyle(rev.severity)}>{rev.label}</span>
+                      <span className="ml-auto text-[11px]" style={{ color: "var(--v4-fg-faint)" }}>{rev.time}</span>
+                      <button type="button" title="Collapse" onClick={() => setCollapsedIds((s) => new Set(s).add(rev.id))}
+                        className="text-sm leading-none px-1" style={{ color: "var(--v4-fg-faint)" }}>▴</button>
+                    </div>
+                    <div className="px-3 py-2">
+                      <p className="text-[13px] leading-relaxed" style={{ color: "var(--v4-fg-primary)" }}>{rev.text}</p>
+                      <div className="flex items-center gap-2 flex-wrap mt-3 pt-2" style={{ borderTop: "1px solid var(--v4-border)" }}>
+                        <button type="button" onClick={() => sendReview(rev)}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5" style={sendStyle}>
+                          {isSafety ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{isSafety ? "Send to Safety" : "Send to QC"}
+                        </button>
+                        <button type="button" onClick={() => setDialogId(rev.id)}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
+                          style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                          <Pencil className="h-3.5 w-3.5" /> Edit
+                        </button>
+                        <button type="button" onClick={() => { navigator.clipboard?.writeText(rev.text); toast.success("Review copied"); }}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
+                          style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                          <CopyIcon className="h-3.5 w-3.5" /> Copy
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
       {/* Bucket F Phase 4 -- "Preparing tag suggestions…" spinner
           renders inline below the gallery while the upload waits for
           AI analysis to land. Cap is 6s; the user can keep working
@@ -3885,6 +4043,49 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             setAiPrepStatus(null);
           }}
         />
+      )}
+      {dialogReview && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-6"
+          style={{ background: "rgba(0,0,0,.6)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setDialogId(null); }}>
+          <div className="w-full max-w-[560px] rounded-xl overflow-hidden"
+            style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)", boxShadow: "0 8px 28px rgba(0,0,0,.45)" }}>
+            <div className="flex items-center gap-2 px-4 py-3 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
+              <span className="inline-flex items-center gap-1.5 text-sm font-bold"
+                style={{ color: dialogReview.lens === "safety" ? "#fcd9a1" : "#bce6fb" }}>
+                {dialogReview.lens === "safety" ? <ShieldAlert className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}{dialogReview.lens === "safety" ? "Safety review" : "QC review"}
+              </span>
+              <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {dialogReview.n} photo{dialogReview.n !== 1 ? "s" : ""}</span>
+              <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={sevStyle(dialogReview.severity)}>{dialogReview.label}</span>
+              <button type="button" onClick={() => setDialogId(null)} className="ml-auto text-base leading-none px-1"
+                style={{ color: "var(--v4-fg-faint)" }}>✕</button>
+            </div>
+            <div className="px-4 py-3">
+              <textarea value={dialogReview.text} data-testid="photo-review-edit"
+                onChange={(e) => setReviewText(dialogReview.id, e.target.value)}
+                rows={6} className="w-full rounded p-3 text-[13px] leading-relaxed dr-mp-input" />
+              <p className="text-[11px] mt-2" style={{ color: "var(--v4-fg-faint)" }}>
+                Edit before sending — it carries the “{dialogReview.label}” severity through.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--v4-border)" }}>
+              <button type="button" onClick={() => { navigator.clipboard?.writeText(dialogReview.text); toast.success("Review copied"); }}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
+                style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                <CopyIcon className="h-3.5 w-3.5" /> Copy
+              </button>
+              <span className="flex-1" />
+              <button type="button" onClick={() => sendReview(dialogReview)}
+                data-testid="photo-review-send"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
+                style={dialogReview.lens === "safety"
+                  ? { background: "rgba(245,158,11,.14)", color: "#fcd9a1", border: "1px solid rgba(245,158,11,.35)" }
+                  : { background: "rgba(56,189,248,.14)", color: "#bce6fb", border: "1px solid rgba(56,189,248,.35)" }}>
+                {dialogReview.lens === "safety" ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{dialogReview.lens === "safety" ? "Send to Safety" : "Send to QC"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </PanelShell>
   );
