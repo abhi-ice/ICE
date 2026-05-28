@@ -1073,6 +1073,32 @@ async def analyze_single(
     )
 
 
+# Photo Review (pt.53, 2026-05-28) -- on-demand Safety / QC review across
+# the photos a super pinned on a daily report. Returns one narrative +
+# severity for the DR Photos panel to render and push into an event.
+class _PhotoReviewPayload(_AiStrictModel):
+    tray_ids: list[str] = _AiField(default_factory=list)
+    lens: str = "safety"  # "safety" | "qc"
+
+
+@router.post("/photo-tray/review")
+async def photo_review(
+    payload: _PhotoReviewPayload, ctx: dict = Depends(require_tenant),
+):
+    if payload.lens not in ("safety", "qc"):
+        raise HTTPException(400, "lens must be 'safety' or 'qc'")
+    if not payload.tray_ids:
+        raise HTTPException(400, "Pin at least one photo to review")
+    from services.photo_ai import review_photos
+    result = await review_photos(
+        tenant_id=ctx["tenant_id"], tray_ids=payload.tray_ids,
+        lens=payload.lens, actor_id=ctx["user"]["id"],
+    )
+    if not result.get("ok"):
+        raise HTTPException(422, result.get("reason") or "review_failed")
+    return result
+
+
 # (2) POST /api/photo-tray/batch-analyze (admin/PM only)
 @router.post("/photo-tray/batch-analyze")
 async def analyze_batch(

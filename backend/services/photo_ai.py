@@ -1204,6 +1204,192 @@ async def _persist_dedup_reuse(*, db, tray_id: str, src: dict,
     return update
 
 
+# =====================================================================
+# Photo Review (pt.53, 2026-05-28) -- on-demand multi-image Safety / QC
+# review of the photos a super PINS on a daily report. Distinct from the
+# per-photo tagging analysis above: this takes 1..N already-uploaded tray
+# photos and returns ONE short narrative + a severity, which the DR
+# "Photos" panel renders and can push into a Safety event / QC issue.
+# Reuses the same gateway transport, preprocess, CUI + budget gates.
+# =====================================================================
+_REVIEW_PROMPTS = {
+    "safety": (
+        "You are Foreman, a senior site-safety reviewer for a federal "
+        "construction general contractor. You are shown one or more job-site "
+        "photos from a single daily report. Identify genuine SAFETY issues "
+        "only — fall protection, PPE, housekeeping / trip hazards, electrical, "
+        "ladders & scaffold, struck-by, excavation, hot work, etc. Be specific "
+        "and reference what is actually visible. If the photos look clean, say "
+        "so plainly rather than inventing concerns. Respond with ONLY a JSON "
+        "object, no markdown, exactly these keys: "
+        '{"severity": one of "clear"|"minor"|"moderate"|"major"|"critical", '
+        '"label": a 1-3 word chip such as "Clear" or "2 concerns" or "1 critical", '
+        '"analysis": a plain-English summary of the requested sentence length}.'
+    ),
+    "qc": (
+        "You are Foreman, a senior quality-control reviewer for a federal "
+        "construction general contractor. You are shown one or more job-site "
+        "photos from a single daily report. Assess WORKMANSHIP and spec / "
+        "code compliance only — installation quality, spacing & supports, "
+        "seams, penetrations & firestopping, alignment, finishes, damage. Be "
+        "specific and reference what is visible. If the work looks on-spec, say "
+        "so plainly. Respond with ONLY a JSON object, no markdown, exactly "
+        "these keys: "
+        '{"severity": one of "clear"|"minor"|"moderate"|"major"|"critical", '
+        '"label": a 1-3 word chip such as "Looks clean" or "1 concern", '
+        '"analysis": a plain-English summary of the requested sentence length}.'
+    ),
+}
+
+
+def _parse_review_json(text: str) -> dict:
+    """Coerce the gateway reply into {severity, label, text}. Tolerant of
+    code fences / stray prose around the JSON object."""
+    import re
+    raw = (text or "").strip()
+    obj = {}
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            obj = {}
+    sev = str(obj.get("severity") or "").lower().strip()
+    if sev not in ("clear", "minor", "moderate", "major", "critical"):
+        sev = "moderate"
+    label = (str(obj.get("label") or "").strip()[:40]
+             or ("Clear" if sev == "clear" else "Review"))
+    analysis = str(obj.get("analysis") or obj.get("text") or "").strip()
+    if not analysis:
+        analysis = raw[:600] if raw else "No analysis was returned."
+    return {"severity": sev, "label": label, "text": analysis[:1200]}
+
+
+def _stub_review(lens: str, n: int) -> dict:
+    """Dev-mode (no EMERGENT_LLM_KEY) deterministic stub so the UI flow
+    works end-to-end locally without spending tokens."""
+    if lens == "safety":
+        return {"ok": True, "lens": "safety", "photo_count": n,
+                "severity": "moderate", "label": f"{n} concern{'s' if n != 1 else ''}",
+                "text": ("(Dev stub) Foreman would flag visible safety items here — "
+                         "fall protection, PPE, and housekeeping. Set EMERGENT_LLM_KEY "
+                         "to run the real review.")}
+    return {"ok": True, "lens": "qc", "photo_count": n,
+            "severity": "minor", "label": "1 concern",
+            "text": ("(Dev stub) Foreman would assess workmanship against spec — "
+                     "spacing, supports, and seams. Set EMERGENT_LLM_KEY to run the "
+                     "real review.")}
+
+
+async def _call_vision_review(
+    *, jpeg_list: list, lens: str, n: int,
+    model: str = DEFAULT_MODEL, timeout_seconds: float = 55.0,
+) -> dict:
+    """Single multi-image gateway call for a Safety/QC review. Mirrors the
+    transport + response-extraction of _call_anthropic_vision but sends N
+    images and the review system prompt."""
+    api_key = _anthropic_api_key()
+    if not api_key:
+        raise VisionApiError("no EMERGENT_LLM_KEY configured", subtype="no_api_key")
+    from emergentintegrations.llm.chat import (
+        LlmChat, UserMessage, ImageContent,
+    )
+    session_id = f"photo-review-{int(asyncio.get_event_loop().time()*1000)}"
+    chat = LlmChat(
+        api_key=api_key, session_id=session_id,
+        system_message=_REVIEW_PROMPTS[lens],
+    ).with_model("anthropic", model)
+    contents = [
+        ImageContent(image_base64=base64.standard_b64encode(j).decode("ascii"))
+        for j in jpeg_list
+    ]
+    sent = "2-3 sentences" if n == 1 else ("3-4 sentences" if n <= 3 else "4-6 sentences")
+    user_message = UserMessage(
+        text=(f"Review these {n} site photo(s). Keep the analysis to {sent}. "
+              f"Respond ONLY with the JSON object."),
+        file_contents=contents,
+    )
+    resp_obj = await asyncio.wait_for(
+        chat.send_message(user_message), timeout=timeout_seconds,
+    )
+    if isinstance(resp_obj, str):
+        text = resp_obj.strip()
+    elif hasattr(resp_obj, "text"):
+        text = str(getattr(resp_obj, "text") or "").strip()
+    elif hasattr(resp_obj, "content"):
+        text = str(getattr(resp_obj, "content") or "").strip()
+    else:
+        text = str(resp_obj).strip()
+    return _parse_review_json(text)
+
+
+async def review_photos(
+    *, tenant_id: str, tray_ids: list, lens: str,
+    actor_id: Optional[str] = None,
+) -> dict:
+    """Run a Safety or QC review across the pinned tray photos. Returns
+    {ok, lens, photo_count, severity, label, text} or {ok:False, reason}."""
+    db = get_db()
+    lens = (lens or "").lower().strip()
+    if lens not in ("safety", "qc"):
+        return {"ok": False, "reason": "bad_lens"}
+    ids = [str(t) for t in (tray_ids or []) if t][:8]  # cap at 8 images / call
+    if not ids:
+        return {"ok": False, "reason": "no_photos"}
+    trays = await db.photo_tray.find(
+        tenant_filter(tenant_id, {"id": {"$in": ids}}), {"_id": 0},
+    ).to_list(length=8)
+    if not trays:
+        return {"ok": False, "reason": "no_photos_found"}
+
+    project_id = next((t.get("project_id") for t in trays if t.get("project_id")), None)
+    gate = await check_cui_safety(tenant_id=tenant_id, project_id=project_id)
+    if not gate.get("safe_to_analyze"):
+        return {"ok": False, "reason": gate.get("reason") or "ai_disabled"}
+    budget = await check_budget(tenant_id=tenant_id)
+    if not budget.get("budget_ok"):
+        return {"ok": False, "reason": budget.get("reason") or "budget_exceeded"}
+
+    images = []
+    for tray in trays:
+        sk = tray.get("storage_key")
+        if not sk:
+            continue
+        try:
+            blob, _ct = await cached_get_object(sk)
+            jpeg, _mt, _meta = _preprocess_image_for_vision(blob)
+            images.append(jpeg)
+        except Exception:
+            continue
+    if not images:
+        return {"ok": False, "reason": "no_readable_images"}
+    n = len(images)
+
+    if _is_dev_mode():
+        return _stub_review(lens, n)
+    try:
+        parsed = await _call_vision_review(jpeg_list=images, lens=lens, n=n)
+    except Exception as exc:
+        log.warning("photo_ai: review failed (%s): %s",
+                    type(exc).__name__, exc)
+        return {"ok": False, "reason": "ai_error", "detail": str(exc)[:200]}
+
+    try:
+        from audit import write_audit
+        await write_audit(
+            tenant_id=tenant_id, table_name="photo_tray", op="PHOTO_REVIEW",
+            record_id=ids[0], before=None,
+            after={"lens": lens, "tray_ids": ids,
+                   "severity": parsed.get("severity"),
+                   "photo_count": n, "actor_id": actor_id},
+            actor_id=actor_id, request_id=f"photo_review_{ids[0]}_{lens}",
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "lens": lens, "photo_count": n, **parsed}
+
+
 async def analyze_photo(
     *, tenant_id: str, tray_id: str,
     actor_id: Optional[str] = None,
