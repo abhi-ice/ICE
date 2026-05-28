@@ -1841,7 +1841,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
           <thead>
             <tr>
               <th>Company</th>
-              <th>Trade</th>
+              <th>Trade <span className="text-rose-500">*</span></th>
               <th title="Optional: link this crew to a scheduled activity on today's DR">Task</th>
               <th>Headcount</th>
               <th>Hrs/person</th>
@@ -1860,21 +1860,21 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                     <MpSelect testid={`presence-company-${r.id}`} className="w-44"
                       value={r.company_name || ""} disabled={locked}
                       onValueChange={(v) => patch(r.id, { company_name: v })}
-                      placeholder="Company"
+                      placeholder=""
                       options={companyOptions(r.company_name)} />
                   </td>
                   <td>
                     <MpSelect testid={`presence-trade-${r.id}`} className="w-36"
                       value={r.trade || ""} disabled={locked}
                       onValueChange={(v) => patch(r.id, { trade: v })}
-                      placeholder="Trade"
+                      placeholder=""
                       options={tradeOptions(r.trade)} />
                   </td>
                   <td>
                     <MpSelect testid={`presence-task-${r.id}`} className="min-w-[150px]"
-                      value={r.schedule_activity_id || MP_NONE} disabled={locked}
+                      value={r.schedule_activity_id || ""} disabled={locked}
                       onValueChange={(v) => patch(r.id, { schedule_activity_id: v === MP_NONE ? null : v })}
-                      placeholder="— none —"
+                      placeholder=""
                       options={taskSelectOptions} />
                   </td>
                   <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
@@ -1903,7 +1903,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       <MpSelect testid={`presence-draft-company-${idx}`} className="w-44"
                         value={d.company_name || ""}
                         onValueChange={(v) => setDraftField(idx, "company_name", v)}
-                        placeholder="Company"
+                        placeholder=""
                         options={companyOptions(d.company_name)} />
                     ) : (
                       <div className="w-44">
@@ -1919,14 +1919,14 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                     <MpSelect testid={`presence-draft-trade-${idx}`} className="w-36"
                       value={d.trade || ""}
                       onValueChange={(v) => setDraftField(idx, "trade", v)}
-                      placeholder="Trade *"
+                      placeholder=""
                       options={tradeOptions(d.trade)} />
                   </td>
                   <td>
                     <MpSelect testid={`presence-draft-task-${idx}`} className="min-w-[150px]"
-                      value={d.schedule_activity_id || MP_NONE}
+                      value={d.schedule_activity_id || ""}
                       onValueChange={(v) => setDraftField(idx, "schedule_activity_id", v === MP_NONE ? "" : v)}
-                      placeholder="— none —"
+                      placeholder=""
                       options={taskSelectOptions} />
                   </td>
                   <td>
@@ -1943,7 +1943,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   <td>
                     <input data-testid={`presence-draft-notes-${idx}`} value={d.notes}
                       onChange={(e) => setDraftField(idx, "notes", e.target.value)}
-                      placeholder="Notes"
+                      placeholder=""
                       className="w-44 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
                   </td>
                   <td>
