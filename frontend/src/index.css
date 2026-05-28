@@ -2677,6 +2677,22 @@ html[data-theme="light"] [data-radix-popper-content-wrapper] > * {
 }
 .dr-mp-input--draft::placeholder { color: rgba(16, 185, 129, 0.55); }
 
+/* pt.45.1 (2026-05-27): hide the browser-native datalist arrow that
+   Chrome / Edge render on hover for <input list="...">. pt.45 added
+   a visible ChevronDown icon ourselves for visual affordance; the
+   native arrow on top made two arrows show at once. Scoped to inputs
+   bound to a datalist so plain text inputs aren't affected.
+   Firefox doesn't render the native arrow at all, so this rule is a
+   Chrome/Edge / Safari fix that's harmless on Firefox. */
+input[list]::-webkit-calendar-picker-indicator {
+    display: none !important;
+    opacity: 0 !important;
+}
+input[list]::-webkit-list-button {
+    display: none !important;
+    opacity: 0 !important;
+}
+
 /* --- Events tabs strip — replaces pale-emerald that "looked like a
    defect". Active tab now has a stronger emerald fill + white text
    so it reads as a real selection in both themes. ----------------- */
