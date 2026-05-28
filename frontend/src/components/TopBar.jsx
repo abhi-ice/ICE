@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, LogOut, User2, Trash2, Sun, Moon } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, LogOut, User2, Trash2, Sun, Moon, Building2 } from "lucide-react";
 import { getUser, getTenant, clearAuth } from "../lib/auth";
 import { toast } from "./ui/sonner";
 import { useProjects } from "../lib/projects";
@@ -22,12 +22,7 @@ export default function TopBar() {
   const [user] = useState(getUser());
   const [tenant] = useState(getTenant());
   const { projects, activeId, setActiveId } = useProjects();
-  const [tenants, setTenants] = useState([]);
   const { theme, toggle: toggleTheme } = useTheme();
-
-  useEffect(() => {
-    api.get("/auth/tenants").then(({ data }) => setTenants(data)).catch(() => {});
-  }, []);
 
   const initials = (user?.full_name || "U")
     .split(" ")
@@ -43,16 +38,15 @@ export default function TopBar() {
       // horizontal padding, 10px gap, sticky.
       className="v4-topbar h-[52px] flex items-center gap-2.5 px-3.5 sticky top-0 z-10"
     >
-      <Select value={tenant?.id} onValueChange={() => {}}>
-        <SelectTrigger className="v4-topbar-select h-8 w-[140px] text-xs" data-testid="tenant-switcher">
-          <SelectValue placeholder="Tenant" />
-        </SelectTrigger>
-        <SelectContent>
-          {tenants.map((t) => (
-            <SelectItem key={t.id} value={t.id}>{t.display_name}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      {/* pt.59 (2026-05-28): the tenant "switcher" was a no-op dropdown
+          (one user = one tenant; switching was never wired). Replaced with
+          a static org label — new orgs are created via /signup, not here. */}
+      <div data-testid="tenant-label" title={tenant?.display_name || ""}
+        className="v4-topbar-tenant flex items-center gap-1.5 h-8 px-2 text-xs font-medium"
+        style={{ color: "rgba(255,255,255,0.82)" }}>
+        <Building2 className="h-3.5 w-3.5" style={{ opacity: 0.65 }} />
+        <span className="truncate max-w-[150px]">{tenant?.display_name || "—"}</span>
+      </div>
 
       <Select value={activeId || ""} onValueChange={(v) => setActiveId(v)}>
         <SelectTrigger className="v4-topbar-select h-8 w-[230px] text-xs" data-testid="project-switcher">
