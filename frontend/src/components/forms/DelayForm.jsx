@@ -21,6 +21,7 @@ import { isMasterTaskComplete } from "../../lib/taskCompletion";
 // yet). User role drives Accept/Reject role-gating via the
 // authorized_confirmer_roles list on each suggestion.
 import JigsawField from "./JigsawField";
+import FieldLabel from "./FieldLabel";
 import { getUser } from "../../lib/auth";
 // Bucket D Corrective (2026-05-08) -- DrActivityPicker import removed.
 // The duplicate "Affected activities (optional)" picker that briefly
@@ -29,13 +30,28 @@ import { getUser } from "../../lib/auth";
 // always the source of truth.
 
 const SEVERITY_OPTS = ["minor", "moderate", "major", "critical"];
-const REASON_OPTS = ["weather", "rfi_pending", "submittal_pending", "design_change",
-                     "site_condition", "manpower", "owner_caused", "sub_caused",
-                     "concealed_condition", "other"];
 const STATUS_OPTS = ["open", "in_progress", "resolved"];
 
-// Followup-fix 7 (2026-05-07): owner attribution + cause class -- same
-// vocabulary as gating_entities so TIA Section 4 (Owner Attribution
+// pt.49 (2026-05-28): merged the old "Category" (reason_category) and
+// "Cause class" dropdowns into ONE "Cause" field. They duplicated each
+// other (design_change / concealed_condition / site_condition lived in
+// both), and the who-flavored Category values (owner_caused / sub_caused)
+// just restated Owner attribution. This union keeps every distinct cause
+// from both lists, drops the who-values, and is stored in cause_class
+// (the claims-engine field) + mirrored into reason_category so the voice /
+// recovery / export readers still resolve. cause_class is a free string
+// server-side, so the added values (weather, manpower, ...) need no
+// backend change.
+const CAUSE_OPTS = [
+  "weather", "differing_site_condition", "concealed_condition",
+  "design_clarification", "design_change", "rfi_pending", "submittal_pending",
+  "procurement", "manpower", "utility", "regulatory",
+  "tenant_coordination", "building_coordination", "other",
+];
+
+// Owner attribution -- WHO is responsible. pt.49: optional for field
+// supers; the office / PM (or AI) sets it for the formal claim rollup.
+// Same vocabulary as gating_entities so TIA Section 4 (Owner Attribution
 // Summary) rolls up consistently across delays and gates.
 const OWNER_ATTRIBUTION_OPTS = [
   { value: "none", label: "(no specific attribution)" },
@@ -45,11 +61,6 @@ const OWNER_ATTRIBUTION_OPTS = [
   { value: "sub", label: "Subcontractor" },
   { value: "external_authority", label: "External Authority (utility, regulator)" },
   { value: "tenant", label: "Tenant" },
-];
-const CAUSE_CLASS_OPTS = [
-  "design_clarification", "design_change", "differing_site_condition",
-  "concealed_condition", "tenant_coordination", "building_coordination",
-  "regulatory", "utility", "procurement", "other",
 ];
 
 // Bucket D Addition 5 (2026-05-12) -- new `isLocked` + `lockedAddReason`
@@ -102,12 +113,13 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     // but our client always sends the selected value (never empty)
     // because the validation gate runs first.
     severity: initial?.severity || "",
-    reason_category: initial?.reason_category || "",
     status: initial?.status || "",
     resolved_date: initial?.resolved_date || "",
     resolved_note: initial?.resolved_note || "",
     owner_attribution: initial?.owner_attribution || "",
-    cause_class: initial?.cause_class || "",
+    // pt.49: single merged Cause. Read from cause_class (canonical) with a
+    // fallback to a legacy reason_category value so older delays still show.
+    cause: initial?.cause_class || initial?.reason_category || "",
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
   const [busy, setBusy] = useState(false);
@@ -175,9 +187,8 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     if (!initial?.id) return false;
     if ((form.description || "") !== (initial.description || "")) return true;
     if ((form.severity || "") !== (initial.severity || "")) return true;
-    if ((form.reason_category || "") !== (initial.reason_category || "")) return true;
     if ((form.owner_attribution || "") !== (initial.owner_attribution || "")) return true;
-    if ((form.cause_class || "") !== (initial.cause_class || "")) return true;
+    if ((form.cause || "") !== (initial.cause_class || initial.reason_category || "")) return true;
     const initImpacts = initial.per_task_impacts || [];
     if (form.impacts.length !== initImpacts.length) return true;
     const initBy = Object.fromEntries(
@@ -244,9 +255,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     // so we don't end up with false "moderate / weather" data on
     // unattended logs.
     if (!form.severity) { toast.error("Severity is required"); return; }
-    if (!form.reason_category) { toast.error("Category is required"); return; }
-    if (!form.owner_attribution) { toast.error("Owner attribution is required"); return; }
-    if (!form.cause_class) { toast.error("Cause class is required"); return; }
+    if (!form.cause) { toast.error("Cause is required"); return; }
+    // pt.49: Owner attribution is now optional for field supers — the
+    // office / PM (or AI) sets it later for the formal claim rollup, so
+    // it's intentionally NOT gated here.
     if (!form.status) { toast.error("Status is required"); return; }
     if (!form.impacts.length) { toast.error("Link at least one task"); return; }
     // Bucket D Addition 5 -- client-side add-reason gate. Uniform
@@ -272,13 +284,16 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       const payload = {
         description: form.description,
         severity: form.severity,
-        reason_category: form.reason_category,
         status: form.status,
-        // Followup-fix 7 (2026-05-07): owner attribution + cause class
-        // included on every save (create + edit). Backend accepts both
-        // on DelayCreate and DelayUpdate.
-        owner_attribution: form.owner_attribution,
-        cause_class: form.cause_class,
+        // pt.49: the merged Cause is stored in cause_class (the claims-engine
+        // field used by TIA + gating entities) AND mirrored into
+        // reason_category, so the voice / recovery / export readers that key
+        // off reason_category keep resolving. Owner attribution is optional
+        // now; default to "none" when the super leaves it blank, which TIA
+        // already renders as "no attribution".
+        cause_class: form.cause,
+        reason_category: form.cause,
+        owner_attribution: form.owner_attribution || "none",
         linked_task_ids: form.impacts.map((i) => i.task_id),
         per_task_impacts: form.impacts.map((i) => ({
           task_id: i.task_id,
@@ -344,7 +359,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
   return (
     <div data-testid="delay-form" className="space-y-3">
       <div>
-        <label className="text-xs text-slate-500">What happened? *</label>
+        <FieldLabel required>What happened?</FieldLabel>
         <JigsawField entityType="delay" entityId={entityId}
           fieldPath="description" userRole={userRole}
           fieldLabel="description"
@@ -362,7 +377,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-slate-500">Severity</label>
+          <FieldLabel required>Severity</FieldLabel>
           <JigsawField entityType="delay" entityId={entityId}
             fieldPath="severity" userRole={userRole}
             fieldLabel="severity"
@@ -376,30 +391,32 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           </JigsawField>
         </div>
         <div>
-          <label className="text-xs text-slate-500">Category</label>
+          {/* pt.49: merged Cause (was Category + Cause class). Bound to
+              cause_class via Jigsaw; mirrored to reason_category on save. */}
+          <FieldLabel required title="What type of delay this was (merged the old Category + Cause class)">Cause</FieldLabel>
           <JigsawField entityType="delay" entityId={entityId}
-            fieldPath="reason_category" userRole={userRole}
-            fieldLabel="category"
-            onConfirm={(v) => setForm({ ...form, reason_category: String(v ?? form.reason_category) })}>
-            <select data-testid="delay-form-category" value={form.reason_category}
-              onChange={(e) => setForm({ ...form, reason_category: e.target.value })}
+            fieldPath="cause_class" userRole={userRole}
+            fieldLabel="cause"
+            onConfirm={(v) => setForm({ ...form, cause: String(v ?? form.cause) })}>
+            <select data-testid="delay-form-cause" value={form.cause}
+              onChange={(e) => setForm({ ...form, cause: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
               <option value="">— select —</option>
-              {REASON_OPTS.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
+              {CAUSE_OPTS.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
             </select>
           </JigsawField>
         </div>
       </div>
 
-      {/* Followup-fix 7 (2026-05-07): owner attribution + cause class.
-          Both default to permissive values ("none" / "other") so a hurried
-          user can still save a delay without a forced choice; TIA Section 4
-          surfaces "no attribution" when left at default. */}
+      {/* pt.49: Owner attribution is optional now (formal claim field) and
+          stands alone — the old "Cause class" half merged into the single
+          "Cause" dropdown above. Left blank -> saved as "none", which TIA
+          Section 4 renders as "no attribution". */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-slate-500" title="Who is responsible for the delay event">
+          <FieldLabel optional title="Who is responsible for the delay event — usually set by the office/PM (or AI) for the formal claim rollup">
             Owner attribution
-          </label>
+          </FieldLabel>
           <JigsawField entityType="delay" entityId={entityId}
             fieldPath="owner_attribution" userRole={userRole}
             fieldLabel="owner_attribution"
@@ -414,28 +431,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             </select>
           </JigsawField>
         </div>
-        <div>
-          <label className="text-xs text-slate-500" title="Why the delay occurred (matches gating-entity vocabulary)">
-            Cause class
-          </label>
-          <JigsawField entityType="delay" entityId={entityId}
-            fieldPath="cause_class" userRole={userRole}
-            fieldLabel="cause_class"
-            onConfirm={(v) => setForm({ ...form, cause_class: String(v ?? form.cause_class) })}>
-            <select data-testid="delay-form-cause-class" value={form.cause_class}
-              onChange={(e) => setForm({ ...form, cause_class: e.target.value })}
-              className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
-              <option value="">— select —</option>
-              {CAUSE_CLASS_OPTS.map((c) => (
-                <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
-              ))}
-            </select>
-          </JigsawField>
-        </div>
       </div>
 
       <div>
-        <label className="text-xs text-slate-500">Linked tasks *</label>
+        <FieldLabel required>Linked tasks</FieldLabel>
         <div className="mt-1 space-y-2">
           {form.impacts.map((imp) => {
             const t = taskById[imp.task_id];
@@ -519,7 +518,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           build duplicate that confused the form. */}
 
       <div>
-        <label className="text-xs text-slate-500">Status</label>
+        <FieldLabel required>Status</FieldLabel>
         <select data-testid="delay-form-status" value={form.status}
           onChange={(e) => setForm({ ...form, status: e.target.value })}
           className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
@@ -531,14 +530,14 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       {form.status === "resolved" && (
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-slate-500">Resolved date</label>
+            <FieldLabel optional>Resolved date</FieldLabel>
             <input data-testid="delay-form-resolved-date" type="date"
               value={form.resolved_date || ""}
               onChange={(e) => setForm({ ...form, resolved_date: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm" />
           </div>
           <div>
-            <label className="text-xs text-slate-500">Resolution note</label>
+            <FieldLabel optional>Resolution note</FieldLabel>
             <input data-testid="delay-form-resolved-note" type="text"
               value={form.resolved_note || ""}
               onChange={(e) => setForm({ ...form, resolved_note: e.target.value })}
