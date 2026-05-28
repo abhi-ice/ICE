@@ -2741,6 +2741,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
   return (
     <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <div className="surface p-2 flex items-center gap-2 flex-wrap">
         <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1">
             {TABS.map((t) => {
               const Icon = t.icon;
@@ -2759,6 +2760,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
               );
             })}
         </TabsList>
+        </div>
         <TabsContent value="delays" className="mt-3" data-testid="dr-events-tab-content-delays">
           <DelaysPanel rows={delays} dailyReportId={dailyReportId} projectId={projectId}
                        reportDate={reportDate} locked={locked} reload={reload} />
@@ -2939,7 +2941,7 @@ function DelayRowInline({ delay, reload, locked, dailyReportId }) {
 function ReminderBanner({ reminders, reload }) {
   if (!reminders?.length) return null;
   return (
-    <div data-testid="dr-reminder-banner" className="surface p-4 border-l-4 border-amber-400 bg-amber-50/40">
+    <div data-testid="dr-reminder-banner" className="surface p-4 mb-6 border-l-4 border-amber-400 bg-amber-50/40">
       <div className="flex items-center gap-2 mb-2">
         <AlertTriangle className="h-4 w-4 text-amber-600" />
         <div className="font-medium text-sm text-amber-900">Open delay reminders</div>
