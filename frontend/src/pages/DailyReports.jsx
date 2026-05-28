@@ -13,7 +13,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { setActiveDailyReportId, subscribeDescriptionInsert, emitDescriptionInsert } from "../lib/copilotContext";
+import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { localTodayISO, formatDateDisplay } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import { confirmAction } from "../lib/confirmAction";
@@ -3057,12 +3057,15 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
   const [busy, setBusy] = useState(false);
   // 2026-05-26 -- Activity Grid Issues dropdown integration.
   useIssueDropdownListener("safety", "dr-safety-panel", (detail) => {
-    if (!detail.activityId) return;
-    setDraft((d) => ({
-      ...d,
-      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
-        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
-    }));
+    setDraft((d) => {
+      const next = { ...d };
+      if (detail.description) next.description = detail.description;
+      if (detail.severity) next.severity = detail.severity;
+      if (detail.activityId && !d.linked_task_ids.includes(detail.activityId)) {
+        next.linked_task_ids = [...d.linked_task_ids, detail.activityId];
+      }
+      return next;
+    });
   });
   // Phase D — copilot can push a drafted description into this form.
   useEffect(() => subscribeDescriptionInsert(({ target, text }) => {
@@ -3213,12 +3216,15 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
   const [busy, setBusy] = useState(false);
   // 2026-05-26 -- Activity Grid Issues dropdown integration.
   useIssueDropdownListener("qc", "dr-qc-panel", (detail) => {
-    if (!detail.activityId) return;
-    setDraft((d) => ({
-      ...d,
-      linked_task_ids: d.linked_task_ids.includes(detail.activityId)
-        ? d.linked_task_ids : [...d.linked_task_ids, detail.activityId],
-    }));
+    setDraft((d) => {
+      const next = { ...d };
+      if (detail.description) next.description = detail.description;
+      if (detail.severity) next.severity = detail.severity;
+      if (detail.activityId && !d.linked_task_ids.includes(detail.activityId)) {
+        next.linked_task_ids = [...d.linked_task_ids, detail.activityId];
+      }
+      return next;
+    });
   });
 
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
@@ -3732,13 +3738,15 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   // Safety / QC review (POST /photo-tray/review), and get one short
   // narrative + severity back. Newest review shows in full; older ones
   // collapse to a single line, re-openable in a dialog to edit / copy /
-  // send into a Safety event or QC issue (via emitDescriptionInsert,
-  // the same pub/sub the events panels subscribe to).
+  // send into a Safety event or QC issue (pt.56: via the dr-open-event-form
+  // event, which switches to that tab + prefills the form's description +
+  // severity, even when the Events card is on a different tab).
   const [pinned, setPinned] = useState(() => new Set());
   const [reviews, setReviews] = useState([]);       // {id,lens,severity,label,text,n,ids,time}
   const [runningLens, setRunningLens] = useState(null);
   const [collapsedIds, setCollapsedIds] = useState(() => new Set());
   const [dialogId, setDialogId] = useState(null);
+  const [previewSrc, setPreviewSrc] = useState(null);
   const pinnedIds = [...pinned];
   const togglePin = (id) => setPinned((s) => {
     const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
@@ -3759,11 +3767,21 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   };
   const setReviewText = (id, text) => setReviews((r) => r.map((x) => x.id === id ? { ...x, text } : x));
   const sendReview = (rev) => {
-    const tag = `[${rev.lens === "safety" ? "Safety" : "QC"} review${rev.label ? ` · ${rev.label}` : ""}] `;
-    emitDescriptionInsert(rev.lens, tag + (rev.text || ""));
+    // pt.56: route through the same dr-open-event-form event the activity
+    // grid uses — it switches the Events tab to Safety/QC (even if it's
+    // currently on Delays), opens + scrolls to the form, and the panel's
+    // listener prefills the description + severity dropdown. We send only
+    // the analysis text (no "[QC review · …]" tag) since severity rides
+    // in its own field now.
+    const sevMap = rev.lens === "qc"
+      ? { clear: "observation", minor: "minor", moderate: "moderate", major: "major", critical: "critical" }
+      : { clear: "", minor: "minor", moderate: "moderate", major: "major", critical: "critical" };
+    window.dispatchEvent(new CustomEvent("dr-open-event-form", {
+      detail: { kind: rev.lens, description: rev.text || "", severity: sevMap[rev.severity] || "" },
+    }));
     toast.success(rev.lens === "safety"
-      ? "Sent to Safety — text added to the event description below."
-      : "Sent to QC — text added to the issue description below.");
+      ? "Opened a Safety event with the review prefilled."
+      : "Opened a QC issue with the review prefilled.");
     setDialogId(null);
   };
   const sevStyle = (s) => s === "clear"
@@ -3888,7 +3906,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           const isPinned = pinned.has(p.id);
           return (
             <div key={p.id} className={`relative rounded ${isPinned ? "ring-2 ring-emerald-500" : ""}`}>
-              <AuthPhoto photo={p}
+              <AuthPhoto photo={p} onPreview={setPreviewSrc}
                 locked={locked} dailyReportId={dailyReportId} reload={reload} />
               <button type="button" data-testid={`photo-pin-${p.id}`}
                 onClick={() => togglePin(p.id)}
@@ -4044,6 +4062,18 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           }}
         />
       )}
+      {previewSrc && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6"
+          style={{ background: "rgba(0,0,0,.8)" }}
+          onClick={() => setPreviewSrc(null)}>
+          <img src={previewSrc} alt="" data-testid="photo-preview-img"
+            className="max-w-full max-h-full rounded-lg object-contain"
+            style={{ boxShadow: "0 8px 40px rgba(0,0,0,.6)" }} />
+          <button type="button" onClick={() => setPreviewSrc(null)}
+            className="absolute top-4 right-5 text-2xl leading-none"
+            style={{ color: "rgba(255,255,255,.85)" }}>✕</button>
+        </div>
+      )}
       {dialogReview && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-6"
           style={{ background: "rgba(0,0,0,.6)" }}
@@ -4091,7 +4121,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   );
 }
 
-function AuthPhoto({ photo, locked, dailyReportId, reload }) {
+function AuthPhoto({ photo, locked, dailyReportId, reload, onPreview }) {
   const [src, setSrc] = useState(null);
   // Addition 4 follow-up -- locked-DR edit modal toggle for the photo
   // card. Pencil icon overlays in the top-right when locked; opens
@@ -4109,7 +4139,8 @@ function AuthPhoto({ photo, locked, dailyReportId, reload }) {
   return (
     <div data-testid={`photo-${photo.id}`} data-event-row-id={photo.id} data-event-row-type="photo"
       className="relative block aspect-square bg-slate-100 rounded overflow-hidden border border-slate-200 group">
-      {src ? <img src={src} alt={photo.caption || ""} className="w-full h-full object-cover" /> :
+      {src ? <img src={src} alt={photo.caption || ""} onClick={() => onPreview && onPreview(src)}
+        className="w-full h-full object-cover cursor-zoom-in" /> :
         <div className="w-full h-full grid place-items-center text-xs text-slate-400">…</div>}
       <div className="absolute top-1 left-1 flex items-center gap-1">
         <span data-testid={`photo-class-${photo.id}`} className={`text-xs leading-none px-1.5 py-0.5 rounded border ${cls.color}`}>
