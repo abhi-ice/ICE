@@ -534,8 +534,12 @@ export default function Tasks() {
               return (
               <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={rowClass}>
                 <td className={`tabular-nums text-xs text-slate-500 col-pin-1 ${rowClass || "bg-white"}`}>{idx + 1}</td>
-                <td className={`truncate max-w-[280px] col-pin-2 ${rowClass || "bg-white"}`}>
-                  <div className="font-medium text-sm">{t.description}</div>
+                {/* pt.46: dropped `truncate` so long descriptions like
+                    "Selective Demo — Walls, Ceilings, Casework" wrap
+                    within the column instead of getting cut off with
+                    no ellipsis. max-w stays the same, height grows. */}
+                <td className={`max-w-[280px] col-pin-2 ${rowClass || "bg-white"}`}>
+                  <div className="font-medium text-sm whitespace-normal break-words">{t.description}</div>
                   {/* N1: activity-code sub-line + work_category badge */}
                   <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-0.5 whitespace-normal">
                     <span className="text-xs text-slate-400 font-mono whitespace-nowrap">

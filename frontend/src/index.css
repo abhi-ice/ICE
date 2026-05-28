@@ -1806,6 +1806,61 @@ html[data-theme="dark"] .bg-emerald-50.border-emerald-300 {
 .phase-now-helper { padding: 0 14px 10px; font-size: 12px; color: var(--v4-fg-muted); }
 .phase-now-body { background: var(--v4-bg-input); border-top: 1px solid var(--v4-border); }
 
+/* pt.46 (2026-05-27) — read-only card for the BEFORE / AFTER
+   reference sections (preconstruction + closeout paperwork). Used
+   when those sections have rows scheduled for today; mirrors the
+   structure of .phase-now but DESATURATED so the user's eye stays
+   on the action-required "Today's Planned Activity" card above.
+   Empty case still falls back to the minimal .phase-ref bar. */
+.phase-readonly {
+    position: relative;
+    margin: 6px 0 12px;
+    background: var(--v4-bg-surface);
+    border: 1px solid var(--v4-border);
+    border-left: 3px solid var(--v4-border-strong);
+    border-radius: var(--v4-radius-btn);
+    overflow: hidden;
+}
+.phase-readonly-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--v4-border);
+    background: var(--v4-bg-surface-2);
+}
+.phase-readonly .lock-icon {
+    width: 13px; height: 13px;
+    color: var(--v4-fg-faint);
+    flex-shrink: 0;
+}
+.phase-readonly-title {
+    font-size: 13px; font-weight: 600;
+    color: var(--v4-fg-secondary);
+}
+.phase-readonly-count {
+    font-size: 11.5px; color: var(--v4-fg-muted);
+    font-feature-settings: "tnum";
+}
+.phase-readonly-tag {
+    margin-left: auto;
+    font-size: 10.5px; font-style: italic;
+    color: var(--v4-fg-faint);
+    text-transform: none;
+    letter-spacing: 0;
+}
+.phase-readonly-body { padding: 0; background: var(--v4-bg-surface); }
+.phase-readonly-body .dense-table th {
+    background: var(--v4-bg-surface-2);
+    color: var(--v4-fg-muted);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.phase-readonly-body .dense-table tbody tr { background: transparent; }
+.phase-readonly-body .dense-table tbody tr:hover td { background: transparent; }
+.phase-readonly-body .dense-table td { color: var(--v4-fg-secondary); }
+
 /* ----- Sticky bottom submit bar ----- */
 .sticky-submit {
     position: fixed;

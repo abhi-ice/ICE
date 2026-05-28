@@ -2215,6 +2215,30 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
   );
 }
 
+// pt.46 (2026-05-27) — read-only row for the BEFORE (preconstruction +
+// construction paperwork) and AFTER (closeout paperwork) sections.
+// Shows the same columns the populated read-only card promises (Code,
+// Description, Loc, Status, Plan finish) without ANY editing
+// affordances (no slider, no input, no delete, no flag-issue). Supers
+// aren't responsible for these — PMs / admins are — so the row is
+// purely informational.
+function ReadOnlyGridRow({ r }) {
+  const status = r.auto_status || r.status_at_end_of_day || "not_started";
+  return (
+    <tr data-testid={`dr-readonly-row-${r.activity_code}`}>
+      <td className="font-mono text-xs">{r.activity_code}</td>
+      <td>
+        <div className="text-sm whitespace-normal break-words">{r.description || "—"}</div>
+      </td>
+      <td className="text-xs">{r.location_label || r.location || "—"}</td>
+      <td><GridStatusPill status={status} testid={`dr-readonly-status-${r.activity_code}`} /></td>
+      <td className="text-xs font-mono">
+        {r.planned_finish ? formatDateDisplay(r.planned_finish) : "—"}
+      </td>
+    </tr>
+  );
+}
+
 function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
   const [refreshing, setRefreshing] = useState(false);
@@ -2357,15 +2381,55 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
         const sec2Pct = sec2Rows.length === 0 ? 0 : Math.round((sec2Reported / sec2Rows.length) * 100);
         return (
           <div className="lifecycle">
-            {/* BEFORE · REFERENCE divider + one-line summary */}
+            {/* pt.46: BEFORE section.
+                - Empty (no preconstruction / construction-paperwork
+                  tasks scheduled today) → minimal one-line locked bar
+                  (current behavior).
+                - Populated → full read-only card mirroring the
+                  Today's Planned Activity card structure but
+                  desaturated (no green badge, no edit affordances)
+                  so supers can SEE the scheduled paperwork without
+                  it competing for attention with their own action
+                  items. Supers don't action this — it's PMs'/admins'
+                  work — but they get visibility. */}
             <div className="phase-divider">Before · Reference</div>
-            <div className="phase-ref" data-testid="dr-grid-section-1">
-              <Lock className="lock-icon" />
-              <span className="title">{sec1.title}</span>
-              <span className="count">· {sec1Rows.length} {sec1Rows.length === 1 ? "row" : "rows"}</span>
-              <span className="ref-tag">Read-Only</span>
-              <span className="meta">cleared before today's activity began</span>
-            </div>
+            {sec1Rows.length === 0 ? (
+              <div className="phase-ref" data-testid="dr-grid-section-1">
+                <Lock className="lock-icon" />
+                <span className="title">{sec1.title}</span>
+                <span className="count">· 0 rows</span>
+                <span className="ref-tag">Read-Only</span>
+                <span className="meta">no paperwork scheduled for today</span>
+              </div>
+            ) : (
+              <div className="phase-readonly" data-testid="dr-grid-section-1">
+                <div className="phase-readonly-head">
+                  <Lock className="lock-icon" />
+                  <span className="phase-readonly-title">{sec1.title}</span>
+                  <span className="phase-readonly-count">
+                    · {sec1Rows.length} {sec1Rows.length === 1 ? "row" : "rows"} scheduled
+                  </span>
+                  <span className="phase-readonly-tag">Read-only · for reference</span>
+                </div>
+                <div className="phase-readonly-body">
+                  <div className="overflow-x-auto">
+                    <table className="dense-table">
+                      <thead>
+                        <tr>
+                          <th>Code</th><th>Description</th><th>Loc</th>
+                          <th>Status</th><th>Plan finish</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sec1Rows.map((r) => (
+                          <ReadOnlyGridRow key={r.id} r={r} />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* pt.43: dropped "Today ·" prefix per user — just
                 "Action Required" centered. */}
@@ -2418,15 +2482,47 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
               </div>
             </div>
 
-            {/* AFTER · REFERENCE divider + one-line summary */}
+            {/* pt.46: AFTER section — same pattern as BEFORE.
+                Empty → minimal locked bar. Populated → read-only
+                card showing the closeout paperwork scheduled today. */}
             <div className="phase-divider">After · Reference</div>
-            <div className="phase-ref" data-testid="dr-grid-section-3">
-              <Lock className="lock-icon" />
-              <span className="title">{sec3.title}</span>
-              <span className="count">· {sec3Rows.length} {sec3Rows.length === 1 ? "row" : "rows"}</span>
-              <span className="ref-tag">Read-Only</span>
-              <span className="meta">activates once today's rows are submitted</span>
-            </div>
+            {sec3Rows.length === 0 ? (
+              <div className="phase-ref" data-testid="dr-grid-section-3">
+                <Lock className="lock-icon" />
+                <span className="title">{sec3.title}</span>
+                <span className="count">· 0 rows</span>
+                <span className="ref-tag">Read-Only</span>
+                <span className="meta">no closeout paperwork scheduled for today</span>
+              </div>
+            ) : (
+              <div className="phase-readonly" data-testid="dr-grid-section-3">
+                <div className="phase-readonly-head">
+                  <Lock className="lock-icon" />
+                  <span className="phase-readonly-title">{sec3.title}</span>
+                  <span className="phase-readonly-count">
+                    · {sec3Rows.length} {sec3Rows.length === 1 ? "row" : "rows"} scheduled
+                  </span>
+                  <span className="phase-readonly-tag">Read-only · for reference</span>
+                </div>
+                <div className="phase-readonly-body">
+                  <div className="overflow-x-auto">
+                    <table className="dense-table">
+                      <thead>
+                        <tr>
+                          <th>Code</th><th>Description</th><th>Loc</th>
+                          <th>Status</th><th>Plan finish</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sec3Rows.map((r) => (
+                          <ReadOnlyGridRow key={r.id} r={r} />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}
