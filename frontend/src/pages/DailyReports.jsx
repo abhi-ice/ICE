@@ -70,6 +70,19 @@ import VoiceIntakePanel from "../components/VoiceIntakePanel";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
+// pt.47 (2026-05-28): Manpower Log Trade column is a dropdown of the
+// trades a federal GC typically self-performs or subs out, with "Other"
+// as the catch-all last option. Persisted rows whose stored trade isn't
+// in this list still render (the value is injected as a leading option).
+const COMMON_TRADES = [
+  "General Labor", "Electrical", "Plumbing", "HVAC / Mechanical",
+  "Concrete", "Masonry", "Carpentry / Framing", "Drywall", "Painting",
+  "Roofing", "Steel / Structural", "Demolition", "Earthwork / Excavation",
+  "Flooring", "Tile", "Glazing", "Fireproofing", "Fire Protection / Sprinkler",
+  "Low-Voltage / Data", "Insulation", "Acoustical Ceilings", "Doors / Hardware",
+  "Landscaping / Sitework", "Other",
+];
+
 // Bucket D Addition 5 (2026-05-12) -- "add to locked DR" reason capture.
 // Reused by every event panel + the activity grid when the user adds a
 // new event/row AFTER the parent DR was submitted. The reason text is
@@ -614,7 +627,6 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const locked = report.status === "submitted" || report.status === "approved";
   const isRenovation = RENOVATION_TYPES.includes(project.project_type || "");
 
-  const totalHours = grid.reduce((s, r) => s + (r.hours_worked || 0), 0);
   const totalHeadcount = presence.reduce((s, p) => s + (p.headcount || 0), 0);
   const totalCrewHours = presence.reduce((s, p) => s + (p.headcount || 0) * (p.hours_per_person || 0), 0);
   const completed = grid.filter((r) => (r.pct_complete_end_of_day || 0) >= 100).length;
@@ -636,7 +648,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   //     (someone progressed activities with nobody present -- has to
   //      be one or the other)
   //   - Grid rows exist AND every row is untouched (zero progress,
-  //     zero hours, zero status change) -- that's a "wasted submit"
+  //     zero status change) -- that's a "wasted submit"
   //     not a no-work day; user should mark the rows or remove them
   //
   // Soft (non-blocking) hints would go in a future "submit checklist"
@@ -646,7 +658,6 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     const errors = [];
     const hasProgress = grid.some((r) =>
       (r.pct_complete_end_of_day ?? 0) > (r.pct_complete_start_of_day ?? 0)
-      || (r.hours_worked || 0) > 0
       || (r.status_at_end_of_day && r.status_at_end_of_day !== "not_started")
     );
     if (presence.length === 0 && hasProgress) {
@@ -661,13 +672,12 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     // non-empty. Empty grid is a valid no-work day candidate.
     const untouched = grid.filter((r) =>
       (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
-      && (r.hours_worked || 0) === 0
       && (!r.status_at_end_of_day || r.status_at_end_of_day === "not_started")
     );
     if (grid.length > 0 && untouched.length === grid.length) {
       errors.push(
-        "Activity grid has rows but none show progress. Either record EOD%, "
-        + "hours, or status on at least one row, or remove the rows and submit "
+        "Activity grid has rows but none show progress. Either record EOD% "
+        + "or status on at least one row, or remove the rows and submit "
         + "as a no-work day.",
       );
     }
@@ -839,7 +849,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         if (rows.length === 0) return "empty";
         const fieldRows = rows.filter((r) => gridSectionOf(r.work_category) === 2);
         if (fieldRows.length === 0) return "empty";
-        const withProgress = fieldRows.filter((r) => (r.pct_complete_end_of_day || 0) > 0).length;
+        const withProgress = fieldRows.filter((r) => (r.pct_complete_end_of_day || 0) > 0 || (r.auto_status || r.status_at_end_of_day) === "blocked").length;
         if (withProgress === 0) return "blocked";
         if (withProgress < fieldRows.length) return "in-progress";
         return "complete";
@@ -889,7 +899,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
 
       {/* HEADER */}
       <Header report={report} project={project} userLabels={user_labels}
-              ppc={ppc} totalHours={totalHours}
+              ppc={ppc}
               totalHeadcount={totalHeadcount} totalCrewHours={totalCrewHours}
               delaysCount={(delays || []).length}
               rfisCount={(rfis || []).length}
@@ -1245,7 +1255,7 @@ function StatusPill({ status }) {
   return <span data-testid={`dr-status-${status}`} className={`pill ${klass}`}>{status}</span>;
 }
 
-function Header({ report, project, userLabels, ppc, totalHours,
+function Header({ report, project, userLabels, ppc,
                   totalHeadcount, totalCrewHours,
                   delaysCount = 0, rfisCount = 0, safetyCount = 0, qcCount = 0,
                   locked, onBack, onSubmit,
@@ -1389,14 +1399,14 @@ function Header({ report, project, userLabels, ppc, totalHours,
         </div>
       )}
       {/* KPI band — full width below the progress card. Operational
-          stats (PPC / Headcount / Crew hours / Activity hrs) on the
+          stats (PPC / Headcount / Crew hours) on the
           left; event-count stats (Delays / RFIs / Safety / QC) on the
-          right. */}
-      <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+          right. pt.47 (2026-05-28): dropped "Activity hrs" KPI — crew
+          hours come from the Manpower Log, per-activity hours retired. */}
+      <div className="grid grid-cols-4 md:grid-cols-7 gap-2">
         <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
         <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
         <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
-        <KPI label="Activity hrs" value={totalHours.toFixed(1)} testid="kpi-activity-hours" />
         <KPI label="Delays" value={delaysCount} testid="kpi-delays" />
         <KPI label="RFIs" value={rfisCount} testid="kpi-rfis" />
         <KPI label="Safety" value={safetyCount} testid="kpi-safety" />
@@ -1786,9 +1796,13 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                 <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
                   <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 dr-mp-input rounded text-sm" /></td>
                   <td>
-                    <input data-testid={`presence-trade-${r.id}`} defaultValue={r.trade}
-                      onBlur={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
-                      className="w-32 px-2 py-1 dr-mp-input rounded text-sm" />
+                    <select data-testid={`presence-trade-${r.id}`} defaultValue={r.trade || ""}
+                      onChange={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
+                      className="w-32 px-2 py-1 dr-mp-input rounded text-sm">
+                      <option value="" disabled>Trade…</option>
+                      {r.trade && !COMMON_TRADES.includes(r.trade) && <option value={r.trade}>{r.trade}</option>}
+                      {COMMON_TRADES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
                   </td>
                   <td>
                     <select data-testid={`presence-task-${r.id}`} defaultValue={r.schedule_activity_id || ""}
@@ -1852,10 +1866,12 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                     )}
                   </td>
                   <td>
-                    <input data-testid={`presence-draft-trade-${idx}`} value={d.trade}
+                    <select data-testid={`presence-draft-trade-${idx}`} value={d.trade}
                       onChange={(e) => setDraftField(idx, "trade", e.target.value)}
-                      placeholder="Trade *"
-                      className="w-32 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
+                      className="w-32 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm">
+                      <option value="" disabled>Trade *</option>
+                      {COMMON_TRADES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
                   </td>
                   <td>
                     <select data-testid={`presence-draft-task-${idx}`} value={d.schedule_activity_id || ""}
@@ -2077,7 +2093,8 @@ function EodSlider({ rowId, initialValue, locked, updateRow, activityCode }) {
         onTouchEnd={(e) => commit(e.target.value)}
         onKeyUp={(e) => commit(e.target.value)}
         disabled={locked}
-        className="flex-1 accent-emerald-500 cursor-pointer disabled:opacity-50"
+        className="eod-range flex-1 cursor-pointer disabled:opacity-50"
+        style={{ "--eod-fill": `${val}%` }}
       />
       <span className="text-xs tabular-nums font-medium text-emerald-300 w-9 text-right">{val}%</span>
     </div>
@@ -2136,29 +2153,6 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       </td>
       <td className={`text-xs tabular-nums font-medium ${variance === "neg" ? "text-red-600" : variance === "pos" ? "text-emerald-600" : "text-slate-400"}`}>
         {delta > 0 ? "+" : ""}{delta}
-      </td>
-      {/* Hours column — V4 (2026-05-26): editable when row is editable
-          (Field Work section + not locked). Renders the row's
-          hours_worked; on blur, patches the row. Read-only for
-          paperwork sections + locked DRs. */}
-      <td>
-        {editable && !locked ? (
-          <input
-            type="number"
-            step="0.5"
-            min="0"
-            data-testid={`dr-hours-${r.activity_code}`}
-            defaultValue={r.hours_worked ?? ""}
-            placeholder="0"
-            onBlur={(e) => {
-              const v = e.target.value === "" ? null : Number(e.target.value);
-              if (v !== (r.hours_worked ?? null)) updateRow(r.id, { hours_worked: v });
-            }}
-            className="dr-mp-input w-14 text-xs tabular-nums text-right rounded"
-          />
-        ) : (
-          <span className="text-xs tabular-nums text-slate-500">{r.hours_worked ?? "—"}</span>
-        )}
       </td>
       <td><GridStatusPill status={status} testid={`dr-status-${r.activity_code}`} /></td>
       <td><BlockerPopover count={r.open_blocker_count} summary={r.open_blocker_summary} testid={`dr-blocker-${r.activity_code}`} /></td>
@@ -2377,7 +2371,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
         const sec1Rows = grid.filter((r) => gridSectionOf(r.work_category) === 1);
         const sec2Rows = grid.filter((r) => gridSectionOf(r.work_category) === 2);
         const sec3Rows = grid.filter((r) => gridSectionOf(r.work_category) === 3);
-        const sec2Reported = sec2Rows.filter((r) => (r.pct_complete_end_of_day || 0) > 0).length;
+        const sec2Reported = sec2Rows.filter((r) => (r.pct_complete_end_of_day || 0) > 0 || (r.auto_status || r.status_at_end_of_day) === "blocked").length;
         const sec2Pct = sec2Rows.length === 0 ? 0 : Math.round((sec2Reported / sec2Rows.length) * 100);
         return (
           <div className="lifecycle">
@@ -2454,7 +2448,6 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                       <tr>
                         <th>Code</th><th>Description</th><th>Loc</th>
                         <th>SOD %</th><th>EOD %</th><th>Δ</th>
-                        <th title="Hours worked by the crew on this activity today. Free-text — defaults to crew-headcount × hours/person from the Manpower Log if not overridden.">Hours</th>
                         <th>Status</th>
                         <th title="Open blockers on the linked task — open RFIs, delays, over-SLA submittals. Same count the Tasks page shows.">Blocker</th>
                         <th title="Flag a new delay, safety event, QC issue, RFI, or delivery against this activity. Selecting jumps to that section.">Issues</th>
@@ -2464,7 +2457,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                     <tbody>
                       {sec2Rows.length === 0 ? (
                         <tr>
-                          <td colSpan="11" data-testid="dr-grid-section-2-empty"
+                          <td colSpan="10" data-testid="dr-grid-section-2-empty"
                             className="text-center py-4 text-xs italic" style={{ color: "var(--v4-fg-faint)" }}>
                             {sec2.empty}
                           </td>
@@ -2600,7 +2593,7 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
           gone -- redundant with the F3 blocker badge) and the Status
           field was removed (status is now F4 auto-computed from
           blockers + EOD%, so a manual pick would just be overridden).
-          The editable post-submit field set is SOD% / EOD% / hours /
+          The editable post-submit field set is SOD% / EOD% /
           notes; editing EOD% re-derives the row's auto-status on the
           backend PATCH. Δ stays excluded -- it's derived (EOD% - SOD%),
           not patchable. */}
@@ -2612,13 +2605,11 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
         fields={[
           { key: "pct_complete_start_of_day", label: "SOD %", type: "number" },
           { key: "pct_complete_end_of_day", label: "EOD %", type: "number" },
-          { key: "hours_worked", label: "Hours worked", type: "number" },
           { key: "notes", label: "Notes", type: "textarea" },
         ]}
         currentValues={{
           pct_complete_start_of_day: row.pct_complete_start_of_day,
           pct_complete_end_of_day: row.pct_complete_end_of_day,
-          hours_worked: row.hours_worked,
           notes: row.notes,
         }}
         onSaved={reload}
