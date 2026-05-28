@@ -1631,7 +1631,10 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   // clean; clicking the dedicated "+ Add trade" button below opens
   // one editable draft. Same button switches to "Save" when the
   // draft has a trade typed in, then disappears again on success.
-  const [draftsCount, setDraftsCount] = useState(0);
+  // pt.50 (2026-05-28): when the manpower log is empty, open with ONE blank
+  // draft row already in place (the pre-reskin behavior) so the super can type
+  // immediately. Additional rows come from the "Add trade" button.
+  const [draftsCount, setDraftsCount] = useState(() => (rows && rows.length === 0 && !locked) ? 1 : 0);
   // Each draft has a stable local id so input components don't lose
   // focus on every keystroke as the array re-mounts.
   const draftIdsRef = useRef([]);
@@ -1640,7 +1643,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     }
   }
-  const [drafts, setDrafts] = useState(() => []);
+  const [drafts, setDrafts] = useState(() => (rows && rows.length === 0 && !locked)
+    ? [{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]
+    : []);
   // 2026-02-XX (Abhi) -- Subcontractor central repo integration.
   // pt.48 (2026-05-28): the Company dropdown now lists ONLY the subs
   // attached to THIS project (chosen during project create / edit), not the
@@ -3844,9 +3849,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
           After upload, we'll open the tag wizard with AI suggestions ready.
         </div>
-        <label data-testid="photo-upload-label" className="block">
-          <span className="h-8 px-3 rounded bg-blue-600 text-white text-sm inline-flex items-center gap-1 hover:bg-blue-700 cursor-pointer">
-            <ImageIcon className="h-3.5 w-3.5" />
+        <label data-testid="photo-upload-label" className="inline-block">
+          {/* pt.50 (2026-05-28): match the "Log a delay" CTA size — was an
+              oversized h-8 + icon span; now the standard sbtn-sm primary. */}
+          <span className="sbtn sbtn-sm sbtn-primary cursor-pointer">
             {busy ? "Uploading…" : (locked ? "Upload + tag (post-submit)" : "Upload + tag")}
           </span>
           <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
