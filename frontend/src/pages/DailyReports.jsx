@@ -1816,11 +1816,28 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               return (
                 <tr key={localId} data-testid={`presence-draft-${idx}`} className="bg-emerald-50/30">
                   <td>
-                    <input data-testid={`presence-draft-company-${idx}`} value={d.company_name}
-                      onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
-                      placeholder={subs.length ? "Company (type to pick)" : "Company"}
-                      list={subs.length ? `subs-datalist-${idx}` : undefined}
-                      className="w-44 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
+                    {/* pt.45 (2026-05-27): two fixes per user --
+                        (a) dropped the "(type to pick)" hint from the
+                        placeholder; the column was too narrow so it
+                        truncated to "Company (" which read as a typo;
+                        (b) wrapped the input in a relative container
+                        with a ChevronDown icon on the right so the
+                        field visually reads as a dropdown (native
+                        datalist inputs don't render the arrow). */}
+                    <div className="relative w-44">
+                      <input data-testid={`presence-draft-company-${idx}`} value={d.company_name}
+                        onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
+                        placeholder="Company"
+                        list={subs.length ? `subs-datalist-${idx}` : undefined}
+                        className="w-full pl-2 pr-6 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
+                      {subs.length > 0 && (
+                        <ChevronDown
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none"
+                          aria-hidden="true"
+                          strokeWidth={2}
+                        />
+                      )}
+                    </div>
                     {subs.length > 0 && (
                       <datalist id={`subs-datalist-${idx}`}>
                         {subs.map((s) => <option key={s.id} value={s.name} />)}
@@ -1830,7 +1847,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       <a href="/vendors" target="_blank" rel="noreferrer"
                          className="block mt-0.5 text-[10px] text-emerald-600 hover:underline"
                          data-testid="presence-add-sub-link">
-                        + Add to vendor repo
+                        Add to vendor repo
                       </a>
                     )}
                   </td>
