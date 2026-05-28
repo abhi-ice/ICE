@@ -49,6 +49,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "../components/ui/dropdown-menu";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "../components/ui/select";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
@@ -1004,12 +1007,12 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       )}
       {activeIntakeMode === "manual" && !locked && (
         <div className="flex justify-end -mt-2">
-          {/* pt.39 button-system sweep: secondary 24px compact (sbtn-xs).
-              Inline action inside a section panel — should not compete
-              with the page-header primary buttons. */}
+          {/* pt.48 (2026-05-28): voice intake is a flagship feature, so
+              promote this from the toned-down sbtn-xs secondary to a
+              prominent emerald sbtn-md primary CTA. */}
           <button data-testid="dr-open-voice-intake"
             onClick={() => setActiveIntakeMode("voice_memo")}
-            className="sbtn sbtn-xs sbtn-secondary"
+            className="sbtn sbtn-md sbtn-primary"
           >
             <Mic /> Add via voice
           </button>
@@ -1561,6 +1564,32 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
 
 const PRESENCE_SHIFTS = ["first", "second", "third", "weekend", "holiday", "off_hours"];
 
+// pt.48 (2026-05-28): manpower-log dropdowns (Company / Trade / Task) now use
+// the same Radix Select primitive as the top-bar project switcher, so they open
+// downward into a themed panel. The old native <datalist> (Company) + <select>
+// (Trade/Task) popups rendered white and mis-positioned (to the side / above).
+// The trigger is styled with the theme-aware .dr-mp-input (NOT .v4-topbar-select,
+// which hardcodes white-on-dark for the always-dark topbar and would be invisible
+// on the light-theme page surface). MP_NONE is the sentinel for the Task
+// "— none —" choice, since a Radix SelectItem cannot have an empty-string value.
+const MP_NONE = "__none__";
+function MpSelect({ value, onValueChange, options, placeholder, disabled, testid, className = "w-40" }) {
+  return (
+    <div className={className}>
+      <Select value={value || ""} onValueChange={onValueChange} disabled={disabled}>
+        <SelectTrigger data-testid={testid} className="dr-mp-input h-8 w-full text-xs rounded">
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent className="max-h-72">
+          {options.map((o) => (
+            <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = [], reportDate }) {
   // Bucket H Phase 4 -- demand-vs-actual comparison. Fetch per-project
   // demand for this DR's date, group by trade, render alongside actual
@@ -1612,16 +1641,24 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     }
   }
   const [drafts, setDrafts] = useState(() => []);
-  // 2026-02-XX (Abhi) -- Subcontractor central repo integration. Pull
-  // the tenant-wide subs so the Company column on the manpower log
-  // gets autocomplete. Empty list also lets the empty-state surface
-  // a "+ Add to repo" link.
+  // 2026-02-XX (Abhi) -- Subcontractor central repo integration.
+  // pt.48 (2026-05-28): the Company dropdown now lists ONLY the subs
+  // attached to THIS project (chosen during project create / edit), not the
+  // whole tenant repo. Fetch the project for its subcontractor_ids and
+  // intersect with the repo. Empty -> the draft row shows a "manage in
+  // project" hint instead of an empty dropdown.
   const [subs, setSubs] = useState([]);
   useEffect(() => {
-    api.get("/subcontractors")
-      .then(({ data }) => setSubs(Array.isArray(data) ? data : []))
-      .catch(() => setSubs([]));
-  }, []);
+    if (!projectId) { setSubs([]); return; }
+    Promise.all([
+      api.get("/subcontractors").catch(() => ({ data: [] })),
+      api.get(`/projects/${projectId}`).catch(() => ({ data: {} })),
+    ]).then(([subsRes, projRes]) => {
+      const all = Array.isArray(subsRes.data) ? subsRes.data : [];
+      const ids = new Set((projRes.data && projRes.data.subcontractor_ids) || []);
+      setSubs(ids.size ? all.filter((s) => ids.has(s.id)) : []);
+    });
+  }, [projectId]);
   // Keep drafts array length in sync with draftsCount (additions only).
   if (drafts.length < draftsCount) {
     setDrafts((arr) => {
@@ -1717,6 +1754,26 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     id: g.schedule_activity_id, code: g.activity_code, desc: g.activity_description,
   })).filter((t) => t.id);
 
+  // pt.48 (2026-05-28): option builders for the manpower-log Radix dropdowns.
+  // Company is restricted to this project's subs; a value already stored that
+  // isn't in the (filtered) list is injected as a leading option so existing
+  // rows still display it. Same injection pattern for free-text trades.
+  const subNames = subs.map((s) => s.name).filter(Boolean);
+  const companyOptions = (current) => {
+    const opts = subNames.map((n) => ({ value: n, label: n }));
+    if (current && !subNames.includes(current)) opts.unshift({ value: current, label: current });
+    return opts;
+  };
+  const tradeOptions = (current) => {
+    const opts = COMMON_TRADES.map((t) => ({ value: t, label: t }));
+    if (current && !COMMON_TRADES.includes(current)) opts.unshift({ value: current, label: current });
+    return opts;
+  };
+  const taskSelectOptions = [
+    { value: MP_NONE, label: "— none —" },
+    ...taskOptions.map((t) => ({ value: t.id, label: `[${t.code}] ${(t.desc || "").slice(0, 30)}` })),
+  ];
+
   // Total column count for empty-state rowspan calc -- header below has:
   // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Notes, actions = 8
   const COL_COUNT = 8;
@@ -1794,23 +1851,26 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               const isAuto = (r.notes || "").startsWith("Auto-created");
               return (
                 <tr key={r.id} data-testid={`presence-row-${r.id}`} className={isAuto ? "bg-blue-50/30" : undefined}>
-                  <td><input defaultValue={r.company_name || ""} onBlur={(e) => patch(r.id, { company_name: e.target.value })} disabled={locked} className="w-44 px-2 py-1 dr-mp-input rounded text-sm" /></td>
                   <td>
-                    <select data-testid={`presence-trade-${r.id}`} defaultValue={r.trade || ""}
-                      onChange={(e) => patch(r.id, { trade: e.target.value })} disabled={locked}
-                      className="w-32 px-2 py-1 dr-mp-input rounded text-sm">
-                      <option value="" disabled>Trade…</option>
-                      {r.trade && !COMMON_TRADES.includes(r.trade) && <option value={r.trade}>{r.trade}</option>}
-                      {COMMON_TRADES.map((t) => <option key={t} value={t}>{t}</option>)}
-                    </select>
+                    <MpSelect testid={`presence-company-${r.id}`} className="w-44"
+                      value={r.company_name || ""} disabled={locked}
+                      onValueChange={(v) => patch(r.id, { company_name: v })}
+                      placeholder="Company"
+                      options={companyOptions(r.company_name)} />
                   </td>
                   <td>
-                    <select data-testid={`presence-task-${r.id}`} defaultValue={r.schedule_activity_id || ""}
-                      onChange={(e) => patch(r.id, { schedule_activity_id: e.target.value || null })} disabled={locked}
-                      className="h-7 px-1 dr-mp-input rounded text-xs min-w-[140px]">
-                      <option value="">— none —</option>
-                      {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
-                    </select>
+                    <MpSelect testid={`presence-trade-${r.id}`} className="w-36"
+                      value={r.trade || ""} disabled={locked}
+                      onValueChange={(v) => patch(r.id, { trade: v })}
+                      placeholder="Trade"
+                      options={tradeOptions(r.trade)} />
+                  </td>
+                  <td>
+                    <MpSelect testid={`presence-task-${r.id}`} className="min-w-[150px]"
+                      value={r.schedule_activity_id || MP_NONE} disabled={locked}
+                      onValueChange={(v) => patch(r.id, { schedule_activity_id: v === MP_NONE ? null : v })}
+                      placeholder="— none —"
+                      options={taskSelectOptions} />
                   </td>
                   <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
                   <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
@@ -1830,56 +1890,39 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               return (
                 <tr key={localId} data-testid={`presence-draft-${idx}`} className="bg-emerald-50/30">
                   <td>
-                    {/* pt.45 (2026-05-27): two fixes per user --
-                        (a) dropped the "(type to pick)" hint from the
-                        placeholder; the column was too narrow so it
-                        truncated to "Company (" which read as a typo;
-                        (b) wrapped the input in a relative container
-                        with a ChevronDown icon on the right so the
-                        field visually reads as a dropdown (native
-                        datalist inputs don't render the arrow). */}
-                    <div className="relative w-44">
-                      <input data-testid={`presence-draft-company-${idx}`} value={d.company_name}
-                        onChange={(e) => setDraftField(idx, "company_name", e.target.value)}
+                    {/* pt.48 (2026-05-28): Company is a Radix Select scoped to
+                        the project's subs (see companyOptions). When the
+                        project has no subs attached, show a hint pointing to
+                        the project rather than an empty dropdown. */}
+                    {subNames.length > 0 ? (
+                      <MpSelect testid={`presence-draft-company-${idx}`} className="w-44"
+                        value={d.company_name || ""}
+                        onValueChange={(v) => setDraftField(idx, "company_name", v)}
                         placeholder="Company"
-                        list={subs.length ? `subs-datalist-${idx}` : undefined}
-                        className="w-full pl-2 pr-6 py-1 dr-mp-input dr-mp-input--draft rounded text-sm" />
-                      {subs.length > 0 && (
-                        <ChevronDown
-                          className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none"
-                          aria-hidden="true"
-                          strokeWidth={2}
-                        />
-                      )}
-                    </div>
-                    {subs.length > 0 && (
-                      <datalist id={`subs-datalist-${idx}`}>
-                        {subs.map((s) => <option key={s.id} value={s.name} />)}
-                      </datalist>
-                    )}
-                    {subs.length === 0 && (
-                      <a href="/vendors" target="_blank" rel="noreferrer"
-                         className="block mt-0.5 text-[10px] text-emerald-600 hover:underline"
-                         data-testid="presence-add-sub-link">
-                        Add to vendor repo
-                      </a>
+                        options={companyOptions(d.company_name)} />
+                    ) : (
+                      <div className="w-44">
+                        <a href="/projects" target="_blank" rel="noreferrer"
+                           className="block text-[11px] text-emerald-600 hover:underline"
+                           data-testid="presence-add-sub-link">
+                          No subs on this project — add them in the project
+                        </a>
+                      </div>
                     )}
                   </td>
                   <td>
-                    <select data-testid={`presence-draft-trade-${idx}`} value={d.trade}
-                      onChange={(e) => setDraftField(idx, "trade", e.target.value)}
-                      className="w-32 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm">
-                      <option value="" disabled>Trade *</option>
-                      {COMMON_TRADES.map((t) => <option key={t} value={t}>{t}</option>)}
-                    </select>
+                    <MpSelect testid={`presence-draft-trade-${idx}`} className="w-36"
+                      value={d.trade || ""}
+                      onValueChange={(v) => setDraftField(idx, "trade", v)}
+                      placeholder="Trade *"
+                      options={tradeOptions(d.trade)} />
                   </td>
                   <td>
-                    <select data-testid={`presence-draft-task-${idx}`} value={d.schedule_activity_id || ""}
-                      onChange={(e) => setDraftField(idx, "schedule_activity_id", e.target.value)}
-                      className="h-7 px-1 dr-mp-input dr-mp-input--draft rounded text-xs min-w-[140px]">
-                      <option value="">— none —</option>
-                      {taskOptions.map((t) => <option key={t.id} value={t.id}>[{t.code}] {(t.desc || "").slice(0, 30)}</option>)}
-                    </select>
+                    <MpSelect testid={`presence-draft-task-${idx}`} className="min-w-[150px]"
+                      value={d.schedule_activity_id || MP_NONE}
+                      onValueChange={(v) => setDraftField(idx, "schedule_activity_id", v === MP_NONE ? "" : v)}
+                      placeholder="— none —"
+                      options={taskSelectOptions} />
                   </td>
                   <td>
                     <input data-testid={`presence-draft-headcount-${idx}`} type="number" value={d.headcount}
