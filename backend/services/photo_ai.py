@@ -1336,13 +1336,53 @@ async def review_photos(
     ids = [str(t) for t in (tray_ids or []) if t][:8]  # cap at 8 images / call
     if not ids:
         return {"ok": False, "reason": "no_photos"}
-    trays = await db.photo_tray.find(
-        tenant_filter(tenant_id, {"id": {"$in": ids}}), {"_id": 0},
+    # Resolve each pinned id to an image storage key. The DR gallery sends
+    # Photo (tagging-junction) ids -> photos.storage_path, and each Photo
+    # points back to its source tray row via tray_photo_id. We prefer the
+    # tray's storage_key (the key proven to work with cached_get_object in
+    # analyze_photo), fall back to the Photo's storage_path, and also accept
+    # a raw photo_tray id directly.
+    photo_docs = await db.photos.find(
+        tenant_filter(tenant_id, {"id": {"$in": ids}}),
+        {"_id": 0, "id": 1, "storage_path": 1, "project_id": 1, "tray_photo_id": 1},
     ).to_list(length=8)
-    if not trays:
+    by_id = {p["id"]: p for p in photo_docs}
+    tray_candidates = set()
+    for p in photo_docs:
+        if p.get("tray_photo_id"):
+            tray_candidates.add(p["tray_photo_id"])
+    for pid in ids:
+        if pid not in by_id:
+            tray_candidates.add(pid)  # maybe the caller passed a tray id
+    trays = []
+    if tray_candidates:
+        trays = await db.photo_tray.find(
+            tenant_filter(tenant_id, {"id": {"$in": list(tray_candidates)}}),
+            {"_id": 0, "id": 1, "storage_key": 1, "project_id": 1},
+        ).to_list(length=16)
+    tray_by_id = {t["id"]: t for t in trays}
+
+    keys = []
+    project_id = None
+    for pid in ids:
+        p = by_id.get(pid)
+        if p:
+            project_id = project_id or p.get("project_id")
+            tp = p.get("tray_photo_id")
+            tray = tray_by_id.get(tp) if tp else None
+            if tray and tray.get("storage_key"):
+                keys.append(tray["storage_key"])
+            elif p.get("storage_path"):
+                keys.append(p["storage_path"])
+            continue
+        tray = tray_by_id.get(pid)
+        if tray:
+            project_id = project_id or tray.get("project_id")
+            if tray.get("storage_key"):
+                keys.append(tray["storage_key"])
+    if not keys:
         return {"ok": False, "reason": "no_photos_found"}
 
-    project_id = next((t.get("project_id") for t in trays if t.get("project_id")), None)
     gate = await check_cui_safety(tenant_id=tenant_id, project_id=project_id)
     if not gate.get("safe_to_analyze"):
         return {"ok": False, "reason": gate.get("reason") or "ai_disabled"}
@@ -1351,10 +1391,7 @@ async def review_photos(
         return {"ok": False, "reason": budget.get("reason") or "budget_exceeded"}
 
     images = []
-    for tray in trays:
-        sk = tray.get("storage_key")
-        if not sk:
-            continue
+    for sk in keys:
         try:
             blob, _ct = await cached_get_object(sk)
             jpeg, _mt, _meta = _preprocess_image_for_vision(blob)

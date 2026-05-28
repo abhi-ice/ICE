@@ -3866,7 +3866,23 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   };
 
   return (
-    <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}>
+    <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}
+      badge={
+        <label data-testid="photo-upload-label" className="ml-auto inline-block">
+          {/* pt.55 (2026-05-28): Upload + tag promoted to the section header
+              (per the v2 design) so the body stays clean for the grid + review. */}
+          <span className="sbtn sbtn-sm sbtn-primary cursor-pointer">
+            <Upload className="h-3.5 w-3.5" /> {busy ? "Uploading…" : (locked ? "Upload (post-submit)" : "Upload + tag")}
+          </span>
+          <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
+        </label>
+      }>
+      {locked && (
+        <div className="mb-3">
+          <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+            eventLabel="a photo" testid="photo-add-reason" />
+        </div>
+      )}
       <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
         {rows.map((p) => {
           const isPinned = pinned.has(p.id);
@@ -4000,22 +4016,6 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           Preparing tag suggestions…
         </div>
       )}
-      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-        {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
-          eventLabel="a photo" testid="photo-add-reason" />}
-        <div className="text-xs text-slate-500">
-          Photos upload to the <a href="/photo-tray" className="text-blue-600 underline">Photo tray</a> first.
-          After upload, we'll open the tag wizard with AI suggestions ready.
-        </div>
-        <label data-testid="photo-upload-label" className="inline-block">
-          {/* pt.50 (2026-05-28): match the "Log a delay" CTA size — was an
-              oversized h-8 + icon span; now the standard sbtn-sm primary. */}
-          <span className="sbtn sbtn-sm sbtn-primary cursor-pointer">
-            {busy ? "Uploading…" : (locked ? "Upload + tag (post-submit)" : "Upload + tag")}
-          </span>
-          <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
-        </label>
-      </div>
       {/* Auto-opened tag wizard. DR is pre-locked so the wizard starts
           at step 2 (event-type picker) and inherits AI suggestions. */}
       {pendingTray && (
