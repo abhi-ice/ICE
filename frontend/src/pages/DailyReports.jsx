@@ -2736,14 +2736,12 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
     { value: "notes",      label: "Notes",      icon: ClipboardList,  count: null },
   ];
 
+  const eventsTotal = (delays || []).length + (safetyEvents || []).length
+    + (qcIssues || []).length + (rfis || []).length + (deliveries || []).length;
   return (
-    <div data-testid="dr-events-tabs" className="space-y-3 dr-section">
-      <div className="flex items-center gap-2 -mb-1 px-1">
-        <div className="text-xs tracking-tight font-semibold" style={{ color: "var(--v4-fg-secondary)" }}>Events</div>
-      </div>
+    <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <div className="surface p-2 flex items-center gap-2 flex-wrap">
-          <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1">
+        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1">
             {TABS.map((t) => {
               const Icon = t.icon;
               return (
@@ -2760,8 +2758,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
                 </TabsTrigger>
               );
             })}
-          </TabsList>
-        </div>
+        </TabsList>
         <TabsContent value="delays" className="mt-3" data-testid="dr-events-tab-content-delays">
           <DelaysPanel rows={delays} dailyReportId={dailyReportId} projectId={projectId}
                        reportDate={reportDate} locked={locked} reload={reload} />
@@ -2786,7 +2783,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
           <NotesPanel report={report} dailyReportId={dailyReportId} locked={locked} reload={reload} />
         </TabsContent>
       </Tabs>
-    </div>
+    </PanelShell>
   );
 }
 
