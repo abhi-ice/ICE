@@ -1424,7 +1424,7 @@ async def review_photos(
     except Exception:
         pass
 
-    return {"ok": True, "lens": lens, "photo_count": n, **parsed}
+    return {"ok": True, "lens": lens, "photo_count": n, "photo_ids": ids, **parsed}
 
 
 async def analyze_photo(

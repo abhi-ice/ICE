@@ -3722,16 +3722,27 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const togglePin = (id) => setPinned((s) => {
     const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
+  const toReview = (d) => ({
+    id: d.id, lens: d.lens, severity: d.severity, label: d.label, text: d.text,
+    n: d.photo_count ?? (d.photo_ids || []).length, ids: d.photo_ids || [],
+    time: new Date(d.created_at || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+  });
+  // pt.61: load persisted reviews on open so Safety/QC reviews survive a
+  // refresh / re-open days later — no re-spending tokens to regenerate.
+  useEffect(() => {
+    if (!dailyReportId) return;
+    let cancelled = false;
+    api.get(`/daily-reports/${dailyReportId}/photo-reviews`)
+      .then(({ data }) => { if (!cancelled) setReviews((data || []).map(toReview)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [dailyReportId]); // eslint-disable-line react-hooks/exhaustive-deps
   const runReview = async (lens) => {
     if (!pinnedIds.length || runningLens) return;
     setRunningLens(lens);
     try {
-      const { data } = await api.post(`/photo-tray/review`, { tray_ids: pinnedIds, lens });
-      setReviews((r) => [{
-        id: `${Date.now()}`, lens, severity: data.severity, label: data.label,
-        text: data.text, n: data.photo_count, ids: pinnedIds,
-        time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-      }, ...r]);
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: pinnedIds, lens, daily_report_id: dailyReportId });
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || pinnedIds }), ...r]);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Review failed — try again.");
     } finally { setRunningLens(null); }
@@ -3754,6 +3765,25 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       ? "Opened a Safety event with the review prefilled."
       : "Opened a QC issue with the review prefilled.");
     setDialogId(null);
+  };
+  const deleteReview = async (rev) => {
+    try { await api.delete(`/photo-reviews/${rev.id}`); } catch { /* drop locally regardless */ }
+    setReviews((r) => r.filter((x) => x.id !== rev.id));
+    if (dialogId === rev.id) setDialogId(null);
+  };
+  // pt.61: retry re-runs the SAME lens on the SAME photos and REPLACES the
+  // review (so the super doesn't stack up rejected versions).
+  const retryReview = async (rev) => {
+    if (runningLens) return;
+    setRunningLens(rev.lens);
+    try {
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens, daily_report_id: dailyReportId });
+      await api.delete(`/photo-reviews/${rev.id}`).catch(() => {});
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
+      if (dialogId === rev.id) setDialogId(null);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Re-run failed — try again.");
+    } finally { setRunningLens(null); }
   };
   const sevStyle = (s) => s === "clear"
     ? { color: "#7ee0bf", background: "rgba(16,185,129,.14)" }
@@ -3983,6 +4013,18 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                           style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
                           <CopyIcon className="h-3.5 w-3.5" /> Copy
                         </button>
+                        <button type="button" onClick={() => retryReview(rev)} disabled={!!runningLens}
+                          title="Re-run this review (replaces it)"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
+                          style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                          <RefreshCw className="h-3.5 w-3.5" /> Retry
+                        </button>
+                        <button type="button" onClick={() => deleteReview(rev)}
+                          title="Delete this review"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 ml-auto"
+                          style={{ color: "#fda4af", border: "1px solid rgba(251,113,133,.35)" }}>
+                          <Trash2 className="h-3.5 w-3.5" /> Delete
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -4074,6 +4116,18 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                 className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
                 style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
                 <CopyIcon className="h-3.5 w-3.5" /> Copy
+              </button>
+              <button type="button" onClick={() => retryReview(dialogReview)} disabled={!!runningLens}
+                title="Re-run this review (replaces it)"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
+                style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                <RefreshCw className="h-3.5 w-3.5" /> Retry
+              </button>
+              <button type="button" onClick={() => deleteReview(dialogReview)}
+                title="Delete this review"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
+                style={{ color: "#fda4af", border: "1px solid rgba(251,113,133,.35)" }}>
+                <Trash2 className="h-3.5 w-3.5" /> Delete
               </button>
               <span className="flex-1" />
               <button type="button" onClick={() => sendReview(dialogReview)}

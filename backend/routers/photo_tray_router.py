@@ -29,6 +29,7 @@ per Bucket C3b Phase 4 OR semantics.
 # supports PEP 604 unions natively so removal is safe runtime-wise.
 import hashlib
 import io
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -1079,6 +1080,7 @@ async def analyze_single(
 class _PhotoReviewPayload(_AiStrictModel):
     tray_ids: list[str] = _AiField(default_factory=list)
     lens: str = "safety"  # "safety" | "qc"
+    daily_report_id: Optional[str] = None
 
 
 @router.post("/photo-tray/review")
@@ -1096,7 +1098,48 @@ async def photo_review(
     )
     if not result.get("ok"):
         raise HTTPException(422, result.get("reason") or "review_failed")
+    # pt.61: persist the review so it survives a refresh / re-open days later
+    # (and we don't burn tokens re-generating it). Scoped to the daily report.
+    if payload.daily_report_id:
+        db = get_db()
+        review_doc = {
+            "id": uuid.uuid4().hex,
+            "tenant_id": ctx["tenant_id"],
+            "daily_report_id": payload.daily_report_id,
+            "lens": result["lens"],
+            "severity": result.get("severity"),
+            "label": result.get("label"),
+            "text": result.get("text"),
+            "photo_ids": result.get("photo_ids") or payload.tray_ids,
+            "photo_count": result.get("photo_count"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": ctx["user"]["id"],
+        }
+        await db.photo_reviews.insert_one(dict(review_doc))
+        result = {**result, "id": review_doc["id"],
+                  "created_at": review_doc["created_at"],
+                  "photo_ids": review_doc["photo_ids"]}
     return result
+
+
+@router.get("/daily-reports/{dr_id}/photo-reviews")
+async def list_photo_reviews(dr_id: str, ctx: dict = Depends(require_tenant)):
+    """Saved Safety / QC photo reviews for one daily report (newest first)."""
+    db = get_db()
+    docs = await db.photo_reviews.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": dr_id}),
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(length=100)
+    return docs
+
+
+@router.delete("/photo-reviews/{review_id}")
+async def delete_photo_review(review_id: str, ctx: dict = Depends(require_tenant)):
+    db = get_db()
+    res = await db.photo_reviews.delete_one(
+        tenant_filter(ctx["tenant_id"], {"id": review_id}),
+    )
+    return {"ok": res.deleted_count > 0}
 
 
 # (2) POST /api/photo-tray/batch-analyze (admin/PM only)
