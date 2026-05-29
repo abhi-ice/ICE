@@ -3838,10 +3838,19 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       const failed = results.length - trayIds.length;
       if (!trayIds.length) {
         const firstErr = results.find((r) => r.err)?.err;
+        const status = firstErr?.response?.status;
         const detail = firstErr?.response?.data?.detail || firstErr?.message;
-        toast.error(detail
-          ? `Upload failed: ${detail}. The server may have been waking up — please try again.`
-          : "Upload failed — no photos were saved. The server may have been waking up; please try again.");
+        // pt.68: a 413 is a deterministic size rejection — retrying won't help,
+        // so don't tell the user to retry; tell them to use a smaller photo.
+        let msg;
+        if (status === 413) {
+          msg = `Upload failed: ${detail || "photo too large"}. Use photos under 25MB.`;
+        } else if (detail) {
+          msg = `Upload failed: ${detail}. The server may have been waking up — please try again.`;
+        } else {
+          msg = "Upload failed — no photos were saved. The server may have been waking up; please try again.";
+        }
+        toast.error(msg);
         return;
       }
       // Attach all to this DR in one shot (no event, no AI).

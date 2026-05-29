@@ -119,8 +119,8 @@ async def upload_photo(
     if not proj:
         raise HTTPException(404, "Project not found")
     body = await file.read()
-    if len(body) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Photo > 10MB")
+    if len(body) > 25 * 1024 * 1024:  # pt.68: raised 10MB -> 25MB (matches photo-tray + vision cap)
+        raise HTTPException(413, "Photo exceeds 25MB limit")
     if not body:
         raise HTTPException(400, "Empty file")
 

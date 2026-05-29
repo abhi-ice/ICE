@@ -165,8 +165,12 @@ async def upload_to_tray(
         capture_source = "manual_upload"
 
     body = await file.read()
-    if len(body) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Photo > 10MB")
+    # pt.68: 10MB was too tight — modern phone / high-res site photos routinely
+    # exceed it. 25MB matches the vision-preprocess guard so anything that
+    # uploads can also be AI-reviewed. (Large media transiting the API process
+    # is the P1 presigned-direct-upload item in the scale audit.)
+    if len(body) > 25 * 1024 * 1024:
+        raise HTTPException(413, "Photo exceeds 25MB limit")
     if not body:
         raise HTTPException(400, "Empty file")
 

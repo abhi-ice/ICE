@@ -626,13 +626,13 @@ def _preprocess_image_for_vision(blob: bytes) -> tuple[bytes, str, dict]:
     to RGB JPEG q85. Handles HEIC / PNG / WebP via Pillow. Returns
     (jpeg_bytes, media_type, meta) or raises a domain-specific
     exception class:
-      ImageTooLargeError      input >20MB before preprocessing
+      ImageTooLargeError      input >25MB before preprocessing
       NotAnImageError         file doesn't open as an image
       ImageConversionError    Pillow can't convert (e.g. unknown HEIC variant)
     """
-    if len(blob) > 20 * 1024 * 1024:
+    if len(blob) > 25 * 1024 * 1024:  # pt.68: 20MB -> 25MB to match the upload cap
         raise ImageTooLargeError(
-            f"input {len(blob)} bytes exceeds 20MB limit",
+            f"input {len(blob)} bytes exceeds 25MB limit",
         )
     try:
         from PIL import Image, ImageOps
