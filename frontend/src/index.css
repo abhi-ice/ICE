@@ -1872,6 +1872,16 @@ html[data-theme="dark"] .bg-emerald-50.border-emerald-300 {
     text-transform: none;
     letter-spacing: 0;
 }
+/* pt.78: collapse/expand affordance on the reference section header — the
+   end arrow mirrors the photo-review stack. Header is clickable; the tag's
+   margin-left:auto pushes itself + the arrow to the far right. */
+.phase-readonly-toggleable { cursor: pointer; user-select: none; }
+.phase-readonly-toggleable:hover { background: var(--v4-bg-surface); }
+.phase-readonly-tag + .phase-readonly-toggle { margin-left: 6px; }
+.phase-readonly-toggle {
+    font-size: 11px; line-height: 1; color: var(--v4-fg-faint);
+    flex-shrink: 0;
+}
 .phase-readonly-body { padding: 0; background: var(--v4-bg-surface); }
 .phase-readonly-body .dense-table th {
     background: var(--v4-bg-surface-2);

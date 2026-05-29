@@ -2259,13 +2259,13 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
 // pt.46 (2026-05-27) — read-only row for the BEFORE (preconstruction +
 // construction paperwork) and AFTER (closeout paperwork) sections.
 // pt.62 (2026-05-28): mirror Today's Planned Activity columns minus the
-// editable/interactive ones (EOD slider, Δ, Blocker, Issues) — Code,
-// Description, Loc, SOD %, Status. CRITICAL FIX: read the SAME fields the
-// editable GridRow reads (activity_description / location_name) — the old
-// row read r.description / r.location which don't exist on grid rows, so
-// every reference row rendered a blank name. These rows are informational:
-// other teams (PM/admin) update submittals & paperwork; the super just
-// sees them for reference.
+// editable/interactive ones (EOD slider, Δ, Blocker, Issues). pt.78: dropped
+// the Loc column for these reference sections (paperwork has no location) —
+// columns are now Code, Description, SOD %, Status. CRITICAL FIX: read the
+// SAME fields the editable GridRow reads (activity_description) — the old row
+// read r.description which doesn't exist on grid rows, so every reference row
+// rendered a blank name. These rows are informational: other teams (PM/admin)
+// update submittals & paperwork; the super just sees them for reference.
 function ReadOnlyGridRow({ r }) {
   const status = r.auto_status || r.status_at_end_of_day || "not_started";
   return (
@@ -2274,7 +2274,6 @@ function ReadOnlyGridRow({ r }) {
       <td>
         <div className="text-sm whitespace-normal break-words">{r.activity_description || "—"}</div>
       </td>
-      <td className="text-xs">{r.location_name || "—"}</td>
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td><GridStatusPill status={status} testid={`dr-readonly-status-${r.activity_code}`} /></td>
     </tr>
@@ -2287,6 +2286,11 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
   // 2026-02-XX (Abhi) -- empty sections collapse by default; the
   // user can click any section header to flip the override.
   const [sectionOpenOverride, setSectionOpenOverride] = useState({});
+  // pt.78 (2026-05-29) -- the BEFORE (preconstruction/construction paperwork)
+  // and AFTER (closeout paperwork) read-only reference sections collapse by
+  // DEFAULT even when they have rows. Click the one-line header (end arrow) to
+  // expand — same affordance as the photo-review stack.
+  const [refSecOpen, setRefSecOpen] = useState({ before: false, after: false });
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture
   // for activity grid rows (both planned + unplanned). Reused across the
   // two add forms below so a single reason captures both kinds.
@@ -2445,31 +2449,37 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
               </div>
             ) : (
               <div className="phase-readonly" data-testid="dr-grid-section-1">
-                <div className="phase-readonly-head">
+                <div className="phase-readonly-head phase-readonly-toggleable" role="button" tabIndex={0}
+                  data-testid="dr-grid-section-1-toggle"
+                  onClick={() => setRefSecOpen((s) => ({ ...s, before: !s.before }))}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setRefSecOpen((s) => ({ ...s, before: !s.before })); } }}>
                   <Lock className="lock-icon" />
                   <span className="phase-readonly-title">{sec1.title}</span>
                   <span className="phase-readonly-count">
                     · {sec1Rows.length} {sec1Rows.length === 1 ? "row" : "rows"} scheduled
                   </span>
                   <span className="phase-readonly-tag">Read-only · for reference</span>
+                  <span className="phase-readonly-toggle" aria-hidden>{refSecOpen.before ? "▴" : "▾"}</span>
                 </div>
-                <div className="phase-readonly-body">
-                  <div className="overflow-x-auto">
-                    <table className="dense-table">
-                      <thead>
-                        <tr>
-                          <th>Code</th><th>Description</th><th>Loc</th>
-                          <th>SOD %</th><th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sec1Rows.map((r) => (
-                          <ReadOnlyGridRow key={r.id} r={r} />
-                        ))}
-                      </tbody>
-                    </table>
+                {refSecOpen.before && (
+                  <div className="phase-readonly-body">
+                    <div className="overflow-x-auto">
+                      <table className="dense-table">
+                        <thead>
+                          <tr>
+                            <th>Code</th><th>Description</th>
+                            <th>SOD %</th><th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sec1Rows.map((r) => (
+                            <ReadOnlyGridRow key={r.id} r={r} />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -2537,31 +2547,37 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
               </div>
             ) : (
               <div className="phase-readonly" data-testid="dr-grid-section-3">
-                <div className="phase-readonly-head">
+                <div className="phase-readonly-head phase-readonly-toggleable" role="button" tabIndex={0}
+                  data-testid="dr-grid-section-3-toggle"
+                  onClick={() => setRefSecOpen((s) => ({ ...s, after: !s.after }))}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setRefSecOpen((s) => ({ ...s, after: !s.after })); } }}>
                   <Lock className="lock-icon" />
                   <span className="phase-readonly-title">{sec3.title}</span>
                   <span className="phase-readonly-count">
                     · {sec3Rows.length} {sec3Rows.length === 1 ? "row" : "rows"} scheduled
                   </span>
                   <span className="phase-readonly-tag">Read-only · for reference</span>
+                  <span className="phase-readonly-toggle" aria-hidden>{refSecOpen.after ? "▴" : "▾"}</span>
                 </div>
-                <div className="phase-readonly-body">
-                  <div className="overflow-x-auto">
-                    <table className="dense-table">
-                      <thead>
-                        <tr>
-                          <th>Code</th><th>Description</th><th>Loc</th>
-                          <th>SOD %</th><th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sec3Rows.map((r) => (
-                          <ReadOnlyGridRow key={r.id} r={r} />
-                        ))}
-                      </tbody>
-                    </table>
+                {refSecOpen.after && (
+                  <div className="phase-readonly-body">
+                    <div className="overflow-x-auto">
+                      <table className="dense-table">
+                        <thead>
+                          <tr>
+                            <th>Code</th><th>Description</th>
+                            <th>SOD %</th><th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sec3Rows.map((r) => (
+                            <ReadOnlyGridRow key={r.id} r={r} />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
           </div>
