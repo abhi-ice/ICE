@@ -10,6 +10,7 @@ import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import FieldLabel from "../components/forms/FieldLabel";
 // CPM Part G (2026-05-15) -- added_at displayed MM/DD/YYYY.
 import { formatDateDisplay } from "../lib/dateUtil";
 import { confirmAction } from "../lib/confirmAction";
@@ -258,7 +259,7 @@ function AddMemberForm({ eligible, onAdd, onCancel }) {
   return (
     <div className="space-y-3 text-sm">
       <div>
-        <label className="field-label">Tenant user *</label>
+        <FieldLabel required className="field-label">Tenant user</FieldLabel>
         {!eligible.length ? (
           <div className="text-xs text-slate-500 italic">
             No eligible tenant users. All active users are already members.
@@ -277,7 +278,7 @@ function AddMemberForm({ eligible, onAdd, onCancel }) {
         )}
       </div>
       <div>
-        <label className="field-label">Role on project *</label>
+        <FieldLabel required className="field-label">Role on project</FieldLabel>
         <select data-testid="pa-add-role" value={role}
           onChange={(e) => setRole(e.target.value)}
           className="w-full h-9 px-2 rounded border border-slate-300 bg-white text-sm">

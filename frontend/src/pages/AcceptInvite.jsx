@@ -6,6 +6,7 @@ import { MailCheck } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast, Toaster } from "../components/ui/sonner";
 import SiteOpsLogo from "../components/SiteOpsLogo";
+import FieldLabel from "../components/forms/FieldLabel";
 
 export default function AcceptInvite() {
   const nav = useNavigate();
@@ -80,7 +81,7 @@ export default function AcceptInvite() {
 function Field({ label, testid, ...rest }) {
   return (
     <div>
-      <label className="field-label">{label}</label>
+      <FieldLabel required={!!rest.required} className="field-label">{label}</FieldLabel>
       <input data-testid={testid} {...rest}
         className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
     </div>

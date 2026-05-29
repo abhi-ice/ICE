@@ -18,6 +18,7 @@ import { toast } from "../ui/sonner";
 import TaskPicker from "./TaskPicker";
 // Bucket G Phase 3 (2026-05-11) -- Jigsaw pre-fill wrapper.
 import JigsawField from "./JigsawField";
+import FieldLabel from "./FieldLabel";
 import { getUser } from "../../lib/auth";
 
 const CHANNELS = ["email", "phone", "in_person", "formal_letter",
@@ -250,7 +251,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
     <div data-testid="coordination-event-form" className="space-y-3 text-sm">
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <label className="text-xs text-slate-500">Occurred at *</label>
+          <FieldLabel required>Occurred at</FieldLabel>
           <input data-testid="coord-occurred-at" type="datetime-local"
             value={form.occurred_at}
             onChange={(e) => set("occurred_at", e.target.value)}
@@ -280,7 +281,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-slate-500">Other party name *</label>
+          <FieldLabel required>Other party name</FieldLabel>
           <input data-testid="coord-other-name" value={form.other_party_name}
             onChange={(e) => set("other_party_name", e.target.value)}
             placeholder="Name of person you spoke with"
@@ -344,7 +345,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             trade_code suggestions on coordination_event) can pre-fill
             this from a photo. Empty string == not set. */}
         <div>
-          <label className="text-xs text-slate-500">Trade (optional)</label>
+          <FieldLabel optional>Trade</FieldLabel>
           <JigsawField entityType="coordination_event" entityId={entityId}
             fieldPath="trade_code" userRole={userRole} fieldLabel="trade"
             onConfirm={(v) => set("trade_code", String(v ?? form.trade_code ?? ""))}>
@@ -360,7 +361,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       {form.topic === "other" && (
         <div>
-          <label className="text-xs text-slate-500">Describe the topic *</label>
+          <FieldLabel required>Describe the topic</FieldLabel>
           <input data-testid="coord-topic-other"
             value={form.topic_other_description}
             onChange={(e) => set("topic_other_description", e.target.value)}
@@ -369,7 +370,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       )}
 
       <div>
-        <label className="text-xs text-slate-500">Summary *</label>
+        <FieldLabel required>Summary</FieldLabel>
         <JigsawField entityType="coordination_event" entityId={entityId}
           fieldPath="summary" userRole={userRole} fieldLabel="summary"
           onConfirm={(v) => set("summary", String(v ?? form.summary))}>
@@ -382,7 +383,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       {!abbreviated && (
         <div>
-          <label className="text-xs text-slate-500">Detail (optional)</label>
+          <FieldLabel optional>Detail</FieldLabel>
           <textarea data-testid="coord-detail" rows={4}
             value={form.detail_text}
             onChange={(e) => set("detail_text", e.target.value)}
@@ -393,7 +394,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
       {!abbreviated && (
         <div>
-          <label className="text-xs text-slate-500">Outcome notes (optional)</label>
+          <FieldLabel optional>Outcome notes</FieldLabel>
           <textarea rows={2}
             value={form.outcome_notes}
             onChange={(e) => set("outcome_notes", e.target.value)}

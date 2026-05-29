@@ -3,6 +3,7 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import { Sparkles, Check, BarChart3 } from "lucide-react";
+import FieldLabel from "../components/forms/FieldLabel";
 
 export default function Recovery() {
   const { activeId, projects } = useProjects();
@@ -59,7 +60,7 @@ export default function Recovery() {
 
       <div className="bg-card border border-border rounded-lg p-4 flex flex-wrap items-end gap-3">
         <div className="flex-1 min-w-[280px]">
-          <label className="field-label">Target activity</label>
+          <FieldLabel required className="field-label">Target activity</FieldLabel>
           <select data-testid="recovery-target" value={target} onChange={(e) => setTarget(e.target.value)} className="w-full h-9 px-2 rounded border border-input bg-background text-sm">
             <option value="">— select activity —</option>
             {tasks.map((t) => (

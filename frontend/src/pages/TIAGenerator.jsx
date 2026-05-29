@@ -11,6 +11,7 @@ import { FileText, Download, History, Sparkles, ShieldAlert, Loader2 } from "luc
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
+import FieldLabel from "../components/forms/FieldLabel";
 
 function isoToday() { return new Date().toISOString().slice(0, 10); }
 
@@ -157,7 +158,7 @@ export default function TIAGenerator() {
               className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-xs text-slate-500">Cause class (optional)</label>
+            <FieldLabel optional className="text-xs text-slate-500">Cause class</FieldLabel>
             <select data-testid="tia-cause" value={causeClass} onChange={(e) => setCauseClass(e.target.value)}
               className="block w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
               <option value="">(any)</option>
@@ -165,12 +166,12 @@ export default function TIAGenerator() {
             </select>
           </div>
           <div>
-            <label className="text-xs text-slate-500">Zone ID (optional)</label>
+            <FieldLabel optional className="text-xs text-slate-500">Zone ID</FieldLabel>
             <input data-testid="tia-zone" type="text" value={zoneId} onChange={(e) => setZoneId(e.target.value)}
               placeholder="e.g. floor-3-east" className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>
           <div>
-            <label className="text-xs text-slate-500">Gating entity ID (optional)</label>
+            <FieldLabel optional className="text-xs text-slate-500">Gating entity ID</FieldLabel>
             <input data-testid="tia-gate" type="text" value={gatingEntityId} onChange={(e) => setGatingEntityId(e.target.value)}
               placeholder="paste a UUID to scope" className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
           </div>

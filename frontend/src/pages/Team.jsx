@@ -5,6 +5,7 @@ import { toast } from "../components/ui/sonner";
 import { Users, Mail, Trash2, Copy, ShieldAlert } from "lucide-react";
 import { confirmAction } from "../lib/confirmAction";
 import { deleteWithUndo } from "../lib/deleteWithUndo";
+import FieldLabel from "../components/forms/FieldLabel";
 
 // Bug #38 fix (2026-05-13): expanded to include the specialty roles
 // added by migration 015 (submittal_tech + scheduling_engineer) and
@@ -117,7 +118,7 @@ export default function Team() {
       {isAdmin ? (
         <form data-testid="team-invite-form" onSubmit={sendInvite} className="surface p-4 flex flex-wrap gap-3 items-end">
           <div className="grow min-w-[240px]">
-            <div className="field-label">Email to invite</div>
+            <FieldLabel required className="field-label">Email to invite</FieldLabel>
             <input data-testid="invite-email-input" type="email" required value={draft.email}
               onChange={(e) => setDraft({ ...draft, email: e.target.value })}
               placeholder="teammate@yourcompany.com"

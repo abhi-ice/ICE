@@ -9,6 +9,7 @@ import {
 } from "../ui/dialog";
 import { useProjects } from "../../lib/projects";
 import { toast } from "../ui/sonner";
+import FieldLabel from "../forms/FieldLabel";
 
 const KIND_TO_API = {
   delay: "/delays",
@@ -187,11 +188,11 @@ export default function EntityFromVoiceDialog({ open, onClose, voiceAnnotation }
           {kind === "delay" && (
             <>
               <div>
-                <label className="field-label">Delay (min)</label>
+                <FieldLabel optional className="field-label">Delay (min)</FieldLabel>
                 <input type="number" value={form.delay_minutes || ""} onChange={(e) => setF("delay_minutes", e.target.value === "" ? null : Number(e.target.value))} className="w-full h-9 px-3 rounded border border-slate-200" />
               </div>
               <div>
-                <label className="field-label">Reason</label>
+                <FieldLabel optional className="field-label">Reason</FieldLabel>
                 <input value={form.reason_category || ""} onChange={(e) => setF("reason_category", e.target.value)} className="w-full h-9 px-3 rounded border border-slate-200" />
               </div>
             </>
@@ -207,32 +208,32 @@ export default function EntityFromVoiceDialog({ open, onClose, voiceAnnotation }
           {kind === "work_item" && (
             <>
               <div>
-                <label className="field-label">Est. cost ($)</label>
+                <FieldLabel optional className="field-label">Est. cost ($)</FieldLabel>
                 <input type="number" value={form.estimated_cost_impact ?? ""} onChange={(e) => setF("estimated_cost_impact", e.target.value === "" ? null : Number(e.target.value))} className="w-full h-9 px-3 rounded border border-slate-200" />
               </div>
               <div>
-                <label className="field-label">Est. days</label>
+                <FieldLabel optional className="field-label">Est. days</FieldLabel>
                 <input type="number" value={form.estimated_time_impact_days ?? ""} onChange={(e) => setF("estimated_time_impact_days", e.target.value === "" ? null : Number(e.target.value))} className="w-full h-9 px-3 rounded border border-slate-200" />
               </div>
             </>
           )}
           {kind === "qc_issue" && (
             <div>
-              <label className="field-label">Spec ref</label>
+              <FieldLabel optional className="field-label">Spec ref</FieldLabel>
               <input value={form.spec_section_ref || ""} onChange={(e) => setF("spec_section_ref", e.target.value)} className="w-full h-9 px-3 rounded border border-slate-200 font-mono text-xs" />
             </div>
           )}
 
           {/* Cross-cutting linkage */}
           <div>
-            <label className="field-label">Activity (linkage)</label>
+            <FieldLabel optional className="field-label">Activity (linkage)</FieldLabel>
             <select data-testid="vef-activity" value={activityId} onChange={(e) => setActivityId(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
               <option value="">— optional —</option>
               {tasks.map((t) => <option key={t.id} value={t.id}>[{t.activity_code}] {t.description.slice(0, 50)}</option>)}
             </select>
           </div>
           <div>
-            <label className="field-label">Location (linkage)</label>
+            <FieldLabel optional className="field-label">Location (linkage)</FieldLabel>
             <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
               <option value="">— optional —</option>
               {locations.map((l) => <option key={l.id} value={l.id}>{l.code} {l.name}</option>)}

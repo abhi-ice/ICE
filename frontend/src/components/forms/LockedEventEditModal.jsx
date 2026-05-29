@@ -32,6 +32,7 @@ import { Button } from "../ui/button";
 // delivery / coordination event types that the spec called out for
 // Jigsaw wrapping, since they all reach this modal.
 import JigsawField from "./JigsawField";
+import FieldLabel from "./FieldLabel";
 import { getUser } from "../../lib/auth";
 // CPM Part J-6 (2026-05-15) -- per-task RFI impact input. Rendered
 // via FieldEditor when a field carries type: "per_task_impacts".
@@ -309,9 +310,9 @@ export default function LockedEventEditModal({
               {/* Bug #57 (2026-05-14) -- conditional label / hint based
                   on whether the current diff is a status-only transition
                   (Bug #49 exemption) or a field edit (reason required). */}
-              <label className="field-label">
-                Edit reason{reasonRequired ? " *" : " (optional for status-only changes)"}
-              </label>
+              <FieldLabel className="field-label" required={reasonRequired} optional={!reasonRequired}>
+                Edit reason
+              </FieldLabel>
               <textarea data-testid="locked-edit-reason"
                 value={reason} onChange={(e) => setReason(e.target.value)}
                 placeholder={reasonRequired
@@ -356,7 +357,7 @@ export default function LockedEventEditModal({
               and (if approved) open a 1-hour edit window for you.
             </div>
             <div>
-              <label className="field-label">Why do you need to edit? *</label>
+              <FieldLabel className="field-label" required>Why do you need to edit?</FieldLabel>
               <textarea data-testid="locked-edit-request-reason"
                 value={requestReason} onChange={(e) => setRequestReason(e.target.value)}
                 placeholder={`Describe what you need to fix (min ${REASON_MIN} characters).`}

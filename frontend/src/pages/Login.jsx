@@ -5,6 +5,7 @@ import { setAuth } from "../lib/auth";
 import { Button } from "../components/ui/button";
 import { toast, Toaster } from "../components/ui/sonner";
 import SiteOpsLogo from "../components/SiteOpsLogo";
+import FieldLabel from "../components/forms/FieldLabel";
 
 export default function Login() {
   const nav = useNavigate();
@@ -56,7 +57,7 @@ export default function Login() {
 
           <form onSubmit={submit} className="space-y-4">
             <div>
-              <label className="field-label">Email</label>
+              <FieldLabel required className="field-label">Email</FieldLabel>
               <input
                 data-testid="login-email"
                 type="email"
@@ -68,7 +69,7 @@ export default function Login() {
               />
             </div>
             <div>
-              <label className="field-label">Password</label>
+              <FieldLabel required className="field-label">Password</FieldLabel>
               <input
                 data-testid="login-password"
                 type="password"

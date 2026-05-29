@@ -22,6 +22,7 @@ import BackButton from "../components/BackButton";
 import SubmitProgress from "../components/SubmitProgress";
 import { getUser } from "../lib/auth";
 import DelayForm from "../components/forms/DelayForm";
+import FieldLabel from "../components/forms/FieldLabel";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
 // Addition 4 -- locked-DR edit modal (reusable across event types).
 import LockedEventEditModal from "../components/forms/LockedEventEditModal";
@@ -1077,7 +1078,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               <span><strong>File as a no-work day</strong> (required to submit a blank DR)</span>
             </label>
             <div>
-              <label className="field-label">Reason *</label>
+              <FieldLabel required className="field-label">Reason</FieldLabel>
               <select data-testid="no-work-reason"
                 value={noWorkModal?.reason ?? ""}
                 onChange={(e) => setNoWorkModal({ ...noWorkModal, reason: e.target.value })}
@@ -1092,9 +1093,9 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               </select>
             </div>
             <div>
-              <label className="field-label">
-                Note {noWorkModal?.reason === "other" && <span className="text-red-600">*</span>}
-              </label>
+              <FieldLabel required={noWorkModal?.reason === "other"} className="field-label">
+                Note
+              </FieldLabel>
               <textarea data-testid="no-work-note"
                 value={noWorkModal?.note ?? ""}
                 onChange={(e) => setNoWorkModal({ ...noWorkModal, note: e.target.value })}
@@ -3295,14 +3296,14 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               )}
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="text-xs text-slate-500">Rework duration (days) *</label>
+                  <FieldLabel required>Rework duration (days)</FieldLabel>
                   <input data-testid="qc-rework-days" type="number" step="0.5" min="0"
                     value={draft.rework_duration_days}
                     onChange={(e) => setDraft({ ...draft, rework_duration_days: e.target.value })}
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-xs text-slate-500">Basis * (short note)</label>
+                  <FieldLabel required>Basis (short note)</FieldLabel>
                   <input data-testid="qc-rework-basis" type="text"
                     value={draft.rework_duration_basis}
                     onChange={(e) => setDraft({ ...draft, rework_duration_basis: e.target.value })}
@@ -4311,13 +4312,13 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
               Synthetic delay: <span className="font-mono">{(qcIssue.linked_synthetic_delay_id || "").slice(0, 8)}</span>.
             </div>
             <div>
-              <label className="text-xs text-slate-500">Actual rework (days) *</label>
+              <FieldLabel required>Actual rework (days)</FieldLabel>
               <input data-testid="qc-rework-actual-days" type="number" step="0.5" min="0"
                 value={days} onChange={(e) => setDays(e.target.value)}
                 className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
             </div>
             <div>
-              <label className="text-xs text-slate-500">Notes</label>
+              <FieldLabel optional>Notes</FieldLabel>
               <textarea data-testid="qc-rework-outcome-notes" rows={3}
                 value={notes} onChange={(e) => setNotes(e.target.value)}
                 placeholder="What went better or worse than expected?"

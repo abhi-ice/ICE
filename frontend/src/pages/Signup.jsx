@@ -6,6 +6,7 @@ import { Building2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { toast, Toaster } from "../components/ui/sonner";
 import SiteOpsLogo from "../components/SiteOpsLogo";
+import FieldLabel from "../components/forms/FieldLabel";
 
 // Signup redesign (2026-05-24) — mirrors Login.jsx structure exactly:
 // header with brand + back-to-home, single centered auth card,
@@ -109,7 +110,7 @@ export default function Signup() {
 function Field({ label, testid, ...rest }) {
   return (
     <div>
-      <label className="field-label">{label}</label>
+      <FieldLabel required={rest.required} className="field-label">{label}</FieldLabel>
       <input data-testid={testid} {...rest}
         className="w-full h-11 px-3 rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
     </div>

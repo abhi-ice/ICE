@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import api from "../lib/api";
 import { confirmAction } from "../lib/confirmAction";
+import FieldLabel from "../components/forms/FieldLabel";
 
 const BLANK = {
   name: "", trades: [], contact_name: "", contact_email: "",
@@ -298,17 +299,18 @@ function VendorTable({ kind }) {
             <DialogTitle>{editing === "new" ? `Add ${titleSingular}` : `Edit ${titleSingular}`}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 mt-2">
-            <Field label="Name *" value={form.name} onChange={(v) => setForm({ ...form, name: v })} testid="vendor-form-name" />
+            <Field label="Name" required value={form.name} onChange={(v) => setForm({ ...form, name: v })} testid="vendor-form-name" />
             <Field label={`Trades (${kind === "subcontractor" ? "comma-separated, e.g. electrical, mechanical" : "categories supplied"})`}
+              optional
               value={Array.isArray(form.trades) ? form.trades.join(", ") : form.trades}
               onChange={(v) => setForm({ ...form, trades: v })}
               testid="vendor-form-trades" />
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Contact name" value={form.contact_name} onChange={(v) => setForm({ ...form, contact_name: v })} />
-              <Field label="Phone" value={form.contact_phone} onChange={(v) => setForm({ ...form, contact_phone: v })} />
+              <Field label="Contact name" optional value={form.contact_name} onChange={(v) => setForm({ ...form, contact_name: v })} />
+              <Field label="Phone" optional value={form.contact_phone} onChange={(v) => setForm({ ...form, contact_phone: v })} />
             </div>
-            <Field label="Email" value={form.contact_email} onChange={(v) => setForm({ ...form, contact_email: v })} />
-            <Field label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} textarea />
+            <Field label="Email" optional value={form.contact_email} onChange={(v) => setForm({ ...form, contact_email: v })} />
+            <Field label="Notes" optional value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} textarea />
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <button onClick={close} className="h-8 px-3 rounded border border-white/10 text-xs">Cancel</button>
@@ -415,10 +417,10 @@ function VendorTable({ kind }) {
   );
 }
 
-function Field({ label, value, onChange, testid, textarea }) {
+function Field({ label, value, onChange, testid, textarea, required, optional }) {
   return (
-    <label className="block">
-      <div className="text-xs text-slate-400 mb-1">{label}</div>
+    <div className="block">
+      <FieldLabel required={required} optional={optional} className="text-slate-400 mb-1 block">{label}</FieldLabel>
       {textarea
         ? <textarea data-testid={testid} value={value || ""}
             onChange={(e) => onChange(e.target.value)} rows={2}
@@ -427,7 +429,7 @@ function Field({ label, value, onChange, testid, textarea }) {
             onChange={(e) => onChange(e.target.value)}
             className="w-full h-8 px-2 rounded bg-slate-900/60 border border-white/10 text-sm focus:border-emerald-500 outline-none" />
       }
-    </label>
+    </div>
   );
 }
 

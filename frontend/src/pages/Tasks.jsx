@@ -21,6 +21,7 @@ import PageHelp from "../components/PageHelp";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
 import { toast } from "../components/ui/sonner";
+import FieldLabel from "../components/forms/FieldLabel";
 
 // N1 (2026-05-18) -- the AI-assigned work_category (Feature F1) shown
 // as a small muted badge on the activity-code sub-line of the Tasks
@@ -368,7 +369,7 @@ export default function Tasks() {
               <DialogHeader><DialogTitle>{editing ? `Edit ${editing.activity_code}` : "New activity"}</DialogTitle></DialogHeader>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="field-label">Activity code *</label>
+                  <FieldLabel required className="field-label">Activity code</FieldLabel>
                   <input data-testid="ac-code" value={form.activity_code} disabled={!!editing} onChange={(e) => setForm({ ...form, activity_code: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200 disabled:bg-slate-50" />
                 </div>
                 <div>
@@ -376,7 +377,7 @@ export default function Tasks() {
                   <input value={form.wbs} onChange={(e) => setForm({ ...form, wbs: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" />
                 </div>
                 <div className="col-span-2">
-                  <label className="field-label">Description *</label>
+                  <FieldLabel required className="field-label">Description</FieldLabel>
                   <input data-testid="ac-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" />
                 </div>
                 <div>

@@ -18,6 +18,7 @@ import { ChevronRight, ChevronLeft, Check, AlertTriangle } from "lucide-react";
 import api from "../../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { toast } from "../ui/sonner";
+import FieldLabel from "./FieldLabel";
 
 const FACT_TYPES = [
   { value: "delay",          label: "Delay",          endpoint: "/delays",          requireDescr: true },
@@ -141,14 +142,14 @@ export default function SupplementWizard({
           {step === 1 && (
             <>
               <div>
-                <label className="text-xs text-slate-500">Fact type *</label>
+                <FieldLabel required className="text-xs text-slate-500">Fact type</FieldLabel>
                 <select data-testid="supplement-fact-type" value={factType} onChange={(e) => setFactType(e.target.value)}
                   className="block w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
                   {FACT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
               <div>
-                <label className="text-xs text-slate-500">Reason this is filed late *</label>
+                <FieldLabel required className="text-xs text-slate-500">Reason this is filed late</FieldLabel>
                 <textarea data-testid="supplement-reason" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
                   placeholder="e.g. sub provided rework photos this morning; original DR was already submitted"
                   className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
@@ -201,15 +202,15 @@ export default function SupplementWizard({
               <div className="text-xs text-slate-500">Describe the {FACT_TYPES.find((t) => t.value === factType)?.label}:</div>
               {factType === "rfi" && (
                 <div>
-                  <label className="text-xs text-slate-500">Subject *</label>
+                  <FieldLabel required className="text-xs text-slate-500">Subject</FieldLabel>
                   <input data-testid="supplement-subject" value={subject} onChange={(e) => setSubject(e.target.value)}
                     className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
                 </div>
               )}
               <div>
-                <label className="text-xs text-slate-500">
-                  {factType === "rfi" ? "Question" : "Description"} *
-                </label>
+                <FieldLabel required className="text-xs text-slate-500">
+                  {factType === "rfi" ? "Question" : "Description"}
+                </FieldLabel>
                 <textarea data-testid="supplement-description" rows={3} value={description} onChange={(e) => setDescription(e.target.value)}
                   className="block w-full px-2 py-1 rounded border border-slate-300 text-sm" />
               </div>

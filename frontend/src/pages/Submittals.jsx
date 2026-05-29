@@ -26,6 +26,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { toast } from "../components/ui/sonner";
 import { getUser } from "../lib/auth";
 import JigsawField from "../components/forms/JigsawField";
+import FieldLabel from "../components/forms/FieldLabel";
 // CPM Part G (2026-05-15) -- submittal SLA dates (submitted_to_ae_at,
 // a_e_review_due_at, must_approve_by) rendered MM/DD/YYYY via the
 // chokepoint helper. The fields are datetimes in storage but the
@@ -298,21 +299,21 @@ function RegisterTab() {
               <DialogHeader><DialogTitle>New submittal</DialogTitle></DialogHeader>
               <div className="space-y-3">
                 <div>
-                  <label className="field-label">Title *</label>
+                  <FieldLabel required className="field-label">Title</FieldLabel>
                   <input data-testid="sub-title" value={form.title}
                     onChange={(e) => setForm({ ...form, title: e.target.value })}
                     className="w-full h-9 px-3 rounded border border-slate-200" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="field-label">Spec section code</label>
+                    <FieldLabel optional className="field-label">Spec section code</FieldLabel>
                     <input value={form.spec_section_code}
                       onChange={(e) => setForm({ ...form, spec_section_code: e.target.value })}
                       placeholder="03 30 00"
                       className="w-full h-9 px-3 rounded border border-slate-200 font-mono text-sm" />
                   </div>
                   <div>
-                    <label className="field-label">Discipline</label>
+                    <FieldLabel optional className="field-label">Discipline</FieldLabel>
                     <input data-testid="sub-discipline" value={form.discipline}
                       onChange={(e) => setForm({ ...form, discipline: e.target.value })}
                       placeholder="Plumbing / Mechanical / Electrical / …"
@@ -330,7 +331,7 @@ function RegisterTab() {
                     </select>
                   </div>
                   <div>
-                    <label className="field-label">Sub responsible</label>
+                    <FieldLabel optional className="field-label">Sub responsible</FieldLabel>
                     <input value={form.sub_responsible}
                       onChange={(e) => setForm({ ...form, sub_responsible: e.target.value })}
                       className="w-full h-9 px-3 rounded border border-slate-200" />
@@ -338,7 +339,7 @@ function RegisterTab() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="field-label">Procurement lead time (days)</label>
+                    <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                     <input data-testid="sub-lead-time" type="number" min="0"
                       value={form.procurement_lead_time_days}
                       onChange={(e) => setForm({ ...form, procurement_lead_time_days: e.target.value })}
@@ -347,9 +348,9 @@ function RegisterTab() {
                   </div>
                   {isAdminOrPm && (
                     <div>
-                      <label className="field-label" title="Admin-only override">
+                      <FieldLabel optional className="field-label" title="Admin-only override">
                         SLA override (days)
-                      </label>
+                      </FieldLabel>
                       <input data-testid="sub-sla-override" type="number" min="1" max="365"
                         value={form.sla_days_override}
                         onChange={(e) => setForm({ ...form, sla_days_override: e.target.value })}
@@ -747,7 +748,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                 </JigsawField>
               </div>
               <div>
-                <label className="field-label">Discipline</label>
+                <FieldLabel optional className="field-label">Discipline</FieldLabel>
                 <JigsawField entityType="submittal" entityId={submittal.id}
                   fieldPath="discipline" userRole={userRole} fieldLabel="discipline"
                   onConfirm={(v) => setForm({ ...form, discipline: String(v || "") })}>
@@ -759,13 +760,13 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="field-label">Procurement lead time (days)</label>
+                <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                 <input type="number" min="0" value={form.procurement_lead_time_days}
                   onChange={(e) => setForm({ ...form, procurement_lead_time_days: e.target.value })}
                   className="w-full h-9 px-3 rounded border border-slate-200" />
               </div>
               <div>
-                <label className="field-label">Sub responsible</label>
+                <FieldLabel optional className="field-label">Sub responsible</FieldLabel>
                 <input value={form.sub_responsible}
                   onChange={(e) => setForm({ ...form, sub_responsible: e.target.value })}
                   className="w-full h-9 px-3 rounded border border-slate-200" />
@@ -774,7 +775,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
             {isAdminOrPm && (
               <div className="grid grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
                 <div>
-                  <label className="field-label text-amber-900">SLA override (days)</label>
+                  <FieldLabel optional className="field-label text-amber-900">SLA override (days)</FieldLabel>
                   <input type="number" min="1" max="365"
                     value={form.sla_days_override}
                     onChange={(e) => setForm({ ...form, sla_days_override: e.target.value })}
@@ -833,7 +834,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
         {tab === "event" && (
           <div className="space-y-3 text-sm">
             <div>
-              <label className="field-label">Event type</label>
+              <FieldLabel required className="field-label">Event type</FieldLabel>
               <select value={eventType}
                 onChange={(e) => setEventType(e.target.value)}
                 data-testid="event-type"
@@ -844,7 +845,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
               </select>
             </div>
             <div>
-              <label className="field-label">Notes (optional)</label>
+              <FieldLabel optional className="field-label">Notes</FieldLabel>
               <textarea value={eventNotes}
                 onChange={(e) => setEventNotes(e.target.value)}
                 rows={3} className="w-full p-2 rounded border border-slate-200 text-sm" />
@@ -862,7 +863,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
         {tab === "reviewer" && isAdminOrPm && (
           <div className="space-y-3 text-sm">
             <div>
-              <label className="field-label">Reviewer user_id</label>
+              <FieldLabel required className="field-label">Reviewer user_id</FieldLabel>
               <input value={reviewerId}
                 onChange={(e) => setReviewerId(e.target.value)}
                 placeholder="user_id (admin / submittal_tech / pm)"

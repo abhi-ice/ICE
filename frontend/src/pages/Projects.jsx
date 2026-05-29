@@ -6,6 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
+import FieldLabel from "../components/forms/FieldLabel";
 // CPM Part G (2026-05-15) -- planned_completion_date rendered
 // MM/DD/YYYY via the lib/dateUtil chokepoint.
 import { formatDateDisplay } from "../lib/dateUtil";
@@ -312,7 +313,7 @@ export default function Projects() {
             <DialogHeader><DialogTitle>{editId ? "Edit project" : "New project"}</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div>
-                <label className="field-label">Project name *</label>
+                <FieldLabel required className="field-label">Project name</FieldLabel>
                 <input data-testid="np-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               {/* Feature DR Header Auto-Population (2026-05-20) -- the
@@ -322,42 +323,42 @@ export default function Projects() {
                 Project / Contract Information
               </div>
               <div>
-                <label className="field-label">Contract number</label>
+                <FieldLabel optional className="field-label">Contract number</FieldLabel>
                 <input data-testid="np-contract" value={form.contract_number} onChange={(e) => setForm({ ...form, contract_number: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               <div>
-                <label className="field-label">Client</label>
+                <FieldLabel optional className="field-label">Client</FieldLabel>
                 <input data-testid="np-client" placeholder="e.g. VA Medical Center, Bronx NY" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="field-label">Station</label>
+                  <FieldLabel optional className="field-label">Station</FieldLabel>
                   <input data-testid="np-station" placeholder="e.g. 526-25-100" value={form.station_id} onChange={(e) => setForm({ ...form, station_id: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
                 </div>
                 <div>
-                  <label className="field-label">Contractor</label>
+                  <FieldLabel optional className="field-label">Contractor</FieldLabel>
                   <input data-testid="np-contractor" placeholder="e.g. Integrated Construction Enterprises, Inc." value={form.contractor_name} onChange={(e) => setForm({ ...form, contractor_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
                 </div>
               </div>
               <div>
-                <label className="field-label">Contract value (USD)</label>
+                <FieldLabel optional className="field-label">Contract value (USD)</FieldLabel>
                 <input data-testid="np-value" type="number" value={form.contract_value_usd} onChange={(e) => setForm({ ...form, contract_value_usd: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               <div>
-                <label className="field-label">Address</label>
+                <FieldLabel optional className="field-label">Address</FieldLabel>
                 <input data-testid="np-address" placeholder="Street address" value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               <div>
-                <label className="field-label">City</label>
+                <FieldLabel optional className="field-label">City</FieldLabel>
                 <input data-testid="np-city" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="field-label">State</label>
+                  <FieldLabel optional className="field-label">State</FieldLabel>
                   <input data-testid="np-state" placeholder="e.g. NY or New York" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
                 </div>
                 <div>
-                  <label className="field-label">Postal code</label>
+                  <FieldLabel optional className="field-label">Postal code</FieldLabel>
                   <input data-testid="np-postal" value={form.postal_code} onChange={(e) => setForm({ ...form, postal_code: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
                 </div>
               </div>
@@ -389,26 +390,26 @@ export default function Projects() {
                 </summary>
                 <div className="mt-3 space-y-3">
                   <div>
-                    <label className="field-label">Agency</label>
+                    <FieldLabel optional className="field-label">Agency</FieldLabel>
                     <input data-testid="np-agency" placeholder="e.g. GSA, NYCHA, USMS"
                       value={form.agency} onChange={(e) => setForm({ ...form, agency: e.target.value })}
                       className="w-full h-9 px-3 rounded border border-input bg-background" />
                   </div>
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="field-label">NTP date</label>
+                      <FieldLabel optional className="field-label">NTP date</FieldLabel>
                       <input data-testid="np-ntp" type="date"
                         value={form.ntp_date} onChange={(e) => setForm({ ...form, ntp_date: e.target.value })}
                         className="w-full h-9 px-3 rounded border border-input bg-background" />
                     </div>
                     <div>
-                      <label className="field-label">Contract days</label>
+                      <FieldLabel optional className="field-label">Contract days</FieldLabel>
                       <input data-testid="np-contract-days" type="number" min="0"
                         value={form.contract_days} onChange={(e) => setForm({ ...form, contract_days: e.target.value })}
                         className="w-full h-9 px-3 rounded border border-input bg-background" />
                     </div>
                     <div>
-                      <label className="field-label">Calendar basis</label>
+                      <FieldLabel optional className="field-label">Calendar basis</FieldLabel>
                       <select data-testid="np-calendar-basis"
                         value={form.calendar_basis} onChange={(e) => setForm({ ...form, calendar_basis: e.target.value })}
                         className="w-full h-9 px-3 rounded border border-input bg-background">
@@ -419,14 +420,14 @@ export default function Projects() {
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="field-label">Original substantial completion</label>
+                      <FieldLabel optional className="field-label">Original substantial completion</FieldLabel>
                       <input data-testid="np-osc" type="date"
                         value={form.original_substantial_completion}
                         onChange={(e) => setForm({ ...form, original_substantial_completion: e.target.value })}
                         className="w-full h-9 px-3 rounded border border-input bg-background" />
                     </div>
                     <div>
-                      <label className="field-label">Current substantial completion</label>
+                      <FieldLabel optional className="field-label">Current substantial completion</FieldLabel>
                       <input data-testid="np-csc" type="date"
                         value={form.current_substantial_completion}
                         onChange={(e) => setForm({ ...form, current_substantial_completion: e.target.value })}

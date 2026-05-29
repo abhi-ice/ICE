@@ -5,6 +5,7 @@ import { Plus, FileUp, BookOpen } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
+import FieldLabel from "../components/forms/FieldLabel";
 
 export default function Specs() {
   const { activeId, projects } = useProjects();
@@ -85,11 +86,11 @@ export default function Specs() {
             <DialogHeader><DialogTitle>New spec</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div>
-                <label className="field-label">Name *</label>
+                <FieldLabel required className="field-label">Name</FieldLabel>
                 <input data-testid="spec-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" />
               </div>
               <div>
-                <label className="field-label">Revision label</label>
+                <FieldLabel optional className="field-label">Revision label</FieldLabel>
                 <input value={form.revision_label} onChange={(e) => setForm({ ...form, revision_label: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" placeholder="100% CD / Addendum 2 / ..." />
               </div>
               <Button data-testid="spec-create" onClick={create} disabled={!form.name} className="bg-blue-600 hover:bg-blue-700">Create</Button>
