@@ -420,7 +420,7 @@ function VendorTable({ kind }) {
 function Field({ label, value, onChange, testid, textarea, required, optional }) {
   return (
     <div className="block">
-      <FieldLabel required={required} optional={optional} className="text-slate-400 mb-1 block">{label}</FieldLabel>
+      <FieldLabel required={required} optional={optional} className="!text-slate-400 mb-1 block">{label}</FieldLabel>
       {textarea
         ? <textarea data-testid={testid} value={value || ""}
             onChange={(e) => onChange(e.target.value)} rows={2}

@@ -2845,6 +2845,12 @@ html[data-theme="light"] .rev-sky:not(:disabled):hover { background: #bae6fd; }
 html[data-theme="light"] .rev-danger { color: #be123c; border-color: #fda4af; }
 html[data-theme="light"] .rev-danger:not(:disabled):hover { background: #ffe4e6; }
 
+/* collapsed-row "Open ›" affordance — emerald that passes contrast in BOTH
+   themes (pt.65): emerald-700 on the light white surface (~5:1), emerald-400
+   on the dark surface. The old inline #10b981 was ~2.5:1 on white (failed). */
+.rev-open { color: #047857; }
+html[data-theme="dark"] .rev-open { color: #34d399; }
+
 /* lens text label (header + collapsed-row) */
 .rev-lens--safety { color: #fcd9a1; }
 html[data-theme="light"] .rev-lens--safety { color: #b45309; }

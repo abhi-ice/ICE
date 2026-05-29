@@ -1102,6 +1102,15 @@ async def photo_review(
     # (and we don't burn tokens re-generating it). Scoped to the daily report.
     if payload.daily_report_id:
         db = get_db()
+        # pt.65: validate the DR exists + belongs to this tenant before
+        # persisting, matching create_photo_tag / attach_trays_to_dr — so a
+        # crafted request can't write an orphan review under a foreign dr_id.
+        dr = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}),
+            {"_id": 0, "id": 1},
+        )
+        if not dr:
+            raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
         review_doc = {
             "id": uuid.uuid4().hex,
             "tenant_id": ctx["tenant_id"],
@@ -1227,9 +1236,31 @@ async def attach_trays_to_dr(
             "created_via_ai_suggestion": False, "ai_suggestion_id": None,
             "ai_confidence_at_tag_time": None,
             "user_overridden_at_tag_time": False,
-            "post_submit_added": bool(is_locked_add),
+            # post_submit_added is stamped by stamp_add_metadata below when
+            # the DR is locked (mirrors create_photo_tag) — not set inline.
         }
         await db.photos.insert_one(photo_doc.copy())
+        # pt.65: every Photo-creation path must write an audit row (the
+        # evidentiary hash-chain). Mirror create_photo_tag's PHOTO_TAG_CREATED.
+        await write_audit(
+            tenant_id=tenant_id, table_name="photos", op="PHOTO_TAG_CREATED",
+            record_id=photo_doc["id"], before=None,
+            after={"tray_photo_id": tray["id"],
+                   "daily_report_id": payload.daily_report_id,
+                   "_source": "batch_attach_to_dr",
+                   "photo_class": "progress", "evidentiary_flag": False},
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+        # pt.65: on a locked DR, persist the validated add_reason + write the
+        # EVENT_ADDED_POST_SUBMIT audit (was discarded before — compliance gap).
+        if is_locked_add:
+            from services.edit_permissions import stamp_add_metadata
+            await stamp_add_metadata(
+                db=db, collection="photos", record_id=photo_doc["id"],
+                tenant_id=tenant_id, actor_id=ctx["user"]["id"],
+                add_reason=payload.add_reason or "", after=photo_doc,
+                request_id=ctx["request_id"],
+            )
         if tray.get("status") in ("untagged", "partially_tagged"):
             await db.photo_tray.update_one(
                 tenant_filter(tenant_id, {"id": tray["id"]}),

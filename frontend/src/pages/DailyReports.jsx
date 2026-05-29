@@ -166,16 +166,8 @@ function handleLockedAddError(e, _eventType) {
   return false;
 }
 
-const PHOTO_CLASSES = [
-  { value: "progress", label: "Progress", color: "bg-slate-100 text-slate-700 border-slate-300" },
-  { value: "discovery", label: "Discovery", color: "bg-amber-100 text-amber-800 border-amber-300" },
-  { value: "damage", label: "Damage", color: "bg-rose-100 text-rose-800 border-rose-300" },
-  { value: "quality", label: "Quality", color: "bg-violet-100 text-violet-800 border-violet-300" },
-  { value: "safety", label: "Safety", color: "bg-orange-100 text-orange-800 border-orange-300" },
-  { value: "coordination", label: "Coordination", color: "bg-sky-100 text-sky-800 border-sky-300" },
-  { value: "closeout", label: "Closeout", color: "bg-emerald-100 text-emerald-800 border-emerald-300" },
-];
-const PHOTO_CLASS_BY_VALUE = Object.fromEntries(PHOTO_CLASSES.map((c) => [c.value, c]));
+// pt.65: PHOTO_CLASSES / PHOTO_CLASS_BY_VALUE removed — they were only used
+// by the photo-class badge that pt.57 dropped from AuthPhoto (dead code).
 
 // ------------------------------------------------------------
 //  Top-level list — pick a date (any past/future), open or create
@@ -3719,6 +3711,17 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const togglePin = (id) => setPinned((s) => {
     const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
+  // pt.65: prune pins to the live gallery whenever rows change (e.g. a pinned
+  // photo is deleted) so the count, the run-spinner, and the review request
+  // never carry a stale, no-longer-present photo id.
+  useEffect(() => {
+    setPinned((prev) => {
+      if (!prev.size) return prev;
+      const live = new Set(rows.map((p) => p.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
   const toReview = (d) => ({
     id: d.id, lens: d.lens, severity: d.severity, label: d.label, text: d.text,
     n: d.photo_count ?? (d.photo_ids || []).length, ids: d.photo_ids || [],
@@ -3774,8 +3777,12 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
     if (runningLens) return;
     setRunningLens(rev.lens);
     try {
+      // pt.65: delete the old review FIRST (awaited, not swallowed) so a
+      // failed delete can't leave two persisted copies — the POST always
+      // inserts a fresh row, so create-before-delete risked a duplicate on
+      // next mount. If the delete fails we abort before creating a second.
+      await api.delete(`/photo-reviews/${rev.id}`);
       const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens, daily_report_id: dailyReportId });
-      await api.delete(`/photo-reviews/${rev.id}`).catch(() => {});
       setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
       if (dialogId === rev.id) setDialogId(null);
     } catch (e) {
@@ -3816,6 +3823,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
         } catch { return null; }
       }));
       const trayIds = results.filter(Boolean);
+      const failed = results.length - trayIds.length;
       if (!trayIds.length) {
         toast.error("Upload failed — no photos were saved.");
         return;
@@ -3827,7 +3835,13 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       });
       reload();
       const n = data?.created ?? trayIds.length;
-      toast.success(`${n} photo${n !== 1 ? "s" : ""} added to this report.`);
+      // pt.65: surface partial failures — don't show a clean success toast
+      // when some files silently failed to upload (easy to miss on a phone).
+      if (failed > 0) {
+        toast.error(`${n} photo${n !== 1 ? "s" : ""} added · ${failed} failed to upload — please retry those.`);
+      } else {
+        toast.success(`${n} photo${n !== 1 ? "s" : ""} added to this report.`);
+      }
       if (locked) setAddReason("");
     } catch (err) {
       if (!handleLockedAddError(err, "photo")) {
@@ -3925,7 +3939,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                       <span className={`shrink-0 ${sevCls(rev.severity)}`}>{rev.label}</span>
                       <span className="flex-1 truncate" style={{ color: "var(--v4-fg-muted)" }}>{rev.text}</span>
                       <span className="shrink-0" style={{ color: "var(--v4-fg-faint)" }}>{rev.n} photo{rev.n !== 1 ? "s" : ""} · {rev.time}</span>
-                      <span className="font-semibold shrink-0" style={{ color: "#10b981" }}>Open ›</span>
+                      <span className="rev-open font-semibold shrink-0">Open ›</span>
                     </button>
                   );
                 }

@@ -80,23 +80,6 @@ function looksTabular(text) {
 // description or a Safety event description (often from photos). Only
 // then do we show the "Send to QC / Send to Safety" buttons under the
 // AI reply — they autofill the relevant section's text field. Before
-// pt.30 these buttons appeared on every reply on the DR page, which
-// was noise. Pattern: detect intent in the USER message.
-function detectFormInsertIntent(userMessage) {
-  if (!userMessage) return null;
-  const t = String(userMessage).toLowerCase();
-  // QC drafting cues
-  if (/\b(qc|quality control|quality)\b.*(issue|finding|defect|description|write|draft|note)/.test(t)) return "qc";
-  if (/\b(draft|write|describe|generate).*\bqc\b/.test(t)) return "qc";
-  // Safety drafting cues
-  if (/\b(safety|near[\s-]?miss|incident|hazard|osha)\b.*(event|description|write|draft|note|report)/.test(t)) return "safety";
-  if (/\b(draft|write|describe|generate).*\b(safety|incident|hazard)\b/.test(t)) return "safety";
-  // Photo-driven drafting — bridge case: "from the photos draft a QC/safety"
-  if (/from.*(photo|picture|image).*(qc|safety|quality|hazard|defect)/.test(t)) {
-    return /qc|quality|defect/.test(t) ? "qc" : "safety";
-  }
-  return null;
-}
 
 // Claude.ai-style document-intent detection. Inspect the user's message to
 // see if they're asking for a downloadable file, and infer the format. If
@@ -211,11 +194,9 @@ export default function CopilotPanel({ open, onClose }) {
       const intent = !isBareTool && replyText && replyText.length > 40
         ? detectDocumentIntent(msg)
         : null;
-      // Send-to-form intent — only show QC/Safety buttons when user asked
-      // Mason to draft one of those, not on every DR-scoped reply.
-      const formInsert = !isBareTool && replyText
-        ? detectFormInsertIntent(msg)
-        : null;
+      // pt.65: form_insert / detectFormInsertIntent removed — their only
+      // consumer (the Send-to-QC/Safety buttons) was dropped in pt.52; photo
+      // findings now route through the Photos AI Review instead.
       setThread((t) => [...t, {
         role: "ai",
         text: isBareTool ? `I ran ${replyText}, but the follow-up summary didn't come back.` : replyText,
@@ -224,7 +205,6 @@ export default function CopilotPanel({ open, onClose }) {
         bare_tool: isBareTool ? replyText : null,
         retry_payload: isBareTool ? msg : null,
         artifact: intent,
-        form_insert: formInsert,
         user_prompt: msg,
       }]);
     } catch (e) {

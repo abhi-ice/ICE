@@ -1320,7 +1320,20 @@ async def _call_vision_review(
         text = str(getattr(resp_obj, "content") or "").strip()
     else:
         text = str(resp_obj).strip()
-    return _parse_review_json(text)
+    # pt.65: surface token usage so review_photos can debit the AI budget
+    # like analyze_photo does. The gateway rarely returns structured usage,
+    # so estimate the same way _call_anthropic_vision does: ~1600 image
+    # tokens per 1568px JPEG + ~300 prompt tokens in; output ~ text/4.
+    in_tok, out_tok = 0, 0
+    if hasattr(resp_obj, "usage"):
+        u = getattr(resp_obj, "usage")
+        in_tok = int(getattr(u, "input_tokens", 0) or 0)
+        out_tok = int(getattr(u, "output_tokens", 0) or 0)
+    if not in_tok and not out_tok:
+        in_tok = 300 + 1600 * max(1, n)
+        out_tok = max(1, len(text) // 4)
+    return {"parsed": _parse_review_json(text),
+            "input_tokens": in_tok, "output_tokens": out_tok}
 
 
 async def review_photos(
@@ -1405,11 +1418,22 @@ async def review_photos(
     if _is_dev_mode():
         return _stub_review(lens, n)
     try:
-        parsed = await _call_vision_review(jpeg_list=images, lens=lens, n=n)
+        v = await _call_vision_review(jpeg_list=images, lens=lens, n=n)
     except Exception as exc:
         log.warning("photo_ai: review failed (%s): %s",
                     type(exc).__name__, exc)
         return {"ok": False, "reason": "ai_error", "detail": str(exc)[:200]}
+    parsed = v["parsed"]
+
+    # pt.65: debit the AI budget for this Vision call, exactly like
+    # analyze_photo — otherwise reviews run unbounded after the per-photo
+    # budget is spent and the AI-usage dashboard under-reports real cost.
+    in_tok, out_tok = v.get("input_tokens", 0), v.get("output_tokens", 0)
+    if in_tok or out_tok:
+        try:
+            await increment_spend(tenant_id=tenant_id, input_tokens=in_tok, output_tokens=out_tok)
+        except Exception:
+            pass
 
     try:
         from audit import write_audit
