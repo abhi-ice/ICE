@@ -60,9 +60,6 @@ import {
   Upload, FileSpreadsheet, Pin, Copy as CopyIcon,
 } from "lucide-react";
 // Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
-// AI analysis lands (3-5s wait). Imported as a default export from
-// the photos sub-package.
-import TagWizard from "../components/photos/TagWizard";
 // Bucket G Phase 3 -- Jigsaw pre-fill widget on the DR narrative.
 import JigsawField from "../components/forms/JigsawField";
 // 5-Route DR voice intake (Phase A 2026-05-25): renders the voice memo
@@ -3700,16 +3697,8 @@ function NotesPanel({ report, dailyReportId, locked, reload }) {
 
 function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   const [busy, setBusy] = useState(false);
-  // Bucket F Phase 4 -- after upload, we poll the tray's AI analysis
-  // for up to ~6s while showing "Preparing tag suggestions…", then
-  // open the tag wizard with the AI defaults pre-loaded. The wizard
-  // starts at step 2 since the DR is already known from the page.
-  const [aiPrepStatus, setAiPrepStatus] = useState(null); // null | 'preparing' | 'ready' | 'skipped'
-  const [pendingTray, setPendingTray] = useState(null);
-  const [openWizard, setOpenWizard] = useState(false);
-  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason
-  // capture for photo uploads. Forwarded through to TagWizard which
-  // includes it on the /photo-tags POST.
+  // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture
+  // for photo uploads; forwarded to /photo-tray/attach-to-dr.
   const [addReason, setAddReason] = useState("");
 
   // pt.54 (2026-05-28): Photo AI Review — pin uploaded photos, run a
@@ -3798,94 +3787,51 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
     : (s === "critical" || s === "major") ? "rev-sev--crit" : "rev-sev--warn");
   const dialogReview = reviews.find((r) => r.id === dialogId) || null;
 
-  // Poll the tray's /ai-analysis until status leaves "pending"/"analyzing"
-  // or we hit the time cap. We never fail the upload on AI errors;
-  // worst case the wizard opens without AI defaults and the user tags
-  // manually.
-  const waitForAnalysis = async (trayId) => {
-    const MAX_ITERS = 12; // 12 * 500ms = 6s
-    for (let i = 0; i < MAX_ITERS; i++) {
-      try {
-        const r = await api.get(`/photo-tray/${trayId}/ai-analysis`);
-        const s = r.data?.ai_analysis_status;
-        if (s === "complete" || s === "failed" || s === "skipped"
-            || s === "budget_paused" || s === "rejected_by_user") {
-          return r.data;
-        }
-      } catch {
-        // Non-fatal -- keep waiting; loop will eventually time out.
-      }
-      // Don't sleep on the last iteration.
-      if (i < MAX_ITERS - 1) {
-        await new Promise((res) => setTimeout(res, 500));
-      }
-    }
-    return null;
-  };
-
-  // Bucket D Phase 2 -- DR upload now lands in the photo_tray
-  // (status=untagged) instead of going straight to the legacy
-  // /photos/upload endpoint. The tray page (sidebar) is where the
-  // user opens the 3-step tagging wizard. Caption + class moved to
-  // the wizard since both are tag-time decisions, not capture-time.
-  //
-  // Bucket F Phase 4 -- after upload, we don't redirect the user to
-  // the tray page; we open the tag wizard inline with AI defaults
-  // pre-loaded.
+  // pt.63 (2026-05-28): batch upload, no tagging in the middle. The super
+  // picks MANY photos at once; each uploads to the tray, then all are
+  // attached to THIS daily report in one call (POST /photo-tray/attach-to-dr)
+  // — no per-photo TagWizard, no AI caption/class step. The photos appear in
+  // the gallery with the delete + pin controls; tagging to an event / running
+  // an AI review is a separate, optional step the super does later.
   const onUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    // Bucket D Addition 5 -- locked-DR uploads require add_reason BEFORE
-    // we even hit the upload endpoint, so the user knows the gate up
-    // front. The reason itself is enforced on the tag-create call.
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     if (locked && (addReason || "").trim().length < ADD_REASON_MIN) {
       toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) before uploading to a locked DR.`);
       e.target.value = "";
       return;
     }
     setBusy(true);
-    setAiPrepStatus(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("project_id", projectId);
-      fd.append("capture_source", "manual_upload");
-      const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      // Upload each file to the tray (parallel), collect tray ids.
+      const results = await Promise.all(files.map(async (file) => {
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          fd.append("project_id", projectId);
+          fd.append("capture_source", "manual_upload");
+          const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+          return r.data?.id || null;
+        } catch { return null; }
+      }));
+      const trayIds = results.filter(Boolean);
+      if (!trayIds.length) {
+        toast.error("Upload failed — no photos were saved.");
+        return;
+      }
+      // Attach all to this DR in one shot (no event, no AI).
+      const { data } = await api.post(`/photo-tray/attach-to-dr`, {
+        tray_ids: trayIds, daily_report_id: dailyReportId,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
+      });
       reload();
-      const trayRow = r.data;
-      if (!trayRow?.id) {
-        toast.error("Upload returned no tray row");
-        return;
-      }
-      // Existing dedup branch: same photo already uploaded -> the
-      // server returns the prior tray row (any status). Surface a
-      // friendlier message but still proceed to wizard if untagged.
-      if (trayRow.status && trayRow.status !== "untagged") {
-        toast.info(`Same photo already in tray (status=${trayRow.status}). Opening wizard.`);
-      }
-      // If CUI / AI disabled, the analysis status is already "skipped"
-      // -- don't wait; just open the wizard immediately.
-      const initialStatus = trayRow.ai_analysis_status;
-      if (initialStatus === "complete" || initialStatus === "skipped"
-          || initialStatus === "budget_paused"
-          || initialStatus === "rejected_by_user"
-          || initialStatus === "failed") {
-        setPendingTray(trayRow);
-        setAiPrepStatus(initialStatus === "complete" ? "ready" : "skipped");
-        setOpenWizard(true);
-        return;
-      }
-      // Otherwise: wait + show inline spinner.
-      setAiPrepStatus("preparing");
-      const finalRow = await waitForAnalysis(trayRow.id);
-      // Merge the latest analysis fields back onto the tray row so
-      // the wizard picks them up via its `tray` prop.
-      const merged = finalRow ? { ...trayRow, ...finalRow } : trayRow;
-      setPendingTray(merged);
-      setAiPrepStatus(finalRow?.ai_analysis_status === "complete" ? "ready" : "skipped");
-      setOpenWizard(true);
+      const n = data?.created ?? trayIds.length;
+      toast.success(`${n} photo${n !== 1 ? "s" : ""} added to this report.`);
+      if (locked) setAddReason("");
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Upload failed");
+      if (!handleLockedAddError(err, "photo")) {
+        toast.error(err.response?.data?.detail || "Upload failed");
+      }
     }
     finally { setBusy(false); e.target.value = ""; }
   };
@@ -3894,12 +3840,11 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
     <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}
       badge={
         <label data-testid="photo-upload-label" className="ml-auto inline-block">
-          {/* pt.55 (2026-05-28): Upload + tag promoted to the section header
-              (per the v2 design) so the body stays clean for the grid + review. */}
+          {/* pt.63 (2026-05-28): batch multi-select upload, no tagging step. */}
           <span className="sbtn sbtn-sm sbtn-primary cursor-pointer">
-            <Upload className="h-3.5 w-3.5" /> {busy ? "Uploading…" : (locked ? "Upload (post-submit)" : "Upload + tag")}
+            <Upload className="h-3.5 w-3.5" /> {busy ? "Uploading…" : (locked ? "Upload photos (post-submit)" : "Upload photos")}
           </span>
-          <input data-testid="photo-upload" type="file" accept="image/*" onChange={onUpload} className="hidden" />
+          <input data-testid="photo-upload" type="file" accept="image/*" multiple onChange={onUpload} className="hidden" />
         </label>
       }>
       {locked && (
@@ -4025,47 +3970,6 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             </div>
           )}
         </div>
-      )}
-      {/* Bucket F Phase 4 -- "Preparing tag suggestions…" spinner
-          renders inline below the gallery while the upload waits for
-          AI analysis to land. Cap is 6s; the user can keep working
-          on the page in the meantime since the wizard hasn't opened
-          yet. */}
-      {aiPrepStatus === "preparing" && (
-        <div data-testid="dr-photos-ai-preparing"
-          className="mt-3 px-3 py-2 rounded bg-blue-50 border border-blue-200 text-blue-800 text-xs inline-flex items-center gap-2">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          <Sparkles className="h-3.5 w-3.5" />
-          Preparing tag suggestions…
-        </div>
-      )}
-      {/* Auto-opened tag wizard. DR is pre-locked so the wizard starts
-          at step 2 (event-type picker) and inherits AI suggestions. */}
-      {pendingTray && (
-        <TagWizard
-          open={openWizard}
-          onOpenChange={(v) => {
-            setOpenWizard(v);
-            if (!v) {
-              setPendingTray(null);
-              setAiPrepStatus(null);
-              // Reset reason after the wizard closes so the next
-              // locked-DR upload requires a fresh reason capture.
-              if (locked) setAddReason("");
-            }
-          }}
-          tray={pendingTray}
-          projectId={projectId}
-          initialDailyReportId={dailyReportId}
-          isLocked={locked}
-          lockedAddReason={locked ? addReason : null}
-          onTagged={() => {
-            reload();
-            setOpenWizard(false);
-            setPendingTray(null);
-            setAiPrepStatus(null);
-          }}
-        />
       )}
       {previewSrc && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-6"

@@ -1142,6 +1142,105 @@ async def delete_photo_review(review_id: str, ctx: dict = Depends(require_tenant
     return {"ok": res.deleted_count > 0}
 
 
+# pt.63 (2026-05-28): batch-attach tray photos to a daily report with NO
+# event tag and NO AI tagging. The super uploads many photos at once; each
+# becomes a plain DR-linked Photo row (photo_class=progress). They can later
+# pin + run a Safety/QC review or attach to an event. This skips the
+# one-by-one TagWizard entirely (the tedious part). Distinct from
+# /photo-tags, which forces exactly one event reference (XOR).
+class _AttachToDrPayload(_AiStrictModel):
+    tray_ids: list[str] = _AiField(default_factory=list)
+    daily_report_id: str
+    add_reason: Optional[str] = None
+
+
+@router.post("/photo-tray/attach-to-dr")
+async def attach_trays_to_dr(
+    payload: _AttachToDrPayload, ctx: dict = Depends(require_tenant),
+):
+    if not payload.tray_ids:
+        raise HTTPException(400, "No photos to attach")
+    db = get_db()
+    tenant_id = ctx["tenant_id"]
+    dr = await db.daily_reports.find_one(
+        tenant_filter(tenant_id, {"id": payload.daily_report_id}),
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1},
+    )
+    if not dr:
+        raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
+
+    # Locked-DR add policy (mirrors create_photo_tag): admin/PM bypass,
+    # everyone else needs an add_reason. Enforced once for the whole batch.
+    from services.edit_permissions import enforce_locked_dr_add_policy
+    _dr_full, is_locked_add = await enforce_locked_dr_add_policy(
+        ctx=ctx, daily_report_id=payload.daily_report_id,
+        add_reason=payload.add_reason, event_type="photo",
+    )
+
+    created, skipped = [], 0
+    for tray_id in payload.tray_ids[:50]:
+        tray = await db.photo_tray.find_one(
+            tenant_filter(tenant_id, {"id": tray_id}), {"_id": 0},
+        )
+        if not tray or tray.get("status") == "archived":
+            skipped += 1
+            continue
+        if tray.get("project_id") != dr.get("project_id"):
+            skipped += 1
+            continue
+        # Idempotency: a plain DR-attach row (this tray + this DR, no event ref).
+        existing = await db.photos.find_one(
+            tenant_filter(tenant_id, {
+                "tray_photo_id": tray_id,
+                "daily_report_id": payload.daily_report_id,
+            }),
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            skipped += 1
+            continue
+        now_iso = utc_now().isoformat()
+        photo_doc = {
+            "id": gen_id(), "tenant_id": tenant_id,
+            "project_id": tray["project_id"],
+            "daily_report_id": payload.daily_report_id,
+            "tray_photo_id": tray["id"],
+            "tagged_at": now_iso, "tagged_by": ctx["user"]["id"],
+            "tag_caption": tray.get("ai_suggested_caption"),
+            # No event reference — this is a DR-level attach.
+            "daily_report_activity_id": None, "delay_id": None, "rfi_id": None,
+            "qc_issue_id": None, "safety_event_id": None,
+            "coordination_event_id": None, "delivery_id": None,
+            "drawing_pin_id": None,
+            "storage_path": tray["storage_key"],
+            "captured_at": tray.get("uploaded_at") or now_iso,
+            "captured_by": tray.get("uploaded_by"),
+            "phash": tray.get("phash"), "sha256_hash": tray.get("sha256"),
+            "device_timestamp": tray.get("exif_taken_at"),
+            "server_received_timestamp": tray.get("uploaded_at"),
+            "timestamp_mismatch_flag": False, "exif_preserved": True,
+            "gps_lat": tray.get("exif_gps_lat"), "gps_lng": tray.get("exif_gps_lng"),
+            "photo_class": "progress", "evidentiary_flag": False,
+            "schedule_activity_id": None, "tags": [],
+            "caption": tray.get("ai_suggested_caption"),
+            "is_supplement": False, "created_at": now_iso,
+            "created_via_ai_suggestion": False, "ai_suggestion_id": None,
+            "ai_confidence_at_tag_time": None,
+            "user_overridden_at_tag_time": False,
+            "post_submit_added": bool(is_locked_add),
+        }
+        await db.photos.insert_one(photo_doc.copy())
+        if tray.get("status") in ("untagged", "partially_tagged"):
+            await db.photo_tray.update_one(
+                tenant_filter(tenant_id, {"id": tray["id"]}),
+                {"$set": {"status": "fully_tagged"}},
+            )
+        created.append(photo_doc["id"])
+
+    return {"ok": True, "created": len(created), "skipped": skipped,
+            "photo_ids": created}
+
+
 # (2) POST /api/photo-tray/batch-analyze (admin/PM only)
 @router.post("/photo-tray/batch-analyze")
 async def analyze_batch(
