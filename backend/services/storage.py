@@ -81,6 +81,36 @@ def get_object(path: str) -> tuple[bytes, str]:
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
+# pt.77 -- small in-process LRU cache for served blobs (PDFs). Range requests
+# from PDF.js issue many small GETs for the SAME object; without a cache each
+# would re-download the entire object from object storage. Bounded by total
+# bytes; evicts least-recently-used. Per-worker (fine: a miss just re-fetches).
+from collections import OrderedDict as _OrderedDict
+
+_BLOB_CACHE: "_OrderedDict[str, tuple]" = _OrderedDict()
+_BLOB_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_blob_cache_bytes = 0
+
+
+def get_object_cached(path: str) -> tuple:
+    """get_object() with an LRU cache so repeated range requests for the same
+    PDF don't re-download the full object each time."""
+    global _blob_cache_bytes
+    hit = _BLOB_CACHE.get(path)
+    if hit is not None:
+        _BLOB_CACHE.move_to_end(path)
+        return hit
+    data, ct = get_object(path)
+    size = len(data)
+    if size <= _BLOB_CACHE_MAX_BYTES:
+        _BLOB_CACHE[path] = (data, ct)
+        _blob_cache_bytes += size
+        while _blob_cache_bytes > _BLOB_CACHE_MAX_BYTES and len(_BLOB_CACHE) > 1:
+            _old_path, (old_data, _oct) = _BLOB_CACHE.popitem(last=False)
+            _blob_cache_bytes -= len(old_data)
+    return data, ct
+
+
 def make_path(tenant_id: str, kind: str, ext: str) -> str:
     """Build a tenant-scoped storage path. NO leading slash."""
     safe_ext = (ext or "bin").lstrip(".").lower()

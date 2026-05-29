@@ -38,6 +38,27 @@ async def fit_spec_index(tenant_id: str, project_spec_id: str) -> dict:
         return {"section_count": 0, "vocab_size": 0}
 
     docs = [(s["section_title"] + "\n" + (s.get("text_content") or "")).strip() for s in sections]
+
+    # pt.77: try NEURAL embeddings first (env-gated). On any failure embed_texts
+    # returns None and we drop to the proven TF-IDF path below — so the default
+    # (and fallback) behavior is identical to before.
+    from services.embeddings import embed_texts, neural_enabled
+    if neural_enabled():
+        neural = await embed_texts(docs)
+        if neural:
+            arr = np.asarray(neural, dtype=np.float32)
+            n_norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            n_norms[n_norms == 0] = 1.0
+            n_normed = arr / n_norms
+            for i, sec in enumerate(sections):
+                await db.spec_sections.update_one(
+                    tenant_filter(tenant_id, {"id": sec["id"]}),
+                    {"$set": {"embedding": n_normed[i].tolist(), "embedding_kind": "neural"}},
+                )
+            _VEC_CACHE[project_spec_id] = {"kind": "neural"}
+            return {"section_count": len(sections), "vocab_size": 0, "kind": "neural"}
+
+    # --- TF-IDF (default + fallback) ---
     vectorizer = TfidfVectorizer(
         max_features=4000,
         ngram_range=(1, 2),
@@ -57,13 +78,13 @@ async def fit_spec_index(tenant_id: str, project_spec_id: str) -> dict:
         vec = normed[i].tolist()
         await db.spec_sections.update_one(
             tenant_filter(tenant_id, {"id": sec["id"]}),
-            {"$set": {"embedding": vec}},
+            {"$set": {"embedding": vec, "embedding_kind": "tfidf"}},
         )
 
     # Cache vocab for fast query at request time
-    _VEC_CACHE[project_spec_id] = {"vocab": vocab, "vectorizer": vectorizer}
+    _VEC_CACHE[project_spec_id] = {"vocab": vocab, "vectorizer": vectorizer, "kind": "tfidf"}
 
-    return {"section_count": len(sections), "vocab_size": len(vocab)}
+    return {"section_count": len(sections), "vocab_size": len(vocab), "kind": "tfidf"}
 
 
 def _query_vector(project_spec_id: str, query: str) -> np.ndarray | None:
@@ -84,10 +105,22 @@ async def search_spec(
     yet cached (e.g., after server restart)."""
     db = get_db()
     if project_spec_id not in _VEC_CACHE:
-        # Re-fit so vectorizer vocab matches what's in DB
+        # Re-fit so the query vectorizer matches what's persisted in DB
         await fit_spec_index(tenant_id, project_spec_id)
 
-    qvec = _query_vector(project_spec_id, query)
+    # pt.77: the query vector must match the KIND of the stored section vectors.
+    cache = _VEC_CACHE.get(project_spec_id) or {}
+    if cache.get("kind") == "neural":
+        from services.embeddings import embed_texts
+        qv = await embed_texts([query])
+        if not qv:
+            return []  # neural query unavailable this call; cosine guard would skip anyway
+        qvec = np.asarray(qv[0], dtype=np.float32)
+        qn = float(np.linalg.norm(qvec))
+        if qn > 0:
+            qvec = qvec / qn
+    else:
+        qvec = _query_vector(project_spec_id, query)
     if qvec is None or qvec.size == 0:
         return []
 

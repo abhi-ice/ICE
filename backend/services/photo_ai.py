@@ -1358,6 +1358,9 @@ def _parse_combined_review_json(text: str) -> dict:
             entry = {"issue": issue[:300], "severity": fsev}
             if allow_code:
                 entry["osha_code"] = _normalize_osha(it.get("osha_code"))
+            else:
+                sr = it.get("spec_ref")
+                entry["spec_ref"] = str(sr).strip()[:24] if sr else None
             out.append(entry)
         return out
 
@@ -1412,7 +1415,11 @@ _REVIEW_PROMPTS["combined"] = (
     "supports, seams, penetrations & firestopping, alignment, finishes, "
     "damage, wrong or missing materials. Describe QC issues in plain "
     "English. Do NOT attach OSHA codes to QC findings (OSHA is a safety "
-    "standard, not a workmanship spec).\n\n"
+    "standard, not a workmanship spec). If the user message lists PROJECT SPEC "
+    "SECTIONS and a QC finding clearly maps to one, set its \"spec_ref\" to that "
+    "section's EXACT code from the list (e.g. \"09 91 00\") and you may cite it "
+    "inline in the analysis like (spec 09 91 00) — cite ONLY codes from that "
+    "list; never invent or guess a section code.\n\n"
     "Be specific and reference what is ACTUALLY visible. Before you finalize, "
     "RE-CHECK every finding against the image and DROP anything you are not "
     "confident is truly present. A clean photo with no real issue is the "
@@ -1430,7 +1437,9 @@ _REVIEW_PROMPTS["combined"] = (
     '"osha_code": a code string from the list above or null, '
     '"severity": "minor"|"moderate"|"major"|"critical"} ], '
     '"qc_findings": [ {"issue": short text of what is visible, '
-    '"severity": "minor"|"moderate"|"major"|"critical"} ], '
+    '"severity": "minor"|"moderate"|"major"|"critical", '
+    '"spec_ref": a project spec section code from the list in the user message '
+    '(e.g. "09 91 00") or null} ], '
     '"analysis": a concise plain-English narrative of the requested length '
     "covering the work plus any safety and QC findings; when you mention a "
     "validated safety code, write it inline like (OSHA 1926.501). Use empty "
@@ -1491,6 +1500,7 @@ def _stub_review(lens: str, n: int) -> dict:
 async def _call_vision_review(
     *, jpeg_list: list, lens: str, n: int,
     model: str = DEFAULT_MODEL, timeout_seconds: float = 55.0,
+    spec_index: Optional[list] = None,
 ) -> dict:
     """Single multi-image gateway call for a Safety/QC review. Mirrors the
     transport + response-extraction of _call_anthropic_vision but sends N
@@ -1511,9 +1521,16 @@ async def _call_vision_review(
         for j in jpeg_list
     ]
     sent = "2-3 sentences" if n == 1 else ("3-4 sentences" if n <= 3 else "4-6 sentences")
+    # pt.77: ground QC findings in the project's spec sections (combined lens).
+    spec_block = ""
+    if lens == "combined" and spec_index:
+        listing = "\n".join(f"  {x['code']} — {x['title']}" for x in spec_index[:60] if x.get("code"))
+        if listing:
+            spec_block = ("\n\nPROJECT SPEC SECTIONS (cite ONLY these exact codes in "
+                          "qc_findings.spec_ref when a QC finding maps to one):\n" + listing)
     user_message = UserMessage(
         text=(f"Review these {n} site photo(s). Keep the analysis to {sent}. "
-              f"Respond ONLY with the JSON object."),
+              f"Respond ONLY with the JSON object." + spec_block),
         file_contents=contents,
     )
     resp_obj = await asyncio.wait_for(
@@ -1543,6 +1560,40 @@ async def _call_vision_review(
               else _parse_review_json(text))
     return {"parsed": parsed,
             "input_tokens": in_tok, "output_tokens": out_tok}
+
+
+async def _project_spec_section_index(tenant_id: str, project_id: Optional[str], cap: int = 60) -> list:
+    """pt.77 -- compact [{code,title}] index of the project's COMPLETED-spec
+    sections, used to ground QC findings in the combined photo review. Returns
+    [] when the project has no ingested specs (grounding becomes a no-op).
+    Bounded by `cap` to keep the prompt token cost in check."""
+    if not project_id:
+        return []
+    try:
+        db = get_db()
+        specs = await db.project_specs.find(
+            tenant_filter(tenant_id, {"project_id": project_id, "processing_status": "complete"}),
+            {"_id": 0, "id": 1},
+        ).to_list(50)
+        spec_ids = [s["id"] for s in specs]
+        if not spec_ids:
+            return []
+        sections = await db.spec_sections.find(
+            tenant_filter(tenant_id, {"project_spec_id": {"$in": spec_ids}}),
+            {"_id": 0, "section_code": 1, "section_title": 1},
+        ).sort("section_code", 1).to_list(500)
+        out, seen = [], set()
+        for s in sections:
+            code = (s.get("section_code") or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            out.append({"code": code, "title": (s.get("section_title") or "").strip()[:80]})
+            if len(out) >= cap:
+                break
+        return out
+    except Exception:
+        return []
 
 
 async def review_photos(
@@ -1626,13 +1677,23 @@ async def review_photos(
 
     if _is_dev_mode():
         return _stub_review(lens, n)
+    # pt.77: fetch the project's spec section index to ground QC (combined lens
+    # only). Empty when the project has no ingested specs -> no-op.
+    spec_index = await _project_spec_section_index(tenant_id, project_id) if lens == "combined" else []
     try:
-        v = await _call_vision_review(jpeg_list=images, lens=lens, n=n)
+        v = await _call_vision_review(jpeg_list=images, lens=lens, n=n, spec_index=spec_index)
     except Exception as exc:
         log.warning("photo_ai: review failed (%s): %s",
                     type(exc).__name__, exc)
         return {"ok": False, "reason": "ai_error", "detail": str(exc)[:200]}
     parsed = v["parsed"]
+    # pt.77: strip any qc spec_ref the model invented that isn't a REAL project
+    # spec section code (same anti-hallucination discipline as the OSHA codes).
+    if lens == "combined" and isinstance(parsed.get("qc_findings"), list):
+        _valid_specs = {x["code"] for x in (spec_index or []) if x.get("code")}
+        for _f in parsed["qc_findings"]:
+            if _f.get("spec_ref") and _f["spec_ref"] not in _valid_specs:
+                _f["spec_ref"] = None
 
     # pt.65: debit the AI budget for this Vision call, exactly like
     # analyze_photo — otherwise reviews run unbounded after the per-photo

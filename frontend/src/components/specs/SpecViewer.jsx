@@ -2,40 +2,58 @@
 // spec PDF (up to ~900 pages). Cloned down from DrawingViewer but stripped of
 // Konva markups / pins / sidebar: just react-pdf page render + page nav + zoom.
 // Theme-aware (light + dark). Fetches the original PDF from GET /specs/:id/pdf.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, X, Loader2 } from "lucide-react";
-import api from "../../lib/api";
+import api, { API } from "../../lib/api";
+import { getToken, getActiveTenantId } from "../../lib/auth";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 export default function SpecViewer({ spec, onClose }) {
-  const [pdfUrl, setPdfUrl] = useState(null);
   const [numPages, setNumPages] = useState(spec?.pdf_page_count || 0);
   const [page, setPage] = useState(1);
   const [scale, setScale] = useState(1.1);
   const [pageInput, setPageInput] = useState("1");
   const [err, setErr] = useState(null);
+  const [blobUrl, setBlobUrl] = useState(null); // populated only on fallback
+  const blobRef = useRef(null);
+
+  // pt.77: prefer URL mode so pdf.js streams pages via HTTP range requests
+  // (the backend serves 206 + an LRU blob cache). httpHeaders carry the JWT +
+  // tenant so the authenticated endpoint accepts pdf.js's own fetches.
+  const urlFile = useMemo(() => ({
+    url: `${API}/specs/${spec.id}/pdf`,
+    httpHeaders: {
+      Authorization: `Bearer ${getToken() || ""}`,
+      "X-Tenant-ID": getActiveTenantId() || "",
+    },
+    withCredentials: false,
+  }), [spec?.id]);
 
   useEffect(() => {
-    let urlObj = null;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await api.get(`/specs/${spec.id}/pdf`, { responseType: "blob" });
-        if (cancelled) return;
-        urlObj = URL.createObjectURL(res.data);
-        setPdfUrl(urlObj);
-      } catch (e) {
-        if (!cancelled) {
-          setErr(e.response?.status === 404
-            ? "No PDF has been uploaded for this spec yet."
-            : "Failed to load the spec PDF.");
-        }
-      }
-    })();
-    return () => { cancelled = true; if (urlObj) URL.revokeObjectURL(urlObj); };
+    setErr(null); setBlobUrl(null); setPage(1);
+    if (blobRef.current) { URL.revokeObjectURL(blobRef.current); blobRef.current = null; }
+    return () => { if (blobRef.current) { URL.revokeObjectURL(blobRef.current); blobRef.current = null; } };
   }, [spec?.id]);
+
+  // On any load error, fall back to downloading the full blob (the prior
+  // behavior) so the viewer is never worse than before range streaming.
+  const onDocError = async () => {
+    if (blobUrl) { setErr("Failed to render the spec PDF."); return; }
+    try {
+      const res = await api.get(`/specs/${spec.id}/pdf`, { responseType: "blob" });
+      const u = URL.createObjectURL(res.data);
+      blobRef.current = u;
+      setBlobUrl(u);
+    } catch (e) {
+      setErr(e.response?.status === 404
+        ? "No PDF has been uploaded for this spec yet."
+        : "Failed to load the spec PDF.");
+    }
+  };
+
+  const fileProp = blobUrl || urlFile;
 
   // Clamp in the handler (rather than disabling buttons) so the controls are
   // never rendered in an invisible disabled state in either theme.
@@ -98,17 +116,13 @@ export default function SpecViewer({ spec, onClose }) {
           style={{ background: "var(--v4-bg-surface-2)" }}>
           {err ? (
             <div className="text-sm mt-12" style={{ color: "var(--v4-fg-muted)" }}>{err}</div>
-          ) : !pdfUrl ? (
-            <div className="flex items-center gap-2 text-sm mt-12" style={{ color: "var(--v4-fg-muted)" }}>
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading PDF…
-            </div>
           ) : (
             <Document
-              file={pdfUrl}
+              file={fileProp}
               onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-              onLoadError={() => setErr("Failed to render the spec PDF.")}
+              onLoadError={onDocError}
               loading={<div className="flex items-center gap-2 text-sm mt-12" style={{ color: "var(--v4-fg-muted)" }}>
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>}
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading PDF…</div>}
             >
               <Page
                 pageNumber={page}
