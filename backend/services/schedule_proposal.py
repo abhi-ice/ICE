@@ -44,6 +44,13 @@ def parsed_to_task_create_payload(parsed: dict, project_id: str) -> dict:
         # below keeps it out of the payload in that case (TaskCreate
         # declares it Optional). METADATA ONLY -- not read by CPM.
         "work_category": parsed.get("work_category"),
+        # pt.76 -- progress-aware import: carry execution state when the source
+        # schedule provided it. None when absent; the None-drop below keeps
+        # these out of the payload so a baseline-only import is unchanged.
+        "pct_complete": parsed.get("pct_complete"),
+        "actual_start": parsed.get("actual_start"),
+        "actual_finish": parsed.get("actual_finish"),
+        "status": parsed.get("status"),
     }
     # Drop None values so StrictModel validation doesn't trip on Optional fields
     # that don't accept None at construction time. BUT keep keys that exist

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
-import { Plus, FileUp, BookOpen } from "lucide-react";
+import { Plus, FileUp, BookOpen, FileText } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { toast } from "../components/ui/sonner";
 import FieldLabel from "../components/forms/FieldLabel";
+import SpecViewer from "../components/specs/SpecViewer";
 
 export default function Specs() {
   const { activeId, projects } = useProjects();
@@ -17,6 +18,7 @@ export default function Specs() {
   const [busy, setBusy] = useState(false);
   const [openSpec, setOpenSpec] = useState(null);
   const [sections, setSections] = useState([]);
+  const [viewSpec, setViewSpec] = useState(null); // pt.76: in-app PDF viewer
   const project = projects.find((p) => p.id === activeId);
 
   const load = () => activeId && api.get(`/projects/${activeId}/specs`).then(({ data }) => setList(data));
@@ -115,6 +117,9 @@ export default function Specs() {
                   </span>
                 </td>
                 <td className="text-right space-x-2">
+                  {s.pdf_page_count > 0 && (
+                    <button data-testid={`view-spec-pdf-${s.id}`} onClick={() => setViewSpec(s)} className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"><FileText className="h-3 w-3" /> View PDF</button>
+                  )}
                   <button data-testid={`upload-spec-${s.id}`} onClick={() => setUploadFor(s)} className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"><FileUp className="h-3 w-3" /> Upload PDF</button>
                   {s.total_sections > 0 && (
                     <button data-testid={`open-spec-${s.id}`} onClick={() => openSections(s)} className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"><BookOpen className="h-3 w-3" /> Open sections</button>
@@ -132,7 +137,7 @@ export default function Specs() {
           <DialogHeader><DialogTitle>Upload PDF — {uploadFor?.name}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <input data-testid="spec-file" type="file" accept=".pdf" onChange={(e) => setPdfFile(e.target.files[0])} />
-            <div className="text-xs text-slate-500">Master prompt §14: pdfplumber + MasterFormat (DIVISION / SECTION / PART) regex extraction. Embedding deferred to next iteration (would use Voyage SDK).</div>
+            <div className="text-xs text-slate-500">pdfplumber + MasterFormat (DIVISION / SECTION / PART) extraction → searchable sections the AI copilot cites. After ingest, the full PDF is viewable in-app via “View PDF”. Up to 250&nbsp;MB.</div>
             <Button data-testid="spec-upload" onClick={upload} disabled={!pdfFile || busy} className="bg-blue-600 hover:bg-blue-700">
               {busy ? "Uploading…" : "Upload & ingest"}
             </Button>
@@ -162,6 +167,8 @@ export default function Specs() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {viewSpec && <SpecViewer spec={viewSpec} onClose={() => setViewSpec(null)} />}
     </div>
   );
 }

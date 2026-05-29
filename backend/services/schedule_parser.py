@@ -246,6 +246,16 @@ COL_ALIASES = {
     "predecessors": ["predecessors", "preds", "depends on"],
     "trade_code": ["trade", "trade_code", "discipline"],
     "is_milestone": ["milestone", "is milestone"],
+    # pt.76 (2026-05-29) -- progress-aware import: recognize execution-state
+    # columns so an already-in-progress project migrates with its real % /
+    # actuals / status instead of being zeroed to a fresh baseline. All four
+    # are optional; a baseline-only schedule (no such columns) is unaffected.
+    "pct_complete": ["% complete", "pct complete", "pct_complete", "percent complete",
+                     "percent_complete", "% comp", "complete %", "physical % complete"],
+    "actual_start": ["actual start", "actual_start", "act start", "actual start date"],
+    "actual_finish": ["actual finish", "actual_finish", "act finish", "actual end",
+                      "actual finish date"],
+    "status": ["status", "task_status", "task status", "activity status", "state"],
 }
 
 
@@ -259,6 +269,46 @@ def _map_columns(header: list[str]) -> dict[str, int]:
                 out[canonical] = norm.index(a)
                 break
     return out
+
+
+# pt.76 -- execution-state cell parsers for progress-aware import.
+def _parse_pct(v):
+    """Percent-complete from a schedule cell. Accepts 0-100 numbers or strings
+    like '75', '75%', '75.0'. Returns a float clamped to [0,100], or None when
+    empty/unparseable. (P6 / MS Project export percent-complete as 0-100.)"""
+    if v is None:
+        return None
+    s = str(v).strip().rstrip("%").strip()
+    if not s:
+        return None
+    try:
+        f = float(s)
+    except Exception:
+        return None
+    return max(0.0, min(100.0, f))
+
+
+_STATUS_ALIASES = {
+    "not_started": ["not started", "not_started", "notstarted", "new", "planned", "to do", "todo"],
+    "in_progress": ["in progress", "in_progress", "inprogress", "started", "active", "wip", "ongoing"],
+    "blocked": ["blocked", "on hold", "on-hold", "hold", "stopped", "suspended", "halted"],
+    "complete": ["complete", "completed", "done", "finished", "closed", "100%"],
+}
+
+
+def _parse_status(v):
+    """Normalize a source status string to one of
+    not_started|in_progress|blocked|complete, or None when empty/unrecognized.
+    Never returns 'deleted' (import cannot delete tasks)."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s:
+        return None
+    for canon, aliases in _STATUS_ALIASES.items():
+        if s in aliases:
+            return canon
+    return None
 
 
 def parse_xlsx(content: bytes) -> Tuple[List[dict], List[str]]:
@@ -295,6 +345,10 @@ def parse_xlsx(content: bytes) -> Tuple[List[dict], List[str]]:
                 "predecessors": _parse_predecessors(row[cols["predecessors"]]) if "predecessors" in cols else [],
                 "trade_code": str(row[cols["trade_code"]]).strip() if "trade_code" in cols and row[cols["trade_code"]] else None,
                 "is_milestone": bool(row[cols["is_milestone"]]) if "is_milestone" in cols else False,
+                "pct_complete": _parse_pct(row[cols["pct_complete"]]) if "pct_complete" in cols else None,
+                "actual_start": _parse_date(row[cols["actual_start"]]) if "actual_start" in cols else None,
+                "actual_finish": _parse_date(row[cols["actual_finish"]]) if "actual_finish" in cols else None,
+                "status": _parse_status(row[cols["status"]]) if "status" in cols else None,
             }
             rows.append(parsed)
         except Exception as e:
@@ -329,6 +383,10 @@ def parse_csv(content: bytes) -> Tuple[List[dict], List[str]]:
                 "predecessors": _parse_predecessors(row[cols["predecessors"]]) if "predecessors" in cols and len(row) > cols["predecessors"] else [],
                 "trade_code": row[cols["trade_code"]].strip() if "trade_code" in cols and len(row) > cols["trade_code"] and row[cols["trade_code"]] else None,
                 "is_milestone": str(row[cols["is_milestone"]]).strip().lower() in ("1", "true", "yes") if "is_milestone" in cols and len(row) > cols["is_milestone"] else False,
+                "pct_complete": _parse_pct(row[cols["pct_complete"]]) if "pct_complete" in cols and len(row) > cols["pct_complete"] else None,
+                "actual_start": _parse_date(row[cols["actual_start"]]) if "actual_start" in cols and len(row) > cols["actual_start"] else None,
+                "actual_finish": _parse_date(row[cols["actual_finish"]]) if "actual_finish" in cols and len(row) > cols["actual_finish"] else None,
+                "status": _parse_status(row[cols["status"]]) if "status" in cols and len(row) > cols["status"] else None,
             }
             if not parsed["activity_code"] or not parsed["description"]:
                 continue

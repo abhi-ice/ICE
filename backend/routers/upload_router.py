@@ -26,8 +26,8 @@ async def upload_spec_pdf(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "PDF required")
     pdf_bytes = await file.read()
-    if len(pdf_bytes) > 100 * 1024 * 1024:
-        raise HTTPException(413, "PDF > 100MB")
+    if len(pdf_bytes) > 250 * 1024 * 1024:
+        raise HTTPException(413, "PDF > 250MB")
 
     await db.project_specs.update_one(
         tenant_filter(ctx["tenant_id"], {"id": spec_id}),
@@ -41,6 +41,27 @@ async def upload_spec_pdf(
         await ingest_spec_pdf(tenant_id=ctx["tenant_id"], project_spec_id=spec_id,
                               pdf_bytes=pdf_bytes, actor_id=ctx["user"]["id"])
     return {"ok": True, "queued": True}
+
+
+@router.get("/specs/{spec_id}/pdf")
+async def stream_spec_pdf(spec_id: str, ctx: dict = Depends(require_tenant)):
+    """Serve the original spec PDF for in-app viewing (pt.76). The PDF is
+    stored at ingest time (services/spec_ingest.ingest_spec_pdf). Mirrors the
+    drawing-revision PDF route — full-blob response; HTTP range requests are a
+    later optimization for very large files / high concurrency."""
+    from fastapi import Response
+    from services.storage import get_object
+    db = get_db()
+    spec = await db.project_specs.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": spec_id}), {"_id": 0, "pdf_url": 1},
+    )
+    if not spec or not spec.get("pdf_url"):
+        raise HTTPException(404, "Spec PDF not found")
+    try:
+        data, _ct = get_object(spec["pdf_url"])
+    except Exception as e:
+        raise HTTPException(500, f"storage: {e}")
+    return Response(content=data, media_type="application/pdf")
 
 
 class DrawingRevisionMeta(StrictModel):
@@ -64,8 +85,8 @@ async def upload_drawing_revision(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "PDF required")
     pdf_bytes = await file.read()
-    if len(pdf_bytes) > 100 * 1024 * 1024:
-        raise HTTPException(413, "PDF > 100MB")
+    if len(pdf_bytes) > 250 * 1024 * 1024:
+        raise HTTPException(413, "PDF > 250MB")
 
     storage_path = make_path(ctx["tenant_id"], "drawings", "pdf")
     try:

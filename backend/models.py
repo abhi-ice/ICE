@@ -375,6 +375,10 @@ class Location(ReadModel):
 
 # ---------- Tasks (activities) ----------
 TaskStatus = Literal["not_started", "in_progress", "blocked", "complete", "deleted"]
+# pt.76 (2026-05-29) -- the subset of statuses a schedule IMPORT may set on a
+# task (a migrated in-progress project). Excludes "deleted": import cannot
+# delete tasks (drops are handled separately via the proposal diff).
+TaskImportStatus = Literal["not_started", "in_progress", "blocked", "complete"]
 LookaheadStatus = Literal["not_in_window", "in_window", "proposed_new", "modified_from_master"]
 
 
@@ -724,6 +728,19 @@ class TaskCreate(StrictModel):
     # classified and was not reviewed, may be None. METADATA ONLY --
     # never read by CPM / float / cascade / the Tasks page.
     work_category: Optional[WorkCategory] = None
+    # pt.76 (2026-05-29) -- progress-aware import. All optional; when the
+    # source schedule omits them the task is created as a zeroed baseline
+    # (historical behavior). When present, the apply step migrates the real
+    # execution state (% complete -> derives complete/in_progress; actual
+    # dates feed CPM's behind/slip). status is the importable subset (no
+    # "deleted"). NOTE: a "blocked" status here records intent on the task,
+    # but the Tasks/CPM "blocked" badge is driven by an open linked delay/RFI
+    # (services/task_status.py) -- migrating a true blocker still needs that
+    # record (logged manually for now).
+    pct_complete: Optional[float] = Field(default=None, ge=0, le=100)
+    actual_start: Optional[date] = None
+    actual_finish: Optional[date] = None
+    status: Optional[TaskImportStatus] = None
 
     # CPM Part A (2026-05-15) -- accept the legacy bare-string form
     # alongside the new dict form for backward compat with schedule

@@ -259,6 +259,8 @@ async def approve_proposal(
     created = 0
     updated = 0
     failed: list[dict] = []
+    migrated_progress = 0   # pt.76: tasks that carried real % / actuals / status
+    blocked_imported = 0    # pt.76: source rows flagged "blocked" (need a delay)
     for idx, row in enumerate(rows_to_apply):
         try:
             payload_dict = parsed_to_task_create_payload(row, project_id)
@@ -268,6 +270,25 @@ async def approve_proposal(
             failed.append({"row": row.get("activity_code"), "error": str(e)})
             continue
 
+        # pt.76 -- progress-aware import. Derive the migrated execution state
+        # from whatever the source schedule provided. When NONE is present the
+        # task is created/updated as a zeroed baseline (historical behavior).
+        imp = tc.model_dump(mode="json")
+        imp_pct = imp.get("pct_complete")
+        imp_status = imp.get("status")
+        imp_as = imp.get("actual_start")
+        imp_af = imp.get("actual_finish")
+        has_progress = any(v is not None for v in (imp_pct, imp_status, imp_as, imp_af))
+        # status=complete forces 100%; else use the given % (default 0).
+        mig_pct = 100.0 if imp_status == "complete" else (float(imp_pct) if imp_pct is not None else 0.0)
+        mig_status = imp_status or (
+            "complete" if mig_pct >= 100 else "in_progress" if mig_pct > 0 else "not_started"
+        )
+        if has_progress:
+            migrated_progress += 1
+        if imp_status == "blocked":
+            blocked_imported += 1
+
         existing = await db.tasks.find_one(
             tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": tc.activity_code}),
             {"_id": 0},
@@ -275,21 +296,31 @@ async def approve_proposal(
         if existing:
             updates = tc.model_dump(mode="json", exclude_unset=False)
             updates.pop("project_id", None)
-            # If this activity_code was previously soft-deleted (e.g. user
-            # deleted it manually before re-importing), RESTORE it instead of
-            # silently re-applying fields onto a deleted record. Otherwise the
-            # Tasks list (which filters status='deleted') would show nothing
-            # even though the import reported success.
-            if existing.get("status") == "deleted":
-                updates["status"] = "not_started"
-                updates["pct_complete"] = 0
-                updates["prev_pct_complete"] = 0
-                updates["actual_start"] = None
-                updates["actual_finish"] = None
-                updates["actual_hours"] = 0
-                updates["actual_quantity"] = 0
+            # pt.76 -- NEVER let a baseline-only re-import (no progress columns)
+            # wipe a task's existing execution state: drop the (None) progress
+            # keys first, then re-apply only when the import actually carried
+            # progress, or restore a soft-deleted row to a clean baseline.
+            for _k in ("pct_complete", "actual_start", "actual_finish", "status"):
+                updates.pop(_k, None)
+            if existing.get("status") == "deleted" and not has_progress:
+                # Previously soft-deleted + no imported progress -> RESTORE to a
+                # clean baseline (otherwise the Tasks list, which filters
+                # status='deleted', would show nothing despite a success).
+                updates.update({
+                    "status": "not_started", "pct_complete": 0, "prev_pct_complete": 0,
+                    "actual_start": None, "actual_finish": None,
+                    "actual_hours": 0, "actual_quantity": 0,
+                })
                 updates.pop("deleted_at", None)
                 updates.pop("deleted_by_proposal_id", None)
+            elif has_progress:
+                # Re-import carrying progress -> migrate the execution state
+                # (also un-deletes a soft-deleted row via the $unset below).
+                updates.update({
+                    "status": mig_status, "pct_complete": mig_pct,
+                    "prev_pct_complete": mig_pct,
+                    "actual_start": imp_as, "actual_finish": imp_af,
+                })
             await db.tasks.update_one(
                 tenant_filter(ctx["tenant_id"], {"id": existing["id"]}),
                 {"$set": updates,
@@ -300,10 +331,10 @@ async def approve_proposal(
             doc = tc.model_dump(mode="json")
             doc.update({
                 "id": gen_id(), "tenant_id": ctx["tenant_id"],
-                "status": "not_started",
-                "actual_start": None, "actual_finish": None,
+                "status": mig_status,
+                "actual_start": imp_as, "actual_finish": imp_af,
                 "actual_hours": 0, "actual_quantity": 0,
-                "pct_complete": 0, "prev_pct_complete": 0,
+                "pct_complete": mig_pct, "prev_pct_complete": mig_pct,
                 "is_critical_path": False, "total_float_days": None,
                 "lookahead_status": "not_in_window",
                 "created_at": utc_now().isoformat(),
@@ -326,7 +357,10 @@ async def approve_proposal(
         if res.modified_count:
             deleted_count += 1
 
-    applied = {"created": created, "updated": updated, "deleted": deleted_count, "failed": failed}
+    applied = {"created": created, "updated": updated, "deleted": deleted_count,
+               "failed": failed,
+               # pt.76 -- progress-aware import telemetry
+               "migrated_progress": migrated_progress, "blocked_imported": blocked_imported}
 
     new_status_doc = {
         "status": "approved",
