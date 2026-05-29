@@ -49,7 +49,7 @@ export default function MobileForeman() {
     finally { setPhotoBusy(false); }
   };
 
-  const logout = () => { clearAuth(); nav("/voice-login"); };
+  const logout = () => { clearAuth(); nav("/login"); };
 
   return (
     <div data-testid="mobile-foreman" className="min-h-screen bg-slate-50">

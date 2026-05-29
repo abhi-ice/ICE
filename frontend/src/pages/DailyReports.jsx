@@ -873,29 +873,33 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
 
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
-      {/* V4 title block — H1 with date + breadcrumb pill, plus date stepper.
-          pt.71: wrapped in a .surface card so it matches every other section
-          (was the only bare row on the page). .surface is theme-aware. */}
-      <div className="surface px-5 py-3 flex items-baseline gap-3 flex-wrap">
-        <h1 className="text-xl font-semibold tracking-tight m-0">
-          Daily Report &middot;{" "}
-          <span className="font-mono">{formatDateDisplay(report.report_date)}</span>
-        </h1>
-        <span className="date-stepper" data-testid="dr-date-stepper">
-          <button onClick={() => dateStep(-1)} title="Previous day" aria-label="Previous day">
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={() => dateStep(+1)} title="Next day" aria-label="Next day">
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
-        </span>
-        <span className={`v4-pill v4-pill-${
-          report.status === "approved" ? "closed" :
-          report.status === "submitted" ? "submitted" : "draft"
-        }`}>
-          {report.status === "approved" ? "Approved" :
-           report.status === "submitted" ? "Submitted" : "Draft"}
-        </span>
+      {/* V4 title block — pt.73: "Back to Daily Reports" now sits at the TOP
+          of this title card (was in the header card below), with the H1 +
+          date stepper + status pill on the row beneath it. .surface is
+          theme-aware (light + dark). */}
+      <div className="surface px-5 py-3">
+        <BackButton onClick={onBack} label="Daily Reports" />
+        <div className="mt-2 flex items-baseline gap-3 flex-wrap">
+          <h1 className="text-xl font-semibold tracking-tight m-0">
+            Daily Report &middot;{" "}
+            <span className="font-mono">{formatDateDisplay(report.report_date)}</span>
+          </h1>
+          <span className="date-stepper" data-testid="dr-date-stepper">
+            <button onClick={() => dateStep(-1)} title="Previous day" aria-label="Previous day">
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={() => dateStep(+1)} title="Next day" aria-label="Next day">
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </span>
+          <span className={`v4-pill v4-pill-${
+            report.status === "approved" ? "closed" :
+            report.status === "submitted" ? "submitted" : "draft"
+          }`}>
+            {report.status === "approved" ? "Approved" :
+             report.status === "submitted" ? "Submitted" : "Draft"}
+          </span>
+        </div>
       </div>
 
       {/* HEADER */}
@@ -907,7 +911,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               safetyCount={(safety_events || []).length}
               qcCount={(qc_issues || []).length}
               locked={locked}
-              onBack={onBack} onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
+              onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
               busy={busy} validate={validate}
               templateMeta={templateMeta}
               exportingClient={exportingClient}
@@ -1259,7 +1263,7 @@ function StatusPill({ status }) {
 function Header({ report, project, userLabels, ppc,
                   totalHeadcount, totalCrewHours,
                   delaysCount = 0, rfisCount = 0, safetyCount = 0, qcCount = 0,
-                  locked, onBack, onSubmit,
+                  locked, onSubmit,
                   onApprove, onDownload, busy, validate, onQuickLogCoordination,
                   templateMeta, exportingClient, onDownloadClientTemplate,
                   /* v4 pt.19 — render progress card INSIDE header, ABOVE KPI band */
@@ -1268,12 +1272,9 @@ function Header({ report, project, userLabels, ppc,
   return (
     <div className="surface p-4" data-testid="dr-header">
       {/* v4 (2026-05-26): action buttons (Coordination / Export / Submit)
-          moved ABOVE the KPI band to match the v4 mockup. Header now
-          reads: [Back] [actions on right] above [KPI band 8-wide]. */}
+          moved ABOVE the KPI band to match the v4 mockup. pt.73: the Back
+          pill moved up to the title card, so this row is just the actions. */}
       <div className="flex flex-wrap items-center gap-3 mb-3">
-        {/* pt.37: Option E back-button pill (BackButton component). */}
-        <BackButton onClick={onBack} label="Daily Reports" />
-
         <div className="ml-auto flex gap-2 items-center">
           {/* pt.38: removed the duplicate "N items blocking submit:
               ..." amber brick that lived here in the header. The same

@@ -45,7 +45,6 @@ import MarketplaceFull from "./pages/MarketplaceFull";
 import MasterDoc from "./pages/MasterDoc";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import ComplianceFull from "./pages/ComplianceFull";
-import VoiceLogin from "./pages/VoiceLogin";
 import MobileForeman from "./pages/MobileForeman";
 import { AuditLog, AiAgentsPage, Settings, WeeklyReports } from "./pages/SystemPages";
 import EditRequestsQueue from "./pages/EditRequestsQueue";
@@ -76,7 +75,6 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
-          <Route path="/voice-login" element={<VoiceLogin />} />
           <Route path="/m/foreman" element={<Guard><MobileForeman /></Guard>} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
