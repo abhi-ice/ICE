@@ -1241,6 +1241,202 @@ _REVIEW_PROMPTS = {
     ),
 }
 
+# =====================================================================
+# pt.75 (2026-05-29) -- COMBINED Safety + QC review in a single vision
+# pass. One "AI analysis" button: the model inspects the pinned photos and
+# reports safety violations AND QC/workmanship issues together (or says it's
+# clean). OSHA 29 CFR 1926 codes are cited ONLY for safety findings and ONLY
+# from the curated whitelist below; every code the model emits is validated
+# in code (see _normalize_osha / _strip_invalid_osha_prose) so a wrong or
+# invented code can NEVER reach the user. QC findings carry no OSHA code
+# (OSHA is a safety standard; spec/code comparison arrives with the Specs
+# feature later). Anti-hallucination is a single self-checking call: the
+# prompt makes the model re-check each finding and drop low-confidence ones.
+# =====================================================================
+OSHA_1926_CODES = {
+    "1926.20": "General safety & health provisions / accident-prevention program",
+    "1926.21": "Safety training and education",
+    "1926.25": "Housekeeping",
+    "1926.50": "Medical services and first aid",
+    "1926.95": "Personal protective equipment (PPE) — criteria and use",
+    "1926.100": "Head protection (hard hats)",
+    "1926.102": "Eye and face protection",
+    "1926.103": "Respiratory protection",
+    "1926.150": "Fire protection",
+    "1926.151": "Fire prevention",
+    "1926.152": "Flammable and combustible liquids",
+    "1926.250": "General requirements for storage / material handling",
+    "1926.300": "Hand and power tools — general (guarding of moving parts)",
+    "1926.301": "Hand tools",
+    "1926.302": "Power-operated hand tools",
+    "1926.304": "Woodworking tools",
+    "1926.350": "Gas welding and cutting",
+    "1926.351": "Arc welding and cutting",
+    "1926.404": "Electrical — wiring design & protection (GFCI, grounding)",
+    "1926.405": "Electrical — wiring methods, components & equipment",
+    "1926.416": "Electrical — general requirements (work near live parts, cords)",
+    "1926.417": "Electrical — lockout and tagging of circuits",
+    "1926.451": "Scaffolds — general requirements (guardrails, planking, access)",
+    "1926.452": "Scaffolds — additional requirements by scaffold type",
+    "1926.453": "Aerial lifts",
+    "1926.501": "Fall protection — duty to have (leading edges, holes, open edges)",
+    "1926.502": "Fall protection — systems criteria and practices (guardrails, PFAS)",
+    "1926.503": "Fall protection — training requirements",
+    "1926.651": "Excavations — general requirements (access, spoil, water, atmosphere)",
+    "1926.652": "Excavations — requirements for protective systems (sloping/shoring)",
+    "1926.701": "Concrete and masonry construction — general requirements",
+    "1926.760": "Steel erection — fall protection",
+    "1926.1052": "Stairways",
+    "1926.1053": "Ladders",
+    "1926.1101": "Asbestos",
+    "1926.1153": "Respirable crystalline silica",
+}
+_OSHA_REFERENCE_BLOCK = "\n".join(f"  {c} — {d}" for c, d in OSHA_1926_CODES.items())
+
+
+def _normalize_osha(raw) -> Optional[str]:
+    """Return the whitelisted base code (e.g. '1926.501') for a model-supplied
+    code string, or None if it isn't a real code on our list. Accepts trailing
+    subparts like '1926.501(b)(1)' — only the base section is validated."""
+    if not raw:
+        return None
+    import re
+    m = re.search(r"1926\.\d{1,4}", str(raw))
+    if not m:
+        return None
+    base = m.group(0)
+    return base if base in OSHA_1926_CODES else None
+
+
+def _strip_invalid_osha_prose(text: str) -> str:
+    """Remove any OSHA code mention from narrative prose whose base section is
+    NOT on the whitelist (belt-and-suspenders): even a code the model slips
+    into the analysis text (rather than the structured findings) is dropped
+    if it is not whitelisted. Valid codes are left untouched."""
+    if not text:
+        return text
+    import re
+    sentinel = "�"  # marks an invalid code; removed with its wrapper below
+    marked = re.sub(
+        r"1926\.\d{1,4}",
+        lambda m: m.group(0) if m.group(0) in OSHA_1926_CODES else sentinel,
+        text,
+    )
+    marked = re.sub(
+        r"\(?\s*(?:per\s+)?(?:OSHA|29\s*CFR)?\s*" + sentinel + r"\s*\)?",
+        "", marked,
+    )
+    marked = marked.replace(sentinel, "")
+    return re.sub(r"[ 	]{2,}", " ", marked).strip()
+
+
+def _parse_combined_review_json(text: str) -> dict:
+    """Parse the combined safety+QC JSON, validate every OSHA code against the
+    whitelist, and derive overall severity/label. Returns
+    {severity, label, text, safety_findings, qc_findings}."""
+    import re
+    raw = (text or "").strip()
+    obj = {}
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+        except Exception:
+            obj = {}
+
+    def _clean(items, allow_code):
+        out = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            issue = str(it.get("issue") or it.get("text") or "").strip()
+            if not issue:
+                continue
+            fsev = str(it.get("severity") or "").lower().strip()
+            if fsev not in ("minor", "moderate", "major", "critical"):
+                fsev = "moderate"
+            entry = {"issue": issue[:300], "severity": fsev}
+            if allow_code:
+                entry["osha_code"] = _normalize_osha(it.get("osha_code"))
+            out.append(entry)
+        return out
+
+    safety = _clean(obj.get("safety_findings"), True)
+    qc = _clean(obj.get("qc_findings"), False)
+
+    analysis = _strip_invalid_osha_prose(
+        str(obj.get("analysis") or obj.get("text") or "").strip()
+    )
+    if not analysis:
+        analysis = raw[:600] if raw else "No analysis was returned."
+
+    order = {"clear": 0, "minor": 1, "moderate": 2, "major": 3, "critical": 4}
+    rank = {v: k for k, v in order.items()}
+    sev = str(obj.get("severity") or "").lower().strip()
+    if sev not in order:
+        worst = max([order[f["severity"]] for f in (safety + qc)], default=0)
+        sev = rank[worst] if (safety or qc) else "clear"
+
+    label = str(obj.get("label") or "").strip()[:40]
+    if not label:
+        ns, nq = len(safety), len(qc)
+        if not ns and not nq:
+            label = "All clear"
+        else:
+            parts = []
+            if ns:
+                parts.append(f"{ns} safety")
+            if nq:
+                parts.append(f"{nq} QC")
+            label = " · ".join(parts)
+
+    return {"severity": sev, "label": label, "text": analysis[:1500],
+            "safety_findings": safety, "qc_findings": qc}
+
+
+_REVIEW_PROMPTS["combined"] = (
+    "You are Foreman, a senior site reviewer for a federal construction "
+    "general contractor, covering BOTH job-site SAFETY and quality control "
+    "(QC / workmanship) in a single pass. You are shown one or more photos "
+    "from a single daily report.\n\n"
+    "Do TWO things:\n"
+    "1) SAFETY — flag genuine, clearly-visible safety violations only: fall "
+    "protection, PPE (hard hat, eye/face, hi-vis, respirator), ladders & "
+    "scaffold, housekeeping / trip hazards, electrical, struck-by, "
+    "excavation, hot work, fire. For each safety finding, cite the SINGLE "
+    "most relevant OSHA 29 CFR 1926 code ONLY when you are confident it "
+    "applies, and ONLY from the reference list below. If you are not certain "
+    "of the exact code, set \"osha_code\" to null — NEVER guess, invent, or "
+    "cite a code that is not in the list.\n"
+    "2) QC — assess workmanship and installation quality only: spacing & "
+    "supports, seams, penetrations & firestopping, alignment, finishes, "
+    "damage, wrong or missing materials. Describe QC issues in plain "
+    "English. Do NOT attach OSHA codes to QC findings (OSHA is a safety "
+    "standard, not a workmanship spec).\n\n"
+    "Be specific and reference what is ACTUALLY visible. Before you finalize, "
+    "RE-CHECK every finding against the image and DROP anything you are not "
+    "confident is truly present. A clean photo with no real issue is the "
+    "correct answer when nothing is wrong — do not invent concerns. If "
+    "everything looks clean, briefly describe the work shown and say it "
+    "looks clean.\n\n"
+    "OSHA 29 CFR 1926 reference list (cite ONLY these codes, exactly as "
+    "written):\n" + _OSHA_REFERENCE_BLOCK + "\n\n"
+    "Respond with ONLY a JSON object, no markdown, exactly these keys:\n"
+    '{"severity": one of "clear"|"minor"|"moderate"|"major"|"critical" '
+    "(the OVERALL worst finding; \"clear\" when nothing is wrong), "
+    '"label": a 1-4 word chip summarizing counts, e.g. "All clear" or '
+    '"2 safety · 1 QC" or "1 safety", '
+    '"safety_findings": [ {"issue": short text of what is visible, '
+    '"osha_code": a code string from the list above or null, '
+    '"severity": "minor"|"moderate"|"major"|"critical"} ], '
+    '"qc_findings": [ {"issue": short text of what is visible, '
+    '"severity": "minor"|"moderate"|"major"|"critical"} ], '
+    '"analysis": a concise plain-English narrative of the requested length '
+    "covering the work plus any safety and QC findings; when you mention a "
+    "validated safety code, write it inline like (OSHA 1926.501). Use empty "
+    "arrays when there are no findings of that type.}"
+)
+
 
 def _parse_review_json(text: str) -> dict:
     """Coerce the gateway reply into {severity, label, text}. Tolerant of
@@ -1268,6 +1464,17 @@ def _parse_review_json(text: str) -> dict:
 def _stub_review(lens: str, n: int) -> dict:
     """Dev-mode (no EMERGENT_LLM_KEY) deterministic stub so the UI flow
     works end-to-end locally without spending tokens."""
+    if lens == "combined":
+        return {"ok": True, "lens": "combined", "photo_count": n,
+                "severity": "moderate", "label": "1 safety · 1 QC",
+                "text": ("(Dev stub) Foreman would describe the work, then flag "
+                         "any safety items — e.g. a worker without fall protection "
+                         "near an open edge (OSHA 1926.501) — and any QC items, e.g. "
+                         "uneven support spacing. Set EMERGENT_LLM_KEY to run the real "
+                         "combined review."),
+                "safety_findings": [{"issue": "(stub) missing fall protection near open edge",
+                                     "osha_code": "1926.501", "severity": "major"}],
+                "qc_findings": [{"issue": "(stub) uneven support spacing", "severity": "minor"}]}
     if lens == "safety":
         return {"ok": True, "lens": "safety", "photo_count": n,
                 "severity": "moderate", "label": f"{n} concern{'s' if n != 1 else ''}",
@@ -1297,7 +1504,7 @@ async def _call_vision_review(
     session_id = f"photo-review-{int(asyncio.get_event_loop().time()*1000)}"
     chat = LlmChat(
         api_key=api_key, session_id=session_id,
-        system_message=_REVIEW_PROMPTS[lens],
+        system_message=_REVIEW_PROMPTS.get(lens, _REVIEW_PROMPTS["combined"]),
     ).with_model("anthropic", model)
     contents = [
         ImageContent(image_base64=base64.standard_b64encode(j).decode("ascii"))
@@ -1332,7 +1539,9 @@ async def _call_vision_review(
     if not in_tok and not out_tok:
         in_tok = 300 + 1600 * max(1, n)
         out_tok = max(1, len(text) // 4)
-    return {"parsed": _parse_review_json(text),
+    parsed = (_parse_combined_review_json(text) if lens == "combined"
+              else _parse_review_json(text))
+    return {"parsed": parsed,
             "input_tokens": in_tok, "output_tokens": out_tok}
 
 
@@ -1344,7 +1553,7 @@ async def review_photos(
     {ok, lens, photo_count, severity, label, text} or {ok:False, reason}."""
     db = get_db()
     lens = (lens or "").lower().strip()
-    if lens not in ("safety", "qc"):
+    if lens not in ("safety", "qc", "combined"):
         return {"ok": False, "reason": "bad_lens"}
     ids = [str(t) for t in (tray_ids or []) if t][:8]  # cap at 8 images / call
     if not ids:

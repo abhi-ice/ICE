@@ -3697,13 +3697,14 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   // for photo uploads; forwarded to /photo-tray/attach-to-dr.
   const [addReason, setAddReason] = useState("");
 
-  // pt.54 (2026-05-28): Photo AI Review — pin uploaded photos, run a
-  // Safety / QC review (POST /photo-tray/review), and get one short
-  // narrative + severity back. Newest review shows in full; older ones
-  // collapse to a single line, re-openable in a dialog to edit / copy /
-  // send into a Safety event or QC issue (pt.56: via the dr-open-event-form
-  // event, which switches to that tab + prefills the form's description +
-  // severity, even when the Events card is on a different tab).
+  // pt.54 (2026-05-28) / pt.75 (2026-05-29): Photo AI Review — pin uploaded
+  // photos, run ONE combined "AI analysis" (POST /photo-tray/review, lens
+  // "combined") that reports safety violations (with validated OSHA 1926
+  // codes) AND QC / workmanship issues in a single pass, or says it's clean.
+  // Newest review shows in full; older ones collapse to a single line,
+  // re-openable in a dialog to edit / copy / retry / delete. (pt.75 replaced
+  // the separate Safety + QC buttons with one button and removed the
+  // "Send to Safety / QC" actions entirely.)
   const [pinned, setPinned] = useState(() => new Set());
   const [reviews, setReviews] = useState([]);       // {id,lens,severity,label,text,n,ids,time}
   const [runningLens, setRunningLens] = useState(null);
@@ -3751,24 +3752,6 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
     } finally { setRunningLens(null); }
   };
   const setReviewText = (id, text) => setReviews((r) => r.map((x) => x.id === id ? { ...x, text } : x));
-  const sendReview = (rev) => {
-    // pt.56: route through the same dr-open-event-form event the activity
-    // grid uses — it switches the Events tab to Safety/QC (even if it's
-    // currently on Delays), opens + scrolls to the form, and the panel's
-    // listener prefills the description + severity dropdown. We send only
-    // the analysis text (no "[QC review · …]" tag) since severity rides
-    // in its own field now.
-    const sevMap = rev.lens === "qc"
-      ? { clear: "observation", minor: "minor", moderate: "moderate", major: "major", critical: "critical" }
-      : { clear: "", minor: "minor", moderate: "moderate", major: "major", critical: "critical" };
-    window.dispatchEvent(new CustomEvent("dr-open-event-form", {
-      detail: { kind: rev.lens, description: rev.text || "", severity: sevMap[rev.severity] || "" },
-    }));
-    toast.success(rev.lens === "safety"
-      ? "Opened a Safety event with the review prefilled."
-      : "Opened a QC issue with the review prefilled.");
-    setDialogId(null);
-  };
   const deleteReview = async (rev) => {
     try { await api.delete(`/photo-reviews/${rev.id}`); } catch { /* drop locally regardless */ }
     setReviews((r) => r.filter((x) => x.id !== rev.id));
@@ -3932,13 +3915,23 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
               style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
               onClick={() => setPinned(new Set())}>Clear</button>
             <span className="flex-1" />
-            <button type="button" data-testid="photo-review-safety" disabled={!pinnedIds.length || !!runningLens}
-              onClick={() => runReview("safety")} className="rev-btn rev-amber">
-              {runningLens === "safety" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />} Safety review
-            </button>
-            <button type="button" data-testid="photo-review-qc" disabled={!pinnedIds.length || !!runningLens}
-              onClick={() => runReview("qc")} className="rev-btn rev-sky">
-              {runningLens === "qc" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ClipboardCheck className="h-3.5 w-3.5" />} QC review
+            {/* pt.75: ONE combined "AI analysis" button (safety + QC in a
+                single vision pass). It stays solid + clearly visible in BOTH
+                themes whether idle or running — the old per-lens buttons faded
+                to near-invisible in light theme when disabled. When nothing is
+                pinned we don't disable it (that was the invisibility trap);
+                instead a click shows a clear toast. */}
+            <button type="button" data-testid="photo-review-run" disabled={!!runningLens}
+              title={pinnedIds.length
+                ? `Run AI safety + QC analysis on ${pinnedIds.length} pinned photo${pinnedIds.length !== 1 ? "s" : ""}`
+                : "Pin one or more photos, then run AI safety + QC analysis"}
+              onClick={() => {
+                if (!pinnedIds.length) { toast.error("Pin at least one photo to analyze."); return; }
+                runReview("combined");
+              }}
+              className="rev-analyze">
+              {runningLens ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {runningLens ? "Analyzing…" : "AI analysis"}
             </button>
           </div>
 
@@ -3947,14 +3940,19 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
               {runningLens && (
                 <div className="flex items-center gap-2 text-xs px-3 py-2 rounded"
                   style={{ color: "var(--v4-fg-muted)", background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)" }}>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Foreman is reviewing {pinnedIds.length} photo{pinnedIds.length !== 1 ? "s" : ""} for {runningLens === "safety" ? "safety" : "QC"}…
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Foreman is analyzing {pinnedIds.length} photo{pinnedIds.length !== 1 ? "s" : ""} for {runningLens === "safety" ? "safety" : runningLens === "qc" ? "QC" : "safety & QC"}…
                 </div>
               )}
               {reviews.map((rev, idx) => {
                 const full = idx === 0 && !collapsedIds.has(rev.id);
                 const isSafety = rev.lens === "safety";
-                const lensCls = isSafety ? "rev-lens--safety" : "rev-lens--qc";
-                const sendCls = isSafety ? "rev-btn rev-amber" : "rev-btn rev-sky";
+                const isQc = rev.lens === "qc";
+                const isCombined = !isSafety && !isQc; // pt.75: combined is the default lens
+                const HeadIcon = isCombined ? Sparkles : (isSafety ? ShieldAlert : ClipboardCheck);
+                const headFull = isCombined ? "AI analysis" : (isSafety ? "Safety review" : "QC review");
+                const headMini = isCombined ? "AI" : (isSafety ? "Safety" : "QC");
+                const lensCls = isCombined ? "rev-lens--ai" : (isSafety ? "rev-lens--safety" : "rev-lens--qc");
+                const accent = isCombined ? "#6366f1" : (isSafety ? "#f59e0b" : "#38bdf8");
                 if (!full) {
                   return (
                     <button key={rev.id} type="button" onClick={() => setDialogId(rev.id)}
@@ -3962,7 +3960,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                       className="w-full flex items-center gap-2 text-left px-3 py-2 rounded text-xs"
                       style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)" }}>
                       <span className={`inline-flex items-center gap-1 font-semibold shrink-0 ${lensCls}`}>
-                        {isSafety ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{isSafety ? "Safety" : "QC"}
+                        <HeadIcon className="h-3.5 w-3.5" />{headMini}
                       </span>
                       <span className={`shrink-0 ${sevCls(rev.severity)}`}>{rev.label}</span>
                       <span className="flex-1 truncate" style={{ color: "var(--v4-fg-muted)" }}>{rev.text}</span>
@@ -3973,10 +3971,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                 }
                 return (
                   <div key={rev.id} className="rounded overflow-hidden"
-                    style={{ background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)", borderLeft: `3px solid ${isSafety ? "#f59e0b" : "#38bdf8"}` }}>
+                    style={{ background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)", borderLeft: `3px solid ${accent}` }}>
                     <div className="flex items-center gap-2 px-3 py-2 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
                       <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${lensCls}`}>
-                        {isSafety ? <ShieldAlert className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}{isSafety ? "Safety review" : "QC review"}
+                        <HeadIcon className="h-4 w-4" />{headFull}
                       </span>
                       <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {rev.n} photo{rev.n !== 1 ? "s" : ""}</span>
                       <span className={sevCls(rev.severity)}>{rev.label}</span>
@@ -3987,9 +3985,6 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                     <div className="px-3 py-2">
                       <p className="text-[13px] leading-relaxed" style={{ color: "var(--v4-fg-primary)" }}>{rev.text}</p>
                       <div className="flex items-center gap-2 flex-wrap mt-3 pt-2" style={{ borderTop: "1px solid var(--v4-border)" }}>
-                        <button type="button" onClick={() => sendReview(rev)} className={sendCls}>
-                          {isSafety ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{isSafety ? "Send to Safety" : "Send to QC"}
-                        </button>
                         <button type="button" onClick={() => setDialogId(rev.id)} className="rev-btn rev-ghost">
                           <Pencil className="h-3.5 w-3.5" /> Edit
                         </button>
@@ -4033,8 +4028,8 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           <div className="w-full max-w-[560px] rounded-xl overflow-hidden"
             style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)", boxShadow: "0 8px 28px rgba(0,0,0,.45)" }}>
             <div className="flex items-center gap-2 px-4 py-3 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
-              <span className={`inline-flex items-center gap-1.5 text-sm font-bold ${dialogReview.lens === "safety" ? "rev-lens--safety" : "rev-lens--qc"}`}>
-                {dialogReview.lens === "safety" ? <ShieldAlert className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}{dialogReview.lens === "safety" ? "Safety review" : "QC review"}
+              <span className={`inline-flex items-center gap-1.5 text-sm font-bold ${dialogReview.lens === "safety" ? "rev-lens--safety" : dialogReview.lens === "qc" ? "rev-lens--qc" : "rev-lens--ai"}`}>
+                {dialogReview.lens === "safety" ? <ShieldAlert className="h-4 w-4" /> : dialogReview.lens === "qc" ? <ClipboardCheck className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}{dialogReview.lens === "safety" ? "Safety review" : dialogReview.lens === "qc" ? "QC review" : "AI analysis"}
               </span>
               <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {dialogReview.n} photo{dialogReview.n !== 1 ? "s" : ""}</span>
               <span className={sevCls(dialogReview.severity)}>{dialogReview.label}</span>
@@ -4046,7 +4041,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                 onChange={(e) => setReviewText(dialogReview.id, e.target.value)}
                 rows={6} className="w-full rounded p-3 text-[13px] leading-relaxed dr-mp-input" />
               <p className="text-[11px] mt-2" style={{ color: "var(--v4-fg-faint)" }}>
-                Edit before sending — it carries the “{dialogReview.label}” severity through.
+                Edit the analysis here, then copy it — the “{dialogReview.label}” severity is kept with this review.
               </p>
             </div>
             <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--v4-border)" }}>
@@ -4059,14 +4054,8 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                 <RefreshCw className="h-3.5 w-3.5" /> Retry
               </button>
               <button type="button" onClick={() => deleteReview(dialogReview)}
-                title="Delete this review" className="rev-btn rev-danger">
+                title="Delete this review" className="rev-btn rev-danger ml-auto">
                 <Trash2 className="h-3.5 w-3.5" /> Delete
-              </button>
-              <span className="flex-1" />
-              <button type="button" onClick={() => sendReview(dialogReview)}
-                data-testid="photo-review-send"
-                className={dialogReview.lens === "safety" ? "rev-btn rev-amber" : "rev-btn rev-sky"}>
-                {dialogReview.lens === "safety" ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{dialogReview.lens === "safety" ? "Send to Safety" : "Send to QC"}
               </button>
             </div>
           </div>

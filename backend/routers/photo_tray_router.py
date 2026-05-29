@@ -1083,7 +1083,7 @@ async def analyze_single(
 # severity for the DR Photos panel to render and push into an event.
 class _PhotoReviewPayload(_AiStrictModel):
     tray_ids: list[str] = _AiField(default_factory=list)
-    lens: str = "safety"  # "safety" | "qc"
+    lens: str = "combined"  # "combined" (safety+QC, pt.75) | legacy "safety" | "qc"
     daily_report_id: Optional[str] = None
 
 
@@ -1091,8 +1091,8 @@ class _PhotoReviewPayload(_AiStrictModel):
 async def photo_review(
     payload: _PhotoReviewPayload, ctx: dict = Depends(require_tenant),
 ):
-    if payload.lens not in ("safety", "qc"):
-        raise HTTPException(400, "lens must be 'safety' or 'qc'")
+    if payload.lens not in ("safety", "qc", "combined"):
+        raise HTTPException(400, "lens must be 'combined', 'safety', or 'qc'")
     if not payload.tray_ids:
         raise HTTPException(400, "Pin at least one photo to review")
     from services.photo_ai import review_photos
@@ -1123,6 +1123,10 @@ async def photo_review(
             "severity": result.get("severity"),
             "label": result.get("label"),
             "text": result.get("text"),
+            # pt.75: persist the structured combined findings too (safety carries
+            # validated OSHA codes; QC does not) so they survive a refresh.
+            "safety_findings": result.get("safety_findings"),
+            "qc_findings": result.get("qc_findings"),
             "photo_ids": result.get("photo_ids") or payload.tray_ids,
             "photo_count": result.get("photo_count"),
             "created_at": datetime.now(timezone.utc).isoformat(),
