@@ -356,20 +356,14 @@ async def gather_lookahead_for_export(
 
     today_d = start_date or date.today()
     end_d = today_d + timedelta(days=days)
+    # pt.72: slip-aware look-ahead window (effective = projected when slipped,
+    # else planned), matching the Lookahead page + DR grid.
+    from services.schedule_filters import effective_schedule_overlap, effective_start
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$ne": "deleted"},
-            "$or": [
-                {"planned_start": {"$gte": today_d.isoformat(),
-                                    "$lte": end_d.isoformat()}},
-                {"planned_finish": {"$gte": today_d.isoformat(),
-                                     "$lte": end_d.isoformat()}},
-                {"$and": [
-                    {"planned_start": {"$lte": today_d.isoformat()}},
-                    {"planned_finish": {"$gte": end_d.isoformat()}},
-                ]},
-            ],
+            "$expr": effective_schedule_overlap(today_d.isoformat(), end_d.isoformat()),
         }),
         {"_id": 0},
     ).sort("planned_start", 1).to_list(length=500)
@@ -416,7 +410,9 @@ async def gather_lookahead_for_export(
     rows: list[dict] = []
     at_risk_count = 0
     for t in tasks:
-        ps_iso = _iso_date(t.get("planned_start"))
+        # pt.72: "days until start" off the EFFECTIVE start so a slipped task
+        # counts down to its new start, not the stale planned one.
+        ps_iso = _iso_date(effective_start(t))
         ps_d = _parse_iso_date(ps_iso)
         days_until_start = (
             (ps_d - today_d).days if ps_d else None

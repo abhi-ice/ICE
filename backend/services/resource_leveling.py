@@ -786,6 +786,10 @@ async def recompute_demand_for_project(
     if proj is None or proj.get("status") == "archived":
         return {"cleared": int(deleted.deleted_count or 0), "added": 0, "archived": True}
     # Walk active tasks for the project with required_trade set.
+    # pt.72: distribute demand on each task's EFFECTIVE window (projected when
+    # slipped, else planned) so a slipped task's crew demand lands on its new
+    # dates. (No date-window match here — this walks the whole project.)
+    from services.schedule_filters import effective_start, effective_finish
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id,
@@ -794,6 +798,7 @@ async def recompute_demand_for_project(
         }),
         {"_id": 0, "id": 1, "required_trade": 1, "required_headcount": 1,
          "required_hours": 1, "planned_start": 1, "planned_finish": 1,
+         "projected_start_date": 1, "projected_finish_date": 1,
          "is_critical_path": 1},
     ).to_list(length=None)
     added = 0
@@ -806,8 +811,8 @@ async def recompute_demand_for_project(
         if not rtrade or rcount <= 0:
             continue
         try:
-            ps = date.fromisoformat(str(t["planned_start"])[:10])
-            pf = date.fromisoformat(str(t["planned_finish"])[:10])
+            ps = date.fromisoformat(str(effective_start(t))[:10])
+            pf = date.fromisoformat(str(effective_finish(t))[:10])
         except Exception:
             continue
         if pf < ps:
@@ -871,16 +876,23 @@ async def recompute_demand_for_dates(
         }),
     )
     now_iso = datetime.now(timezone.utc).isoformat()
+    # pt.72: slip-aware demand — match + distribute on each task's EFFECTIVE
+    # window (projected when slipped, else planned) so a slipped task's crew
+    # demand lands on its NEW dates, not the stale planned ones.
+    from services.schedule_filters import (
+        effective_schedule_overlap, effective_start, effective_finish,
+    )
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "required_trade": {"$nin": [None, ""]},
             "status": {"$ne": "deleted"},
-            "planned_start": {"$lte": dates_list[-1].isoformat()},
-            "planned_finish": {"$gte": dates_list[0].isoformat()},
+            "$expr": effective_schedule_overlap(
+                dates_list[0].isoformat(), dates_list[-1].isoformat()),
         }),
         {"_id": 0, "id": 1, "required_trade": 1, "required_headcount": 1,
          "required_hours": 1, "planned_start": 1, "planned_finish": 1,
+         "projected_start_date": 1, "projected_finish_date": 1,
          "is_critical_path": 1},
     ).to_list(length=None)
     per_tuple: dict[tuple[str, str], dict] = {}
@@ -891,8 +903,8 @@ async def recompute_demand_for_dates(
         if not rtrade or rcount <= 0:
             continue
         try:
-            ps = date.fromisoformat(str(t["planned_start"])[:10])
-            pf = date.fromisoformat(str(t["planned_finish"])[:10])
+            ps = date.fromisoformat(str(effective_start(t))[:10])
+            pf = date.fromisoformat(str(effective_finish(t))[:10])
         except Exception:
             continue
         span = (pf - ps).days + 1

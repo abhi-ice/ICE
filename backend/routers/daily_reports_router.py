@@ -103,23 +103,10 @@ async def dr_activity_chips(
 
 
 def _scheduled_window_expr(report_date_iso: str) -> dict:
-    """Mongo $expr matching tasks whose EFFECTIVE schedule window contains
-    report_date_iso. Effective dates = projected_start_date/projected_finish_date
-    when a blocker has SLIPPED the task, else the baseline planned_start/finish
-    (projected_* are written together and cleared to None when there's no slip).
-    So a slipped task follows its NEW dates onto the DR grid instead of staying
-    stuck on the original planned window. Both effective dates must be non-null,
-    mirroring the prior planned_* match (which silently skipped tasks missing
-    dates). All dates are 'YYYY-MM-DD' strings → lexicographic compare is exact.
-    """
-    es = {"$ifNull": ["$projected_start_date", "$planned_start"]}
-    ef = {"$ifNull": ["$projected_finish_date", "$planned_finish"]}
-    return {"$and": [
-        {"$ne": [es, None]},
-        {"$ne": [ef, None]},
-        {"$lte": [es, report_date_iso]},
-        {"$gte": [ef, report_date_iso]},
-    ]}
+    """Single-date contains-check via the shared slip-aware helper (pt.72):
+    a contains-check is just overlap(day, day)."""
+    from services.schedule_filters import effective_schedule_overlap
+    return effective_schedule_overlap(report_date_iso, report_date_iso)
 
 
 async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: str, report_date: date):

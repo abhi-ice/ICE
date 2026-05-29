@@ -352,18 +352,16 @@ async def lookahead(
     db = get_db()
     start_d = start or date.today()
     end_d = start_d + timedelta(days=days)
+    # pt.72: slip-aware look-ahead window — a task whose EFFECTIVE window
+    # (projected when slipped, else planned) overlaps [start_d, end_d] is in
+    # the 2WLA, so slipped tasks move into the right week instead of staying
+    # on their original planned dates. Replaces the verbose planned_* $or.
+    from services.schedule_filters import effective_schedule_overlap
     docs = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {
             "project_id": project_id,
             "status": {"$ne": "deleted"},
-            "$or": [
-                {"planned_start": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}},
-                {"planned_finish": {"$gte": start_d.isoformat(), "$lte": end_d.isoformat()}},
-                {"$and": [
-                    {"planned_start": {"$lte": start_d.isoformat()}},
-                    {"planned_finish": {"$gte": end_d.isoformat()}},
-                ]},
-            ],
+            "$expr": effective_schedule_overlap(start_d.isoformat(), end_d.isoformat()),
         }),
         {"_id": 0},
     ).sort("planned_start", 1).to_list(500)
