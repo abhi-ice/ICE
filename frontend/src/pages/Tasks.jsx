@@ -514,23 +514,26 @@ export default function Tasks() {
               // -- any further slip drives the project finish. Tint
               // those rows darker than the slip-rose tint so PMs can
               // scan for tasks with no slack left.
-              const slipTint = slip > 0 ? "bg-rose-50" : "";
+              const slipTint = slip > 0 ? "row-slip" : "";
               const structural = t.total_float_days;
               const remaining = t.remaining_float_days;
               const cliffTint = (
                 remaining != null && remaining <= 0
-              ) ? "bg-rose-100" : "";
-              // pt.35 (2026-05-27): was bg-red-50/40 -- the /40 alpha
-              // made the critical-path tint translucent, which on the
-              // sticky col-pin-1 / col-pin-2 cells caused scrolled-
-              // under date columns to bleed through the # and
-              // Description columns during horizontal scroll. Dropping
-              // the /40 modifier so the row tint is fully opaque
-              // (still visually subtle vs the cliff bg-rose-100 and
-              // slip bg-rose-50 below). Sticky behaviour now correctly
-              // masks the scrolled content.
+              ) ? "row-cliff" : "";
+              // pt.74 (2026-05-29): row tints moved from raw Tailwind
+              // bg-red-50/bg-rose-50/bg-rose-100 to the dedicated
+              // .row-cp / .row-slip / .row-cliff classes (index.css).
+              // The Tailwind classes were invisible in LIGHT theme
+              // (the `.dense-table-frozen tbody tr { background: surface }`
+              // rule out-specified them; dark only worked via !important
+              // overrides) and never reached the sticky #/Description
+              // columns (their surface gradient painted over the tint).
+              // The new classes are opaque + theme-aware, win with
+              // !important, and let the pinned cells inherit the tint so
+              // the WHOLE row tints in both themes while still masking
+              // scrolled-under content on the sticky columns.
               const rowClass = t.is_critical_path
-                ? "bg-red-50"
+                ? "row-cp"
                 : (cliffTint || slipTint);
               return (
               <tr key={t.id} data-testid={`task-row-${t.activity_code}`} className={rowClass}>

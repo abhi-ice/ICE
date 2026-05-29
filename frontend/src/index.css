@@ -398,6 +398,30 @@ html[data-theme="dark"] .page-shell::after { display: none; }
     background-color: var(--v4-bg-surface);
 }
 
+/* Schedule-activity row tints (pt.74). The native Tailwind bg-red-50 /
+   bg-rose-50 / bg-rose-100 were (a) invisible in LIGHT theme — the
+   `.dense-table-frozen tbody tr { background: surface }` rule above
+   out-specified them (dark only worked via !important overrides) — and
+   (b) never reached the sticky #/Description columns, whose surface
+   gradient painted over the inherited tint. These opaque, theme-aware
+   classes win with !important and let the pinned cells inherit the row
+   tint (gradient killed), so the tint covers the WHOLE row in both
+   themes while staying opaque enough to mask scrolled-under content. */
+tr.row-slip  { background-color: #ffe4e6 !important; }   /* projected slip > 0 (rose) */
+tr.row-cliff { background-color: #fecdd3 !important; }   /* rem float <= 0 (stronger rose) */
+tr.row-cp    { background-color: #fee2e2 !important; }   /* on the critical path (red) */
+html[data-theme="dark"] tr.row-slip  { background-color: #3a1d22 !important; }
+html[data-theme="dark"] tr.row-cliff { background-color: #4a1d26 !important; }
+html[data-theme="dark"] tr.row-cp    { background-color: #3f1f20 !important; }
+/* sticky #/Description cells: inherit the row tint instead of the
+   surface-masking gradient (opaque tint still masks scrolled content). */
+.dense-table-frozen tr.row-slip  > td[class*="col-pin"],
+.dense-table-frozen tr.row-cliff > td[class*="col-pin"],
+.dense-table-frozen tr.row-cp    > td[class*="col-pin"] {
+    background-image: none !important;
+    background-color: inherit !important;
+}
+
 /* Top bar â€” dark glass, sticky */
 .app-topbar {
     @apply h-14 flex items-center gap-3 px-4 sticky top-0 z-30;
