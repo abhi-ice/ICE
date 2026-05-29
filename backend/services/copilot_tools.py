@@ -323,7 +323,19 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
             return [_scrub(v) for v in node]
         return node
     safe_filter = _scrub(user_filter)
+    # SECURITY (cross-tenant isolation): the LLM/user controls `filter`, and
+    # a plain `q.update(filter)` would let a filter of {"tenant_id": "<other>"}
+    # OVERWRITE the tenant scope (dict.update replaces existing keys) and read
+    # another tenant's rows. So we (1) strip the scope keys the caller must
+    # never set, then (2) merge, then (3) RE-ASSERT tenant + project scope LAST
+    # so it always wins. A nested {"$or": [...]} cannot escape because the
+    # top-level tenant_id equality is always AND-ed with the user's filter.
+    for _scope_key in ("tenant_id", "project_id", "_id"):
+        safe_filter.pop(_scope_key, None)
     q.update(safe_filter)
+    q["tenant_id"] = str(tenant_id)
+    if project_id and collection not in NOT_PROJECT_SCOPED:
+        q["project_id"] = project_id
     # Sort: support "field" (asc) or "-field" (desc)
     sort_arg = args.get("sort")
     cursor = db[collection].find(q, {"_id": 0})
