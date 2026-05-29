@@ -873,8 +873,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
 
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
-      {/* V4 title block — H1 with date + breadcrumb pill, plus date stepper */}
-      <div className="flex items-baseline gap-3 flex-wrap">
+      {/* V4 title block — H1 with date + breadcrumb pill, plus date stepper.
+          pt.71: wrapped in a .surface card so it matches every other section
+          (was the only bare row on the page). .surface is theme-aware. */}
+      <div className="surface px-5 py-3 flex items-baseline gap-3 flex-wrap">
         <h1 className="text-xl font-semibold tracking-tight m-0">
           Daily Report &middot;{" "}
           <span className="font-mono">{formatDateDisplay(report.report_date)}</span>

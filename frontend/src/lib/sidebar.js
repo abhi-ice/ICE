@@ -5,7 +5,7 @@ import {
   MapPin, MessagesSquare, Truck, FileText, BookOpen, FileSignature,
   GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck, Briefcase,
   CalendarClock, FileUp, Bot, ShoppingBasket, ShieldCheck, History,
-  Settings, Layers, Box, Activity, Clock, Building2, KeyRound, Brain,
+  Settings, Layers, Box, Activity, Clock, Building2, Brain,
 } from "lucide-react";
 
 export const SIDEBAR_SECTIONS = [
@@ -103,7 +103,6 @@ export const SIDEBAR_SECTIONS = [
       { label: "AI agents", path: "/agents", icon: Bot, testid: "sidebar-agents" },
       { label: "Knowledge base", path: "/kb", icon: Brain, testid: "sidebar-kb" },
       { label: "Marketplace", path: "/marketplace", icon: ShoppingBasket, testid: "sidebar-marketplace" },
-      { label: "Voice PINs", path: "/voice-pins", icon: KeyRound, testid: "sidebar-voice-pins" },
       { label: "Compliance", path: "/compliance", icon: ShieldCheck, testid: "sidebar-compliance" },
       { label: "Audit log", path: "/audit-log", icon: History, testid: "sidebar-audit" },
       // Addition 4 -- edit-request approval queue. Visible to all

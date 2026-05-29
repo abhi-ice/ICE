@@ -45,7 +45,6 @@ import MarketplaceFull from "./pages/MarketplaceFull";
 import MasterDoc from "./pages/MasterDoc";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import ComplianceFull from "./pages/ComplianceFull";
-import VoicePinAdmin from "./pages/VoicePinAdmin";
 import VoiceLogin from "./pages/VoiceLogin";
 import MobileForeman from "./pages/MobileForeman";
 import { AuditLog, AiAgentsPage, Settings, WeeklyReports } from "./pages/SystemPages";
@@ -145,7 +144,6 @@ export default function App() {
             <Route path="marketplace" element={<MarketplaceFull />} />
             <Route path="kb" element={<KnowledgeBase />} />
             <Route path="master-doc" element={<MasterDoc />} />
-            <Route path="voice-pins" element={<VoicePinAdmin />} />
             <Route path="compliance" element={<ComplianceFull />} />
             <Route path="audit-log" element={<AuditLog />} />
             <Route path="edit-requests" element={<EditRequestsQueue />} />
