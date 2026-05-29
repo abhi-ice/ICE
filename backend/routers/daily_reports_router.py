@@ -102,9 +102,30 @@ async def dr_activity_chips(
     return out
 
 
+def _scheduled_window_expr(report_date_iso: str) -> dict:
+    """Mongo $expr matching tasks whose EFFECTIVE schedule window contains
+    report_date_iso. Effective dates = projected_start_date/projected_finish_date
+    when a blocker has SLIPPED the task, else the baseline planned_start/finish
+    (projected_* are written together and cleared to None when there's no slip).
+    So a slipped task follows its NEW dates onto the DR grid instead of staying
+    stuck on the original planned window. Both effective dates must be non-null,
+    mirroring the prior planned_* match (which silently skipped tasks missing
+    dates). All dates are 'YYYY-MM-DD' strings → lexicographic compare is exact.
+    """
+    es = {"$ifNull": ["$projected_start_date", "$planned_start"]}
+    ef = {"$ifNull": ["$projected_finish_date", "$planned_finish"]}
+    return {"$and": [
+        {"$ne": [es, None]},
+        {"$ne": [ef, None]},
+        {"$lte": [es, report_date_iso]},
+        {"$gte": [ef, report_date_iso]},
+    ]}
+
+
 async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: str, report_date: date):
-    """Find activities planned for the day → create grid rows. A task is
-    'planned for this day' iff `planned_start <= report_date <= planned_finish`.
+    """Find activities scheduled for the day → create grid rows. A task is
+    'scheduled for this day' iff its EFFECTIVE window (projected dates when
+    slipped, else planned) contains report_date — see _scheduled_window_expr.
     Pre-fill pct_complete_start_of_day from yesterday's end_of_day or
     task.pct_complete.
     """
@@ -114,8 +135,7 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
-            "planned_start": {"$lte": rd_iso},
-            "planned_finish": {"$gte": rd_iso},
+            "$expr": _scheduled_window_expr(rd_iso),
         }),
         {"_id": 0},
     ).limit(200).to_list(200)
@@ -415,13 +435,13 @@ async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require
         raise HTTPException(404, "Daily report not found")
     report_date = dr["report_date"]
     project_id = dr["project_id"]
-    # tasks planned on this date (planned_start <= date <= planned_finish)
+    # tasks scheduled on this date — effective (slip-aware) window, same rule
+    # as _prepopulate_grid so the dropdown and the grid agree.
     candidates = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
-            "planned_start": {"$lte": report_date},
-            "planned_finish": {"$gte": report_date},
+            "$expr": _scheduled_window_expr(report_date),
         }),
         {"_id": 0},
     ).limit(200).to_list(200)
