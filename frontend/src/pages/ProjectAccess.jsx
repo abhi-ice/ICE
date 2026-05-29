@@ -5,7 +5,8 @@
 // Adds/removes/role-changes flow through the project_members router
 // which audit-logs PROJECT_MEMBER_ADDED / REMOVED / ROLE_CHANGED.
 import { useEffect, useMemo, useState } from "react";
-import { Users, Plus, Trash2, ShieldCheck, AlertCircle, ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Users, Plus, Trash2, ShieldCheck, AlertCircle, ChevronRight, Mail } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
@@ -37,6 +38,7 @@ const ROLE_PILL = {
 };
 
 export default function ProjectAccess() {
+  const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [members, setMembers] = useState(null);   // {project_id, project_name, members:[]}
@@ -130,6 +132,15 @@ export default function ProjectAccess() {
         <span className="ml-2 text-xs text-slate-500">
           Manage who can see and act on each project. PMs and Admins only.
         </span>
+        <span className="flex-1" />
+        {/* pt.69: "Add member" only grants EXISTING org users access to a
+            project. To bring a NEW person into the org, you invite them on the
+            Team page — this shortcut routes there. */}
+        <button data-testid="pa-send-invite" onClick={() => navigate("/team")}
+          title="Invite a new teammate to your organization (Team page)"
+          className="sbtn sbtn-sm sbtn-secondary shrink-0">
+          <Mail className="h-3.5 w-3.5" /> Send invite
+        </button>
       </header>
 
       {error && (

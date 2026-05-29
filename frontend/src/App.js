@@ -16,7 +16,6 @@ import Lookahead from "./pages/Lookahead";
 import DailyReports from "./pages/DailyReports";
 import DrTemplate from "./pages/DrTemplate";
 import ProjectScopedList from "./pages/ProjectScopedList";
-import GettingStarted from "./pages/GettingStarted";
 import ResourceList, { Availability } from "./pages/Resources";
 import Approvals from "./pages/Approvals";
 import Recovery from "./pages/Recovery";
@@ -82,7 +81,6 @@ export default function App() {
           <Route path="/m/foreman" element={<Guard><MobileForeman /></Guard>} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
-            <Route path="getting-started" element={<GettingStarted />} />
             <Route path="projects" element={<Projects />} />
             <Route path="vendors" element={<Vendors />} />
             <Route path="team" element={<Team />} />

@@ -27,7 +27,7 @@ export default function Signup() {
       const { data } = await api.post("/auth/register", form);
       setAuth(data);
       toast.success(`Welcome, ${data.user.full_name} - organization "${data.tenant.display_name}" created.`);
-      nav("/getting-started");
+      nav("/");
     } catch (ex) {
       const msg = ex.response?.data?.detail;
       setErr(typeof msg === "string" ? msg : (Array.isArray(msg) ? msg.map((m) => m.msg).join(", ") : "Signup failed"));
