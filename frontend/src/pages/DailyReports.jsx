@@ -77,13 +77,19 @@ const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 // trades a federal GC typically self-performs or subs out, with "Other"
 // as the catch-all last option. Persisted rows whose stored trade isn't
 // in this list still render (the value is injected as a leading option).
+// pt.62 (2026-05-28): alphabetical (localeCompare) with "Other" pinned last —
+// the standard SaaS select convention. Sorting at definition keeps the list
+// ordered even if someone appends a trade out of place later.
 const COMMON_TRADES = [
-  "General Labor", "Electrical", "Plumbing", "HVAC / Mechanical",
-  "Concrete", "Masonry", "Carpentry / Framing", "Drywall", "Painting",
-  "Roofing", "Steel / Structural", "Demolition", "Earthwork / Excavation",
-  "Flooring", "Tile", "Glazing", "Fireproofing", "Fire Protection / Sprinkler",
-  "Low-Voltage / Data", "Insulation", "Acoustical Ceilings", "Doors / Hardware",
-  "Landscaping / Sitework", "Other",
+  ...[
+    "Acoustical Ceilings", "Carpentry / Framing", "Concrete", "Demolition",
+    "Doors / Hardware", "Drywall", "Earthwork / Excavation", "Electrical",
+    "Fire Protection / Sprinkler", "Fireproofing", "Flooring", "General Labor",
+    "Glazing", "HVAC / Mechanical", "Insulation", "Landscaping / Sitework",
+    "Low-Voltage / Data", "Masonry", "Painting", "Plumbing", "Roofing",
+    "Steel / Structural", "Tile",
+  ].sort((a, b) => a.localeCompare(b)),
+  "Other",
 ];
 
 // Bucket D Addition 5 (2026-05-12) -- "add to locked DR" reason capture.
@@ -2259,24 +2265,25 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
 
 // pt.46 (2026-05-27) — read-only row for the BEFORE (preconstruction +
 // construction paperwork) and AFTER (closeout paperwork) sections.
-// Shows the same columns the populated read-only card promises (Code,
-// Description, Loc, Status, Plan finish) without ANY editing
-// affordances (no slider, no input, no delete, no flag-issue). Supers
-// aren't responsible for these — PMs / admins are — so the row is
-// purely informational.
+// pt.62 (2026-05-28): mirror Today's Planned Activity columns minus the
+// editable/interactive ones (EOD slider, Δ, Blocker, Issues) — Code,
+// Description, Loc, SOD %, Status. CRITICAL FIX: read the SAME fields the
+// editable GridRow reads (activity_description / location_name) — the old
+// row read r.description / r.location which don't exist on grid rows, so
+// every reference row rendered a blank name. These rows are informational:
+// other teams (PM/admin) update submittals & paperwork; the super just
+// sees them for reference.
 function ReadOnlyGridRow({ r }) {
   const status = r.auto_status || r.status_at_end_of_day || "not_started";
   return (
     <tr data-testid={`dr-readonly-row-${r.activity_code}`}>
       <td className="font-mono text-xs">{r.activity_code}</td>
       <td>
-        <div className="text-sm whitespace-normal break-words">{r.description || "—"}</div>
+        <div className="text-sm whitespace-normal break-words">{r.activity_description || "—"}</div>
       </td>
-      <td className="text-xs">{r.location_label || r.location || "—"}</td>
+      <td className="text-xs">{r.location_name || "—"}</td>
+      <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td><GridStatusPill status={status} testid={`dr-readonly-status-${r.activity_code}`} /></td>
-      <td className="text-xs font-mono">
-        {r.planned_finish ? formatDateDisplay(r.planned_finish) : "—"}
-      </td>
     </tr>
   );
 }
@@ -2459,7 +2466,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                       <thead>
                         <tr>
                           <th>Code</th><th>Description</th><th>Loc</th>
-                          <th>Status</th><th>Plan finish</th>
+                          <th>SOD %</th><th>Status</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2551,7 +2558,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
                       <thead>
                         <tr>
                           <th>Code</th><th>Description</th><th>Loc</th>
-                          <th>Status</th><th>Plan finish</th>
+                          <th>SOD %</th><th>Status</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3785,11 +3792,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       toast.error(e.response?.data?.detail || "Re-run failed — try again.");
     } finally { setRunningLens(null); }
   };
-  const sevStyle = (s) => s === "clear"
-    ? { color: "#7ee0bf", background: "rgba(16,185,129,.14)" }
-    : (s === "critical" || s === "major")
-      ? { color: "#fda4af", background: "rgba(251,113,133,.14)" }
-      : { color: "#fcd9a1", background: "rgba(245,158,11,.14)" };
+  // pt.62: theme-aware classes (see .rev-* in index.css) instead of inline
+  // dark-only colors, so the chips + buttons read correctly in light mode too.
+  const sevCls = (s) => "rev-sev " + (s === "clear" ? "rev-sev--clear"
+    : (s === "critical" || s === "major") ? "rev-sev--crit" : "rev-sev--warn");
   const dialogReview = reviews.find((r) => r.id === dialogId) || null;
 
   // Poll the tray's /ai-analysis until status leaves "pending"/"analyzing"
@@ -3939,15 +3945,11 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
               onClick={() => setPinned(new Set())}>Clear</button>
             <span className="flex-1" />
             <button type="button" data-testid="photo-review-safety" disabled={!pinnedIds.length || !!runningLens}
-              onClick={() => runReview("safety")}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
-              style={{ background: "rgba(245,158,11,.14)", color: "#fcd9a1", border: "1px solid rgba(245,158,11,.35)" }}>
+              onClick={() => runReview("safety")} className="rev-btn rev-amber">
               {runningLens === "safety" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />} Safety review
             </button>
             <button type="button" data-testid="photo-review-qc" disabled={!pinnedIds.length || !!runningLens}
-              onClick={() => runReview("qc")}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
-              style={{ background: "rgba(56,189,248,.14)", color: "#bce6fb", border: "1px solid rgba(56,189,248,.35)" }}>
+              onClick={() => runReview("qc")} className="rev-btn rev-sky">
               {runningLens === "qc" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ClipboardCheck className="h-3.5 w-3.5" />} QC review
             </button>
           </div>
@@ -3963,20 +3965,18 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
               {reviews.map((rev, idx) => {
                 const full = idx === 0 && !collapsedIds.has(rev.id);
                 const isSafety = rev.lens === "safety";
-                const accent = isSafety ? "#fcd9a1" : "#bce6fb";
-                const sendStyle = isSafety
-                  ? { background: "rgba(245,158,11,.14)", color: "#fcd9a1", border: "1px solid rgba(245,158,11,.35)" }
-                  : { background: "rgba(56,189,248,.14)", color: "#bce6fb", border: "1px solid rgba(56,189,248,.35)" };
+                const lensCls = isSafety ? "rev-lens--safety" : "rev-lens--qc";
+                const sendCls = isSafety ? "rev-btn rev-amber" : "rev-btn rev-sky";
                 if (!full) {
                   return (
                     <button key={rev.id} type="button" onClick={() => setDialogId(rev.id)}
                       data-testid={`photo-review-mini-${rev.id}`}
                       className="w-full flex items-center gap-2 text-left px-3 py-2 rounded text-xs"
                       style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)" }}>
-                      <span className="inline-flex items-center gap-1 font-semibold shrink-0" style={{ color: accent }}>
+                      <span className={`inline-flex items-center gap-1 font-semibold shrink-0 ${lensCls}`}>
                         {isSafety ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{isSafety ? "Safety" : "QC"}
                       </span>
-                      <span className="rounded-full px-2 py-0.5 font-semibold shrink-0" style={sevStyle(rev.severity)}>{rev.label}</span>
+                      <span className={`shrink-0 ${sevCls(rev.severity)}`}>{rev.label}</span>
                       <span className="flex-1 truncate" style={{ color: "var(--v4-fg-muted)" }}>{rev.text}</span>
                       <span className="shrink-0" style={{ color: "var(--v4-fg-faint)" }}>{rev.n} photo{rev.n !== 1 ? "s" : ""} · {rev.time}</span>
                       <span className="font-semibold shrink-0" style={{ color: "#10b981" }}>Open ›</span>
@@ -3987,11 +3987,11 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                   <div key={rev.id} className="rounded overflow-hidden"
                     style={{ background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)", borderLeft: `3px solid ${isSafety ? "#f59e0b" : "#38bdf8"}` }}>
                     <div className="flex items-center gap-2 px-3 py-2 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
-                      <span className="inline-flex items-center gap-1.5 text-xs font-bold" style={{ color: accent }}>
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${lensCls}`}>
                         {isSafety ? <ShieldAlert className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}{isSafety ? "Safety review" : "QC review"}
                       </span>
                       <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {rev.n} photo{rev.n !== 1 ? "s" : ""}</span>
-                      <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={sevStyle(rev.severity)}>{rev.label}</span>
+                      <span className={sevCls(rev.severity)}>{rev.label}</span>
                       <span className="ml-auto text-[11px]" style={{ color: "var(--v4-fg-faint)" }}>{rev.time}</span>
                       <button type="button" title="Collapse" onClick={() => setCollapsedIds((s) => new Set(s).add(rev.id))}
                         className="text-sm leading-none px-1" style={{ color: "var(--v4-fg-faint)" }}>▴</button>
@@ -3999,30 +3999,22 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                     <div className="px-3 py-2">
                       <p className="text-[13px] leading-relaxed" style={{ color: "var(--v4-fg-primary)" }}>{rev.text}</p>
                       <div className="flex items-center gap-2 flex-wrap mt-3 pt-2" style={{ borderTop: "1px solid var(--v4-border)" }}>
-                        <button type="button" onClick={() => sendReview(rev)}
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5" style={sendStyle}>
+                        <button type="button" onClick={() => sendReview(rev)} className={sendCls}>
                           {isSafety ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{isSafety ? "Send to Safety" : "Send to QC"}
                         </button>
-                        <button type="button" onClick={() => setDialogId(rev.id)}
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
-                          style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                        <button type="button" onClick={() => setDialogId(rev.id)} className="rev-btn rev-ghost">
                           <Pencil className="h-3.5 w-3.5" /> Edit
                         </button>
                         <button type="button" onClick={() => { navigator.clipboard?.writeText(rev.text); toast.success("Review copied"); }}
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
-                          style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                          className="rev-btn rev-ghost">
                           <CopyIcon className="h-3.5 w-3.5" /> Copy
                         </button>
                         <button type="button" onClick={() => retryReview(rev)} disabled={!!runningLens}
-                          title="Re-run this review (replaces it)"
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
-                          style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                          title="Re-run this review (replaces it)" className="rev-btn rev-ghost">
                           <RefreshCw className="h-3.5 w-3.5" /> Retry
                         </button>
                         <button type="button" onClick={() => deleteReview(rev)}
-                          title="Delete this review"
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 ml-auto"
-                          style={{ color: "#fda4af", border: "1px solid rgba(251,113,133,.35)" }}>
+                          title="Delete this review" className="rev-btn rev-danger ml-auto">
                           <Trash2 className="h-3.5 w-3.5" /> Delete
                         </button>
                       </div>
@@ -4094,12 +4086,11 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
           <div className="w-full max-w-[560px] rounded-xl overflow-hidden"
             style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)", boxShadow: "0 8px 28px rgba(0,0,0,.45)" }}>
             <div className="flex items-center gap-2 px-4 py-3 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
-              <span className="inline-flex items-center gap-1.5 text-sm font-bold"
-                style={{ color: dialogReview.lens === "safety" ? "#fcd9a1" : "#bce6fb" }}>
+              <span className={`inline-flex items-center gap-1.5 text-sm font-bold ${dialogReview.lens === "safety" ? "rev-lens--safety" : "rev-lens--qc"}`}>
                 {dialogReview.lens === "safety" ? <ShieldAlert className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}{dialogReview.lens === "safety" ? "Safety review" : "QC review"}
               </span>
               <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {dialogReview.n} photo{dialogReview.n !== 1 ? "s" : ""}</span>
-              <span className="rounded-full px-2 py-0.5 text-[11px] font-bold" style={sevStyle(dialogReview.severity)}>{dialogReview.label}</span>
+              <span className={sevCls(dialogReview.severity)}>{dialogReview.label}</span>
               <button type="button" onClick={() => setDialogId(null)} className="ml-auto text-base leading-none px-1"
                 style={{ color: "var(--v4-fg-faint)" }}>✕</button>
             </div>
@@ -4113,29 +4104,21 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             </div>
             <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--v4-border)" }}>
               <button type="button" onClick={() => { navigator.clipboard?.writeText(dialogReview.text); toast.success("Review copied"); }}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
-                style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                className="rev-btn rev-ghost">
                 <CopyIcon className="h-3.5 w-3.5" /> Copy
               </button>
               <button type="button" onClick={() => retryReview(dialogReview)} disabled={!!runningLens}
-                title="Re-run this review (replaces it)"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5 disabled:opacity-40"
-                style={{ color: "var(--v4-fg-muted)", border: "1px solid var(--v4-border)" }}>
+                title="Re-run this review (replaces it)" className="rev-btn rev-ghost">
                 <RefreshCw className="h-3.5 w-3.5" /> Retry
               </button>
               <button type="button" onClick={() => deleteReview(dialogReview)}
-                title="Delete this review"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
-                style={{ color: "#fda4af", border: "1px solid rgba(251,113,133,.35)" }}>
+                title="Delete this review" className="rev-btn rev-danger">
                 <Trash2 className="h-3.5 w-3.5" /> Delete
               </button>
               <span className="flex-1" />
               <button type="button" onClick={() => sendReview(dialogReview)}
                 data-testid="photo-review-send"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-1.5"
-                style={dialogReview.lens === "safety"
-                  ? { background: "rgba(245,158,11,.14)", color: "#fcd9a1", border: "1px solid rgba(245,158,11,.35)" }
-                  : { background: "rgba(56,189,248,.14)", color: "#bce6fb", border: "1px solid rgba(56,189,248,.35)" }}>
+                className={dialogReview.lens === "safety" ? "rev-btn rev-amber" : "rev-btn rev-sky"}>
                 {dialogReview.lens === "safety" ? <ShieldAlert className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}{dialogReview.lens === "safety" ? "Send to Safety" : "Send to QC"}
               </button>
             </div>
