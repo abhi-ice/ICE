@@ -3811,21 +3811,37 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
     }
     setBusy(true);
     try {
-      // Upload each file to the tray (parallel), collect tray ids.
-      const results = await Promise.all(files.map(async (file) => {
-        try {
-          const fd = new FormData();
-          fd.append("file", file);
-          fd.append("project_id", projectId);
-          fd.append("capture_source", "manual_upload");
-          const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-          return r.data?.id || null;
-        } catch { return null; }
-      }));
-      const trayIds = results.filter(Boolean);
+      // pt.67: upload each file to the tray, retrying ONCE on a transient
+      // failure (network error or 5xx — e.g. the Emergent preview waking from
+      // idle, or a flaky site connection) so a momentary blip doesn't silently
+      // drop the whole batch. Capture the real error so the toast is actionable
+      // instead of a generic "upload failed".
+      const uploadOne = async (file) => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const fd = new FormData();
+            fd.append("file", file);
+            fd.append("project_id", projectId);
+            fd.append("capture_source", "manual_upload");
+            const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+            return { id: r.data?.id || null };
+          } catch (err) {
+            const transient = !err.response || (err.response.status >= 500);
+            if (transient && attempt === 0) { await new Promise((res) => setTimeout(res, 900)); continue; }
+            return { id: null, err };
+          }
+        }
+        return { id: null };
+      };
+      const results = await Promise.all(files.map(uploadOne));
+      const trayIds = results.map((r) => r.id).filter(Boolean);
       const failed = results.length - trayIds.length;
       if (!trayIds.length) {
-        toast.error("Upload failed — no photos were saved.");
+        const firstErr = results.find((r) => r.err)?.err;
+        const detail = firstErr?.response?.data?.detail || firstErr?.message;
+        toast.error(detail
+          ? `Upload failed: ${detail}. The server may have been waking up — please try again.`
+          : "Upload failed — no photos were saved. The server may have been waking up; please try again.");
         return;
       }
       // Attach all to this DR in one shot (no event, no AI).
