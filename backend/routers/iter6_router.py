@@ -156,14 +156,20 @@ async def export_daily_report_pdf(
 
     # Item 3 (2026-05-06) — pre-fetch tasks referenced by any delay's
     # linked_task_ids so the Delays section can render "wbs — desc"
-    # rather than UUIDs.
+    # rather than UUIDs. 2026-02-XX (Abhi prod-feedback): the
+    # Manpower-log "Task worked" column reads off the same lookup, so
+    # presence rows that link to a schedule activity must be included
+    # too -- otherwise _task_label falls back to task_id[:8] and shows
+    # garbage like "ac27b383" in the PDF.
     delay_task_ids = {tid for d in delays for tid in (d.get("linked_task_ids") or []) if tid}
+    presence_task_ids = {p.get("schedule_activity_id") for p in presence if p.get("schedule_activity_id")}
+    lookup_task_ids = delay_task_ids | presence_task_ids
     task_lookup: dict[str, dict] = {}
-    if delay_task_ids:
+    if lookup_task_ids:
         task_docs = await db.tasks.find(
-            tenant_filter(ctx["tenant_id"], {"id": {"$in": list(delay_task_ids)}}),
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": list(lookup_task_ids)}}),
             {"_id": 0, "id": 1, "wbs": 1, "activity_code": 1, "description": 1},
-        ).to_list(len(delay_task_ids))
+        ).to_list(len(lookup_task_ids))
         task_lookup = {t["id"]: t for t in task_docs}
 
     def _task_label(task_id: str) -> str:
