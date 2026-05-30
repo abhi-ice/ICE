@@ -488,3 +488,197 @@ async def close_account(ctx: dict = Depends(require_tenant)):
         "cascaded": deleted_counts,
         "note": "Account closed. Your email is now free to sign up a new organization.",
     }
+
+
+
+# ============================================================
+# Self-service password reset (2026-02-XX, Abhi).
+#
+# Public flow, two endpoints:
+#   POST /api/auth/forgot-password  { email }
+#     -- Always returns 200. Generates a 32-byte URL-safe token; stores
+#        a SHA-256 HASH of it on the user doc with a 30-min expiry;
+#        emails the plain token to the recipient inside the reset URL.
+#        Account enumeration is mitigated by ALWAYS responding 200
+#        regardless of whether the email matches a user.
+#
+#   POST /api/auth/reset-password   { token, new_password }
+#     -- Verifies the token's hash matches a non-expired entry; sets
+#        a fresh bcrypt password_hash; invalidates the reset token
+#        (one-time use) and stamps password_reset_at/by="self".
+#
+# Why hash the token at rest:
+#   A DB dump must not let an attacker forge resets. The plain token
+#   only ever exists in transit (email body) and ephemerally in the
+#   user's URL bar after they click. The server only stores SHA-256.
+# ============================================================
+import hashlib  # noqa: E402
+from services.password_reset_email import send_password_reset_email  # noqa: E402
+
+
+_RESET_TOKEN_TTL_MINUTES = 30
+
+
+class ForgotPasswordRequest(StrictModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
+
+class ResetPasswordRequest(StrictModel):
+    token: str = Field(..., min_length=20, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=200)
+
+
+def _hash_reset_token(plain: str) -> str:
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
+
+
+def _frontend_base_url(request: Request) -> str:
+    """Mirror the invite-flow resolution so reset links land on the
+    same origin the user is already using."""
+    base_url = ""
+    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    if origin:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(origin)
+            if parsed.scheme and parsed.netloc:
+                base_url = f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            base_url = ""
+    if not base_url:
+        base_url = (
+            os.environ.get("INVITE_BASE_URL")
+            or os.environ.get("REACT_APP_BACKEND_URL")
+            or ""
+        ).rstrip("/")
+    if base_url.endswith("/api"):
+        base_url = base_url[:-4]
+    return base_url
+
+
+@router.post("/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest, request: Request):
+    """Always 200 -- account enumeration is prevented by returning the
+    same shape whether or not the email matches a user. Email delivery
+    is best-effort; failure is audited but never returned to the caller.
+    """
+    db = get_db()
+    email_norm = (payload.email or "").strip().lower()
+    user = await db.users.find_one({"email": email_norm}, {"_id": 0})
+
+    plain_token = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(plain_token)
+    expires_at = utc_now() + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
+
+    if user:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {
+                "password_reset_token_hash": token_hash,
+                "password_reset_expires_at": expires_at.isoformat(),
+                "password_reset_requested_at": utc_now().isoformat(),
+            }},
+        )
+        base_url = _frontend_base_url(request)
+        reset_link = (
+            f"{base_url}/reset-password?token={plain_token}" if base_url
+            else f"/reset-password?token={plain_token}"
+        )
+        email_result = send_password_reset_email(
+            recipient_email=user["email"],
+            recipient_name=user.get("full_name"),
+            reset_token=plain_token,
+            reset_link=reset_link,
+            expires_minutes=_RESET_TOKEN_TTL_MINUTES,
+        )
+        op = "PASSWORD_RESET_EMAIL_SENT" if email_result.get("sent") else "PASSWORD_RESET_EMAIL_FAILED"
+        try:
+            await write_audit(
+                tenant_id=user.get("tenant_id"),
+                table_name="users", op=op, record_id=user["id"],
+                before={}, after={
+                    "email": user["email"],
+                    "provider_message_id": email_result.get("provider_message_id"),
+                    "error": email_result.get("error"),
+                },
+                actor_id=user["id"],
+                request_id=str(request.headers.get("x-request-id") or ""),
+            )
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "message": (
+            "If an account exists for that email, a password-reset link "
+            "has been sent. Check your inbox (and spam folder)."
+        ),
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(payload: ResetPasswordRequest, request: Request):
+    """Consume a reset token + set a new password. One-time use; the
+    token is invalidated on success even if the user immediately
+    retries. Returns 400 on bad/expired/used token without revealing
+    which of those it was.
+    """
+    db = get_db()
+    token_hash = _hash_reset_token(payload.token)
+    user = await db.users.find_one(
+        {"password_reset_token_hash": token_hash},
+        {"_id": 0},
+    )
+    bad_token_msg = "Reset link is invalid or has expired. Request a new one."
+    if not user:
+        raise HTTPException(400, bad_token_msg)
+    expires_at_raw = user.get("password_reset_expires_at")
+    if not expires_at_raw:
+        raise HTTPException(400, bad_token_msg)
+    try:
+        if expires_at_raw.endswith("Z"):
+            expires_at_raw = expires_at_raw[:-1] + "+00:00"
+        expires_at = datetime.fromisoformat(expires_at_raw)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(400, bad_token_msg)
+    if expires_at < utc_now():
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$unset": {
+                "password_reset_token_hash": "",
+                "password_reset_expires_at": "",
+            }},
+        )
+        raise HTTPException(400, bad_token_msg)
+
+    new_hash = hash_password(payload.new_password)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": {
+                "password_hash": new_hash,
+                "password_reset_at": utc_now().isoformat(),
+                "password_reset_by": "self",
+            },
+            "$unset": {
+                "password_reset_token_hash": "",
+                "password_reset_expires_at": "",
+                "password_reset_requested_at": "",
+            },
+        },
+    )
+    try:
+        await write_audit(
+            tenant_id=user.get("tenant_id"),
+            table_name="users", op="PASSWORD_RESET_SELF",
+            record_id=user["id"], before={"email": user["email"]},
+            after={"reset_via": "forgot_password_email"},
+            actor_id=user["id"],
+            request_id=str(request.headers.get("x-request-id") or ""),
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "email": user["email"]}
