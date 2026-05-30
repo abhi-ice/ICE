@@ -516,7 +516,14 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     if (!isBlank) return;
     api.post(`/daily-reports/${id}/weather-autofill`)
       .then(() => reload())
-      .catch(() => { /* silent -- super can type values manually */ });
+      .catch((e) => {
+        // 2026-02-XX -- surface a toast when autofill fails so the
+        // super knows why the weather card stayed blank (most common:
+        // project missing city/state, so geocode returned 422).
+        const msg = e?.response?.data?.detail
+          || "Weather autofill failed — fill in the project city/state on the Project page, or type values manually.";
+        toast.error(`Weather: ${msg}`);
+      });
   }, [bundle, id, reload]);
 
   // Bucket D Fix F -- gallery click-through highlight. After the bundle
@@ -1538,9 +1545,26 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   // opened with all weather fields blank (see auto-trigger effect
   // in DailyReportDetail). This component is purely render-and-edit
   // so the super still tweaks values manually after autofill lands.
+  // 2026-02-XX (Abhi prod-feedback) -- a tiny "Refresh" button is
+  // back, in case the project city/state was added AFTER the DR was
+  // opened: the auto-trigger fires once-per-mount and can't catch
+  // that follow-up edit on its own.
+  const [refreshing, setRefreshing] = useState(false);
   const patch = async (fields) => {
     try { await api.patch(`/daily-reports/${dailyReportId}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
+  };
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await api.post(`/daily-reports/${dailyReportId}/weather-autofill`);
+      toast.success("Weather refreshed from project location");
+      reload();
+    } catch (e) {
+      toast.error(`Weather: ${e?.response?.data?.detail || "Refresh failed — check project city/state"}`);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
@@ -1548,7 +1572,17 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
     <div data-testid="dr-weather-panel" className="surface px-4 py-3 dr-section">
       <div className="flex items-center gap-2 mb-2 flex-wrap"><Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">Weather</div>
-        {fetchedAt && <span className="text-xs text-slate-400 ml-auto">auto-filled {fetchedAt}</span>}
+        {fetchedAt && <span className="text-xs text-slate-400 ml-2">auto-filled {fetchedAt}</span>}
+        <button
+          data-testid="weather-refresh-btn"
+          type="button"
+          onClick={refresh}
+          disabled={locked || refreshing}
+          className="ml-auto text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+          title="Re-fetch weather from project city/state"
+        >
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />

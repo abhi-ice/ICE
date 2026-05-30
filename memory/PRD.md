@@ -685,3 +685,26 @@ See `/app/memory/test_credentials.md`.
 - `admin@iceops.com / Demo123!`
 - Tenant slug `ice` (for voice-PIN exchange)
 - Stripe sandbox: `STRIPE_API_KEY=sk_test_emergent`
+
+
+## 2026-02 — DR PDF export polish + Weather UX
+- iter6_router (`pdf-rich`): renamed "Crew presence" → **Manpower log**,
+  "Activity grid" → **Today's activity**, added **Task worked** column
+  to the Manpower log (resolves `schedule_activity_id` → `wbs — desc`),
+  dropped the obsolete **Crew** + **Hrs** columns from Today's activity
+  (whose body rows had only 6 cells against an 8-col header — a latent
+  alignment bug).
+- Today's activity grid in both internal + external PDFs now filters to
+  `work_category` section 2 (Field Work) only, dropping the read-only
+  reference rows from Preconstruction / Closeout Paperwork that previously
+  bloated client-facing exports.
+- Weather autofill (`DailyReports.jsx`): silent `.catch` replaced with a
+  toast that surfaces the backend `detail` ("Could not geocode project
+  address (no city/state)", "Weather provider unreachable", etc.), and a
+  manual **Refresh** button added to `WeatherPanel` so the super can
+  re-trigger the autofill after fixing the project city/state without
+  having to navigate away and back.
+- Verified via curl: `GET /api/daily-reports/{id}/pdf-rich?mode=internal`
+  and `?mode=external` both 200 with the new section labels +
+  "Task worked" header rendered, INTERNAL/external audience badge
+  behaviour preserved.

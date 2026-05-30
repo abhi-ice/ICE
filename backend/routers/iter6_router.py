@@ -342,15 +342,15 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 
 {reminder_html}
 
-<h2>Crew presence ({len(presence)})</h2>
+<h2>Manpower log ({len(presence)})</h2>
 <table>
-<thead><tr><th>Trade</th><th>Company</th><th class='num'>Headcount</th><th class='num'>Hrs/person</th><th class='num'>Sub-total</th><th>Notes</th></tr></thead>
+<thead><tr><th>Trade</th><th>Company</th><th>Task worked</th><th class='num'>Headcount</th><th class='num'>Hrs/person</th><th class='num'>Sub-total</th><th>Notes</th></tr></thead>
 <tbody>{presence_rows_html}</tbody>
 </table>
 
-<h2>Activity grid ({len(grid)})</h2>
+<h2>Today's activity ({len(grid_field_only)})</h2>
 <table>
-<thead><tr><th>Code</th><th>Description</th><th>Location</th><th class='num'>SOD</th><th class='num'>EOD</th><th class='num'>Crew</th><th class='num'>Hrs</th><th>Status</th></tr></thead>
+<thead><tr><th>Code</th><th>Description</th><th>Location</th><th class='num'>SOD</th><th class='num'>EOD</th><th>Status</th></tr></thead>
 <tbody>{grid_rows_html}</tbody>
 </table>
 
