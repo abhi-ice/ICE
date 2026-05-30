@@ -687,6 +687,25 @@ See `/app/memory/test_credentials.md`.
 - Stripe sandbox: `STRIPE_API_KEY=sk_test_emergent`
 
 
+## 2026-02 — Paperwork rows must never enter the super's DR
+- **Root-cause fix**: `_prepopulate_grid` + `/available-tasks` in
+  `daily_reports_router.py` now exclude `work_category in
+  {preconstruction_paperwork, construction_paperwork, closeout_paperwork}`.
+  Paperwork tasks are reference-only in the schedule; the super doesn't
+  execute them in the field, so they must never sit in the DR. The
+  earlier PDF-side filter only hid them at export — the rows were still
+  polluting the live grid + downstream consumers (voice intake,
+  copilot, /context).
+- **Self-healing purge**: `daily_report_context` now deletes any
+  paperwork rows that landed in `daily_report_activities` *before* the
+  filter shipped. Idempotent, draft-only (submitted/approved DRs are
+  federal-contract records and stay frozen). Existing polluted DRs
+  clean themselves the moment a user opens them — no migration needed.
+- Verified via curl: 1 paperwork + 1 field-work task scheduled for the
+  same day → refresh-grid inserts 1 row only (field), /context after
+  manually injecting a legacy paperwork row removes it from both
+  response and DB, PDF shows `Today's activity (1)`.
+
 ## 2026-02 — DR PDF export polish + Weather UX
 - iter6_router (`pdf-rich`): renamed "Crew presence" → **Manpower log**,
   "Activity grid" → **Today's activity**, added **Task worked** column
