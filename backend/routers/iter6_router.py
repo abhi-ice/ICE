@@ -157,27 +157,39 @@ async def export_daily_report_pdf(
         desc = t.get("description") or ""
         return f"{code} — {desc}" if desc else code
 
+    # 2026-02-XX (Abhi prod-feedback): exports must show ONLY today's
+    # planned activity (work_category section 2 = Field Work). The
+    # paperwork sections 1 & 3 are read-only reference rows from the
+    # master schedule that the super did not actually execute today
+    # -- they bloat the client deliverable with noise. Mirrors the UI
+    # GRID_SECTIONS filter on the live DR detail.
+    from services.dr_activity_grid import section_for as _grid_section_for
+    grid_field_only = [r for r in grid if _grid_section_for(r.get("work_category")) == 2]
     grid_rows_html = "".join(
         f"<tr><td class='code'>{_html_escape(r.get('activity_code'))}</td>"
         f"<td>{_html_escape((r.get('activity_description') or '')[:80])}</td>"
         f"<td>{_html_escape(r.get('location_name') or '—')}</td>"
         f"<td class='num'>{r.get('pct_complete_start_of_day') or 0}%</td>"
         f"<td class='num'>{r.get('pct_complete_end_of_day') or 0}%</td>"
-        f"<td class='num'>{r.get('crew_count') or 0}</td>"
-        f"<td class='num'>{r.get('hours_worked') or 0}</td>"
         f"<td>{_html_escape(r.get('status_at_end_of_day') or 'not_started')}</td></tr>"
-        for r in grid
-    ) or "<tr><td colspan='8' class='muted'>No activities reported.</td></tr>"
+        for r in grid_field_only
+    ) or "<tr><td colspan='6' class='muted'>No activities reported.</td></tr>"
 
+    # 2026-02-XX (Abhi prod-feedback): Manpower log now carries a
+    # "Task worked" column matching the live DR UI. Resolve the
+    # presence row's schedule_activity_id (set when a sub voice-
+    # intake links a crew to a planned activity) to "code — desc"
+    # using the same _task_label helper used for delays.
     presence_rows_html = "".join(
         f"<tr><td>{_html_escape(p.get('trade'))}</td>"
         f"<td>{_html_escape(p.get('company_name') or '—')}</td>"
+        f"<td>{_html_escape(_task_label(p.get('schedule_activity_id')) if p.get('schedule_activity_id') else '—')}</td>"
         f"<td class='num'>{p.get('headcount') or 0}</td>"
         f"<td class='num'>{p.get('hours_per_person') or 0}</td>"
         f"<td class='num'>{(p.get('headcount') or 0) * (p.get('hours_per_person') or 0):.1f}</td>"
         f"<td>{_html_escape(p.get('notes') or '')}</td></tr>"
         for p in presence
-    ) or "<tr><td colspan='6' class='muted'>No crew presence recorded.</td></tr>"
+    ) or "<tr><td colspan='7' class='muted'>No manpower recorded.</td></tr>"
 
     def event_rows(items, *, fields):
         if not items:
@@ -269,7 +281,7 @@ async def export_daily_report_pdf(
         reminder_html = f"<h2>Open delay reminders ({len(reminders)})</h2>{cards}"
 
     # External-mode flag in the page title so reviewers can tell at a glance
-    title_suffix = " — Client Copy" if not is_internal else ""
+    title_suffix = ""
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset='utf-8'><style>
@@ -301,7 +313,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 .header-meta th {{ background: #f1f5f9; color: #475569; padding: 4px 6px; border: 1px solid #cbd5e1; text-align: left; font-weight: 600; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.04em; width: 14%; }}
 .header-meta td {{ padding: 4px 6px; border: 1px solid #cbd5e1; vertical-align: top; background: #ffffff; color: #0f172a; }}
 </style></head><body>
-<div class='audience'>{'CLIENT COPY' if not is_internal else 'INTERNAL'}</div>
+<div class='audience'>{'INTERNAL' if is_internal else ''}</div>
 <h1>Daily Report — {_html_escape(proj['name'] if proj else dr['project_id'])}{title_suffix}</h1>
 <!-- Feature DR Header Auto-Population (2026-05-20) -- formal project /
      contract / signature block. Same six fields shown on the live DR
