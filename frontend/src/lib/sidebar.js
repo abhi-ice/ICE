@@ -45,6 +45,9 @@ export const SIDEBAR_SECTIONS = [
     items: [
       { label: "Tasks", path: "/tasks", icon: ListChecks, testid: "sidebar-tasks" },
       { label: "Look ahead", path: "/lookahead", icon: CalendarRange, testid: "sidebar-lookahead" },
+      // pt.79 -- lightweight progress/status entry for paperwork (submittal/
+      // approval/closeout) tasks so they don't falsely read "behind" at 0%.
+      { label: "Paperwork progress", path: "/paperwork-progress", icon: FileSignature, testid: "sidebar-paperwork-progress" },
       // Bucket C3c Phase 1 — schedule update diffs (TIA-ready).
       { label: "Schedule updates", path: "/schedule-updates", icon: GitPullRequest, testid: "sidebar-schedule-updates" },
       { label: "Weekly reports", path: "/weekly-reports", icon: FileBarChart, testid: "sidebar-weekly-reports" },

@@ -9,6 +9,7 @@ import io
 from datetime import datetime, timezone
 from typing import Optional
 import pdfplumber
+from starlette.concurrency import run_in_threadpool
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
 from services.storage import put_object, make_path
@@ -16,6 +17,69 @@ from services.storage import put_object, make_path
 DIVISION_RE = re.compile(r"^\s*DIVISION\s+(\d{1,2})\s*[-–—:]?\s*(.+?)\s*$", re.IGNORECASE)
 SECTION_RE = re.compile(r"^\s*SECTION\s+(\d{2}\s+\d{2}\s+\d{2}(?:\.\d+)?)\s*[-–—:]?\s*(.+?)\s*$", re.IGNORECASE)
 PART_RE = re.compile(r"^\s*PART\s+(\d+)\s*[-–—:]?\s*(.+?)?\s*$", re.IGNORECASE)
+
+
+def _parse_spec_pdf_sync(pdf_bytes: bytes, tenant_id: str, project_spec_id: str):
+    """pt.79: the CPU-bound pdfplumber parse, run in a WORKER THREAD (via
+    run_in_threadpool in ingest_spec_pdf) so a large (e.g. 700+ page) spec can
+    no longer freeze the async event loop / the whole app while it ingests.
+    Pure CPU + no DB/await — returns (page_count, sections); raises on error,
+    which the async caller maps to processing_status 'failed'."""
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        page_count = len(pdf.pages)
+        sections: list[dict] = []
+        current_division: dict | None = None
+        current_section: dict | None = None
+        current_text_buf: list[str] = []
+        current_page_idx = 0
+
+        def _flush_section():
+            if current_section is not None:
+                current_section["text_content"] = "\n".join(current_text_buf).strip()
+                current_section["text_length_chars"] = len(current_section["text_content"])
+                current_section["page_end"] = current_page_idx
+                sections.append(current_section)
+
+        for page in pdf.pages:
+            current_page_idx = page.page_number
+            text = page.extract_text() or ""
+            for line in text.splitlines():
+                div_m = DIVISION_RE.match(line)
+                sec_m = SECTION_RE.match(line)
+                if div_m:
+                    _flush_section()
+                    current_section = None
+                    current_text_buf = []
+                    current_division = {
+                        "code": div_m.group(1).zfill(2),
+                        "title": div_m.group(2).strip(),
+                    }
+                    continue
+                if sec_m:
+                    _flush_section()
+                    current_text_buf = []
+                    current_section = {
+                        "id": gen_id(),
+                        "tenant_id": tenant_id,
+                        "project_spec_id": project_spec_id,
+                        "division": current_division["code"] if current_division else sec_m.group(1).split()[0],
+                        "section_code": re.sub(r"\s+", " ", sec_m.group(1).strip()),
+                        "section_title": sec_m.group(2).strip(),
+                        "parent_section_id": None,
+                        "hierarchy_path": (current_division["code"] if current_division else "00") + "/" + sec_m.group(1).strip(),
+                        "heading_level": 2,
+                        "page_start": page.page_number,
+                        "page_end": page.page_number,
+                        "text_content": "",
+                        "text_length_chars": 0,
+                        "masterformat_year": "2020",
+                        "created_at": utc_now().isoformat(),
+                    }
+                    continue
+                if current_section is not None:
+                    current_text_buf.append(line)
+        _flush_section()
+    return page_count, sections
 
 
 async def ingest_spec_pdf(
@@ -26,10 +90,10 @@ async def ingest_spec_pdf(
     actor_id: Optional[str] = None,
 ) -> dict:
     db = get_db()
-    # 1. store PDF
+    # 1. store PDF  (pt.79: sync requests.put -> offload so it can't block the loop)
     storage_path = make_path(tenant_id, "specs", "pdf")
     try:
-        put_object(storage_path, pdf_bytes, "application/pdf")
+        await run_in_threadpool(put_object, storage_path, pdf_bytes, "application/pdf")
     except Exception as e:
         await db.project_specs.update_one(
             tenant_filter(tenant_id, {"id": project_spec_id}),
@@ -37,63 +101,13 @@ async def ingest_spec_pdf(
         )
         return {"ok": False, "error": f"storage: {e}"}
 
-    # 2. parse pages
+    # 2. parse pages  (pt.79: offloaded to a worker thread — see
+    # _parse_spec_pdf_sync — so a large spec's CPU-bound parse never freezes
+    # the event loop / the rest of the app)
     try:
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            page_count = len(pdf.pages)
-            sections: list[dict] = []
-            current_division: dict | None = None
-            current_section: dict | None = None
-            current_text_buf: list[str] = []
-
-            def _flush_section():
-                if current_section is not None:
-                    current_section["text_content"] = "\n".join(current_text_buf).strip()
-                    current_section["text_length_chars"] = len(current_section["text_content"])
-                    current_section["page_end"] = current_page_idx
-                    sections.append(current_section)
-
-            current_page_idx = 0
-            for page in pdf.pages:
-                current_page_idx = page.page_number
-                text = page.extract_text() or ""
-                for line in text.splitlines():
-                    div_m = DIVISION_RE.match(line)
-                    sec_m = SECTION_RE.match(line)
-                    if div_m:
-                        # close prior section
-                        _flush_section()
-                        current_section = None
-                        current_text_buf = []
-                        current_division = {
-                            "code": div_m.group(1).zfill(2),
-                            "title": div_m.group(2).strip(),
-                        }
-                        continue
-                    if sec_m:
-                        _flush_section()
-                        current_text_buf = []
-                        current_section = {
-                            "id": gen_id(),
-                            "tenant_id": tenant_id,
-                            "project_spec_id": project_spec_id,
-                            "division": current_division["code"] if current_division else sec_m.group(1).split()[0],
-                            "section_code": re.sub(r"\s+", " ", sec_m.group(1).strip()),
-                            "section_title": sec_m.group(2).strip(),
-                            "parent_section_id": None,
-                            "hierarchy_path": (current_division["code"] if current_division else "00") + "/" + sec_m.group(1).strip(),
-                            "heading_level": 2,
-                            "page_start": page.page_number,
-                            "page_end": page.page_number,
-                            "text_content": "",
-                            "text_length_chars": 0,
-                            "masterformat_year": "2020",
-                            "created_at": utc_now().isoformat(),
-                        }
-                        continue
-                    if current_section is not None:
-                        current_text_buf.append(line)
-            _flush_section()
+        page_count, sections = await run_in_threadpool(
+            _parse_spec_pdf_sync, pdf_bytes, tenant_id, project_spec_id,
+        )
     except Exception as e:
         await db.project_specs.update_one(
             tenant_filter(tenant_id, {"id": project_spec_id}),

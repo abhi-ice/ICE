@@ -59,19 +59,23 @@ async def fit_spec_index(tenant_id: str, project_spec_id: str) -> dict:
             return {"section_count": len(sections), "vocab_size": 0, "kind": "neural"}
 
     # --- TF-IDF (default + fallback) ---
-    vectorizer = TfidfVectorizer(
-        max_features=4000,
-        ngram_range=(1, 2),
-        stop_words="english",
-        min_df=1,
-    )
-    matrix = vectorizer.fit_transform(docs)  # shape: (n_docs, vocab_size)
-    matrix_dense = matrix.toarray().astype(np.float32)
+    # pt.79: the sklearn fit + dense conversion are CPU-bound and were running
+    # INLINE on the async event loop, freezing the whole app while a large spec
+    # ingested (or while a copilot query lazily re-fit a big index). Offload the
+    # CPU work to a worker thread so the loop stays responsive; the DB writes
+    # below remain async.
+    from starlette.concurrency import run_in_threadpool
 
-    # Persist normalized vectors per section for offline cosine search
-    norms = np.linalg.norm(matrix_dense, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    normed = matrix_dense / norms
+    def _fit_tfidf():
+        vec = TfidfVectorizer(max_features=4000, ngram_range=(1, 2),
+                              stop_words="english", min_df=1)
+        m = vec.fit_transform(docs)            # shape: (n_docs, vocab_size)
+        dense = m.toarray().astype(np.float32)
+        nrm = np.linalg.norm(dense, axis=1, keepdims=True)
+        nrm[nrm == 0] = 1.0
+        return vec, dense / nrm
+
+    vectorizer, normed = await run_in_threadpool(_fit_tfidf)
 
     vocab = vectorizer.get_feature_names_out().tolist()
     for i, sec in enumerate(sections):

@@ -13,6 +13,7 @@ import Projects from "./pages/Projects";
 import Vendors from "./pages/Vendors";
 import Tasks from "./pages/Tasks";
 import Lookahead from "./pages/Lookahead";
+import PaperworkProgress from "./pages/PaperworkProgress";
 import DailyReports from "./pages/DailyReports";
 import DrTemplate from "./pages/DrTemplate";
 import ProjectScopedList from "./pages/ProjectScopedList";
@@ -101,6 +102,7 @@ export default function App() {
             {/* Planning */}
             <Route path="tasks" element={<Tasks />} />
             <Route path="lookahead" element={<Lookahead />} />
+            <Route path="paperwork-progress" element={<PaperworkProgress />} />
             <Route path="weekly-reports" element={<WeeklyReports />} />
             <Route path="locations" element={<ProjectScopedList kind="locations" />} />
             <Route path="spatial-3d" element={<Spatial3D />} />

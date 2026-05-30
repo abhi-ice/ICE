@@ -63,14 +63,41 @@ def planned_pct_at(task: dict, today: date) -> float:
     return round(elapsed / span * 100.0, 1)
 
 
-def derive_status(*, pct: float, planned: float, has_blocker: bool) -> str:
+# pt.79: paperwork work-categories whose progress is driven manually from the
+# Submittals & Paperwork page (until the full submittal SLA model lands in v2).
+PAPERWORK_CATEGORIES = (
+    "preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+)
+
+
+def derive_status(*, pct: float, planned: float, has_blocker: bool,
+                  work_category: Optional[str] = None,
+                  task_status: Optional[str] = None) -> str:
     """Apply the Phase 2 status rule. Strict hierarchy: complete > blocked
     > behind > on_track. Complete wins over blocker so a 100%-done activity
-    isn't shown as blocked even if a stale delay still references it."""
+    isn't shown as blocked even if a stale delay still references it.
+
+    pt.79 SHORTCUT (paperwork work-categories ONLY): submittal / approval /
+    closeout paperwork tasks have no per-day field progress, so at 0% they would
+    read "behind" the moment their planned_start passes — a false alarm that
+    misrepresents schedule health. For these categories only, the user drives
+    status from the Submittals & Paperwork page: a manual task_status of
+    "in_progress" (or any entered progress) reads on_track; a manual "blocked"
+    reads blocked; "open"/not_started paperwork still flags behind once overdue
+    so genuinely-late paperwork is never hidden. Non-paperwork tasks are
+    completely unaffected (the branch is gated on work_category). The full
+    submittal-SLA model replaces this shortcut in v2."""
     if pct >= 100:
         return "complete"
     if has_blocker:
         return "blocked"
+    if work_category in PAPERWORK_CATEGORIES:
+        if task_status == "blocked":
+            return "blocked"
+        if task_status == "in_progress" or pct > 0:
+            return "on_track"
+        # else fall through: an untouched ("open") paperwork task still goes
+        # "behind" when overdue.
     if pct < planned:
         return "behind"
     return "on_track"
@@ -211,7 +238,11 @@ async def compute_and_persist_status(
     has_blocker = count > 0
     pct = float(task.get("pct_complete") or 0)
     planned = planned_pct_at(task, today)
-    new_status = derive_status(pct=pct, planned=planned, has_blocker=has_blocker)
+    new_status = derive_status(
+        pct=pct, planned=planned, has_blocker=has_blocker,
+        work_category=task.get("work_category"),   # pt.79 paperwork shortcut
+        task_status=task.get("status"),
+    )
 
     new_fields = {
         "computed_status": new_status,
