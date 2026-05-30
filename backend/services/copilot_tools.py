@@ -48,6 +48,12 @@ Tools:
                               Global cross-collection text search (projects, tasks, RFIs, work items, specs).
                               Use when the user gives a free-text query like "the wall vent issue" — fuzzy.
 
+  - search_specs              args: {query: str, top_k?: int}
+                              Search the project's ingested SPECIFICATIONS (MasterFormat sections). USE THIS for
+                              any "what does the spec say about X", "what is specified for Y", "which section
+                              covers Z" question. Returns ranked sections (code, title, page, text excerpt) to
+                              quote and cite. PREFER this over `search`/`query` for spec questions.
+
   - get_status                args: {entity_type: 'tasks'|'rfis'|'submittals'|'work_items', filter?: str}
                               Quick top-20 list for a known entity type.
 
@@ -174,6 +180,43 @@ async def _tool_search(ctx: dict, args: dict) -> dict:
     return {"results": (res.get("results") or [])[:10]}
 
 
+async def _tool_search_specs(ctx: dict, args: dict) -> dict:
+    """pt.80: search the project's ingested SPECIFICATIONS (MasterFormat
+    sections). Resolves project -> project_specs -> spec_sections correctly
+    (spec_sections are keyed by project_spec_id, NOT project_id, which is why
+    the generic search/query tools missed them). Returns ranked sections with a
+    text excerpt to quote and cite."""
+    from services.spec_search import search_all_specs_in_project
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return {"error": "no active project — select a project first"}
+    q = (args.get("query") or args.get("q") or "").strip()
+    if not q:
+        return {"error": "query arg is required"}
+    try:
+        hits = await search_all_specs_in_project(
+            tenant_id=ctx["tenant_id"], project_id=project_id,
+            query=q, top_k=int(args.get("top_k") or 5),
+        )
+    except Exception as e:
+        return {"error": f"spec search failed: {str(e)[:160]}"}
+    if not hits:
+        return {"results": [], "count": 0,
+                "note": "no spec section matched that query — try different keywords (the specs ARE ingested)"}
+    db = get_db()
+    sids = [h["spec_section_id"] for h in hits]
+    full = {s["id"]: (s.get("text_content") or "") for s in await db.spec_sections.find(
+        tenant_filter(ctx["tenant_id"], {"id": {"$in": sids}}),
+        {"_id": 0, "id": 1, "text_content": 1},
+    ).to_list(20)}
+    return {"count": len(hits), "results": [
+        {"section_code": h["section_code"], "section_title": h["section_title"],
+         "page_start": h.get("page_start"), "score": h.get("score"),
+         "excerpt": (full.get(h["spec_section_id"]) or h.get("snippet") or "")[:1500]}
+        for h in hits
+    ]}
+
+
 def _parse_date_loose(s: str) -> Optional[str]:
     """Try hard to interpret a date string the user typed. Returns ISO
     YYYY-MM-DD or None. Supports US slash, ISO, dotted, dashed, and
@@ -270,8 +313,9 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
         "delays", "safety_events", "qc_issues", "deliveries",
         "work_items", "rfis", "submittals", "change_orders",
         "coordination_events",
-        # Documents
-        "specs", "spec_sections", "drawings", "kb_entries", "photos",
+        # Documents  (pt.80: the real spec collection is project_specs;
+        # spec_sections are keyed by project_spec_id, not project_id)
+        "project_specs", "spec_sections", "drawings", "kb_entries", "photos",
         # Resources
         "crews", "equipment", "people", "subcontractors", "suppliers",
         "locations", "floors", "rooms",
@@ -293,6 +337,8 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
             "events": "delays",  # closest single collection
             "subs": "subcontractors",
             "vendors": "subcontractors",
+            "specs": "project_specs", "spec": "project_specs",  # pt.80
+            "specifications": "project_specs",
         }
         if collection in aliases:
             collection = aliases[collection]
@@ -306,7 +352,12 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
     # subcontractors/suppliers/kb_entries/audit_log are NOT project-scoped.
     NOT_PROJECT_SCOPED = {"subcontractors", "suppliers", "kb_entries",
                           "audit_log", "copilot_messages", "people",
-                          "equipment", "ai_kb_recommendations"}
+                          "equipment", "ai_kb_recommendations",
+                          # pt.80: spec_sections are keyed by project_spec_id,
+                          # not project_id — tenant-scope so the query isn't
+                          # falsely empty (the search_specs tool does the
+                          # project-correct retrieval).
+                          "spec_sections"}
     q = dict(tenant_filter(tenant_id))
     if project_id and collection not in NOT_PROJECT_SCOPED:
         q["project_id"] = project_id
@@ -1344,6 +1395,7 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
 
 TOOL_REGISTRY = {
     "search": _tool_search,
+    "search_specs": _tool_search_specs,
     "get_status": _tool_get_status,
     "get_daily_report": _tool_get_daily_report,
     "query": _tool_query,
@@ -1405,6 +1457,14 @@ SYSTEM_PROMPT = (
     "will package whatever you write into the requested format. NEVER say "
     "things like \"I can't generate PDFs\" or \"I don't have export\" — "
     "those are false. Just write the formatted content.\n\n"
+    "SPECIFICATIONS: the project's specifications ARE ingested and searchable. "
+    "When a 'RELEVANT SPEC SECTIONS' block appears in the context, answer "
+    "specification questions directly from it and cite the section code (e.g. "
+    "09 29 00). For any spec question you may also call the search_specs tool "
+    "with the user's query. NEVER claim specs are 'not loaded' or that the spec "
+    "collections are 'empty' — they are ingested. If a search returns nothing, "
+    "say no matching section was found for that query and suggest different "
+    "terms.\n\n"
     + TOOL_CATALOGUE
 )
 
@@ -1442,6 +1502,34 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                 f"  [{t['activity_code']}] {t['description']} — {t.get('pct_complete', 0)}% ({t.get('status')})"
                 for t in recent_tasks
             ))
+        # pt.80: SPEC retrieval — inject the most relevant ingested spec
+        # sections so Mason can answer "what does the spec say about X". This
+        # path was previously missing from the tool-using copilot (only the
+        # non-tool copilot_answer had it), so Mason wrongly reported "no specs
+        # loaded". Best-effort: the fit/search CPU is offloaded to a thread
+        # (pt.79) so it can't freeze the turn, and any failure is swallowed.
+        try:
+            from services.spec_search import search_all_specs_in_project
+            spec_hits = await search_all_specs_in_project(
+                tenant_id=tenant_id, project_id=project_id, query=message, top_k=3,
+            )
+            if spec_hits:
+                _sids = [h["spec_section_id"] for h in spec_hits]
+                _full = {s["id"]: (s.get("text_content") or "") for s in await db.spec_sections.find(
+                    tenant_filter(tenant_id, {"id": {"$in": _sids}}),
+                    {"_id": 0, "id": 1, "text_content": 1},
+                ).to_list(10)}
+                blocks.append(
+                    "RELEVANT SPEC SECTIONS (the project's ingested specifications — "
+                    "answer spec questions from these and cite the section code like 09 29 00):\n"
+                    + "\n".join(
+                        f"  [{h['section_code']}] {h['section_title']} (p.{h.get('page_start')}):\n"
+                        f"    {((_full.get(h['spec_section_id']) or h.get('snippet') or '')[:800])}"
+                        for h in spec_hits
+                    )
+                )
+        except Exception:
+            pass
 
     # Daily-report scoping — drives the DR-only tools and gives the LLM
     # the current grid + presence + open delays/safety/qc so it can act.

@@ -32,11 +32,26 @@ function statusPill(cs) {
   return { label: "on track", cls: "pill-green" };
 }
 
-function Row({ t, saving, onPct, onStatus }) {
+function Row({ t, saving, onPct, onStatus, onClearBlock, onSetBlock }) {
   const [pct, setPct] = useState(Math.round(t.pct_complete || 0));
   useEffect(() => { setPct(Math.round(t.pct_complete || 0)); }, [t.pct_complete]);
   const statusVal = ["not_started", "in_progress", "blocked"].includes(t.status) ? t.status : "not_started";
+  const isBlocked = statusVal === "blocked";
   const pill = statusPill(t.computed_status);
+  const slip = Math.round(t.slip_days || 0);
+  const [blockEditor, setBlockEditor] = useState(false);
+  const [impact, setImpact] = useState(slip > 0 ? slip : 1);
+  useEffect(() => { if (!blockEditor) setImpact(slip > 0 ? slip : 1); }, [slip, blockEditor]);
+
+  const selVal = blockEditor ? "blocked" : statusVal;
+  const showEditor = blockEditor || isBlocked;
+  const handleSel = (v) => {
+    if (v === "blocked") { setImpact(slip > 0 ? slip : 1); setBlockEditor(true); return; }
+    setBlockEditor(false);
+    if (isBlocked) onClearBlock(t.id, v); else onStatus(t.id, v);
+  };
+  const saveBlock = () => { onSetBlock(t.id, Math.max(0, Number(impact) || 0)); setBlockEditor(false); };
+
   return (
     <tr data-testid={`paperwork-row-${t.activity_code}`}>
       <td className="font-mono text-xs" style={{ color: "var(--v4-fg-muted)" }}>{t.activity_code}</td>
@@ -56,19 +71,40 @@ function Row({ t, saving, onPct, onStatus }) {
           <span className="text-xs tabular-nums w-9 text-right" style={{ color: "var(--v4-fg-muted)" }}>{pct}%</span>
         </div>
       </td>
-      <td>
+      <td style={{ minWidth: 150 }}>
         <select
-          value={statusVal}
+          value={selVal}
           data-testid={`paperwork-status-${t.activity_code}`}
-          onChange={(e) => onStatus(t.id, e.target.value)}
+          onChange={(e) => handleSel(e.target.value)}
           className="dr-mp-input text-xs"
           style={{ height: 30, minWidth: 120 }}
         >
           {STATUS_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        {showEditor && (
+          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap" data-testid={`paperwork-impact-${t.activity_code}`}>
+            <input
+              type="number" min="0" step="0.5" value={impact}
+              onChange={(e) => setImpact(e.target.value)}
+              className="dr-mp-input text-xs" style={{ width: 58, height: 26 }}
+              title="Schedule impact in working days (cascades downstream like a delay)"
+            />
+            <span className="text-[11px]" style={{ color: "var(--v4-fg-faint)" }}>impact days</span>
+            <button type="button" onClick={saveBlock} className="sbtn sbtn-xs sbtn-primary"
+              data-testid={`paperwork-block-save-${t.activity_code}`}>
+              {isBlocked ? "Update" : "Save"}
+            </button>
+            {blockEditor && !isBlocked && (
+              <button type="button" onClick={() => setBlockEditor(false)} className="sbtn sbtn-xs">Cancel</button>
+            )}
+          </div>
+        )}
       </td>
       <td>
         <span className={`pill ${pill.cls}`}>{pill.label}</span>
+        {isBlocked && slip > 0 && (
+          <span className="text-xs ml-2 tabular-nums" style={{ color: "var(--v4-fg-muted)" }}>+{slip}d</span>
+        )}
         {saving && <Loader2 className="inline h-3 w-3 ml-2 animate-spin" style={{ color: "var(--v4-fg-faint)" }} />}
       </td>
     </tr>
@@ -110,6 +146,32 @@ export default function PaperworkProgress() {
   const onPct = (id, v) => commit(id, { pct_complete: v });
   const onStatus = (id, v) => commit(id, { status: v });
 
+  // pt.80: Blocked carries an impact-days estimate and creates a real
+  // delay-style blocker that cascades downstream slip; clearing resolves it.
+  const onSetBlock = async (id, impact_days) => {
+    setSavingId(id);
+    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "blocked" } : t)));
+    try {
+      await api.post(`/tasks/${id}/paperwork-blocker`, { impact_days });
+      await load(true);
+      toast.success(`Blocked · +${impact_days} day impact applied to the schedule`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to set blocker");
+      await load(true);
+    } finally { setSavingId(null); }
+  };
+  const onClearBlock = async (id, status) => {
+    setSavingId(id);
+    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status } : t)));
+    try {
+      await api.post(`/tasks/${id}/clear-paperwork-blocker`, { status });
+      await load(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to clear blocker");
+      await load(true);
+    } finally { setSavingId(null); }
+  };
+
   const groups = PAPERWORK_CATS
     .map((c) => ({ cat: c, items: tasks.filter((t) => t.work_category === c) }))
     .filter((g) => g.items.length);
@@ -120,8 +182,8 @@ export default function PaperworkProgress() {
         <h1 className="text-2xl font-semibold tracking-tight">Paperwork progress</h1>
         <p className="text-sm mt-1" style={{ color: "var(--v4-fg-muted)" }}>
           {project?.name ? `${project.name} · ` : ""}Submittal, approval &amp; closeout paperwork.
-          Set <b>In progress</b> (or drag progress) to keep a task on-track in the schedule; mark <b>Blocked</b> if
-          it&rsquo;s stuck past its finish date. This feeds the Tasks &amp; Look-ahead CPM directly.
+          Set <b>In progress</b> (or drag progress) to keep a task on-track; mark <b>Blocked</b> and enter
+          <b> impact days</b> to push downstream slip — same as a delay. Feeds the Tasks &amp; Look-ahead CPM directly.
         </p>
       </div>
 
@@ -149,7 +211,9 @@ export default function PaperworkProgress() {
                 </thead>
                 <tbody>
                   {g.items.map((t) => (
-                    <Row key={t.id} t={t} saving={savingId === t.id} onPct={onPct} onStatus={onStatus} />
+                    <Row key={t.id} t={t} saving={savingId === t.id}
+                      onPct={onPct} onStatus={onStatus}
+                      onClearBlock={onClearBlock} onSetBlock={onSetBlock} />
                   ))}
                 </tbody>
               </table>

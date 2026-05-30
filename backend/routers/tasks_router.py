@@ -167,6 +167,105 @@ async def get_task(task_id: str, ctx: dict = Depends(require_tenant)):
     return Task(**doc)
 
 
+# =====================================================================
+# pt.80 -- Paperwork blocker (v1 shortcut for the submittal-SLA model).
+# Marking a paperwork task "Blocked" with an impact-days estimate creates a
+# REAL delay-style blocker (linked_task_ids + per_task_impacts) so it both
+# shows blocked in Tasks/Lookahead AND cascades downstream slip through the
+# SAME CPM engine a delay/RFI uses (count_open_blockers +
+# _open_blocker_impact_for_task + auto_recompute_after_event). Clearing it
+# resolves the blocker and recomputes.
+# =====================================================================
+PAPERWORK_BLOCKER_SOURCE = "paperwork_blocker"
+
+
+class PaperworkBlockerPayload(StrictModel):
+    impact_days: float = 0
+    reason: Optional[str] = None
+
+
+class ClearPaperworkBlockerPayload(StrictModel):
+    status: str = "in_progress"   # status to set after clearing
+
+
+async def _resolve_open_paperwork_blockers(db, tenant_id: str, task_id: str, actor_id: str, note: str):
+    await db.delays.update_many(
+        tenant_filter(tenant_id, {
+            "source": PAPERWORK_BLOCKER_SOURCE, "linked_task_ids": task_id,
+            "status": {"$in": ["open", "in_progress"]},
+        }),
+        {"$set": {"status": "resolved", "resolved_date": utc_now().date().isoformat(),
+                  "resolved_note": note, "resolved_by_user_id": actor_id,
+                  "updated_at": utc_now().isoformat()}},
+    )
+
+
+@router.post("/tasks/{task_id}/paperwork-blocker")
+async def set_paperwork_blocker(task_id: str, payload: PaperworkBlockerPayload, ctx: dict = Depends(require_tenant)):
+    from auth import role_can_write_schedule
+    if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(403, "Only scheduling_engineer / pm / pe / admin can edit tasks")
+    db = get_db()
+    task = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
+    if not task:
+        raise HTTPException(404, "Task not found")
+    project_id = task["project_id"]
+    impact = max(0.0, float(payload.impact_days or 0))
+    actor = ctx["user"]["id"]
+    now = utc_now().isoformat()
+    today = utc_now().date().isoformat()
+    # supersede any existing open paperwork blocker for this task (idempotent)
+    await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor, "superseded by new paperwork blocker")
+    doc = {
+        "id": gen_id(), "tenant_id": ctx["tenant_id"], "project_id": project_id,
+        "source": PAPERWORK_BLOCKER_SOURCE,
+        "schedule_activity_id": task_id, "location_id": None, "daily_report_id": None,
+        "date": today, "logged_date": today,
+        "description": (payload.reason or "").strip()
+                       or f"Paperwork blocked — submittal/approval past finish date (+{impact:g}d impact)",
+        "severity": "moderate", "photo_urls": [],
+        "delay_days": impact, "reason_category": "submittal_approval",
+        "owner_attribution": "none", "cause_class": "other",
+        "linked_task_ids": [task_id],
+        "per_task_impacts": [{"task_id": task_id, "projected_impact_days": impact}],
+        "status": "open",
+        "resolved_date": None, "resolved_note": None, "resolved_by_user_id": None,
+        "ai_report": None, "ai_report_generated_at": None, "is_supplement": False,
+        "reported_by": actor, "reported_at": now, "created_at": now,
+    }
+    await db.delays.insert_one(doc.copy())
+    await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}),
+                              {"$set": {"status": "blocked", "updated_at": now}})
+    try:
+        await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="PAPERWORK_BLOCK",
+                          record_id=doc["id"], before=None,
+                          after={"task_id": task_id, "impact_days": impact},
+                          actor_id=actor, request_id=ctx.get("request_id"))
+    except Exception:
+        pass
+    await auto_recompute_after_event(ctx["tenant_id"], project_id, actor_id=actor, request_id=ctx.get("request_id"))
+    return {"ok": True, "delay_id": doc["id"], "impact_days": impact}
+
+
+@router.post("/tasks/{task_id}/clear-paperwork-blocker")
+async def clear_paperwork_blocker(task_id: str, payload: ClearPaperworkBlockerPayload, ctx: dict = Depends(require_tenant)):
+    from auth import role_can_write_schedule
+    if not role_can_write_schedule((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(403, "Only scheduling_engineer / pm / pe / admin can edit tasks")
+    db = get_db()
+    task = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
+    if not task:
+        raise HTTPException(404, "Task not found")
+    project_id = task["project_id"]
+    actor = ctx["user"]["id"]
+    await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor, "cleared from Paperwork progress")
+    new_status = payload.status if payload.status in ("in_progress", "not_started") else "in_progress"
+    await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}),
+                              {"$set": {"status": new_status, "updated_at": utc_now().isoformat()}})
+    await auto_recompute_after_event(ctx["tenant_id"], project_id, actor_id=actor, request_id=ctx.get("request_id"))
+    return {"ok": True, "status": new_status}
+
+
 @router.patch("/tasks/{task_id}", response_model=Task)
 async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks = None, ctx: dict = Depends(require_tenant)):
     # Bucket J Phase 2 -- schedule write gate.
