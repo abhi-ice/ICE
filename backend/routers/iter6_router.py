@@ -83,6 +83,21 @@ async def export_daily_report_pdf(
     grid = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id}, {"_id": 0},
     ).sort("position", 1).to_list(500)
+    # 2026-02-XX (Abhi prod-feedback): the PDF must drop paperwork
+    # (preconstruction / construction / closeout) rows even though the
+    # in-app DR shows them as read-only reference. Grid rows in mongo
+    # don't carry work_category -- it lives on the linked task -- so
+    # stamp it on with a single $in lookup before the section filter.
+    _grid_task_ids = [r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")]
+    _wc_by_task: dict = {}
+    if _grid_task_ids:
+        _wc_tasks = await db.tasks.find(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": _grid_task_ids}}),
+            {"_id": 0, "id": 1, "work_category": 1},
+        ).to_list(len(_grid_task_ids))
+        _wc_by_task = {t["id"]: t.get("work_category") for t in _wc_tasks}
+    for r in grid:
+        r["work_category"] = _wc_by_task.get(r.get("schedule_activity_id"))
     presence = await db.daily_presence.find(
         tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}), {"_id": 0},
     ).sort("trade", 1).to_list(200)

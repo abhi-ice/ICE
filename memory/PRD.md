@@ -687,6 +687,22 @@ See `/app/memory/test_credentials.md`.
 - Stripe sandbox: `STRIPE_API_KEY=sk_test_emergent`
 
 
+## 2026-02 — Paperwork: visible in-app, hidden in exported PDF
+- **Reverted** the in-app filters from the prior commit (wrong scope).
+  Paperwork tasks (preconstruction_paperwork / construction_paperwork /
+  closeout_paperwork) DO need to render in the DR's read-only reference
+  sections so the super can see what paperwork is scheduled today —
+  they just don't act on it.
+- **PDF-only filter retained + fixed**: `iter6_router.export_daily_report_pdf`
+  now `$in`-looks-up each grid row's task to stamp `work_category`
+  (grid rows in mongo don't persist this — it lives on the linked task),
+  then filters to `_grid_section_for == 2` (Field Work). External +
+  internal PDFs both drop paperwork rows from "Today's activity";
+  the in-app DR keeps them.
+- Verified via curl: 3 paperwork + 1 field task scheduled for the same
+  day → `/context` returns all 4, `pdf-rich` shows `Today's activity (1)`
+  with only the field row.
+
 ## 2026-02 — Paperwork rows must never enter the super's DR
 - **Root-cause fix**: `_prepopulate_grid` + `/available-tasks` in
   `daily_reports_router.py` now exclude `work_category in

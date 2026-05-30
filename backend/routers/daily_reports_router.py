@@ -116,20 +116,19 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
     Pre-fill pct_complete_start_of_day from yesterday's end_of_day or
     task.pct_complete.
 
-    2026-02-XX (Abhi prod-feedback): paperwork tasks
-    (preconstruction_paperwork, construction_paperwork, closeout_paperwork)
-    are reference-only in the schedule. The super never executes them in
-    the field, so they must NOT auto-populate into the DR. Filter them
-    out at the source — both here and in /available-tasks below.
+    Paperwork tasks (preconstruction_paperwork, construction_paperwork,
+    closeout_paperwork) ARE pre-populated alongside field-work rows --
+    the DR UI renders them in dedicated read-only reference sections
+    ("Before · Reference") so the super can see what paperwork is
+    happening today without acting on it. The exported PDF filters
+    them back out (iter6_router._grid_section_for == 2).
     """
     db = get_db()
     rd_iso = report_date.isoformat()
-    _PAPERWORK_CATS = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"]
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
-            "work_category": {"$nin": _PAPERWORK_CATS},
             "$expr": _scheduled_window_expr(rd_iso),
         }),
         {"_id": 0},
@@ -431,14 +430,11 @@ async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require
     report_date = dr["report_date"]
     project_id = dr["project_id"]
     # tasks scheduled on this date — effective (slip-aware) window, same rule
-    # as _prepopulate_grid so the dropdown and the grid agree. Paperwork
-    # categories are excluded for the same reason (reference-only).
-    _PAPERWORK_CATS = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"]
+    # as _prepopulate_grid so the dropdown and the grid agree.
     candidates = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
-            "work_category": {"$nin": _PAPERWORK_CATS},
             "$expr": _scheduled_window_expr(report_date),
         }),
         {"_id": 0},
@@ -1881,21 +1877,6 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
     # row alongside the pre-existing task_updated_at optimistic-lock
     # token. Single $in query. METADATA / VIEW ONLY.
     await _enrich_grid_rows(db, ctx["tenant_id"], grid)
-
-    # 2026-02-XX (Abhi prod-feedback): self-healing purge of paperwork
-    # rows that polluted the grid before _prepopulate_grid started
-    # filtering them out. Paperwork (preconstruction_paperwork /
-    # construction_paperwork / closeout_paperwork) is reference-only in
-    # this app -- the super doesn't execute it in the field, so it must
-    # never sit in the DR. Only purge on draft DRs; submitted/approved
-    # DRs are federal-contract records and stay frozen.
-    if dr.get("status") == "draft":
-        _PAPERWORK_CATS = {"preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"}
-        stale_ids = [r["id"] for r in grid if r.get("work_category") in _PAPERWORK_CATS]
-        if stale_ids:
-            await db.daily_report_activities.delete_many({"id": {"$in": stale_ids}})
-            grid = [r for r in grid if r["id"] not in set(stale_ids)]
-            grid_task_ids = [r["schedule_activity_id"] for r in grid if r.get("schedule_activity_id")]
 
     # Bucket C3a Phase 3 — pre-populate constraint_type +
     # constraint_reference for any row that has no constraint set yet,
