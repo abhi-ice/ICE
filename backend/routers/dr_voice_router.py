@@ -107,16 +107,52 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
     # 404'd for new users and `gemini-2.5-flash` is also slated for
     # replacement — `gemini-3.5-flash` is the current recommended GA
     # model for audio-to-text.
+    #
+    # 2026-06-01 (Abhi prod-feedback): Gemini intermittently returns
+    # `503 UNAVAILABLE — model experiencing high demand`. That's a
+    # transient capacity issue on Google's side, not a real failure,
+    # so we retry up to 3 times with exponential backoff (1s, 2s, 4s)
+    # before surfacing the error to the user. Only retried on 503/
+    # UNAVAILABLE/overloaded responses -- 4xx errors fail fast.
+    import asyncio as _asyncio
+    MAX_RETRIES = 3
+    BACKOFF_S = [1.0, 2.0, 4.0]
+
+    async def _do_inline() -> object:
+        return await client.aio.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=[
+                genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                TRANSCRIPTION_PROMPT,
+            ],
+        )
+
+    def _is_transient(exc: Exception) -> bool:
+        s = str(exc).upper()
+        return ("503" in s) or ("UNAVAILABLE" in s) or ("OVERLOADED" in s) or ("RESOURCE_EXHAUSTED" in s) or ("429" in s)
+
     try:
         if len(audio_bytes) <= INLINE_LIMIT:
-            # ---- Inline path ----
-            resp = await client.aio.models.generate_content(
-                model="gemini-3.5-flash",
-                contents=[
-                    genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                    TRANSCRIPTION_PROMPT,
-                ],
-            )
+            # ---- Inline path with retry-on-503 ----
+            last_exc: Exception | None = None
+            for attempt in range(MAX_RETRIES + 1):
+                try:
+                    resp = await _do_inline()
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < MAX_RETRIES and _is_transient(exc):
+                        wait_s = BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
+                        log.warning(
+                            "dr_voice: Gemini transient error (attempt %d/%d), retrying in %.1fs: %s",
+                            attempt + 1, MAX_RETRIES + 1, wait_s, exc,
+                        )
+                        await _asyncio.sleep(wait_s)
+                        continue
+                    raise
+            if last_exc:
+                raise last_exc
         else:
             # ---- Files API path (large memos, >=18 MB) ----
             # Upload the audio as a Gemini File resource, then reference
@@ -161,10 +197,23 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
         raise
     except Exception as exc:
         log.error("Gemini transcription failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Gemini transcription error: {exc}",
-        ) from exc
+        # 2026-06-01 -- friendly message for the most common transient
+        # case (503/UNAVAILABLE), already retried 3x with backoff above.
+        s = str(exc).upper()
+        if ("503" in s) or ("UNAVAILABLE" in s) or ("OVERLOADED" in s):
+            detail = (
+                "Gemini is temporarily overloaded — please wait a moment "
+                "and click Start recording again. Your audio was NOT lost "
+                "(it's on your device); just re-record or hit Stop again."
+            )
+        elif "429" in s or "RESOURCE_EXHAUSTED" in s:
+            detail = (
+                "Gemini rate-limited this request. Please wait ~30 seconds "
+                "and try again."
+            )
+        else:
+            detail = f"Gemini transcription error: {exc}"
+        raise HTTPException(status_code=502, detail=detail) from exc
 
     text = (resp.text or "").strip() if hasattr(resp, "text") and resp.text else ""
     return text
