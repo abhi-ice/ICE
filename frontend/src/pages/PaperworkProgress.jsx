@@ -180,7 +180,7 @@ export default function PaperworkProgress() {
     <div data-testid="paperwork-progress-page" className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Paperwork progress</h1>
-        <p className="text-sm mt-1" style={{ color: "var(--v4-fg-muted)" }}>
+        <p className="text-sm mt-1 page-desc" style={{ color: "var(--v4-fg-muted)" }}>
           {project?.name ? `${project.name} · ` : ""}Submittal, approval &amp; closeout paperwork.
           Set <b>In progress</b> (or drag progress) to keep a task on-track; mark <b>Blocked</b> and enter
           <b> impact days</b> to push downstream slip — same as a delay. Feeds the Tasks &amp; Look-ahead CPM directly.

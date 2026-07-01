@@ -47,7 +47,7 @@ export default function ScheduleDiffs() {
       <header className="mb-4 flex items-center gap-2">
         <GitPullRequest className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">Schedule updates</h1>
-        <span className="text-xs text-slate-400 ml-2">
+        <span className="text-xs text-slate-400 ml-2 page-desc">
           One row per pair of approved schedule versions. Auto-generated on approval.
         </span>
       </header>

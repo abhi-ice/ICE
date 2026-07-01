@@ -85,7 +85,7 @@ export default function Imports() {
     <div data-testid="imports-page" className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold">Imports</h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground page-desc">
           Upload a schedule file (.xlsx, .csv, .mpp, .xer, or .xml). Imports are scoped to the active project.
         </p>
       </div>

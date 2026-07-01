@@ -177,13 +177,13 @@ export default function CoordinationEventDetail() {
           <div className="font-medium text-sm mb-2">Linked entities</div>
           {linkedSections.map(([label, arr]) => (
             <div key={label} className="text-xs mb-1">
-              <span className="uppercase tracking-wide text-slate-500 mr-2">{label}:</span>
+              <span className="uppercase tracking-wide text-slate-500 mr-2 max-md:normal-case">{label}:</span>
               <span className="font-mono text-slate-700">{arr.length} reference{arr.length === 1 ? "" : "s"}</span>
             </div>
           ))}
           {ev.linked_daily_report_id && (
             <div className="text-xs mb-1">
-              <span className="uppercase tracking-wide text-slate-500 mr-2">Daily report:</span>
+              <span className="uppercase tracking-wide text-slate-500 mr-2 max-md:normal-case">Daily report:</span>
               <span className="font-mono">{ev.linked_daily_report_id.slice(0, 8)}</span>
             </div>
           )}

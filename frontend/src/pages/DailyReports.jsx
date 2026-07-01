@@ -1475,7 +1475,7 @@ function DrAutoHeader({ project, currentUserName }) {
       >
         <ChevronDown
           className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
-        /><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0">
+        /><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0 max-md:normal-case">
           Project / Contract
         </div>
         <div className="text-sm text-slate-300 truncate flex-1" data-testid="dr-auto-header-summary">

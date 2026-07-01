@@ -54,7 +54,7 @@ export default function Recovery() {
         <Sparkles className="h-5 w-5 text-primary" />
         <h1 className="text-2xl font-semibold">AI Recovery</h1>
       </div>
-      <p className="text-sm text-muted-foreground">
+      <p className="text-sm text-muted-foreground page-desc">
         {project?.name} · pick a slipping activity and let Claude (Sonnet 4.5) propose 3-5 concrete recovery actions.
       </p>
 

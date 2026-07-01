@@ -447,7 +447,7 @@ export default function Vendors() {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Vendors</h1>
-        <p className="text-sm text-slate-400 mt-1">
+        <p className="text-sm text-slate-400 mt-1 page-desc">
           Your central repo of subcontractors and suppliers. These show up as autocomplete in the Daily Report "Manpower log" and inform the voice AI when supers mention a trade.
         </p>
       </div>

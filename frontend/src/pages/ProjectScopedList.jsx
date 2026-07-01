@@ -432,7 +432,7 @@ export default function ProjectScopedList({ kind }) {
               (flex-1) + Clear share the next row on phones so the input doesn't
               compress to nothing next to the label. Desktop keeps one row. */}
           <div className="flex items-center gap-2 max-md:flex-wrap">
-            <label className="uppercase tracking-wide text-xs max-md:w-full">Filter by activity id</label>
+            <label className="uppercase tracking-wide text-xs max-md:w-full max-md:normal-case">Filter by activity id</label>
             <input data-testid={`${kind}-affected-activity-filter`}
               value={affectedActivityId}
               onChange={(e) => setAffectedActivityId(e.target.value)}
