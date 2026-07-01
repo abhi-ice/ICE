@@ -2865,7 +2865,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
     <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
-        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1 max-md:grid max-md:grid-cols-3">
+        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1 max-md:grid max-md:grid-cols-3 max-md:gap-2">
             {TABS.map((t) => {
               const Icon = t.icon;
               return (

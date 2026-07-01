@@ -552,6 +552,17 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     /* judge P5 nit: the empty-state row (<td colspan=8> "No manpower logged
        yet") must not show a stray "Company" nth-child label. */
     [data-testid="dr-presence-panel"] .dense-table td[colspan]::before { content: none; }
+    /* pair Headcount + Hours/person 2-across so a manpower card is shorter when
+       a super logs several rows (real-device feedback) -- inputs stay a
+       comfortable ~half-width tap target. */
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(4),
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(5) {
+        display: inline-block;
+        width: 47%;
+        vertical-align: top;
+        border-bottom: 0;
+    }
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(4) { margin-right: 4%; }
 }
 
 /* ============================================================
