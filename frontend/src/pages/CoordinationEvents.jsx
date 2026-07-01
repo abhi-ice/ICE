@@ -77,7 +77,7 @@ export default function CoordinationEvents() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Coordination log</h1>
-          <p className="text-sm text-slate-500">Every email, call, meeting, and letter that affects schedule or scope. TIA-ready.</p>
+          <p className="text-sm text-slate-500 page-desc">Every email, call, meeting, and letter that affects schedule or scope. TIA-ready.</p>
         </div>
         <CoordinationNewButton projectId={activeId}
           fallbackOpen={() => setOpen(true)} />
