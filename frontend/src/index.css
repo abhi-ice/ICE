@@ -751,6 +751,19 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        Opt-in via .page-desc so it only affects intended subtitles. --- */
     .page-desc { display: none !important; }
 
+    /* --- CPM/schedule grids (Tasks, Lookahead, Resource-Leveling): the
+       pinned Description column was up to 280px, so # (40px) + Description
+       ate the ENTIRE phone width -> the scrollable columns had ~no room.
+       Shrink the pinned Description to ~120px (text wraps), and tighten every
+       cell's horizontal padding so more schedule columns are visible per
+       swipe. The columns still horizontal-scroll (nothing hidden). --- */
+    .dense-table-frozen td.col-pin-2,
+    .dense-table-frozen th.col-pin-2 { max-width: 120px !important; }
+    .dense-table-frozen td.col-pin-2 { white-space: normal; line-height: 1.25; }
+    .dense-table-frozen th, .dense-table-frozen td { padding-left: 6px !important; padding-right: 6px !important; }
+    /* denser type inside the schedule grid on phones */
+    .dense-table-frozen th, .dense-table-frozen td { font-size: 12px !important; }
+
     /* --- Page-scroll guard: nothing should scroll the page sideways. The
        dense data tables keep their OWN inner overflow-x scroll (unaffected);
        this only stops the whole page from shifting horizontally. --- */
