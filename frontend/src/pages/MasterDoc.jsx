@@ -62,7 +62,7 @@ export default function MasterDoc() {
             <Building2 className="h-5 w-5 text-blue-600" />
             <h1 className="text-2xl font-semibold tracking-tight">Project master doc</h1>
           </div>
-          <p className="text-sm text-slate-500">{project?.name} — drives project-type gating for every AI agent.</p>
+          <p className="text-sm text-slate-500 page-desc">{project?.name} — drives project-type gating for every AI agent.</p>
         </div>
         {/* pt.40: page-header primary -> sbtn-md (32px). */}
         <button data-testid="md-save" onClick={save} disabled={busy} className="sbtn sbtn-md sbtn-primary">

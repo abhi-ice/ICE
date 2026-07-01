@@ -113,7 +113,7 @@ export default function PolygonEditor() {
           <MapPin className="h-5 w-5 text-blue-600" />
           <h1 className="text-2xl font-semibold tracking-tight">Polygon Editor — Spatial Path 1</h1>
         </div>
-        <p className="text-sm text-slate-500">{project?.name} · click on the plan PDF to add vertices, then Save.</p>
+        <p className="text-sm text-slate-500 page-desc">{project?.name} · click on the plan PDF to add vertices, then Save.</p>
       </div>
 
       <div className="surface p-3 grid grid-cols-1 md:grid-cols-4 gap-3">

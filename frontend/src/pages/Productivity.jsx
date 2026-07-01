@@ -27,7 +27,7 @@ export default function Productivity() {
             <Activity className="h-5 w-5 text-blue-600" />
             <h1 className="text-2xl font-semibold tracking-tight">Productivity rates</h1>
           </div>
-          <p className="text-sm text-slate-500">{project?.name} · trade × location, rolling {days} days</p>
+          <p className="text-sm text-slate-500 page-desc">{project?.name} · trade × location, rolling {days} days</p>
         </div>
         <div className="flex items-center gap-1">
           {[30, 60, 90, 180].map((d) => (

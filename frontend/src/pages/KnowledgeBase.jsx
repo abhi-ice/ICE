@@ -57,7 +57,7 @@ export default function KnowledgeBase() {
             <BookOpen className="h-5 w-5 text-blue-600" />
             <h1 className="text-2xl font-semibold tracking-tight">Knowledge base</h1>
           </div>
-          <p className="text-sm text-slate-500">Past resolutions, lessons learned, and answered RFIs. Cited by AI agents in every recommendation.</p>
+          <p className="text-sm text-slate-500 page-desc">Past resolutions, lessons learned, and answered RFIs. Cited by AI agents in every recommendation.</p>
         </div>
         <div className="flex items-center gap-2">
           <Button data-testid="kb-ingest" onClick={ingest} disabled={busy} variant="outline" className="gap-1">
