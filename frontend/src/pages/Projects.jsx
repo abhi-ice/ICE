@@ -447,6 +447,11 @@ export default function Projects() {
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         {/* pt.37: dense-table-bordered → header-only vertical
             dividers, small-column table per Option C. */}
+        {/* crud-list-table-wrap: on phones this 8-col table reflows into compact
+            cards (Name = headline, the rest inline meta, Location hidden) so it
+            fits the frame instead of h-scrolling. Inert at >=768px -> desktop
+            table byte-identical. */}
+        <div className="crud-list-table-wrap">
         <table className="w-full dense-table dense-table-bordered">
           <thead>
             <tr><th>Name</th><th>Contract #</th><th>Client</th><th>Location</th><th>Status</th><th>Value</th><th>Plan finish</th><th></th></tr>
@@ -456,14 +461,14 @@ export default function Projects() {
               const loc = [p.city, p.state].filter(Boolean).join(", ");
               return (
                 <tr key={p.id} data-testid={`project-row-${p.id}`}>
-                  <td className="font-medium">{p.name}</td>
-                  <td className="font-mono text-xs">{p.contract_number || "—"}</td>
-                  <td>{p.client_name || "—"}</td>
-                  <td className="text-xs">{loc || <span className="text-muted-foreground">—</span>}</td>
-                  <td><span className={`pill ${p.status === "active" ? "pill-green" : "pill-slate"}`}>{p.status}</span></td>
-                  <td className="tabular-nums">{p.contract_value_usd ? `$${(p.contract_value_usd / 1_000_000).toFixed(2)}M` : "—"}</td>
-                  <td className="font-mono text-xs">{formatDateDisplay(p.planned_completion_date)}</td>
-                  <td className="text-right pr-3">
+                  <td className="font-medium col-primary" data-label="Name">{p.name}</td>
+                  <td className="font-mono text-xs" data-label="Contract #">{p.contract_number || "—"}</td>
+                  <td data-label="Client">{p.client_name || "—"}</td>
+                  <td className="text-xs col-hide-m" data-label="Location">{loc || <span className="text-muted-foreground">—</span>}</td>
+                  <td data-label="Status"><span className={`pill ${p.status === "active" ? "pill-green" : "pill-slate"}`}>{p.status}</span></td>
+                  <td className="tabular-nums" data-label="Value">{p.contract_value_usd ? `$${(p.contract_value_usd / 1_000_000).toFixed(2)}M` : "—"}</td>
+                  <td className="font-mono text-xs" data-label="Plan finish">{formatDateDisplay(p.planned_completion_date)}</td>
+                  <td className="text-right pr-3" data-label="">
                     <button
                       data-testid={`edit-project-${p.id}`}
                       onClick={() => openEdit(p)}
@@ -488,6 +493,7 @@ export default function Projects() {
             {!projects.length && <tr><td colSpan="8" className="text-center text-sm text-muted-foreground py-6">No projects yet.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
