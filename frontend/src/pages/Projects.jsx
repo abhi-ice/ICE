@@ -468,7 +468,7 @@ export default function Projects() {
                   <td data-label="Status"><span className={`pill ${p.status === "active" ? "pill-green" : "pill-slate"}`}>{p.status}</span></td>
                   <td className="tabular-nums" data-label="Value">{p.contract_value_usd ? `$${(p.contract_value_usd / 1_000_000).toFixed(2)}M` : "—"}</td>
                   <td className="font-mono text-xs" data-label="Plan finish">{formatDateDisplay(p.planned_completion_date)}</td>
-                  <td className="text-right pr-3" data-label="">
+                  <td className="text-right pr-3 col-fullwidth">
                     <button
                       data-testid={`edit-project-${p.id}`}
                       onClick={() => openEdit(p)}
