@@ -533,27 +533,63 @@ def _hash_reset_token(plain: str) -> str:
 
 
 def _frontend_base_url(request: Request) -> str:
-    """Mirror the invite-flow resolution so reset links land on the
-    same origin the user is already using."""
-    base_url = ""
+    """Resolve the base URL for password-reset / invite emails.
+
+    2026-06-XX (Abhi prod-feedback): a stale forked-session preview URL
+    (cluster-2.preview.emergentcf.cloud) leaked into an email once and
+    produced a 403 Forbidden the next day when that preview pod was
+    torn down. The old code trusted Origin / Referer verbatim, which
+    meant ANY defunct preview host still open in some cached tab could
+    silently poison a live reset link. Fix: only accept the request
+    Origin if it matches one of the env-configured allowed hosts;
+    otherwise fall back to INVITE_BASE_URL (the authoritative one set
+    by the deployment).
+
+    ALLOWED_FRONTEND_HOSTS may be a comma-separated env var listing the
+    prod domain + any staging domains. INVITE_BASE_URL is always
+    accepted (as it's the deployment's own answer). REACT_APP_BACKEND_URL
+    is also accepted for local/dev parity.
+    """
+    from urllib.parse import urlparse
+
+    def _norm(u: str) -> str:
+        u = (u or "").strip().rstrip("/")
+        if u.endswith("/api"):
+            u = u[:-4]
+        return u
+
+    allowed: set[str] = set()
+    for key in ("INVITE_BASE_URL", "REACT_APP_BACKEND_URL", "PRODUCTION_URL"):
+        v = _norm(os.environ.get(key, ""))
+        if v:
+            allowed.add(v)
+    for host in (os.environ.get("ALLOWED_FRONTEND_HOSTS") or "").split(","):
+        v = _norm(host)
+        if v:
+            allowed.add(v)
+
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    origin_base = ""
     if origin:
         try:
-            from urllib.parse import urlparse
             parsed = urlparse(origin)
             if parsed.scheme and parsed.netloc:
-                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                origin_base = f"{parsed.scheme}://{parsed.netloc}"
         except Exception:
-            base_url = ""
-    if not base_url:
-        base_url = (
-            os.environ.get("INVITE_BASE_URL")
-            or os.environ.get("REACT_APP_BACKEND_URL")
-            or ""
-        ).rstrip("/")
-    if base_url.endswith("/api"):
-        base_url = base_url[:-4]
-    return base_url
+            origin_base = ""
+
+    # Only trust the request's origin if it's on the allowlist -- this
+    # prevents defunct / spoofed hosts from poisoning email links.
+    if origin_base and origin_base in allowed:
+        return origin_base
+
+    # Fallback: the deployment-configured URL. Ordered so INVITE_BASE_URL
+    # (explicitly set for emails) wins over REACT_APP_BACKEND_URL.
+    return (
+        _norm(os.environ.get("INVITE_BASE_URL", ""))
+        or _norm(os.environ.get("REACT_APP_BACKEND_URL", ""))
+        or ""
+    )
 
 
 @router.post("/forgot-password")
