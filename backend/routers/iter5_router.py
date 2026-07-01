@@ -987,6 +987,7 @@ async def update_delivery(
     after = await db.deliveries.find_one(
         tenant_filter(ctx["tenant_id"], {"id": delivery_id}), {"_id": 0},
     )
+    from audit import write_audit
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="deliveries", op="UPDATE",
         record_id=delivery_id, before=before, after=after,
