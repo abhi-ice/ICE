@@ -607,6 +607,26 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     expires_at = utc_now() + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
 
     if user:
+        # 2026-06-XX -- explicit prior-token invalidation. The $set below
+        # already overwrites password_reset_token_hash so any previously
+        # emailed link stops working the instant this request lands.
+        # We detect a still-live prior token here purely so the audit
+        # log records the invalidation (security-review visibility).
+        prior_hash = user.get("password_reset_token_hash")
+        prior_expires_at_raw = user.get("password_reset_expires_at")
+        prior_still_live = False
+        if prior_hash and prior_expires_at_raw:
+            try:
+                _raw = prior_expires_at_raw
+                if isinstance(_raw, str) and _raw.endswith("Z"):
+                    _raw = _raw[:-1] + "+00:00"
+                _exp = datetime.fromisoformat(_raw) if isinstance(_raw, str) else _raw
+                if _exp.tzinfo is None:
+                    _exp = _exp.replace(tzinfo=timezone.utc)
+                prior_still_live = _exp > utc_now()
+            except Exception:
+                prior_still_live = False
+
         await db.users.update_one(
             {"id": user["id"]},
             {"$set": {
@@ -615,6 +635,20 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
                 "password_reset_requested_at": utc_now().isoformat(),
             }},
         )
+
+        if prior_still_live:
+            try:
+                await write_audit(
+                    tenant_id=user.get("tenant_id"),
+                    table_name="users", op="PASSWORD_RESET_TOKEN_INVALIDATED",
+                    record_id=user["id"],
+                    before={"reason": "superseded_by_new_request"},
+                    after={"email": user["email"]},
+                    actor_id=user["id"],
+                    request_id=str(request.headers.get("x-request-id") or ""),
+                )
+            except Exception:
+                pass
         base_url = _frontend_base_url(request)
         reset_link = (
             f"{base_url}/reset-password?token={plain_token}" if base_url
