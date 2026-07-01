@@ -106,9 +106,13 @@ export default function CoordinationEvents() {
             <option value="">Channel — all</option>
             {Object.keys(CHANNEL_ICONS).map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
           </select>
+          {/* max-md:col-span-2 -- Direction spans the full width on phones so
+              the From/To date pair lands together on its own row (Topic|Channel,
+              Direction, From|To) instead of a split range + a lone date cell.
+              Desktop keeps the 5-across row (md:grid-cols-5). */}
           <select data-testid="coord-filter-direction" value={filters.direction}
             onChange={(e) => setFilters({ ...filters, direction: e.target.value })}
-            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]">
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px] max-md:col-span-2">
             <option value="">Direction — all</option>
             <option value="inbound">Inbound</option>
             <option value="outbound">Outbound</option>
