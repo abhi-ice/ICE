@@ -88,19 +88,23 @@ export default function Drawings() {
         </Dialog>
       </div>
 
-      <div className="surface overflow-hidden max-md:overflow-x-auto">
+      {/* crud-list-table-wrap: phones collapse each drawing to a compact card
+          (Title headline; Sheet/Discipline/Set/Rev/Status meta; the Upload/View
+          text actions on their own line via col-fullwidth). Inert >=768px. */}
+      <div className="surface overflow-hidden">
+        <div className="crud-list-table-wrap">
         <table className="dense-table">
           <thead><tr><th>Sheet</th><th>Title</th><th>Discipline</th><th>Set</th><th>Rev</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {list.map((d) => (
               <tr key={d.id} data-testid={`drawing-row-${d.sheet_number}`}>
-                <td className="font-mono text-xs">{d.sheet_number}</td>
-                <td>{d.title}</td>
-                <td>{d.discipline || "—"}</td>
-                <td className="text-xs">{d.drawing_set_name}</td>
-                <td className="tabular-nums">{d.revision_count}</td>
-                <td><span className="pill pill-green">{d.status}</span></td>
-                <td className="text-right space-x-2">
+                <td className="font-mono text-xs" data-label="Sheet">{d.sheet_number}</td>
+                <td className="col-primary" data-label="Title">{d.title}</td>
+                <td data-label="Discipline">{d.discipline || "—"}</td>
+                <td className="text-xs" data-label="Set">{d.drawing_set_name}</td>
+                <td className="tabular-nums" data-label="Rev">{d.revision_count}</td>
+                <td data-label="Status"><span className="pill pill-green">{d.status}</span></td>
+                <td className="text-right space-x-2 col-fullwidth" data-label="Actions">
                   <button data-testid={`upload-rev-${d.sheet_number}`} onClick={() => setRevisionDialogFor(d)} className="text-xs text-blue-600 hover:underline max-md:min-h-[44px] max-md:inline-flex max-md:items-center">Upload PDF</button>
                   {d.current_revision_id && (
                     <button data-testid={`view-rev-${d.sheet_number}`} onClick={() => setViewerRev(d.current_revision_id)} className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline max-md:min-h-[44px] max-md:inline-flex max-md:items-center">
@@ -113,6 +117,7 @@ export default function Drawings() {
             {!list.length && <tr><td colSpan="7" className="text-center py-6 text-sm text-slate-500">No drawings. Create one and upload a PDF revision.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
 
       <Dialog open={!!revisionDialogFor} onOpenChange={(o) => !o && setRevisionDialogFor(null)}>

@@ -83,7 +83,11 @@ export default function Submittals() {
         <h1 className="text-2xl font-semibold tracking-tight">Submittals</h1>
       </div>
 
-      <div className="flex border-b border-slate-200 text-sm overflow-x-auto"
+      {/* max-md:grid grid-cols-3 -- three tabs won't fit one 318px row with
+          their icons, so on phones we split the row into equal thirds and hide
+          the icons (label-only) instead of horizontally scrolling + clipping
+          "Review Events". Desktop keeps the icon+label flex row (max-md gated). */}
+      <div className="flex border-b border-slate-200 text-sm overflow-x-auto max-md:grid max-md:grid-cols-3 max-md:overflow-visible"
         data-testid="submittals-tabs">
         <Tab tab="register" active={tab} onClick={setTab} label="Register"
           Icon={ListChecks} testid="submittals-tab-register" />
@@ -105,12 +109,12 @@ function Tab({ tab, active, onClick, label, Icon, testid }) {
   const isActive = tab === active;
   return (
     <button data-testid={testid} onClick={() => onClick(tab)}
-      className={`px-3 py-2 -mb-px border-b-2 inline-flex items-center gap-1.5 whitespace-nowrap ${
+      className={`px-3 py-2 -mb-px border-b-2 inline-flex items-center gap-1.5 whitespace-nowrap max-md:justify-center max-md:px-1 max-md:text-xs ${
         isActive
           ? "border-blue-600 text-blue-900 font-medium"
           : "border-transparent text-slate-600 hover:text-slate-900"
       }`}>
-      <Icon className="h-3.5 w-3.5" /> {label}
+      <Icon className="h-3.5 w-3.5 max-md:hidden" /> {label}
     </button>
   );
 }
@@ -304,7 +308,7 @@ function RegisterTab() {
                     onChange={(e) => setForm({ ...form, title: e.target.value })}
                     className="w-full h-9 px-3 rounded border border-slate-200" />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                   <div>
                     <FieldLabel optional className="field-label">Spec section code</FieldLabel>
                     <input value={form.spec_section_code}
@@ -320,7 +324,7 @@ function RegisterTab() {
                       className="w-full h-9 px-3 rounded border border-slate-200" />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="field-label">Type</label>
                     <select data-testid="sub-type" value={form.type}
@@ -337,7 +341,7 @@ function RegisterTab() {
                       className="w-full h-9 px-3 rounded border border-slate-200" />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                   <div>
                     <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                     <input data-testid="sub-lead-time" type="number" min="0"
@@ -733,7 +737,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                   className="w-full h-9 px-3 rounded border border-slate-200" />
               </JigsawField>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
               <div>
                 <label className="field-label">Type</label>
                 <JigsawField entityType="submittal" entityId={submittal.id}
@@ -758,7 +762,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                 </JigsawField>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
               <div>
                 <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                 <input type="number" min="0" value={form.procurement_lead_time_days}
@@ -773,7 +777,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
               </div>
             </div>
             {isAdminOrPm && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
                 <div>
                   <FieldLabel optional className="field-label text-amber-900">SLA override (days)</FieldLabel>
                   <input type="number" min="1" max="365"

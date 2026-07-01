@@ -35,7 +35,7 @@ export default function Productivity() {
               key={d}
               data-testid={`prod-window-${d}`}
               onClick={() => setDays(d)}
-              className={`h-8 px-3 rounded text-sm border ${days === d ? "bg-blue-600 text-white border-blue-600" : "border-slate-200"}`}
+              className={`h-8 px-3 rounded text-sm border max-md:min-h-[44px] ${days === d ? "bg-blue-600 text-white border-blue-600" : "border-slate-200"}`}
             >
               {d}d
             </button>
@@ -44,6 +44,9 @@ export default function Productivity() {
       </div>
 
       <div className="surface overflow-hidden">
+        {/* crud-list-table-wrap: compact cards on phones (Trade headline;
+            location + the rate metrics as meta). Inert >=768px. */}
+        <div className="crud-list-table-wrap">
         <table className="dense-table">
           <thead>
             <tr>
@@ -57,11 +60,11 @@ export default function Productivity() {
           <tbody>
             {(data?.rates || []).map((r, i) => (
               <tr key={i} data-testid={`prod-row-${i}`}>
-                <td className="font-mono text-xs">{r.trade || "—"}</td>
-                <td className="text-xs text-slate-500">{r.location_id?.slice(0, 8) || "—"}</td>
-                <td className="font-semibold tabular-nums">{r.hours_per_pct_point}</td>
-                <td className="tabular-nums">{r.sample_size}</td>
-                <td className="tabular-nums">{r.total_hours}</td>
+                <td className="font-mono text-xs col-primary" data-label="Trade">{r.trade || "—"}</td>
+                <td className="text-xs text-slate-500" data-label="Location">{r.location_id?.slice(0, 8) || "—"}</td>
+                <td className="font-semibold tabular-nums" data-label="Hrs/pt">{r.hours_per_pct_point}</td>
+                <td className="tabular-nums" data-label="Sample">{r.sample_size}</td>
+                <td className="tabular-nums" data-label="Total hrs">{r.total_hours}</td>
               </tr>
             ))}
             {!data?.rates?.length && (
@@ -71,6 +74,7 @@ export default function Productivity() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <div className="text-xs text-slate-500">

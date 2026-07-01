@@ -453,7 +453,10 @@ export default function Tasks() {
             </DialogTrigger>
             <DialogContent className="max-w-xl">
               <DialogHeader><DialogTitle>{editing ? `Edit ${editing.activity_code}` : "New activity"}</DialogTitle></DialogHeader>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* max-md:grid-cols-2 -- pair the short fields (code/WBS/dates/
+                  trade) 2-up on phones; sm:=640px never fires below 767.98px.
+                  col-span-2 children stay full-width. Desktop unchanged. */}
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel required className="field-label">Activity code</FieldLabel>
                   <input data-testid="ac-code" value={form.activity_code} disabled={!!editing} onChange={(e) => setForm({ ...form, activity_code: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200 disabled:bg-slate-50" />
@@ -529,7 +532,10 @@ export default function Tasks() {
           >
             {sortBySlipDesc ? "✓ Sorted by slip ↓" : "Sort by slip ↓"}
           </button>
-          <label className="inline-flex items-center gap-1 cursor-pointer">
+          {/* max-md:w-full + 44px row -- on phones the checkbox gets its own
+              full-width, thumb-tappable row instead of wrapping awkwardly under
+              the Sort button. Desktop keeps it inline. */}
+          <label className="inline-flex items-center gap-1 cursor-pointer max-md:w-full max-md:min-h-[44px]">
             <input
               data-testid="tasks-show-only-impacted"
               type="checkbox"

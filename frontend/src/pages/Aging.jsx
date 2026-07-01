@@ -69,15 +69,18 @@ export default function Aging() {
                   <div className="font-medium">{s.label}</div>
                   <span className="ml-auto text-xs text-slate-500">{list.length} overdue</span>
                 </div>
+                {/* crud-list-table-wrap: compact cards on phones (Title headline,
+                    Ref/Status/Days-open meta) so it fits; inert >=768px. */}
+                <div className="crud-list-table-wrap">
                 <table className="dense-table">
                   <thead><tr><th>Ref</th><th>Title</th><th>Status</th><th>Days open</th></tr></thead>
                   <tbody>
                     {list.map((it) => (
                       <tr key={it.id} data-testid={`aging-row-${s.key}-${it.id}`}>
-                        <td className="font-mono text-xs">{it[s.colId] || it.id?.slice(0, 8)}</td>
-                        <td className="truncate max-w-[440px] max-md:max-w-[200px]" title={it[s.colTitle] || "—"}>{it[s.colTitle] || "—"}</td>
-                        <td><span className="pill pill-amber capitalize">{it.status}</span></td>
-                        <td className="font-mono text-xs">
+                        <td className="font-mono text-xs" data-label="Ref">{it[s.colId] || it.id?.slice(0, 8)}</td>
+                        <td className="truncate max-w-[440px] max-md:max-w-[200px] col-primary" data-label="Title" title={it[s.colTitle] || "—"}>{it[s.colTitle] || "—"}</td>
+                        <td data-label="Status"><span className="pill pill-amber capitalize">{it.status}</span></td>
+                        <td className="font-mono text-xs" data-label="Days open">
                           <span className={it.days_open > 30 ? "text-red-600 font-semibold" : "text-amber-700"}>
                             {it.days_open}d
                           </span>
@@ -86,6 +89,7 @@ export default function Aging() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               </div>
             );
           })}

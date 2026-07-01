@@ -360,82 +360,94 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-activity-grid"] .dense-table,
     [data-testid="dr-activity-grid"] .dense-table tbody { display: block; width: 100%; }
     [data-testid="dr-activity-grid"] .dense-table thead { display: none; }
+    /* COMPACT activity card (2026-07-01): real-device feedback -- the old
+       layout stacked all 10 fields as label:value rows, ~1 screen per activity,
+       so a 4-5 activity DR felt endless. Now a flex-wrap card: Code + Activity
+       name + the EOD slider stay full-width (the slider needs room); the small
+       fields (Location/SOD/Change/Status/Blockers/Flag) flow inline as a compact
+       meta line with tiny labels. Interactive controls unchanged; desktop
+       (>=768px) byte-identical (media-gated). */
     [data-testid="dr-activity-grid"] .dense-table tr {
-        display: block;
-        margin: 0 0 10px;
-        padding: 8px 11px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 10px;
+        margin: 0 0 8px;
+        padding: 9px 11px;
+        position: relative;
         border: 1px solid var(--v4-border, #e2ddd3);
         border-radius: 10px;
         background: var(--v4-bg-surface, #fff);
     }
     [data-testid="dr-activity-grid"] .dense-table td {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 12px;
+        gap: 5px;
         width: auto;
         max-width: none !important;
-        padding: 6px 0;
-        border: 0;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-        text-align: right;
-        white-space: normal;
         min-width: 0;
+        padding: 0;
+        border: 0;
+        font-size: 12px;
+        text-align: left;
+        white-space: normal;
         overflow-wrap: anywhere;
         word-break: break-word;
     }
-    [data-testid="dr-activity-grid"] .dense-table td:last-child { border-bottom: 0; }
     [data-testid="dr-activity-grid"] .dense-table td::before {
         content: "";
-        font-weight: 600;
-        font-size: 11px;
+        font-weight: 500;
+        font-size: 10px;
         color: var(--v4-fg-muted, #6b7280);
-        text-align: left;
-        margin-right: auto;
         white-space: nowrap;
     }
-    /* ---- editable activity rows (10 cols) ---- */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before { content: "Activity"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(3)::before { content: "Location"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "Start of day %"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5)::before { content: "End of day %"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::before { content: "Change"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(7)::before { content: "Status"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8)::before { content: "Blockers"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9)::before { content: "Flag issue"; }
-    /* code cell = card header (no label, left aligned, bigger) */
+    /* ---- editable activity rows (10 cols) -- tiny inline labels ---- */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(3)::before { content: "Loc"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "SOD"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::before { content: "\0394"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(7)::before,
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8)::before,
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9)::before { content: none; }
+    /* code cell = card header (full width, bold, no label) */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1) {
-        justify-content: flex-start;
-        text-align: left;
+        flex-basis: 100%;
         font-weight: 700;
         font-size: 13px;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.09);
-        padding-bottom: 8px;
-        margin-bottom: 2px;
     }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1)::before { content: none; }
-    /* Activity description + EOD slider = full width (label above) */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2),
+    /* activity name = full width, prominent (no label) */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2) {
+        flex-basis: 100%;
+        font-weight: 600;
+        font-size: 13px;
+        margin-bottom: 1px;
+    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before { content: none; }
+    /* EOD slider = full width, label above */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) {
+        flex-basis: 100%;
         display: block;
-        text-align: left;
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before,
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5)::before {
+        content: "End of day %";
         display: block;
-        margin: 0 0 4px;
+        margin: 2px 0 3px;
     }
-    /* actions cell (remove / edit) -> right aligned */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) { justify-content: flex-end; }
+    /* actions (remove / edit) -> pinned to the card's top-right corner */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) {
+        position: absolute;
+        top: 7px;
+        right: 8px;
+    }
     /* ---- read-only paperwork rows (4 cols: Code, Activity, SOD%, Status) ---- */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(1) {
-        justify-content: flex-start; text-align: left; font-weight: 700; font-size: 13px;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.09); padding-bottom: 8px;
+        flex-basis: 100%; font-weight: 700; font-size: 13px;
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2) { display: block; text-align: left; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2)::before { content: "Activity"; display: block; margin: 0 0 4px; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(3)::before { content: "Start of day %"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(4)::before { content: "Status"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(1)::before { content: none; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2) { flex-basis: 100%; font-weight: 600; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2)::before { content: none; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(3)::before { content: "SOD"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(4)::before { content: none; }
 }
 
 /* ============================================================
@@ -488,8 +500,8 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-presence-panel"] .dense-table thead { display: none; }
     [data-testid="dr-presence-panel"] .dense-table tr {
         display: block;
-        margin: 0 0 10px;
-        padding: 10px 11px;
+        margin: 0 0 8px;
+        padding: 8px 11px;
         border: 1px solid var(--v4-border, #e2ddd3);
         border-radius: 10px;
         background: var(--v4-bg-surface, #fff);
@@ -498,7 +510,7 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         display: block;
         width: auto;
         max-width: none !important;
-        padding: 5px 0;
+        padding: 3px 0;
         border: 0;
         border-bottom: 1px solid rgba(0, 0, 0, 0.06);
         text-align: left;
@@ -540,6 +552,17 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     /* judge P5 nit: the empty-state row (<td colspan=8> "No manpower logged
        yet") must not show a stray "Company" nth-child label. */
     [data-testid="dr-presence-panel"] .dense-table td[colspan]::before { content: none; }
+    /* pair Headcount + Hours/person 2-across so a manpower card is shorter when
+       a super logs several rows (real-device feedback) -- inputs stay a
+       comfortable ~half-width tap target. */
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(4),
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(5) {
+        display: inline-block;
+        width: 47%;
+        vertical-align: top;
+        border-bottom: 0;
+    }
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(4) { margin-right: 4%; }
 }
 
 /* ============================================================
@@ -557,58 +580,88 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     .crud-list-table-wrap .dense-table,
     .crud-list-table-wrap .dense-table tbody { display: block; width: 100%; }
     .crud-list-table-wrap .dense-table thead { display: none; }
+    /* ---- COMPACT MOBILE LIST CARD (2026-07-01) ---------------------------
+       Real-data feedback (super on a phone): the old one-field-per-line reflow
+       made data-heavy lists (Delays, RFIs, Resources, Specs...) ~360px PER ROW
+       -> under 2 rows per screen, so finding one of 40-50 rows meant endless
+       scrolling. This lays each row out as a COMPACT card instead:
+         - a bold headline (mark that column `col-primary`) on its own top line,
+         - the remaining cells as a small inline meta line (date/badges/etc.),
+         - scan-irrelevant cells hidden (mark them `col-hide-m`; still on detail),
+         - the edit/delete actions pinned to the card's top-right corner.
+       Result ~5-8 rows/screen. Desktop (>=768px) is byte-identical (the classes
+       are inert outside this media block). ---------------------------------- */
     .crud-list-table-wrap .dense-table tr {
-        display: block;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px 8px;
         margin: 0 0 8px;
-        padding: 8px 11px;
+        padding: 9px 48px 10px 12px;   /* right pad reserves room for actions */
+        position: relative;
         border: 1px solid var(--v4-border, #e2ddd3);
         border-radius: 10px;
         background: var(--v4-bg-surface, #fff);
     }
     .crud-list-table-wrap .dense-table tr:last-child { margin-bottom: 0; }
+    /* rows with no actions column don't need the right gutter */
+    .crud-list-table-wrap .dense-table tr:not(:has(td[data-label=""])) { padding-right: 12px; }
+    /* empty-state / loading colspan rows are messages, not cards */
+    .crud-list-table-wrap .dense-table tr:has(td[colspan]) {
+        padding: 0; border: 0; background: none; margin: 0;
+    }
     .crud-list-table-wrap .dense-table td {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 12px;
+        gap: 4px;
         width: auto;
         max-width: none !important;
-        padding: 5px 0;
-        border: 0;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-        text-align: right;
-        white-space: normal;
-        /* long UNBROKEN values (emails, ids, hashes, urls) have no space to
-           wrap at -> without this they overflow the flex cell and get clipped
-           by the surface's overflow-hidden (cut-off text). break anywhere so
-           they wrap and stay fully readable. min-width:0 lets the value flex
-           item shrink below its min-content. Phone-only (media-gated). */
         min-width: 0;
+        padding: 0;
+        border: 0;
+        font-size: 12px;
+        color: var(--v4-fg-secondary, #6b7280);
+        white-space: normal;
         overflow-wrap: anywhere;
         word-break: break-word;
     }
-    .crud-list-table-wrap .dense-table td:last-child { border-bottom: 0; }
-    .crud-list-table-wrap .dense-table td::before {
-        content: attr(data-label);
+    .crud-list-table-wrap .dense-table td::before { content: none; }  /* no stacked labels */
+    /* headline field: bold, full width, forced to the top of the card */
+    .crud-list-table-wrap .dense-table td.col-primary {
+        order: -1;
+        flex-basis: 100%;
+        font-size: 14px;
         font-weight: 600;
-        font-size: 11px;
-        color: var(--v4-fg-muted, #6b7280);
-        text-align: left;
-        margin-right: auto;
-        white-space: nowrap;
+        color: var(--v4-fg-primary, #111827);
+        line-height: 1.25;
+        margin-bottom: 1px;
+        white-space: normal;
     }
-    /* actions cell (data-label="") + empty-state colspan -> no label */
-    .crud-list-table-wrap .dense-table td[data-label=""]::before,
-    .crud-list-table-wrap .dense-table td[colspan]::before { content: none; }
-    .crud-list-table-wrap .dense-table td[data-label=""] { justify-content: flex-end; }
-    .crud-list-table-wrap .dense-table td[colspan] { justify-content: center; text-align: center; }
-    /* wide / chip / long-text columns (col-fullwidth or _isChips) -> label
-       ABOVE a full-width value, so chip groups + long text don't cram into a
-       right-aligned half-row (judge CrudList finding). */
-    .crud-list-table-wrap .dense-table td.col-fullwidth { display: block; text-align: left; }
-    .crud-list-table-wrap .dense-table td.col-fullwidth::before { display: block; margin: 0 0 4px; }
-    /* bump the tiny edit/delete icon buttons to comfortable tap targets */
-    .crud-list-table-wrap .dense-table td[data-label=""] button { height: 40px; width: 40px; }
+    .crud-list-table-wrap .dense-table td.col-primary a { color: inherit; text-decoration: none; }
+    /* non-headline field that still wants its own line (chip groups etc.) */
+    .crud-list-table-wrap .dense-table td.col-fullwidth { flex-basis: 100%; }
+    /* fields not worth a phone list row -> hidden (still on the detail view) */
+    .crud-list-table-wrap .dense-table td.col-hide-m { display: none !important; }
+    /* a numeric field that needs a unit on the label-less meta line (e.g. days) */
+    .crud-list-table-wrap .dense-table td.col-mdays::after { content: "d"; margin-left: 1px; opacity: .8; }
+    /* pills a touch tighter in the meta line */
+    .crud-list-table-wrap .dense-table td .pill { font-size: 11px; padding: 1px 8px; }
+    /* edit/delete actions -> pinned to the card's top-right corner */
+    .crud-list-table-wrap .dense-table td[data-label=""] {
+        position: absolute;
+        top: 7px;
+        right: 6px;
+        gap: 2px;
+    }
+    .crud-list-table-wrap .dense-table td[data-label=""] button { height: 34px; width: 34px; }
+    /* empty-state / loading colspan text -> full-width centered */
+    .crud-list-table-wrap .dense-table td[colspan] {
+        flex-basis: 100%;
+        justify-content: center;
+        text-align: center;
+        padding: 14px 4px;
+        color: var(--v4-fg-muted, #6b7280);
+    }
 }
 
 /* ============================================================
@@ -659,6 +712,51 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     .app-main input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
     .app-main select,
     .app-main textarea { min-height: 44px; }
+}
+/* ============================================================
+   MOBILE FILTER / FORM REFLOW (2026-07-01) -- phones only (<=767.98px),
+   desktop (>=768px) emits ZERO css (media-gated, byte-identical).
+   Research-grounded (Baymard "Avoid Multi-Column Forms" single-column +
+   2-3 related-field row exception; NN/g "Web Form Design" top labels;
+   W3C WCAG 2.2 SC 2.5.5 44px targets + 2.5.8 spacing; web.dev; Tailwind
+   max-* docs). ROOT CAUSE fixed: ad-hoc filter bars used `flex flex-wrap`
+   with full-width children (or `sm:grid-cols-N`, and sm=640px never fires
+   below the 767.98px mobile breakpoint), so every control took its own
+   full-width row -> a tall, ragged vertical stack (the ResourceLeveling
+   "Window/Trade/Project" pain the user flagged). `.filter-wrap` reflows
+   such a bar into a compact 2-up grid in ONE place: add class="filter-wrap"
+   to the bar. Short related controls pair 2-up (Baymard exception, capped
+   at 2 tappable inputs per ~320-390px row); a long field or an action
+   button spans the row (`.filter-full` / `[data-filter-action]`).
+   ============================================================ */
+@media (max-width: 767.98px) {
+    /* filter bar -> 2 equal columns; 8px gap = WCAG min tap spacing. */
+    .filter-wrap {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        align-items: start;
+    }
+    /* each label+control group fills its cell; neutralise forced full-width. */
+    .filter-wrap > div { width: auto; min-width: 0; }
+    /* a long/free-text field or an action button spans the whole row. */
+    .filter-wrap > .filter-full,
+    .filter-wrap > [data-filter-action] { grid-column: 1 / -1; width: 100%; }
+    /* the leading filter icon must not consume a grid cell. */
+    .filter-wrap > svg { display: none; }
+    /* controls the .app-main native-control floor (:712) can't reach:
+       Radix <button role=combobox> select triggers + explicitly marked
+       buttons -> 44px tap height. */
+    .app-main [role="combobox"],
+    .app-main button[data-touch] { min-height: 44px; }
+    /* field labels: base .field-label is a literal 11px (index.css:3054),
+       too small in sunlight/gloves -> raise to 14px on phones. !important
+       beats the non-important :3054 rule regardless of source order; desktop
+       keeps 11px (this block is media-gated). */
+    .field-label { font-size: 14px !important; line-height: 1.4; }
+    /* applied-filter chip overview: horizontal scroll, never wrap. */
+    .applied-filters { display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .applied-filters > * { flex: 0 0 auto; white-space: nowrap; }
 }
 /* Mobile tap responsiveness: remove the ~300ms tap delay + accidental
    double-tap-zoom on interactive controls. touch-action is a touch-only

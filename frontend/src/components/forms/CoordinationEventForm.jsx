@@ -249,8 +249,12 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
   return (
     <div data-testid="coordination-event-form" className="space-y-3 text-sm">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div>
+      {/* max-md:grid-cols-2 -- sm:=640px never fires below the 767.98px mobile
+          breakpoint, so these fields used to each take a full row on phones.
+          Pairing them 2-up halves the height (Baymard related-field exception);
+          the wide datetime field spans the full row. Desktop unchanged. */}
+      <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-3 gap-3">
+        <div className="max-md:col-span-2">
           <FieldLabel required>Occurred at</FieldLabel>
           <input data-testid="coord-occurred-at" type="datetime-local"
             value={form.occurred_at}
@@ -279,7 +283,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
         <div>
           <FieldLabel required>Other party name</FieldLabel>
           <input data-testid="coord-other-name" value={form.other_party_name}
@@ -297,7 +301,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       </div>
 
       {!abbreviated && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-3 gap-3">
           <div>
             <label className="text-xs text-slate-500">Other party role</label>
             <input value={form.other_party_role}
@@ -319,7 +323,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-3 gap-3">
         <div>
           <label className="text-xs text-slate-500">Topic</label>
           <JigsawField entityType="coordination_event" entityId={entityId}

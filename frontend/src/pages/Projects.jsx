@@ -330,7 +330,7 @@ export default function Projects() {
                 <FieldLabel optional className="field-label">Client</FieldLabel>
                 <input data-testid="np-client" placeholder="e.g. VA Medical Center, Bronx NY" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel optional className="field-label">Station</FieldLabel>
                   <input data-testid="np-station" placeholder="e.g. 526-25-100" value={form.station_id} onChange={(e) => setForm({ ...form, station_id: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
@@ -352,7 +352,7 @@ export default function Projects() {
                 <FieldLabel optional className="field-label">City</FieldLabel>
                 <input data-testid="np-city" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel optional className="field-label">State</FieldLabel>
                   <input data-testid="np-state" placeholder="e.g. NY or New York" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
@@ -395,7 +395,7 @@ export default function Projects() {
                       value={form.agency} onChange={(e) => setForm({ ...form, agency: e.target.value })}
                       className="w-full h-9 px-3 rounded border border-input bg-background" />
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-3 gap-3">
                     <div>
                       <FieldLabel optional className="field-label">NTP date</FieldLabel>
                       <input data-testid="np-ntp" type="date"
@@ -418,7 +418,7 @@ export default function Projects() {
                       </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                     <div>
                       <FieldLabel optional className="field-label">Original substantial completion</FieldLabel>
                       <input data-testid="np-osc" type="date"
@@ -447,6 +447,11 @@ export default function Projects() {
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         {/* pt.37: dense-table-bordered → header-only vertical
             dividers, small-column table per Option C. */}
+        {/* crud-list-table-wrap: on phones this 8-col table reflows into compact
+            cards (Name = headline, the rest inline meta, Location hidden) so it
+            fits the frame instead of h-scrolling. Inert at >=768px -> desktop
+            table byte-identical. */}
+        <div className="crud-list-table-wrap">
         <table className="w-full dense-table dense-table-bordered">
           <thead>
             <tr><th>Name</th><th>Contract #</th><th>Client</th><th>Location</th><th>Status</th><th>Value</th><th>Plan finish</th><th></th></tr>
@@ -456,14 +461,14 @@ export default function Projects() {
               const loc = [p.city, p.state].filter(Boolean).join(", ");
               return (
                 <tr key={p.id} data-testid={`project-row-${p.id}`}>
-                  <td className="font-medium">{p.name}</td>
-                  <td className="font-mono text-xs">{p.contract_number || "—"}</td>
-                  <td>{p.client_name || "—"}</td>
-                  <td className="text-xs">{loc || <span className="text-muted-foreground">—</span>}</td>
-                  <td><span className={`pill ${p.status === "active" ? "pill-green" : "pill-slate"}`}>{p.status}</span></td>
-                  <td className="tabular-nums">{p.contract_value_usd ? `$${(p.contract_value_usd / 1_000_000).toFixed(2)}M` : "—"}</td>
-                  <td className="font-mono text-xs">{formatDateDisplay(p.planned_completion_date)}</td>
-                  <td className="text-right pr-3">
+                  <td className="font-medium col-primary" data-label="Name">{p.name}</td>
+                  <td className="font-mono text-xs" data-label="Contract #">{p.contract_number || "—"}</td>
+                  <td data-label="Client">{p.client_name || "—"}</td>
+                  <td className="text-xs col-hide-m" data-label="Location">{loc || <span className="text-muted-foreground">—</span>}</td>
+                  <td data-label="Status"><span className={`pill ${p.status === "active" ? "pill-green" : "pill-slate"}`}>{p.status}</span></td>
+                  <td className="tabular-nums" data-label="Value">{p.contract_value_usd ? `$${(p.contract_value_usd / 1_000_000).toFixed(2)}M` : "—"}</td>
+                  <td className="font-mono text-xs" data-label="Plan finish">{formatDateDisplay(p.planned_completion_date)}</td>
+                  <td className="text-right pr-3 col-fullwidth">
                     <button
                       data-testid={`edit-project-${p.id}`}
                       onClick={() => openEdit(p)}
@@ -488,6 +493,7 @@ export default function Projects() {
             {!projects.length && <tr><td colSpan="8" className="text-center text-sm text-muted-foreground py-6">No projects yet.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

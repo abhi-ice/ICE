@@ -104,7 +104,10 @@ export default function Lookahead() {
               >
                 {sortBySlipDesc ? "✓ Sorted by slip ↓" : "Sort by slip ↓"}
               </button>
-              <label className="inline-flex items-center gap-1 cursor-pointer">
+              {/* max-md:w-full + 44px row -- checkbox gets its own full-width
+                  tappable row on phones instead of wrapping under the Sort
+                  button. Desktop keeps it inline. */}
+              <label className="inline-flex items-center gap-1 cursor-pointer max-md:w-full max-md:min-h-[44px]">
                 <input
                   data-testid="lookahead-show-only-impacted"
                   type="checkbox"

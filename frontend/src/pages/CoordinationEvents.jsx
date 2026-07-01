@@ -106,9 +106,13 @@ export default function CoordinationEvents() {
             <option value="">Channel — all</option>
             {Object.keys(CHANNEL_ICONS).map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
           </select>
+          {/* max-md:col-span-2 -- Direction spans the full width on phones so
+              the From/To date pair lands together on its own row (Topic|Channel,
+              Direction, From|To) instead of a split range + a lone date cell.
+              Desktop keeps the 5-across row (md:grid-cols-5). */}
           <select data-testid="coord-filter-direction" value={filters.direction}
             onChange={(e) => setFilters({ ...filters, direction: e.target.value })}
-            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]">
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px] max-md:col-span-2">
             <option value="">Direction — all</option>
             <option value="inbound">Inbound</option>
             <option value="outbound">Outbound</option>
@@ -126,7 +130,12 @@ export default function CoordinationEvents() {
       </div>
 
       {/* List */}
-      <div className="surface overflow-hidden max-md:overflow-x-auto">
+      {/* crud-list-table-wrap: on phones each event collapses to a compact
+          card (Summary is the headline; When/Channel/Party/Topic/Outcome flow
+          as meta; the bare direction icon + optional Trade tag hide to cut
+          clutter). Inert >=768px -> desktop table stays byte-identical. */}
+      <div className="surface overflow-hidden">
+        <div className="crud-list-table-wrap">
         <table className="dense-table">
           <thead>
             <tr>
@@ -152,21 +161,21 @@ export default function CoordinationEvents() {
                 : r.outcome === "pending" ? "pill-amber" : "pill-slate";
               return (
                 <tr key={r.id} data-testid={`coord-row-${r.id}`}>
-                  <td className="font-mono text-xs whitespace-nowrap">{(r.occurred_at || "").slice(0, 16).replace("T", " ")}</td>
-                  <td className="text-xs">
+                  <td className="font-mono text-xs whitespace-nowrap" data-label="When">{(r.occurred_at || "").slice(0, 16).replace("T", " ")}</td>
+                  <td className="text-xs" data-label="Channel">
                     <span className="inline-flex items-center gap-1">
                       <Icon className="h-3 w-3 text-slate-500" /> {r.channel.replace(/_/g, " ")}
                     </span>
                   </td>
-                  <td><Dir className="h-3.5 w-3.5 text-slate-500" /></td>
-                  <td className="text-xs">
+                  <td className="col-hide-m"><Dir className="h-3.5 w-3.5 text-slate-500" /></td>
+                  <td className="text-xs" data-label="Party">
                     <div>{r.other_party_name}</div>
                     {r.other_party_org && <div className="text-xs text-slate-400">{r.other_party_org}</div>}
                   </td>
-                  <td className="text-xs">{TOPIC_LABELS[r.topic] || r.topic}</td>
+                  <td className="text-xs" data-label="Topic">{TOPIC_LABELS[r.topic] || r.topic}</td>
                   {/* Bug #32 fix -- optional trade tag, "—" when unset. */}
-                  <td className="text-xs">{r.trade_code ? r.trade_code.replace(/_/g, " ") : "—"}</td>
-                  <td className="text-sm max-w-[420px]">
+                  <td className="text-xs col-hide-m">{r.trade_code ? r.trade_code.replace(/_/g, " ") : "—"}</td>
+                  <td className="text-sm max-w-[420px] col-primary" data-label="Summary">
                     <Link to={`/coordination/${r.id}`} className="text-blue-700 hover:underline">
                       {r.summary}
                     </Link>
@@ -174,7 +183,7 @@ export default function CoordinationEvents() {
                       <span className="ml-2 text-xs px-1 rounded bg-amber-100 text-amber-700">voice draft</span>
                     )}
                   </td>
-                  <td><span className={`pill ${outClass} capitalize text-xs`}>{r.outcome.replace(/_/g, " ")}</span></td>
+                  <td data-label="Outcome"><span className={`pill ${outClass} capitalize text-xs`}>{r.outcome.replace(/_/g, " ")}</span></td>
                 </tr>
               );
             })}
@@ -186,6 +195,7 @@ export default function CoordinationEvents() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <Dialog open={open} onOpenChange={setOpen}>

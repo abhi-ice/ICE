@@ -1500,7 +1500,11 @@ export function WeeklyReports() {
         <FileBarChart className="h-5 w-5" />
         <h1 className="text-2xl font-semibold">Weekly reports</h1>
       </div>
-      <div className="flex border-b border-slate-200 text-sm overflow-x-auto"
+      {/* max-md:grid grid-cols-2 -- with only two tabs, splitting the row
+          50/50 on phones fits both labels without the horizontal scroll that
+          otherwise clipped "Reports Generator" mid-word. Desktop keeps the
+          natural-width flex row (grid classes are max-md gated). */}
+      <div className="flex border-b border-slate-200 text-sm overflow-x-auto max-md:grid max-md:grid-cols-2 max-md:overflow-visible"
         data-testid="weekly-tabs">
         <WrTab tab="rollup" active={tab} onClick={setTab}
           label="Weekly rollup" testid="weekly-tab-rollup" />
@@ -1517,7 +1521,7 @@ function WrTab({ tab, active, onClick, label, testid }) {
   const isActive = tab === active;
   return (
     <button data-testid={testid} onClick={() => onClick(tab)}
-      className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap ${
+      className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap max-md:text-center max-md:px-1.5 ${
         isActive
           ? "border-blue-600 text-blue-900 font-medium"
           : "border-transparent text-slate-600 hover:text-slate-900"

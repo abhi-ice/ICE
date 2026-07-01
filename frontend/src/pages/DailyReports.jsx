@@ -2865,15 +2865,17 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
     <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
-        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1 max-md:grid max-md:grid-cols-3">
+        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1 max-md:grid max-md:grid-cols-3 max-md:gap-2">
             {TABS.map((t) => {
               const Icon = t.icon;
               return (
                 <TabsTrigger key={t.value} value={t.value}
                   data-testid={`dr-events-tab-${t.value}`}
-                  className="dr-events-tab gap-1.5 px-3">
-                  <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
-                  <span>{t.label}</span>
+                  className="dr-events-tab gap-1.5 px-3 max-md:px-1.5 max-md:gap-1 max-md:text-xs max-md:justify-center">
+                  {/* icon hidden on phones so the 3-col grid fits label + count
+                      without cramping (real-device feedback). */}
+                  <Icon className="h-3.5 w-3.5 max-md:hidden" strokeWidth={1.8} />
+                  <span className="truncate">{t.label}</span>
                   {typeof t.count === "number" && (
                     <span className="dr-events-tab-count ml-1 text-[10px] font-medium px-1.5 py-0.5 rounded">
                       {t.count}

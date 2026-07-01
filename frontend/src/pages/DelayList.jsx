@@ -102,7 +102,7 @@ export default function DelayList() {
 
   return (
     <div data-testid="delays-page" className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-md:flex-col max-md:items-stretch max-md:gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight inline-flex items-baseline">
             Delays
@@ -118,7 +118,7 @@ export default function DelayList() {
               Click any row's date or activity chip to jump to the parent daily report.
             </PageHelp>
           </h1>
-          <p className="text-sm text-slate-500">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
+          <p className="text-sm text-slate-500 max-md:text-xs max-md:line-clamp-2">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
         {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
         <button data-testid="delays-add" onClick={startCreate} disabled={routing}
@@ -133,16 +133,20 @@ export default function DelayList() {
           description is redundant once the title carries the help. */}
 
       {/* Bucket D Phase 3 -- gallery filter. */}
-      <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600 flex items-center gap-2">
-        <label className="uppercase tracking-wide text-xs">Filter by activity id</label>
+      {/* max-md:flex-wrap + label w-full: on phones the label sits on its own
+          line and the input (flex-1) + Clear share the next row -- a tidy
+          2-line filter instead of three stacked full-width elements. Desktop
+          keeps the single inline row. */}
+      <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600 flex items-center gap-2 max-md:flex-wrap">
+        <label className="uppercase tracking-wide text-xs max-md:w-full">Filter by activity id</label>
         <input data-testid="delays-affected-activity-filter"
           value={affectedActivityId}
           onChange={(e) => setAffectedActivityId(e.target.value)}
           placeholder="paste a daily_report_activity.id"
-          className="h-7 px-2 rounded border border-slate-300 bg-white text-xs flex-1" />
+          className="h-7 px-2 rounded border border-slate-300 bg-white text-xs flex-1 max-md:min-h-[44px]" />
         {affectedActivityId && (
           <button onClick={() => setAffectedActivityId("")}
-            className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">
+            className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300 max-md:min-h-[44px]">
             Clear
           </button>
         )}
@@ -179,14 +183,17 @@ export default function DelayList() {
                   </td>
                   <td data-label="Severity"><span className={`pill ${sev}`}>{r.severity}</span></td>
                   <td data-label="Status"><span className={`pill ${stat}`}>{(r.status || "open").replace(/_/g, " ")}</span></td>
-                  <td data-label="Description" className="text-sm max-w-[420px] truncate col-fullwidth">
+                  {/* col-primary = the mobile card headline (bold, top line);
+                      max-w/truncate keep the desktop table cell identical. */}
+                  <td data-label="Description" className="text-sm max-w-[420px] truncate col-primary">
                     <Link to={`/delays/${r.id}`} className="text-blue-600 hover:underline">
                       {(r.description || "").slice(0, 120) || "—"}
                     </Link>
                   </td>
-                  <td className="text-xs" data-label="Linked tasks">{(r.linked_task_ids || []).length}</td>
-                  <td data-label="Affected activities" className="col-fullwidth"><GalleryActivityChips projectId={activeId} activityIds={r.linked_task_ids || []} /></td>
-                  <td className="text-xs" data-label="Days open">{r.duration_days ?? "—"}</td>
+                  {/* col-hide-m = off the phone list card (still on the detail view) */}
+                  <td className="text-xs col-hide-m" data-label="Linked tasks">{(r.linked_task_ids || []).length}</td>
+                  <td data-label="Affected activities" className="col-fullwidth col-hide-m"><GalleryActivityChips projectId={activeId} activityIds={r.linked_task_ids || []} /></td>
+                  <td className="text-xs col-mdays" data-label="Days open">{r.duration_days ?? "—"}</td>
                   <td className="text-right" data-label="">
                     <button data-testid={`delays-edit-${r.id}`} onClick={() => startEdit(r)}
                       className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500"

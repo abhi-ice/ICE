@@ -226,8 +226,12 @@ export default function ResourceLeveling() {
           </div>
         </div>
 
-        {/* Filter row */}
-        <div className="flex flex-wrap items-end gap-3 p-3 bg-slate-50 border border-slate-200 rounded">
+        {/* Filter row. filter-wrap: on phones (<=767.98px) this flex bar
+            reflows to a compact 2-up grid (Window+Trade pair, Project on the
+            next row, Clear spans) instead of a tall full-width stack; the
+            leading Filter icon is hidden and controls keep their 44px touch
+            height. Desktop keeps the flex-wrap row byte-identical. */}
+        <div className="filter-wrap flex flex-wrap items-end gap-3 p-3 bg-slate-50 border border-slate-200 rounded">
           <Filter className="h-4 w-4 text-slate-500 mb-2" />
           <div>
             <label className="text-xs text-slate-500 block">Window (days)</label>
@@ -258,8 +262,8 @@ export default function ResourceLeveling() {
           </div>
           {(filters.trade || filters.project_id) && (
             <button onClick={() => setFilters({ ...filters, trade: "", project_id: "" })}
-              data-testid="rl-filter-clear"
-              className="h-8 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300">
+              data-testid="rl-filter-clear" data-filter-action
+              className="h-8 px-3 rounded bg-slate-200 text-slate-700 text-sm hover:bg-slate-300 max-md:min-h-[44px]">
               Clear
             </button>
           )}

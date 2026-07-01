@@ -246,6 +246,13 @@ export default function CrudList({
     }
   };
 
+  // Compact-mobile-card headline (2026-07-01): on phones each row is a compact
+  // card (see .crud-list-table-wrap in index.css). One column becomes the bold
+  // headline: an explicit `primary: true` column, else the first column (which
+  // across every CrudList config is the natural identifier — Name/First/etc.).
+  // Columns marked `hideMobile: true` drop off the phone card (still on desktop).
+  const mobilePrimaryKey = (columns.find((c) => c.primary) || columns[0] || {}).key;
+
   return (
     <div data-testid={`${testidPrefix}-page`} className="space-y-4">
       {/* max-md:flex-wrap -- shared by every CRUD page (Resources, etc.). On a
@@ -287,9 +294,15 @@ export default function CrudList({
           <tbody>
             {rows.map((r, i) => (
               <tr key={r.id || i} data-testid={`${testidPrefix}-row-${r.id || i}`}>
-                {columns.map((c) => (
-                  <td key={c.key} data-label={c.label} className={(c.fullWidth || c._isChips) ? "col-fullwidth" : undefined}>{c.render ? c.render(r) : (r[c.key] ?? "—")}</td>
-                ))}
+                {columns.map((c) => {
+                  const cls = [
+                    c.key === mobilePrimaryKey ? "col-primary" : ((c.fullWidth || c._isChips) ? "col-fullwidth" : ""),
+                    c.hideMobile ? "col-hide-m" : "",
+                  ].filter(Boolean).join(" ") || undefined;
+                  return (
+                    <td key={c.key} data-label={c.label} className={cls}>{c.render ? c.render(r) : (r[c.key] ?? "—")}</td>
+                  );
+                })}
                 {(patchEndpoint || deleteEndpoint) && (
                   <td className="text-right" data-label="">
                     {patchEndpoint && (
