@@ -810,6 +810,22 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         font-size: 11px; height: 32px; padding: 0 8px; white-space: nowrap;
     }
     [data-testid="dr-activity-grid"] .ml-auto.flex.items-center.gap-2 { flex-wrap: wrap; justify-content: flex-end; }
+    /* Events tabs: keep the kind labels readable on narrow phones -- tighter
+       font + padding so "Delays/Safety/QC/RFIs/Deliveries/Notes" don't
+       truncate to single letters. */
+    .dr-events-tabs [role="tab"] {
+        font-size: 12px;
+        padding-left: 5px;
+        padding-right: 5px;
+        min-width: 0;
+    }
+    .dr-events-tabs [role="tab"] .dr-events-tab-count { font-size: 10px; padding: 0 4px; }
+    /* On very narrow phones the 3-across event-tab grid squeezes each cell to
+       ~65px and the truncate label collapses to "De…" -- drop to 2-across so
+       every kind label renders in full. 380px+ keeps 3-across. */
+    @media (max-width: 379.98px) {
+        .dr-events-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
     /* Manpower: dark-theme override of the draft row's emerald tint outranked
        the earlier neutralizer -- kill it at higher specificity for BOTH themes. */
     html[data-theme="dark"] [data-testid="dr-presence-panel"] tr[data-testid^="presence-draft-"],
