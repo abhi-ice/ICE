@@ -412,7 +412,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           stands alone — the old "Cause class" half merged into the single
           "Cause" dropdown above. Left blank -> saved as "none", which TIA
           Section 4 renders as "no attribution". */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* max-md:grid-cols-1 -- this grid wraps a single standalone field, so
+          on phones collapse to one column (full-width) instead of a half-width
+          control with a blank right cell. Desktop keeps the 2-col grid as-is. */}
+      <div className="grid grid-cols-2 max-md:grid-cols-1 gap-3">
         <div>
           <FieldLabel optional title="Who is responsible for the delay event — usually set by the office/PM (or AI) for the formal claim rollup">
             Owner attribution

@@ -151,7 +151,7 @@ export default function MarketplaceFull() {
           <DialogContent>
             <DialogHeader><DialogTitle>New marketplace posting</DialogTitle></DialogHeader>
             <div className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="field-label">Type</label>
                   <select value={form.posting_type} onChange={(e) => setForm({ ...form, posting_type: e.target.value })} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
@@ -173,12 +173,12 @@ export default function MarketplaceFull() {
                 <label className="field-label">Description *</label>
                 <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full p-2 rounded border border-slate-200 text-sm h-24" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-3 gap-3">
                 <div><label className="field-label">City</label><input value={form.location_city} onChange={(e) => setForm({ ...form, location_city: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
                 <div><label className="field-label">State</label><input value={form.location_state} onChange={(e) => setForm({ ...form, location_state: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
                 <div><label className="field-label">Deadline</label><input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div><label className="field-label">Budget low ($)</label><input type="number" value={form.budget_low} onChange={(e) => setForm({ ...form, budget_low: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
                 <div><label className="field-label">Budget high ($)</label><input type="number" value={form.budget_high} onChange={(e) => setForm({ ...form, budget_high: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
               </div>

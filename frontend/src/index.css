@@ -713,6 +713,51 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     .app-main select,
     .app-main textarea { min-height: 44px; }
 }
+/* ============================================================
+   MOBILE FILTER / FORM REFLOW (2026-07-01) -- phones only (<=767.98px),
+   desktop (>=768px) emits ZERO css (media-gated, byte-identical).
+   Research-grounded (Baymard "Avoid Multi-Column Forms" single-column +
+   2-3 related-field row exception; NN/g "Web Form Design" top labels;
+   W3C WCAG 2.2 SC 2.5.5 44px targets + 2.5.8 spacing; web.dev; Tailwind
+   max-* docs). ROOT CAUSE fixed: ad-hoc filter bars used `flex flex-wrap`
+   with full-width children (or `sm:grid-cols-N`, and sm=640px never fires
+   below the 767.98px mobile breakpoint), so every control took its own
+   full-width row -> a tall, ragged vertical stack (the ResourceLeveling
+   "Window/Trade/Project" pain the user flagged). `.filter-wrap` reflows
+   such a bar into a compact 2-up grid in ONE place: add class="filter-wrap"
+   to the bar. Short related controls pair 2-up (Baymard exception, capped
+   at 2 tappable inputs per ~320-390px row); a long field or an action
+   button spans the row (`.filter-full` / `[data-filter-action]`).
+   ============================================================ */
+@media (max-width: 767.98px) {
+    /* filter bar -> 2 equal columns; 8px gap = WCAG min tap spacing. */
+    .filter-wrap {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        align-items: start;
+    }
+    /* each label+control group fills its cell; neutralise forced full-width. */
+    .filter-wrap > div { width: auto; min-width: 0; }
+    /* a long/free-text field or an action button spans the whole row. */
+    .filter-wrap > .filter-full,
+    .filter-wrap > [data-filter-action] { grid-column: 1 / -1; width: 100%; }
+    /* the leading filter icon must not consume a grid cell. */
+    .filter-wrap > svg { display: none; }
+    /* controls the .app-main native-control floor (:712) can't reach:
+       Radix <button role=combobox> select triggers + explicitly marked
+       buttons -> 44px tap height. */
+    .app-main [role="combobox"],
+    .app-main button[data-touch] { min-height: 44px; }
+    /* field labels: base .field-label is a literal 11px (index.css:3054),
+       too small in sunlight/gloves -> raise to 14px on phones. !important
+       beats the non-important :3054 rule regardless of source order; desktop
+       keeps 11px (this block is media-gated). */
+    .field-label { font-size: 14px !important; line-height: 1.4; }
+    /* applied-filter chip overview: horizontal scroll, never wrap. */
+    .applied-filters { display: flex; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .applied-filters > * { flex: 0 0 auto; white-space: nowrap; }
+}
 /* Mobile tap responsiveness: remove the ~300ms tap delay + accidental
    double-tap-zoom on interactive controls. touch-action is a touch-only
    interaction hint -> zero layout/visual change. Gated to phones (<=767.98px)

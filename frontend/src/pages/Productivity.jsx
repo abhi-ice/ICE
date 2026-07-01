@@ -35,7 +35,7 @@ export default function Productivity() {
               key={d}
               data-testid={`prod-window-${d}`}
               onClick={() => setDays(d)}
-              className={`h-8 px-3 rounded text-sm border ${days === d ? "bg-blue-600 text-white border-blue-600" : "border-slate-200"}`}
+              className={`h-8 px-3 rounded text-sm border max-md:min-h-[44px] ${days === d ? "bg-blue-600 text-white border-blue-600" : "border-slate-200"}`}
             >
               {d}d
             </button>

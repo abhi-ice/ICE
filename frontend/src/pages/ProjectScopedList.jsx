@@ -428,16 +428,19 @@ export default function ProjectScopedList({ kind }) {
            wraps long-form help via its own title; this row is just
            the filter affordance. */
         <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">
-          <div className="flex items-center gap-2">
-            <label className="uppercase tracking-wide text-xs">Filter by activity id</label>
+          {/* max-md:flex-wrap + label w-full: label on its own line, input
+              (flex-1) + Clear share the next row on phones so the input doesn't
+              compress to nothing next to the label. Desktop keeps one row. */}
+          <div className="flex items-center gap-2 max-md:flex-wrap">
+            <label className="uppercase tracking-wide text-xs max-md:w-full">Filter by activity id</label>
             <input data-testid={`${kind}-affected-activity-filter`}
               value={affectedActivityId}
               onChange={(e) => setAffectedActivityId(e.target.value)}
               placeholder="paste a daily_report_activity.id"
-              className="h-7 px-2 rounded border border-slate-300 bg-white text-xs flex-1" />
+              className="h-7 px-2 rounded border border-slate-300 bg-white text-xs flex-1 max-md:min-h-[44px]" />
             {affectedActivityId && (
               <button onClick={() => setAffectedActivityId("")}
-                className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300">
+                className="h-7 px-2 rounded bg-slate-200 text-slate-700 text-xs hover:bg-slate-300 max-md:min-h-[44px]">
                 Clear
               </button>
             )}

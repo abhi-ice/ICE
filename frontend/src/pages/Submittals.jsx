@@ -308,7 +308,7 @@ function RegisterTab() {
                     onChange={(e) => setForm({ ...form, title: e.target.value })}
                     className="w-full h-9 px-3 rounded border border-slate-200" />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                   <div>
                     <FieldLabel optional className="field-label">Spec section code</FieldLabel>
                     <input value={form.spec_section_code}
@@ -324,7 +324,7 @@ function RegisterTab() {
                       className="w-full h-9 px-3 rounded border border-slate-200" />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="field-label">Type</label>
                     <select data-testid="sub-type" value={form.type}
@@ -341,7 +341,7 @@ function RegisterTab() {
                       className="w-full h-9 px-3 rounded border border-slate-200" />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                   <div>
                     <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                     <input data-testid="sub-lead-time" type="number" min="0"
@@ -737,7 +737,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                   className="w-full h-9 px-3 rounded border border-slate-200" />
               </JigsawField>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
               <div>
                 <label className="field-label">Type</label>
                 <JigsawField entityType="submittal" entityId={submittal.id}
@@ -762,7 +762,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                 </JigsawField>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
               <div>
                 <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                 <input type="number" min="0" value={form.procurement_lead_time_days}
@@ -777,7 +777,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
               </div>
             </div>
             {isAdminOrPm && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
                 <div>
                   <FieldLabel optional className="field-label text-amber-900">SLA override (days)</FieldLabel>
                   <input type="number" min="1" max="365"

@@ -330,7 +330,7 @@ export default function Projects() {
                 <FieldLabel optional className="field-label">Client</FieldLabel>
                 <input data-testid="np-client" placeholder="e.g. VA Medical Center, Bronx NY" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel optional className="field-label">Station</FieldLabel>
                   <input data-testid="np-station" placeholder="e.g. 526-25-100" value={form.station_id} onChange={(e) => setForm({ ...form, station_id: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
@@ -352,7 +352,7 @@ export default function Projects() {
                 <FieldLabel optional className="field-label">City</FieldLabel>
                 <input data-testid="np-city" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel optional className="field-label">State</FieldLabel>
                   <input data-testid="np-state" placeholder="e.g. NY or New York" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
@@ -395,7 +395,7 @@ export default function Projects() {
                       value={form.agency} onChange={(e) => setForm({ ...form, agency: e.target.value })}
                       className="w-full h-9 px-3 rounded border border-input bg-background" />
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-3 gap-3">
                     <div>
                       <FieldLabel optional className="field-label">NTP date</FieldLabel>
                       <input data-testid="np-ntp" type="date"
@@ -418,7 +418,7 @@ export default function Projects() {
                       </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 max-md:grid-cols-2 sm:grid-cols-2 gap-3">
                     <div>
                       <FieldLabel optional className="field-label">Original substantial completion</FieldLabel>
                       <input data-testid="np-osc" type="date"
