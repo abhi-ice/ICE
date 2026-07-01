@@ -102,21 +102,25 @@ export default function Specs() {
       </div>
 
       <div className="surface overflow-hidden">
+        {/* crud-list-table-wrap: compact cards on phones (Name headline;
+            Revision/Status meta; Pages/Sections hidden; the PDF/section action
+            links on their own line). Inert >=768px -> desktop byte-identical. */}
+        <div className="crud-list-table-wrap">
         <table className="dense-table">
           <thead><tr><th>Name</th><th>Revision</th><th>Pages</th><th>Sections</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {list.map((s) => (
               <tr key={s.id} data-testid={`spec-row-${s.id}`}>
-                <td>{s.name}</td>
-                <td>{s.revision_label || "—"}</td>
-                <td className="tabular-nums">{s.pdf_page_count || "—"}</td>
-                <td className="tabular-nums">{s.total_sections}</td>
-                <td>
+                <td className="col-primary" data-label="Name">{s.name}</td>
+                <td data-label="Revision">{s.revision_label || "—"}</td>
+                <td className="tabular-nums col-hide-m" data-label="Pages">{s.pdf_page_count || "—"}</td>
+                <td className="tabular-nums col-hide-m" data-label="Sections">{s.total_sections}</td>
+                <td data-label="Status">
                   <span className={`pill ${s.processing_status === "complete" ? "pill-green" : s.processing_status === "processing" ? "pill-amber" : s.processing_status === "failed" ? "pill-red" : "pill-slate"}`}>
                     {s.processing_status}
                   </span>
                 </td>
-                <td className="text-right space-x-2">
+                <td className="text-right space-x-2 col-fullwidth" data-label="Actions">
                   {s.pdf_page_count > 0 && (
                     <button data-testid={`view-spec-pdf-${s.id}`} onClick={() => setViewSpec(s)} className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"><FileText className="h-3 w-3" /> View PDF</button>
                   )}
@@ -130,6 +134,7 @@ export default function Specs() {
             {!list.length && <tr><td colSpan="6" className="text-center py-6 text-sm text-slate-500">No specs yet. Create one and upload a PDF for MasterFormat division/section detection.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
 
       <Dialog open={!!uploadFor} onOpenChange={(o) => !o && setUploadFor(null)}>

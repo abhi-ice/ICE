@@ -145,19 +145,22 @@ export default function Team() {
       {/* Members */}
       <div className="surface p-4" data-testid="members-table">
         <div className="font-medium mb-2">Members ({members.length})</div>
+        {/* crud-list-table-wrap: compact cards on phones (Name headline;
+            Email/Role/Joined meta; Remove on its own line). Inert >=768px. */}
+        <div className="crud-list-table-wrap">
         <table className="dense-table w-full">
           <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
           <tbody>
             {members.map((m) => (
               <tr key={m.id} data-testid={`member-${m.id}`}>
-                <td>{m.full_name}</td>
-                <td className="text-xs text-slate-600">{m.email}</td>
-                <td><span className="pill pill-slate">{m.role}</span></td>
-                <td className="text-xs text-slate-500">{new Date(m.created_at).toLocaleDateString()}</td>
-                <td className="text-right">
+                <td className="col-primary" data-label="Name">{m.full_name}</td>
+                <td className="text-xs text-slate-600" data-label="Email">{m.email}</td>
+                <td data-label="Role"><span className="pill pill-slate">{m.role}</span></td>
+                <td className="text-xs text-slate-500" data-label="Joined">{new Date(m.created_at).toLocaleDateString()}</td>
+                <td className="text-right col-fullwidth">
                   {isAdmin && m.id !== me?.id && (
                     <button data-testid={`remove-member-${m.id}`} onClick={() => remove(m.id)}
-                      className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs flex items-center gap-1">
+                      className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs inline-flex items-center gap-1">
                       <Trash2 className="h-3.5 w-3.5" /> Remove
                     </button>
                   )}
@@ -167,21 +170,25 @@ export default function Team() {
             {!members.length && <tr><td colSpan="5" className="text-center py-4 text-sm text-slate-500">No members yet.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Invites */}
       <div className="surface p-4" data-testid="invites-table">
         <div className="font-medium mb-2">Invites ({invites.length})</div>
+        {/* crud-list-table-wrap: compact cards on phones (Email headline;
+            Role/Status/Code/copy/Sent meta; Revoke on its own line). Inert >=768px. */}
+        <div className="crud-list-table-wrap">
         <table className="dense-table w-full">
           <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Code</th><th>Invite link</th><th>Sent</th><th></th></tr></thead>
           <tbody>
             {invites.map((i) => (
               <tr key={i.id} data-testid={`invite-${i.id}`}>
-                <td className="text-xs">{i.email}</td>
-                <td><span className="pill pill-slate">{i.role}</span></td>
-                <td><span className={`pill ${i.status === "pending" ? "pill-blue" : i.status === "accepted" ? "pill-green" : "pill-slate"}`}>{i.status}</span></td>
-                <td className="font-mono text-xs">{i.code}</td>
-                <td>
+                <td className="text-xs col-primary" data-label="Email">{i.email}</td>
+                <td data-label="Role"><span className="pill pill-slate">{i.role}</span></td>
+                <td data-label="Status"><span className={`pill ${i.status === "pending" ? "pill-blue" : i.status === "accepted" ? "pill-green" : "pill-slate"}`}>{i.status}</span></td>
+                <td className="font-mono text-xs" data-label="Code">{i.code}</td>
+                <td data-label="Link">
                   {i.status === "pending" && (
                     <button data-testid={`copy-link-${i.id}`} onClick={() => { navigator.clipboard.writeText(inviteUrl(i.code)); toast.success("Link copied"); }}
                       className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
@@ -189,8 +196,8 @@ export default function Team() {
                     </button>
                   )}
                 </td>
-                <td className="text-xs text-slate-500">{new Date(i.invited_at).toLocaleDateString()}</td>
-                <td className="text-right">
+                <td className="text-xs text-slate-500" data-label="Sent">{new Date(i.invited_at).toLocaleDateString()}</td>
+                <td className="text-right col-fullwidth">
                   {isAdmin && i.status === "pending" && (
                     <button data-testid={`revoke-invite-${i.id}`} onClick={() => revoke(i.id)}
                       className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs">Revoke</button>
@@ -201,6 +208,7 @@ export default function Team() {
             {!invites.length && <tr><td colSpan="7" className="text-center py-4 text-sm text-slate-500">No invites yet.</td></tr>}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
