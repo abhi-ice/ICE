@@ -30,7 +30,7 @@ export default function Aging() {
         <Clock className="h-5 w-5 text-amber-500" />
         <h1 className="text-2xl font-semibold tracking-tight">Procurement aging</h1>
       </div>
-      <p className="text-sm text-slate-500">Items past their SLA. Click a row to drill into the source list.</p>
+      <p className="text-sm text-slate-500 page-desc">Items past their SLA. Click a row to drill into the source list.</p>
 
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

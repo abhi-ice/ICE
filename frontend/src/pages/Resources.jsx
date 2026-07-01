@@ -200,7 +200,7 @@ export function Availability() {
   return (
     <div data-testid="availability-page" className="space-y-3">
       <h1 className="text-2xl font-semibold tracking-tight">Resource availability</h1>
-      <p className="text-sm text-slate-500">Calendar view of crews and equipment availability — coming next iteration. For now use Crews / People pages to manage records and the AI copilot to query availability conflicts.</p>
+      <p className="text-sm text-slate-500 page-desc">Calendar view of crews and equipment availability — coming next iteration. For now use Crews / People pages to manage records and the AI copilot to query availability conflicts.</p>
     </div>
   );
 }

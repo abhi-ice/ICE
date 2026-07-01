@@ -81,7 +81,7 @@ export default function Photos() {
               </PageHelp>
             </h1>
           </div>
-          <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
+          <p className="text-sm text-slate-500 page-desc">{project?.name} · gallery view across all daily reports</p>
         </div>
         <div className="flex max-md:flex-wrap items-center gap-2">
           <button data-testid="photos-ai-help"

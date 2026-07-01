@@ -262,7 +262,7 @@ export default function CrudList({
       <div className="flex items-center justify-between max-md:flex-wrap max-md:gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-          {subtitle && <p className="text-sm text-slate-500">{subtitle}</p>}
+          {subtitle && <p className="text-sm text-slate-500 page-desc">{subtitle}</p>}
         </div>
         <div className="flex items-center gap-2">
           {extraActions}
@@ -274,7 +274,7 @@ export default function CrudList({
         </div>
       </div>
 
-      {help && <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-2">{help}</div>}
+      {help && <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-2 page-desc">{help}</div>}
 
       <div className="surface overflow-hidden crud-list-table-wrap">
         {/* pt.37: dense-table-bordered → header-only vertical

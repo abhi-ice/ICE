@@ -118,7 +118,7 @@ export default function DelayList() {
               Click any row's date or activity chip to jump to the parent daily report.
             </PageHelp>
           </h1>
-          <p className="text-sm text-slate-500 max-md:text-xs max-md:line-clamp-2">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
+          <p className="text-sm text-slate-500 page-desc">Logged schedule delays with linked tasks, float impact, and resolution status.</p>
         </div>
         {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
         <button data-testid="delays-add" onClick={startCreate} disabled={routing}
