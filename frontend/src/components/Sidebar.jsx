@@ -12,7 +12,7 @@ const SECTION_COLLAPSE_KEY = "ice.sidebar.collapsed";
 // via localStorage so a super who expands it once stays expanded.
 const RAIL_COLLAPSE_KEY = "ice.sidebar.rail.collapsed";
 
-export default function Sidebar() {
+export default function Sidebar({ onNavigate }) {
   const [badges, setBadges] = useState({
     approvals: 0, rfis: 0, submittals: 0, work_items: 0,
     aging: 0, edit_requests: 0, suggestions: 0,
@@ -25,13 +25,30 @@ export default function Sidebar() {
   // Compact "icon rail" state -- defaults to TRUE for new users so the
   // Tasks page (and every other dense-table view) gets maximum width
   // without the super having to learn about a sidebar toggle first.
-  const [rail, setRail] = useState(() => {
+  const [userRail, setUserRail] = useState(() => {
     try {
       const raw = localStorage.getItem(RAIL_COLLAPSE_KEY);
       if (raw === null) return true;   // first visit -> collapsed
       return JSON.parse(raw);
     } catch { return true; }
   });
+  // P1 mobile drawer (2026-06-29): on phones (<=767px) the sidebar becomes an
+  // off-canvas drawer (see index.css) that shows the FULL expanded nav, so we
+  // force expanded there; desktop keeps the persisted rail preference. isMobile
+  // is FALSE on desktop, so `rail` === userRail and the desktop render +
+  // --sidebar-w are byte-identical to before. matchMedia keeps it in sync on
+  // rotate/resize across the 767px boundary.
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== "undefined"
+      && window.matchMedia("(max-width:767.98px)").matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width:767.98px)");
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const rail = isMobile ? false : userRail;
 
   useEffect(() => {
     const load = async () => {
@@ -93,8 +110,8 @@ export default function Sidebar() {
     localStorage.setItem(SECTION_COLLAPSE_KEY, JSON.stringify(next));
   };
   const toggleRail = () => {
-    const next = !rail;
-    setRail(next);
+    const next = !userRail;          // toggle the PERSISTED desktop preference
+    setUserRail(next);
     localStorage.setItem(RAIL_COLLAPSE_KEY, JSON.stringify(next));
   };
 
@@ -107,12 +124,17 @@ export default function Sidebar() {
   // chars) lightly truncates and recovers via the new title tooltip on
   // each NavLink below.
   useLayoutEffect(() => {
-    document.documentElement.style.setProperty("--sidebar-w", rail ? "56px" : "224px");
-  }, [rail]);
+    // On phones the sidebar is an off-canvas drawer (0 layout width). The
+    // --sidebar-w var also left-positions a couple of fixed elements (see
+    // index.css), so zero it on mobile so nothing is offset by a phantom
+    // 224px. Desktop unchanged (rail 56px / expanded 224px).
+    document.documentElement.style.setProperty("--sidebar-w", isMobile ? "0px" : (rail ? "56px" : "224px"));
+  }, [rail, isMobile]);
 
   const Brand = APP_BRAND.icon;
   return (
     <aside
+      id="app-sidebar"
       data-testid="app-sidebar"
       data-collapsed={rail ? "true" : "false"}
       className={`${rail ? "w-14" : "w-56"} app-sidebar fixed left-0 top-0 bottom-0 h-screen overflow-y-auto overflow-x-hidden scrollbar-soft transition-[width] duration-150 ease-out z-30`}
@@ -159,7 +181,18 @@ export default function Sidebar() {
         </div>
       )}
 
-      <nav className="pb-6">
+      <nav
+        className="pb-6"
+        /* P1: on phones, tapping any nav link closes the drawer. Event
+           delegation so we don't touch every NavLink. No-op on desktop
+           (the class is never set there). */
+        onClick={(e) => {
+          if (e.target.closest("a")) {
+            if (onNavigate) onNavigate();
+            else document.body.classList.remove("mobile-nav-open");
+          }
+        }}
+      >
         {SIDEBAR_SECTIONS.map((section) => {
           const isCollapsed = !!collapsed[section.title];
           // In rail mode every section is rendered fully (we can't show

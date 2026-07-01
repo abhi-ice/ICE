@@ -263,21 +263,21 @@ function RegisterTab() {
           <select data-testid="register-filter-discipline"
             value={filterDiscipline}
             onChange={(e) => setFilterDiscipline(e.target.value)}
-            className="h-8 px-2 rounded border border-slate-200 text-xs bg-white">
+            className="h-8 max-md:min-h-[44px] px-2 rounded border border-slate-200 text-xs bg-white">
             <option value="">All disciplines</option>
             {disciplines.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
           <select data-testid="register-filter-sla"
             value={filterSlaStatus}
             onChange={(e) => setFilterSlaStatus(e.target.value)}
-            className="h-8 px-2 rounded border border-slate-200 text-xs bg-white">
+            className="h-8 max-md:min-h-[44px] px-2 rounded border border-slate-200 text-xs bg-white">
             <option value="">All SLA statuses</option>
             {Object.keys(SLA_PILL_LABEL).map((k) =>
               <option key={k} value={k}>{SLA_PILL_LABEL[k]}</option>)}
           </select>
           <select data-testid="register-sort"
             value={sortBy} onChange={(e) => setSortBy(e.target.value)}
-            className="h-8 px-2 rounded border border-slate-200 text-xs bg-white">
+            className="h-8 max-md:min-h-[44px] px-2 rounded border border-slate-200 text-xs bg-white">
             <option value="submittal_number">Sort: # asc</option>
             <option value="aging_days">Sort: aging desc</option>
             <option value="a_e_review_due_at">Sort: due date</option>
@@ -285,7 +285,7 @@ function RegisterTab() {
           </select>
           <button onClick={load} disabled={loading}
             data-testid="register-refresh"
-            className="h-8 px-2 rounded border border-slate-200 bg-white text-xs inline-flex items-center gap-1 hover:bg-slate-50">
+            className="h-8 max-md:min-h-[44px] max-md:min-w-[44px] px-2 rounded border border-slate-200 bg-white text-xs inline-flex items-center gap-1 hover:bg-slate-50">
             <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
           </button>
           <Dialog open={open} onOpenChange={setOpen}>
@@ -304,7 +304,7 @@ function RegisterTab() {
                     onChange={(e) => setForm({ ...form, title: e.target.value })}
                     className="w-full h-9 px-3 rounded border border-slate-200" />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <FieldLabel optional className="field-label">Spec section code</FieldLabel>
                     <input value={form.spec_section_code}
@@ -320,7 +320,7 @@ function RegisterTab() {
                       className="w-full h-9 px-3 rounded border border-slate-200" />
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="field-label">Type</label>
                     <select data-testid="sub-type" value={form.type}
@@ -337,7 +337,7 @@ function RegisterTab() {
                       className="w-full h-9 px-3 rounded border border-slate-200" />
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                     <input data-testid="sub-lead-time" type="number" min="0"
@@ -531,7 +531,7 @@ function RegisterCard({ s, isAdminOrPm, onSubmitToAe, onPauseResume, onOpenEdit 
       <div className="text-slate-500 text-xs">
         {s.discipline || "—"} · {(s.type || "").replace(/_/g, " ")} · rev {s.review_cycle_count || 0}
       </div>
-      <div className="grid grid-cols-2 gap-1 text-xs text-slate-600">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs text-slate-600">
         <div>Submitted: {formatDateDisplay(s.submitted_to_ae_at)}</div>
         <div>Due: {formatDateDisplay(s.a_e_review_due_at)}</div>
         <div>Aging: {s.aging_days != null ? `${s.aging_days}d` : "—"}</div>
@@ -543,20 +543,20 @@ function RegisterCard({ s, isAdminOrPm, onSubmitToAe, onPauseResume, onOpenEdit 
         {s.status === "not_yet_submitted" && (
           <button onClick={() => onSubmitToAe(s)}
             data-testid={`sub-card-submit-${s.submittal_number}`}
-            className="h-7 px-2 rounded bg-blue-600 text-white text-xs inline-flex items-center gap-1 hover:bg-blue-700">
+            className="h-7 max-md:min-h-[44px] px-2 rounded bg-blue-600 text-white text-xs inline-flex items-center gap-1 hover:bg-blue-700">
             <Send className="h-3 w-3" /> Submit
           </button>
         )}
         {isAdminOrPm && s.submitted_to_ae_at && (
           <button onClick={() => onPauseResume(s)}
-            className="h-7 px-2 rounded border border-slate-200 bg-white text-slate-700 text-xs inline-flex items-center gap-1">
+            className="h-7 max-md:min-h-[44px] px-2 rounded border border-slate-200 bg-white text-slate-700 text-xs inline-flex items-center gap-1">
             {s.sla_status === "paused"
               ? <><Play className="h-3 w-3" /> Resume</>
               : <><Pause className="h-3 w-3" /> Pause</>}
           </button>
         )}
         <button onClick={onOpenEdit}
-          className="h-7 px-2 rounded border border-slate-200 bg-white text-slate-700 text-xs inline-flex items-center gap-1 ml-auto">
+          className="h-7 max-md:min-h-[44px] px-2 rounded border border-slate-200 bg-white text-slate-700 text-xs inline-flex items-center gap-1 ml-auto">
           <ChevronRight className="h-3 w-3" /> Edit
         </button>
       </div>
@@ -688,17 +688,17 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
             {submittal.submittal_number} — {submittal.title}
           </DialogTitle>
         </DialogHeader>
-        <div className="flex border-b border-slate-200 text-sm">
+        <div className="flex border-b border-slate-200 text-sm overflow-x-auto">
           <button onClick={() => setTab("edit")}
             data-testid="edit-tab-fields"
-            className={`px-3 py-2 -mb-px border-b-2 ${tab === "edit"
+            className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap ${tab === "edit"
               ? "border-blue-600 text-blue-900 font-medium"
               : "border-transparent text-slate-600"}`}>
             Fields
           </button>
           <button onClick={() => setTab("event")}
             data-testid="edit-tab-event"
-            className={`px-3 py-2 -mb-px border-b-2 ${tab === "event"
+            className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap ${tab === "event"
               ? "border-blue-600 text-blue-900 font-medium"
               : "border-transparent text-slate-600"}`}>
             Record event
@@ -706,7 +706,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
           {isAdminOrPm && (
             <button onClick={() => setTab("reviewer")}
               data-testid="edit-tab-reviewer"
-              className={`px-3 py-2 -mb-px border-b-2 ${tab === "reviewer"
+              className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap ${tab === "reviewer"
                 ? "border-blue-600 text-blue-900 font-medium"
                 : "border-transparent text-slate-600"}`}>
               Assign reviewer
@@ -714,7 +714,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
           )}
           <button onClick={() => setTab("timeline")}
             data-testid="edit-tab-timeline"
-            className={`px-3 py-2 -mb-px border-b-2 ${tab === "timeline"
+            className={`px-3 py-2 -mb-px border-b-2 whitespace-nowrap ${tab === "timeline"
               ? "border-blue-600 text-blue-900 font-medium"
               : "border-transparent text-slate-600"}`}>
             Timeline
@@ -733,7 +733,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                   className="w-full h-9 px-3 rounded border border-slate-200" />
               </JigsawField>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="field-label">Type</label>
                 <JigsawField entityType="submittal" entityId={submittal.id}
@@ -758,7 +758,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                 </JigsawField>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <FieldLabel optional className="field-label">Procurement lead time (days)</FieldLabel>
                 <input type="number" min="0" value={form.procurement_lead_time_days}
@@ -773,7 +773,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
               </div>
             </div>
             {isAdminOrPm && (
-              <div className="grid grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-2 bg-amber-50 border border-amber-200 rounded">
                 <div>
                   <FieldLabel optional className="field-label text-amber-900">SLA override (days)</FieldLabel>
                   <input type="number" min="1" max="365"
@@ -824,7 +824,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
             <div className="flex justify-end">
               <Button onClick={save} disabled={busy}
                 data-testid="edit-save"
-                className="bg-blue-600 hover:bg-blue-700">
+                className="bg-blue-600 hover:bg-blue-700 max-md:min-h-[44px]">
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
               </Button>
             </div>
@@ -853,7 +853,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
             <div className="flex justify-end">
               <Button onClick={recordEvent} disabled={busy || !eventType}
                 data-testid="event-record"
-                className="bg-blue-600 hover:bg-blue-700">
+                className="bg-blue-600 hover:bg-blue-700 max-md:min-h-[44px]">
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Record event"}
               </Button>
             </div>
@@ -873,7 +873,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
             <div className="flex justify-end">
               <Button onClick={assign} disabled={busy || !reviewerId.trim()}
                 data-testid="reviewer-assign"
-                className="bg-blue-600 hover:bg-blue-700">
+                className="bg-blue-600 hover:bg-blue-700 max-md:min-h-[44px]">
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Assign"}
               </Button>
             </div>

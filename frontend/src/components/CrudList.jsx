@@ -248,7 +248,11 @@ export default function CrudList({
 
   return (
     <div data-testid={`${testidPrefix}-page`} className="space-y-4">
-      <div className="flex items-center justify-between">
+      {/* max-md:flex-wrap -- shared by every CRUD page (Resources, etc.). On a
+          320px phone the title + action group (extraActions + "Add ...") can
+          overflow one row; wrapping drops the actions below the title instead
+          of clipping the Add button. Desktop stays a single justified row. */}
+      <div className="flex items-center justify-between max-md:flex-wrap max-md:gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
           {subtitle && <p className="text-sm text-slate-500">{subtitle}</p>}
@@ -256,7 +260,7 @@ export default function CrudList({
         <div className="flex items-center gap-2">
           {extraActions}
           {customAddButton ? customAddButton : createEndpoint && (
-            <Button data-testid={`${testidPrefix}-add`} onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 gap-1">
+            <Button data-testid={`${testidPrefix}-add`} onClick={startCreate} className="bg-blue-600 hover:bg-blue-700 gap-1 max-md:min-h-[44px]">
               Add {title.toLowerCase().replace(/s$/, "")}
             </Button>
           )}
@@ -265,7 +269,7 @@ export default function CrudList({
 
       {help && <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded p-2">{help}</div>}
 
-      <div className="surface overflow-hidden">
+      <div className="surface overflow-hidden crud-list-table-wrap">
         {/* pt.37: dense-table-bordered → header-only vertical
             dividers (Option C). CrudList backs RFIs, Deliveries,
             Crews, Equipment, People, Certifications, Availability,
@@ -284,17 +288,17 @@ export default function CrudList({
             {rows.map((r, i) => (
               <tr key={r.id || i} data-testid={`${testidPrefix}-row-${r.id || i}`}>
                 {columns.map((c) => (
-                  <td key={c.key}>{c.render ? c.render(r) : (r[c.key] ?? "—")}</td>
+                  <td key={c.key} data-label={c.label} className={(c.fullWidth || c._isChips) ? "col-fullwidth" : undefined}>{c.render ? c.render(r) : (r[c.key] ?? "—")}</td>
                 ))}
                 {(patchEndpoint || deleteEndpoint) && (
-                  <td className="text-right">
+                  <td className="text-right" data-label="">
                     {patchEndpoint && (
-                      <button data-testid={`${testidPrefix}-edit-${r.id}`} onClick={() => startEdit(r)} className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button data-testid={`${testidPrefix}-edit-${r.id}`} onClick={() => startEdit(r)} className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500 max-md:min-h-[44px] max-md:min-w-[44px]"><Pencil className="h-3.5 w-3.5" /></button>
                     )}
                     {deleteEndpoint && (
                       <button data-testid={`${testidPrefix}-delete-${r.id}`} onClick={() => remove(r)}
                         disabled={deletingIds.has(r.id)}
-                        className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /></button>
+                        className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-500 disabled:opacity-50 max-md:min-h-[44px] max-md:min-w-[44px]"><Trash2 className="h-3.5 w-3.5" /></button>
                     )}
                   </td>
                 )}
@@ -346,7 +350,7 @@ export default function CrudList({
               title={needsEditReasonCrud && !editReasonValidCrud
                 ? `Edit reason required (min ${reasonMin} chars) for field changes on a locked DR.`
                 : undefined}
-              className="bg-blue-600 hover:bg-blue-700 w-full disabled:opacity-50">{saving ? "Saving…" : (editing ? "Save changes" : "Create")}</Button>
+              className="bg-blue-600 hover:bg-blue-700 w-full disabled:opacity-50 max-md:min-h-[44px]">{saving ? "Saving…" : (editing ? "Save changes" : "Create")}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -368,7 +372,7 @@ function FormField({ f, value, onChange, testidPrefix }) {
     return (
       <div>
         <label className="field-label">{f.label}{f.required && " *"}</label>
-        <select data-testid={id} value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
+        <select data-testid={id} value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm max-md:min-h-[44px]">
           <option value="">— select —</option>
           {(f.options || []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
@@ -386,7 +390,7 @@ function FormField({ f, value, onChange, testidPrefix }) {
   return (
     <div>
       <label className="field-label">{f.label}{f.required && " *"}</label>
-      <input data-testid={id} type={f.type || "text"} value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full h-9 px-3 rounded border border-slate-200" />
+      <input data-testid={id} type={f.type || "text"} value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full h-9 px-3 rounded border border-slate-200 max-md:min-h-[44px]" />
     </div>
   );
 }

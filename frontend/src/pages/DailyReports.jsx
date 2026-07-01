@@ -327,11 +327,11 @@ export default function DailyReports() {
 
   return (
     <div data-testid="daily-reports-page" className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-md:flex-col max-md:items-start max-md:gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Daily reports</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 max-md:w-full">
           {/* Feature Client DR Template Export (2026-05-20) -- visible
               to every user (so they SEE the feature exists), but the
               navigate only happens for admin / PM; other roles get a
@@ -389,7 +389,7 @@ export default function DailyReports() {
 
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         <table className="w-full dense-table">
-          <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th className="w-32"></th></tr></thead>
+          <thead><tr><th>Date</th><th>Status</th><th className="max-md:hidden">Submitted</th><th className="w-32"></th></tr></thead>
           <tbody>
             {reports.map((r) => {
               const canDelete = r.status === "draft";
@@ -397,7 +397,7 @@ export default function DailyReports() {
                 <tr key={r.id} data-testid={`dr-row-${r.id}`}>
                   <td className="font-mono">{formatDateDisplay(r.report_date)}</td>
                   <td><StatusPill status={r.status} /></td>
-                  <td className="text-xs">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
+                  <td className="text-xs max-md:hidden">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
                   <td className="text-right">
                     <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline mr-3">
                       Open
@@ -407,7 +407,7 @@ export default function DailyReports() {
                       onClick={() => removeReport(r)}
                       disabled={!canDelete}
                       title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
-                      className={`h-7 w-7 grid place-items-center rounded inline-flex align-middle ${canDelete ? "text-red-500 hover:bg-red-50" : "text-slate-300 cursor-not-allowed"}`}
+                      className={`h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded inline-flex align-middle ${canDelete ? "text-red-500 hover:bg-red-50" : "text-slate-300 cursor-not-allowed"}`}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -1000,7 +1000,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               onClick={() => setActiveIntakeMode("manual")}
               title="Collapse voice intake"
               aria-label="Collapse voice intake"
-              className="absolute top-2 right-2 z-10 h-7 w-7 grid place-items-center rounded transition"
+              className="absolute top-2 right-2 z-10 h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded transition"
               style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)", border: "1px solid var(--v4-border)" }}
             >
               <ChevronUp className="h-3.5 w-3.5" />
@@ -1111,14 +1111,14 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
                 }
                 className="w-full p-2 rounded border border-slate-200 text-sm h-20" />
             </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex justify-end gap-2 pt-2 max-md:flex-col">
               <button data-testid="no-work-cancel" onClick={() => setNoWorkModal(null)}
-                className="h-9 px-3 rounded border border-slate-200 text-sm">
+                className="h-9 px-3 rounded border border-slate-200 text-sm max-md:min-h-[44px] max-md:w-full">
                 Cancel
               </button>
               <button data-testid="no-work-confirm" onClick={submitNoWorkDay}
                 disabled={busy}
-                className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+                className="h-9 px-3 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 max-md:min-h-[44px] max-md:w-full">
                 {busy ? "Submitting…" : "Submit as no-work day"}
               </button>
             </div>
@@ -1282,7 +1282,7 @@ function Header({ report, project, userLabels, ppc,
           moved ABOVE the KPI band to match the v4 mockup. pt.73: the Back
           pill moved up to the title card, so this row is just the actions. */}
       <div className="flex flex-wrap items-center gap-3 mb-3">
-        <div className="ml-auto flex gap-2 items-center">
+        <div className="ml-auto flex gap-2 items-center max-md:flex-wrap max-md:w-full max-md:justify-end">
           {/* pt.38: removed the duplicate "N items blocking submit:
               ..." amber brick that lived here in the header. The same
               info is now in the sticky-bottom SubmitProgress circle +
@@ -1412,7 +1412,7 @@ function Header({ report, project, userLabels, ppc,
           left; event-count stats (Delays / RFIs / Safety / QC) on the
           right. pt.47 (2026-05-28): dropped "Activity hrs" KPI — crew
           hours come from the Manpower Log, per-activity hours retired. */}
-      <div className="grid grid-cols-4 md:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
         <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
         <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
         <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
@@ -1516,7 +1516,7 @@ function PanelShell({ icon: Icon, title, count, testid, children, badge, step })
   return (
     <div data-testid={testid} className="surface p-5 dr-section">
       <div
-        className="flex items-center gap-2 mb-4 pb-3"
+        className="flex items-center gap-2 mb-4 pb-3 max-md:flex-wrap"
         style={{ borderBottom: "1px solid var(--v4-border)" }}
       >
         {/* Inline step badge removed — the .dr-spine wrapper renders
@@ -1911,7 +1911,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       options={taskSelectOptions} />
                   </td>
                   <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
-                  <td><input type="number" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
+                  <td><input type="number" inputMode="decimal" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
                   <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
                   <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 dr-mp-input rounded text-sm" /></td>
                   <td>
@@ -1968,7 +1968,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       className="w-20 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm tabular-nums" />
                   </td>
                   <td>
-                    <input data-testid={`presence-draft-hours-${idx}`} type="number" step="0.5" value={d.hours_per_person}
+                    <input data-testid={`presence-draft-hours-${idx}`} type="number" inputMode="decimal" step="0.5" value={d.hours_per_person}
                       onChange={(e) => setDraftField(idx, "hours_per_person", e.target.value)}
                       className="w-20 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm tabular-nums" />
                   </td>
@@ -2155,21 +2155,74 @@ function useIssueDropdownListener(kind, panelTestid, onOpen) {
   }, [kind, panelTestid, onOpen]);
 }
 
-function EodSlider({ rowId, initialValue, locked, updateRow, activityCode }) {
+// CPM B1 (2026-06-12) -- relationship-aware EOD-slider gating.
+// `gate` (r.slider_gate) is stamped by the backend ONLY when
+// FF_SLIDER_GATING is on; when absent the slider behaves exactly as it did
+// pre-B1 (free 0-100). When present, the slider clamps to gate.max_pct
+// (FS lock 0% / SS lock 0% / FF cap 95% / SF cap 99%, most-restrictive
+// predecessor) and shows the lock reason. A PM/Admin can override past the
+// cap with a logged reason (sent as slider_gate_override_reason; the server
+// re-validates role + reason and audits the override).
+function EodSlider({ rowId, initialValue, locked, updateRow, activityCode, gate }) {
   const [val, setVal] = useState(Number(initialValue) || 0);
+  const [override, setOverride] = useState(false);
+  const overrideReasonRef = useRef("");
   useEffect(() => { setVal(Number(initialValue) || 0); }, [initialValue]);
+
+  const maxPct = gate && typeof gate.max_pct === "number" ? gate.max_pct : 100;
+  const gated = maxPct < 100;
+  const user = getUser();
+  const canOverride = ["admin", "pm"].includes((user?.role || "").toLowerCase());
+  // Effective ceiling for the slider. The gate only constrains INCREASES past
+  // the cap (the server allows lowering or keeping a value already above the
+  // cap -- e.g. a successor that was 50% before its predecessor was reopened).
+  // So the user may set anything up to max(cap, current value); an active
+  // override lifts it to 100. This mirrors evaluate_eod_gate exactly:
+  // allow iff new <= max(old_eod, max_pct).
+  const startVal = Number(initialValue) || 0;
+  const effMax = override ? 100 : Math.max(maxPct, startVal);
+
   const commit = (v) => {
-    const n = Math.max(0, Math.min(100, Number(v) || 0));
+    let n = Math.max(0, Math.min(100, Number(v) || 0));
+    if (n > effMax) {
+      // Tried to increase past the gate (and past the current value).
+      n = effMax;
+      setVal(n);
+      if (!override && gated) {
+        toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
+      }
+    }
+    if (n === startVal) { setVal(n); return; }
+    const payload = { pct_complete_end_of_day: n };
+    // Send the override reason only on a true increase past the gate cap.
+    if (override && n > maxPct && n > startVal && overrideReasonRef.current) {
+      payload.slider_gate_override_reason = overrideReasonRef.current;
+    }
     setVal(n);
-    if (n !== Number(initialValue)) updateRow(rowId, { pct_complete_end_of_day: n });
+    updateRow(rowId, payload);
   };
+
+  const startOverride = () => {
+    const reason = window.prompt(
+      `Override the schedule gate on ${activityCode}? ` +
+      `${gate?.reason || ""}\n\nEnter a reason (min 8 characters) — this is logged.`,
+    );
+    if (reason && reason.trim().length >= 8) {
+      overrideReasonRef.current = reason.trim();
+      setOverride(true);
+      toast.success("Gate override active for this activity. Move the slider to set progress.");
+    } else if (reason !== null) {
+      toast.error("Override reason must be at least 8 characters.");
+    }
+  };
+
   return (
-    <div className="flex items-center gap-2 min-w-[180px]" data-testid={`dr-pct-wrap-${activityCode}`}>
+    <div className="flex items-center gap-2 min-w-[180px] max-md:min-w-[120px]" data-testid={`dr-pct-wrap-${activityCode}`}>
       <input
         data-testid={`dr-pct-${activityCode}`}
         type="range" min="0" max="100" step="1"
         value={val}
-        onChange={(e) => setVal(Number(e.target.value))}
+        onChange={(e) => setVal(Math.min(effMax, Number(e.target.value)))}
         onMouseUp={(e) => commit(e.target.value)}
         onTouchEnd={(e) => commit(e.target.value)}
         onKeyUp={(e) => commit(e.target.value)}
@@ -2178,6 +2231,25 @@ function EodSlider({ rowId, initialValue, locked, updateRow, activityCode }) {
         style={{ "--eod-fill": `${val}%` }}
       />
       <span className="text-xs tabular-nums font-medium text-emerald-300 w-9 text-right">{val}%</span>
+      {gated && !override && (
+        <span
+          data-testid={`dr-gate-${activityCode}`}
+          title={gate?.reason || "Gated by predecessors"}
+          className="inline-flex items-center text-amber-600"
+        >
+          <Lock className="h-3 w-3" />
+          {canOverride && (
+            <button
+              type="button"
+              data-testid={`dr-gate-override-${activityCode}`}
+              onClick={startOverride}
+              className="ml-1 text-[10px] underline text-amber-700 hover:text-amber-900"
+            >
+              override
+            </button>
+          )}
+        </span>
+      )}
     </div>
   );
 }
@@ -2221,13 +2293,14 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
           </div>
         )}
       </td>
-      <td className="truncate max-w-[260px]">{r.activity_description}</td>
+      <td className="truncate max-w-[260px] max-md:whitespace-normal max-md:break-words max-md:max-w-none">{r.activity_description}</td>
       <td className="text-xs">{r.location_name || "—"}</td>
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td>
         {editable ? (
           <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
-            locked={locked} updateRow={updateRow} activityCode={r.activity_code} />
+            locked={locked} updateRow={updateRow} activityCode={r.activity_code}
+            gate={r.slider_gate} />
         ) : (
           <span className="text-xs tabular-nums text-slate-500">{r.pct_complete_end_of_day || 0}</span>
         )}
@@ -2630,7 +2703,7 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             anticipate them. */}
         <div className="bg-amber-50 border border-amber-200 rounded p-3 space-y-2">
           <div className="text-xs font-medium text-amber-800 flex items-center gap-1"><Wand2 className="h-3 w-3" /> Create unplanned activity (flagged for PM review)</div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
           </div>
@@ -2792,7 +2865,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
     <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
-        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1">
+        <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1 max-md:grid max-md:grid-cols-3">
             {TABS.map((t) => {
               const Icon = t.icon;
               return (
@@ -2972,14 +3045,14 @@ function DelayRowInline({ delay, reload, locked, dailyReportId }) {
         />
       )}
       {resolving && (
-        <div className="mt-2 p-2 bg-slate-50 rounded grid grid-cols-2 gap-2">
+        <div className="mt-2 p-2 bg-slate-50 rounded grid grid-cols-1 sm:grid-cols-2 gap-2">
           <input type="date" value={resolveDate} onChange={(e) => setResolveDate(e.target.value)}
             className="h-7 px-2 border border-slate-200 rounded text-xs" />
           <input type="text" placeholder="Resolution note (optional)" value={resolveNote}
             onChange={(e) => setResolveNote(e.target.value)}
             className="h-7 px-2 border border-slate-200 rounded text-xs" />
           <button data-testid={`delay-resolve-confirm-${delay.id}`} onClick={resolve}
-            className="col-span-2 h-7 px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700">
+            className="col-span-2 h-7 max-md:min-h-[44px] px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-700">
             Mark resolved
           </button>
         </div>
@@ -2992,11 +3065,11 @@ function ReminderBanner({ reminders, reload }) {
   if (!reminders?.length) return null;
   return (
     <div data-testid="dr-reminder-banner" className="surface p-4 mb-6 border-l-4 border-amber-400 bg-amber-50/40">
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 max-md:flex-wrap">
         <AlertTriangle className="h-4 w-4 text-amber-600" />
         <div className="font-medium text-sm text-amber-900">Open delay reminders</div>
         <span className="text-xs text-amber-700">({reminders.length})</span>
-        <span className="text-xs text-slate-500 ml-auto">delays from earlier days that touch tasks scheduled today</span>
+        <span className="text-xs text-slate-500 ml-auto max-md:hidden">delays from earlier days that touch tasks scheduled today</span>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {reminders.map((r) => (
@@ -3342,7 +3415,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <FieldLabel required>Rework duration (days)</FieldLabel>
-                  <input data-testid="qc-rework-days" type="number" step="0.5" min="0"
+                  <input data-testid="qc-rework-days" type="number" inputMode="decimal" step="0.5" min="0"
                     value={draft.rework_duration_days}
                     onChange={(e) => setDraft({ ...draft, rework_duration_days: e.target.value })}
                     className="w-full h-8 px-2 rounded border border-rose-300 text-sm" />
@@ -3684,7 +3757,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a delivery" testid="delivery-add-reason" />}
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <input data-testid="delivery-new-vendor" placeholder="Vendor" value={draft.vendor} onChange={(e) => setDraft({ ...draft, vendor: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
           <input data-testid="delivery-new-desc" placeholder="What was delivered" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-slate-200 text-sm" />
           <input data-testid="delivery-new-po" placeholder="PO #" value={draft.po_number} onChange={(e) => setDraft({ ...draft, po_number: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm" />
@@ -3929,7 +4002,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             eventLabel="a photo" testid="photo-add-reason" />
         </div>
       )}
-      <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
+      <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 gap-2">
         {rows.map((p) => {
           const isPinned = pinned.has(p.id);
           return (
@@ -3939,7 +4012,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
               <button type="button" data-testid={`photo-pin-${p.id}`}
                 onClick={() => togglePin(p.id)}
                 title={isPinned ? "Unpin from review" : "Pin for AI review"}
-                className="absolute top-1 right-1 h-6 w-6 grid place-items-center rounded-full transition z-10"
+                className="absolute top-1 right-1 h-6 w-6 max-md:min-h-[40px] max-md:min-w-[40px] grid place-items-center rounded-full transition z-10"
                 style={isPinned
                   ? { background: "#10b981", color: "#06281d", border: "1px solid transparent" }
                   : { background: "rgba(10,10,11,.6)", color: "#fff", border: "1px solid rgba(255,255,255,.28)" }}>
@@ -4014,7 +4087,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
                       </span>
                       <span className={`shrink-0 ${sevCls(rev.severity)}`}>{rev.label}</span>
                       <span className="flex-1 truncate" style={{ color: "var(--v4-fg-muted)" }}>{rev.text}</span>
-                      <span className="shrink-0" style={{ color: "var(--v4-fg-faint)" }}>{rev.n} photo{rev.n !== 1 ? "s" : ""} · {rev.time}</span>
+                      <span className="shrink-0 max-md:hidden" style={{ color: "var(--v4-fg-faint)" }}>{rev.n} photo{rev.n !== 1 ? "s" : ""} · {rev.time}</span>
                       <span className="rev-open font-semibold shrink-0">Open ›</span>
                     </button>
                   );
@@ -4067,7 +4140,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             className="max-w-full max-h-full rounded-lg object-contain"
             style={{ boxShadow: "0 8px 40px rgba(0,0,0,.6)" }} />
           <button type="button" onClick={() => setPreviewSrc(null)}
-            className="absolute top-4 right-5 text-2xl leading-none"
+            className="absolute top-4 right-5 text-2xl leading-none max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center"
             style={{ color: "rgba(255,255,255,.85)" }}>✕</button>
         </div>
       )}
@@ -4153,7 +4226,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload, onPreview }) {
               catch (err) { toast.error(err.response?.data?.detail || "Delete failed"); }
             }}
             title="Delete photo from this report"
-            className="bg-black/55 hover:bg-red-600 text-white rounded p-1 transition">
+            className="bg-black/55 hover:bg-red-600 text-white rounded p-1 max-md:min-h-[40px] max-md:min-w-[40px] max-md:grid max-md:place-items-center transition">
             <Trash2 className="h-3 w-3" />
           </button>
         )}
@@ -4206,7 +4279,7 @@ function AuthPhoto({ photo, locked, dailyReportId, reload, onPreview }) {
         <button data-testid={`photo-edit-locked-${photo.id}`}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditOpen(true); }}
           title="Edit photo (post-submit -- captures audit trail)"
-          className="absolute top-1 right-1 bg-amber-600/90 hover:bg-amber-700 text-white rounded p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          className="absolute top-1 right-1 bg-amber-600/90 hover:bg-amber-700 text-white rounded p-1 opacity-0 group-hover:opacity-100 max-md:opacity-100 transition-opacity">
           <Pencil className="h-2.5 w-2.5" />
         </button>
       )}
@@ -4394,7 +4467,7 @@ function ReworkOutcomeButton({ qcIssue, reload }) {
             </div>
             <div>
               <FieldLabel required>Actual rework (days)</FieldLabel>
-              <input data-testid="qc-rework-actual-days" type="number" step="0.5" min="0"
+              <input data-testid="qc-rework-actual-days" type="number" inputMode="decimal" step="0.5" min="0"
                 value={days} onChange={(e) => setDays(e.target.value)}
                 className="block w-full h-9 px-2 rounded border border-slate-300 text-sm" />
             </div>

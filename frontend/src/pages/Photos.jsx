@@ -67,7 +67,7 @@ export default function Photos() {
 
   return (
     <div data-testid="photos-page">
-      <header className="mb-4 flex items-center justify-between">
+      <header className="mb-4 flex items-center justify-between max-md:flex-col max-md:items-start max-md:gap-2">
         <div>
           <div className="flex items-center gap-2">
             <Camera className="h-5 w-5 text-slate-700" />
@@ -83,7 +83,7 @@ export default function Photos() {
           </div>
           <p className="text-sm text-slate-500">{project?.name} · gallery view across all daily reports</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex max-md:flex-wrap items-center gap-2">
           <button data-testid="photos-ai-help"
             onClick={() => setHelpOpen(true)} title="How does Photo AI work?"
             className="sbtn sbtn-md sbtn-secondary">
@@ -149,7 +149,7 @@ function PhotoCard({ photo, drLabel }) {
         <div className="text-slate-500">{drLabel(photo.daily_report_id)}</div>
         {photo.is_supplement && (
           <div data-testid={`photo-gallery-supp-${photo.id}`}
-            className="text-xs inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-mono">
+            className="text-xs inline-block px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 font-mono max-md:truncate max-md:max-w-full">
             SUPP→{photo.parent_daily_report_date || photo.parent_daily_report_id?.slice(0, 8) || "?"}
           </div>
         )}

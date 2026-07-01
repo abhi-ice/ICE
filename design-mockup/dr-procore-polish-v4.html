@@ -1,0 +1,1713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SiteOps — DR Polish v4 · Multi-page + Refinements</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* =========================================================
+   V4 DELTAS vs V3:
+   1. Activity Log columns match the live app EXACTLY
+      (Code, Description, LOC, SOD%, EOD%, Δ, Status, Blocker, Issues)
+      — no extra "Crew" column.
+   2. Multi-page navigation: click any sidebar item to jump
+      between Dashboard, Projects, Vendors, DR list, DR detail,
+      Photos, Delays, Tasks, etc.
+   3. NEW polish ideas added throughout:
+        a. Slim DR progress bar with section pips below H1
+        b. "Last saved 12s ago" indicator in topbar
+        c. Trend delta chips on KPI band ("+1 vs yesterday")
+        d. Sticky bottom "Submit Report" action bar with fill
+        e. SVG empty-state illustrations
+        f. Section "jump-to" pills with status colors
+        g. Header date stepper (prev/next day arrows)
+        h. Voice-active inline badge when AI extracted a field
+   ========================================================= */
+
+/* THEMES (unchanged from v3 — locked) */
+:root {
+  --brand-primary:   #10b981;
+  --brand-hover:     #059669;
+  --brand-light:     #34d399;
+  --brand-pale-bg:   rgba(16, 185, 129, 0.10);
+  --brand-pale-bd:   rgba(16, 185, 129, 0.32);
+
+  --bg-page:         #f5f6f8;
+  --bg-surface:      #ffffff;
+  --bg-surface-2:    #eef0f3;
+  --bg-input:        #ffffff;
+  --bg-hover:        #eef0f3;
+  --bg-topbar:       #2f3437;
+  --bg-sidebar:      #232729;
+
+  --fg-primary:      #181d1f;
+  --fg-secondary:    #4a5256;
+  --fg-muted:        #6b7280;
+  --fg-faint:        #9aa1a8;
+  --fg-on-dark:      #e3e6e8;
+
+  --border:          #d8dce0;
+  --border-strong:   #b8bec3;
+  --card-ring:       0 0 0 1px rgba(0, 0, 0, 0.04);
+
+  --status-closed-bg:   #e8f7e9;
+  --status-closed-fg:   #26732d;
+  --status-open-bg:     #fff5e6;
+  --status-open-fg:     #8a5500;
+  --status-draft-bg:    #eef0f2;
+  --status-draft-fg:    #4a5256;
+  --status-submitted-bg:#e3f0ff;
+  --status-submitted-fg:#1a55a3;
+  --status-blocker-bg:  #fde8e8;
+  --status-blocker-fg:  #a3261a;
+
+  --radius-card:     6px;
+  --radius-btn:      4px;
+  --radius-pill:     999px;
+
+  --shadow-card:        0 1px 2px rgba(0,0,0,0.04);
+  --shadow-card-hover:  0 4px 14px rgba(0,0,0,0.06);
+  --shadow-sticky:      0 -4px 12px rgba(0,0,0,0.06);
+}
+
+[data-theme="dark"] {
+  --bg-page:         #26262b;
+  --bg-surface:      #2f2f35;
+  --bg-surface-2:    #38383f;
+  --bg-input:        #2a2a30;
+  --bg-hover:        #3d3d45;
+  --bg-topbar:       #1f1f24;
+  --bg-sidebar:      #1f1f24;
+
+  --fg-primary:      #ececf0;
+  --fg-secondary:    #c0c0c8;
+  --fg-muted:        #8e8e98;
+  --fg-faint:        #5e5e68;
+  --fg-on-dark:      #ececf0;
+
+  --border:          #404048;
+  --border-strong:   #525260;
+  --card-ring:       0 0 0 1px rgba(255, 255, 255, 0.03);
+
+  --status-closed-bg:   rgba(38, 115, 45, 0.18);
+  --status-closed-fg:   #4fc960;
+  --status-open-bg:     rgba(138, 85, 0, 0.22);
+  --status-open-fg:     #f5b54a;
+  --status-draft-bg:    rgba(120, 130, 140, 0.18);
+  --status-draft-fg:    #c0c0c8;
+  --status-submitted-bg:rgba(26, 85, 163, 0.25);
+  --status-submitted-fg:#6ba2f0;
+  --status-blocker-bg:  rgba(163, 38, 26, 0.22);
+  --status-blocker-fg:  #f06a5d;
+
+  --shadow-card:        0 1px 0 rgba(255,255,255,0.02) inset;
+  --shadow-card-hover:  0 0 0 1px rgba(52, 211, 153, 0.18), 0 6px 18px rgba(0,0,0,0.35);
+  --shadow-sticky:      0 -4px 14px rgba(0,0,0,0.4);
+}
+
+* { box-sizing: border-box; }
+html { overflow-x: hidden; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 200ms ease, color 200ms ease;
+  padding-bottom: 60px; /* room for sticky submit bar */
+}
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-ligatures: none; }
+a { color: inherit; text-decoration: none; cursor: pointer; }
+button { font: inherit; cursor: pointer; }
+
+/* SHELL + SIDEBAR + TOPBAR (carried over from v3) */
+.shell {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  min-height: 100vh;
+  min-width: 0;
+}
+.sidebar {
+  background: var(--bg-sidebar);
+  color: var(--fg-on-dark);
+  border-right: 1px solid var(--border);
+  padding: 14px 10px;
+}
+.sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin-bottom: 12px;
+}
+.sidebar-brand-logo { width: 28px; height: 28px; flex: 0 0 auto; }
+.sidebar-brand-name { font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; color: white; }
+.sidebar-brand-tag {
+  font-size: 9.5px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.45);
+  margin-top: 1px;
+}
+.sidebar-group { margin-top: 16px; }
+.sidebar-group-title {
+  font-size: 11.5px; font-weight: 600;
+  color: rgba(255,255,255,0.55);
+  padding: 0 8px; margin-bottom: 6px;
+}
+.sidebar-link {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 9px;
+  font-size: 13px; font-weight: 400;
+  color: rgba(255,255,255,0.78);
+  border-radius: var(--radius-btn);
+  transition: background 150ms;
+}
+.sidebar-link:hover { background: rgba(255,255,255,0.06); color: white; }
+.sidebar-link.active {
+  background: var(--brand-pale-bg);
+  color: var(--brand-light);
+  font-weight: 500;
+}
+.sidebar-link.nested { padding-left: 26px; font-size: 12.5px; }
+.sidebar-icon { width: 15px; height: 15px; opacity: 0.8; flex: 0 0 auto; }
+
+.topbar {
+  background: var(--bg-topbar);
+  color: var(--fg-on-dark);
+  height: 52px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+}
+.tb-select-native {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: var(--radius-btn);
+  padding: 0 28px 0 10px;
+  height: 32px;
+  font-size: 12.5px;
+  color: rgba(255,255,255,0.92);
+  font-family: inherit;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='white' stroke-opacity='0.6' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.tb-select-native option { background: var(--bg-surface); color: var(--fg-primary); }
+.tb-search { position: relative; flex: 0 0 280px; }
+.tb-search input {
+  width: 100%; height: 34px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: var(--radius-btn);
+  padding: 0 36px 0 34px;
+  color: white; font-size: 12.5px;
+  font-family: inherit;
+}
+.tb-search input::placeholder { color: rgba(255,255,255,0.45); }
+.tb-search .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; opacity: 0.5; }
+.tb-search .kbd {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 3px;
+  padding: 2px 5px;
+  color: rgba(255,255,255,0.6);
+}
+.tb-spacer { flex: 1; }
+
+/* ★ NEW V4: Save-state indicator in topbar */
+.save-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px;
+  color: rgba(255,255,255,0.6);
+  padding: 0 8px;
+}
+.save-state .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--brand-light);
+  box-shadow: 0 0 6px var(--brand-light);
+}
+
+.tb-avatar {
+  width: 30px; height: 30px;
+  border-radius: var(--radius-pill);
+  background: var(--brand-pale-bg);
+  border: 1px solid var(--brand-pale-bd);
+  color: var(--brand-light);
+  display: grid; place-items: center;
+  font-size: 10.5px; font-weight: 600;
+}
+.tb-icon-btn {
+  width: 32px; height: 32px;
+  border: 0; background: transparent;
+  color: rgba(255,255,255,0.7);
+  border-radius: var(--radius-btn);
+  display: grid; place-items: center;
+}
+.tb-icon-btn:hover { background: rgba(255,255,255,0.08); color: white; }
+.theme-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-btn);
+  padding: 0 11px;
+  height: 32px;
+  font-size: 12.5px; font-weight: 500;
+  color: rgba(255,255,255,0.85);
+}
+.theme-toggle:hover { background: rgba(255,255,255,0.14); color: white; }
+
+.main { padding: 20px 28px 60px; min-width: 0; overflow-x: hidden; }
+
+/* PAGES — only one visible at a time */
+.page { display: none; }
+.page.active { display: block; }
+
+.page-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  margin-bottom: 14px; gap: 12px; flex-wrap: wrap;
+}
+.page-title {
+  font-size: 22px; font-weight: 700;
+  letter-spacing: 0.15px;
+  margin: 0; color: var(--fg-primary);
+}
+.page-subtitle {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+.crumbs {
+  font-size: 12.5px; color: var(--fg-muted);
+  display: flex; gap: 8px; align-items: center;
+  margin-top: 4px; flex-wrap: wrap;
+}
+.crumbs .sep { color: var(--fg-faint); }
+.crumbs a:hover { color: var(--brand-primary); }
+
+/* ★ NEW V4: Date stepper inline in title row */
+.date-stepper {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.date-stepper button {
+  width: 26px; height: 26px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  color: var(--fg-muted);
+  display: grid; place-items: center;
+}
+.date-stepper button:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--fg-primary); }
+
+/* ★ NEW V4: DR Progress bar + jump-to pips */
+.dr-progress {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--card-ring);
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.dr-progress-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.dr-progress-label .count {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--brand-primary);
+}
+.dr-progress-bar {
+  flex: 1 1 200px;
+  height: 6px;
+  background: var(--bg-surface-2);
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 120px;
+}
+.dr-progress-bar-fill {
+  height: 100%;
+  width: 57%;
+  background: linear-gradient(90deg, var(--brand-primary), var(--brand-light));
+  border-radius: 3px;
+}
+.dr-pips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dr-pip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-surface);
+  font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+  transition: all 120ms;
+}
+.dr-pip:hover { border-color: var(--border-strong); }
+.dr-pip .pip-name {
+  font-family: 'Inter', sans-serif;
+}
+.dr-pip.complete {
+  background: var(--brand-pale-bg);
+  border-color: var(--brand-pale-bd);
+  color: var(--brand-primary);
+}
+.dr-pip.in-progress {
+  background: var(--brand-pale-bg);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+.dr-pip.blocked {
+  background: var(--status-blocker-bg);
+  border-color: var(--status-blocker-fg);
+  color: var(--status-blocker-fg);
+}
+
+/* KPI band + ★ NEW V4: trend delta chip */
+.kpi-band {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px; margin-bottom: 18px;
+}
+.kpi {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 8px 11px;
+  min-width: 0;
+  box-shadow: var(--card-ring);
+}
+.kpi-label {
+  font-size: 10.5px; font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.kpi-value-row {
+  display: flex; align-items: baseline; gap: 6px;
+}
+.kpi-value {
+  font-size: 17px; font-weight: 700;
+  font-feature-settings: "tnum";
+  color: var(--fg-primary);
+}
+.kpi-value.warn { color: var(--status-open-fg); }
+.kpi-value.crit { color: var(--status-blocker-fg); }
+.kpi-value.ok { color: var(--brand-primary); }
+.kpi-delta {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.kpi-delta.up   { background: var(--status-blocker-bg); color: var(--status-blocker-fg); }
+.kpi-delta.down { background: var(--status-closed-bg);  color: var(--status-closed-fg); }
+.kpi-delta.flat { background: var(--bg-surface-2); color: var(--fg-muted); }
+
+.action-bar {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-bottom: 22px; flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 12px;
+  font-size: 13.5px; font-weight: 600;
+  border-radius: var(--radius-btn);
+  border: 1px solid transparent;
+  transition: background 120ms, border-color 120ms, transform 80ms;
+}
+.btn:active { transform: translateY(0.5px); }
+.btn-icon { width: 15px; height: 15px; flex: 0 0 auto; }
+.btn-primary { background: var(--brand-primary); color: white; }
+.btn-primary:hover { background: var(--brand-hover); }
+.btn-secondary {
+  background: var(--bg-surface-2);
+  color: var(--fg-primary);
+  border-color: var(--border);
+}
+.btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+
+/* SPINE */
+.spine { position: relative; padding-left: 38px; min-width: 0; }
+.step { position: relative; margin-bottom: 30px; scroll-margin-top: 70px; }
+.step::after {
+  content: ""; position: absolute;
+  left: -22px; top: 30px; bottom: -38px;
+  width: 0;
+  border-left: 1.5px dashed var(--border-strong);
+  opacity: 0.55;
+}
+.step.complete::after    { border-left: 1.5px solid  var(--brand-primary);     opacity: 0.8; }
+.step.in-progress::after { border-left: 1.5px dashed var(--brand-primary);     opacity: 0.9; }
+.step.blocked::after     { border-left: 1.5px dashed var(--status-blocker-fg); opacity: 0.9; }
+.step:last-child::after  { display: none; }
+.step-node {
+  position: absolute;
+  left: -35px; top: 11px;
+  width: 26px; height: 26px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 700;
+  display: grid; place-items: center;
+  z-index: 1;
+}
+.step.complete .step-node {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: white;
+}
+.step.complete .step-node::before { content: "✓"; font-size: 12px; font-weight: 700; }
+.step.complete .step-node .num { display: none; }
+.step.in-progress .step-node {
+  background: var(--brand-pale-bg);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  box-shadow: 0 0 0 4px var(--brand-pale-bg);
+}
+.step.blocked .step-node {
+  background: var(--status-blocker-bg);
+  border-color: var(--status-blocker-fg);
+  color: var(--status-blocker-fg);
+  box-shadow: 0 0 0 4px var(--status-blocker-bg);
+}
+
+/* CARDS */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card), var(--card-ring);
+  overflow: hidden;
+}
+.card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card-hover); }
+.card-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-wrap: wrap;
+}
+.card-header .icon { width: 15px; height: 15px; color: var(--brand-primary); flex: 0 0 auto; }
+.card-title {
+  font-size: 14px; font-weight: 700;
+  color: var(--fg-primary);
+  letter-spacing: 0.1px;
+}
+.card-count {
+  font-size: 10.5px; font-weight: 600;
+  padding: 1px 6px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-muted);
+}
+.card-meta { font-size: 11.5px; color: var(--fg-muted); margin-left: auto; }
+.card-meta a { color: var(--brand-primary); font-weight: 500; }
+.card-body { padding: 14px; }
+
+/* Project compact row */
+.project-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; flex-wrap: wrap;
+}
+.project-row .eyebrow { font-size: 10.5px; font-weight: 600; color: var(--fg-muted); }
+.project-row .value { font-size: 13.5px; font-weight: 500; color: var(--fg-primary); }
+.project-row .chev { margin-left: auto; color: var(--fg-faint); }
+
+/* Fields */
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-label { font-size: 10.5px; font-weight: 600; color: var(--fg-muted); }
+.field-input, .field-select {
+  height: 32px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  color: var(--fg-primary);
+  font-size: 13px; font-family: inherit;
+  outline: none;
+  transition: border-color 120ms;
+  width: 100%; min-width: 0;
+}
+.field-input { padding: 0 9px; }
+.field-select {
+  padding: 0 28px 0 9px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+[data-theme="dark"] .field-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238e8e98' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+.field-input:hover, .field-select:hover { border-color: var(--border-strong); }
+.field-input:focus, .field-select:focus { border-color: var(--brand-primary); box-shadow: 0 0 0 2px var(--brand-pale-bg); }
+.field-select option { background: var(--bg-surface); color: var(--fg-primary); }
+
+/* ★ NEW V4: "Voice-extracted" badge attached to a field */
+.voice-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--brand-primary);
+  background: var(--brand-pale-bg);
+  border: 1px solid var(--brand-pale-bd);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+/* TABLE */
+.dr-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 13px; table-layout: fixed;
+}
+.dr-table th {
+  text-align: left;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--fg-primary);
+  padding: 9px 10px;
+  background: var(--bg-surface-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dr-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-feature-settings: "tnum";
+  overflow: hidden; text-overflow: ellipsis;
+}
+.dr-table tbody tr:last-child td { border-bottom: 0; }
+.dr-table tbody tr:hover td { background: var(--bg-hover); }
+.dr-table tbody tr.clickable td { cursor: pointer; }
+.cell-input, .cell-select {
+  height: 26px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 12.5px; font-family: inherit;
+  color: var(--fg-primary);
+  width: 100%;
+}
+.cell-input { padding: 0 7px; }
+.cell-select {
+  padding: 0 22px 0 7px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+[data-theme="dark"] .cell-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238e8e98' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+.cell-input:hover, .cell-select:hover { border-color: var(--border); }
+.cell-input:focus, .cell-select:focus { outline: none; background: var(--bg-input); border-color: var(--brand-primary); box-shadow: 0 0 0 2px var(--brand-pale-bg); }
+.cell-select option { background: var(--bg-surface); color: var(--fg-primary); }
+
+/* Pills */
+.pill {
+  display: inline-flex; align-items: center;
+  height: 20px; padding: 0 8px;
+  font-size: 11px; font-weight: 600;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+}
+.pill-closed    { background: var(--status-closed-bg);    color: var(--status-closed-fg); }
+.pill-open      { background: var(--status-open-bg);      color: var(--status-open-fg); }
+.pill-draft     { background: var(--status-draft-bg);     color: var(--status-draft-fg); }
+.pill-submitted { background: var(--status-submitted-bg); color: var(--status-submitted-fg); }
+.pill-blocker   { background: var(--status-blocker-bg);   color: var(--status-blocker-fg); }
+
+/* Tabs */
+.tabs {
+  display: flex; gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 14px;
+  overflow-x: auto;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 11px;
+  font-size: 12.5px; font-weight: 500;
+  color: var(--fg-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tab:hover { color: var(--fg-primary); }
+.tab.active {
+  color: var(--brand-primary);
+  border-bottom-color: var(--brand-primary);
+  font-weight: 600;
+}
+.tab-count {
+  font-size: 10.5px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+/* Voice chip */
+.voice-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 500;
+  color: var(--brand-primary);
+  background: var(--brand-pale-bg);
+  border: 1px solid var(--brand-pale-bd);
+  border-radius: var(--radius-btn);
+  padding: 3px 9px;
+  height: 24px;
+}
+.voice-btn:hover { background: var(--brand-primary); color: white; }
+
+/* Unplanned activity callout */
+.callout {
+  display: block;
+  margin: 0 14px 14px;
+  padding: 11px 13px;
+  border: 1px dashed var(--status-open-fg);
+  background: var(--status-open-bg);
+  border-radius: var(--radius-btn);
+  color: var(--fg-primary);
+}
+.callout-title {
+  font-size: 12.5px; font-weight: 600;
+  color: var(--status-open-fg);
+  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px;
+}
+.callout-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr auto;
+  gap: 8px;
+}
+
+/* Empty states */
+.empty {
+  padding: 36px 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+.empty .empty-illust {
+  width: 64px; height: 64px;
+  margin: 0 auto 12px;
+  opacity: 0.5;
+}
+
+/* Audit */
+.audit-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.audit-row:last-child { border-bottom: 0; }
+.audit-row .ts { color: var(--fg-muted); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+
+/* ============= LIFECYCLE TRACK (from v3) ============= */
+.lifecycle { padding: 12px 14px 0; }
+.phase-divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 6px 0 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.phase-divider::before,
+.phase-divider::after {
+  content: ""; flex: 1; height: 0;
+  border-top: 1px dashed var(--border);
+}
+.phase-divider.now { color: var(--brand-primary); }
+.phase-divider.now::before,
+.phase-divider.now::after { border-top: 1px solid var(--brand-pale-bd); }
+
+.phase-ref {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-btn);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  opacity: 0.78;
+  transition: opacity 150ms, background 150ms;
+  margin-bottom: 4px;
+}
+.phase-ref:hover { background: var(--bg-hover); opacity: 1; cursor: pointer; }
+.phase-ref .lock-icon { width: 13px; height: 13px; flex: 0 0 auto; color: var(--fg-faint); }
+.phase-ref .title { font-weight: 600; color: var(--fg-secondary); }
+.phase-ref .count { color: var(--fg-muted); font-weight: 400; font-feature-settings: "tnum"; }
+.phase-ref .ref-tag {
+  font-size: 9.5px; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.phase-ref .meta { margin-left: auto; font-size: 11.5px; font-style: italic; color: var(--fg-faint); }
+
+.phase-now {
+  position: relative;
+  margin: 6px 0 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--brand-pale-bd);
+  border-left: 3px solid var(--brand-primary);
+  border-radius: var(--radius-btn);
+  box-shadow: 0 0 0 4px var(--brand-pale-bg), var(--card-ring);
+  overflow: hidden;
+}
+.phase-now-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 6px;
+  flex-wrap: wrap;
+}
+.phase-now-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--brand-primary);
+  color: white;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  border-radius: var(--radius-pill);
+  padding: 3px 9px;
+}
+.phase-now-title { font-size: 14.5px; font-weight: 700; color: var(--fg-primary); }
+.phase-now-count { margin-left: auto; font-size: 11.5px; color: var(--fg-muted); font-feature-settings: "tnum"; }
+.phase-now-helper { padding: 0 14px 10px; font-size: 12px; color: var(--fg-muted); }
+.phase-now-body { background: var(--bg-input); border-top: 1px solid var(--border); }
+
+/* ============= ★ NEW V4: Sticky bottom action bar ============= */
+.sticky-submit {
+  position: fixed;
+  left: 200px; right: 0; bottom: 0;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  box-shadow: var(--shadow-sticky);
+  padding: 10px 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  z-index: 15;
+}
+.sticky-submit-meta {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sticky-submit-meta .num {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--brand-primary);
+  font-weight: 700;
+}
+.sticky-submit-fill {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+  max-width: 320px;
+}
+.sticky-submit-fill > div {
+  height: 100%;
+  width: 57%;
+  background: var(--brand-primary);
+}
+
+/* ============= TABLES PAGES (DR list, Projects, Vendors, Delays, etc.) ============= */
+.toolbar {
+  display: flex; gap: 8px; margin-bottom: 14px;
+  align-items: center; flex-wrap: wrap;
+}
+.toolbar .search {
+  position: relative;
+  flex: 0 1 280px;
+}
+.toolbar .search input {
+  width: 100%; height: 32px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  padding: 0 10px 0 30px;
+  color: var(--fg-primary);
+  font-size: 13px; font-family: inherit;
+}
+.toolbar .search .icon {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  width: 14px; height: 14px;
+  color: var(--fg-muted);
+}
+.toolbar select {
+  height: 32px; padding: 0 28px 0 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  color: var(--fg-primary);
+  font-size: 13px; font-family: inherit;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+[data-theme="dark"] .toolbar select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238e8e98' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+
+@media (max-width: 1100px) {
+  .kpi-band { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .shell { grid-template-columns: 56px 1fr; }
+  .sidebar-link span,
+  .sidebar-group-title,
+  .sidebar-brand-name,
+  .sidebar-brand-tag { display: none; }
+  .field-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sticky-submit { left: 56px; }
+}
+</style>
+</head>
+<body data-theme="light">
+
+<div class="shell">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <svg class="sidebar-brand-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="lg-foundation" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"  stop-color="#34D399"/>
+            <stop offset="100%" stop-color="#059669"/>
+          </linearGradient>
+        </defs>
+        <rect x="9"  y="6"  width="14" height="5" rx="1.2" fill="#a1a1aa"/>
+        <rect x="5"  y="14" width="22" height="5" rx="1.2" fill="#d4d4d8"/>
+        <rect x="2"  y="22" width="28" height="6" rx="1.5" fill="url(#lg-foundation)"/>
+        <circle cx="26" cy="4" r="1.5" fill="#34D399" opacity="0.85"/>
+      </svg>
+      <div>
+        <div class="sidebar-brand-name">SiteOps</div>
+        <div class="sidebar-brand-tag">Construction OS</div>
+      </div>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Overview</div>
+      <a class="sidebar-link" data-page="dashboard"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+      <a class="sidebar-link" data-page="projects"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg><span>Projects</span></a>
+      <a class="sidebar-link" data-page="vendors"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 22V8l10-5 10 5v14"/><path d="M9 22V12h6v10"/></svg><span>Vendors</span></a>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Daily Operations</div>
+      <a class="sidebar-link active" data-page="dr-detail"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span>Daily Reports</span></a>
+      <a class="sidebar-link nested" data-page="photos"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><circle cx="12" cy="13" r="3.5"/></svg><span>Photos</span></a>
+      <a class="sidebar-link nested" data-page="delays"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg><span>Delays</span></a>
+      <a class="sidebar-link nested" data-page="safety"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>Safety</span></a>
+      <a class="sidebar-link nested" data-page="qc"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M9 11l2 2 4-4"/></svg><span>QC Issues</span></a>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Planning</div>
+      <a class="sidebar-link" data-page="tasks"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Tasks</span></a>
+      <a class="sidebar-link" data-page="lookahead"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span>Look Ahead</span></a>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Records</div>
+      <a class="sidebar-link" data-page="dr-list"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span>DR Archive</span></a>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div style="min-width:0">
+
+    <header class="topbar">
+      <select class="tb-select-native"><option>ICE</option></select>
+      <select class="tb-select-native" style="min-width:220px">
+        <option>MSU · VA Medical Centre Bronx</option>
+        <option>GSA Office Test</option>
+      </select>
+      <div class="tb-search">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input placeholder="Search projects, RFIs, activities…">
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <div class="tb-spacer"></div>
+      <!-- ★ NEW V4: Save state -->
+      <div class="save-state">
+        <span class="dot"></span>
+        <span>All changes saved · 12s ago</span>
+      </div>
+      <button class="theme-toggle" id="themeToggle">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span id="themeLabel">Switch to Dark</span>
+      </button>
+      <button class="tb-icon-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>
+      <div class="tb-avatar">AD</div>
+    </header>
+
+    <main class="main">
+
+      <!-- ============================================================
+           PAGE: DASHBOARD
+           ============================================================ -->
+      <section class="page" data-page="dashboard">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Dashboard</h1>
+            <div class="page-subtitle">Active project: MSU · VA Medical Centre Bronx</div>
+          </div>
+        </div>
+
+        <div class="kpi-band">
+          <div class="kpi"><div class="kpi-label">Active Projects</div><div class="kpi-value-row"><span class="kpi-value">5</span><span class="kpi-delta flat">·</span></div></div>
+          <div class="kpi"><div class="kpi-label">Open RFIs</div><div class="kpi-value-row"><span class="kpi-value warn">3</span><span class="kpi-delta up">+1</span></div></div>
+          <div class="kpi"><div class="kpi-label">Pending Approvals</div><div class="kpi-value-row"><span class="kpi-value warn">2</span><span class="kpi-delta flat">·</span></div></div>
+          <div class="kpi"><div class="kpi-label">Field Issues</div><div class="kpi-value-row"><span class="kpi-value">0</span><span class="kpi-delta down">-2</span></div></div>
+          <div class="kpi"><div class="kpi-label">Safety Events</div><div class="kpi-value-row"><span class="kpi-value">0</span><span class="kpi-delta flat">·</span></div></div>
+          <div class="kpi"><div class="kpi-label">Schedule Health</div><div class="kpi-value-row"><span class="kpi-value ok">94%</span><span class="kpi-delta up">+2</span></div></div>
+          <div class="kpi"><div class="kpi-label">CP Slip (wd)</div><div class="kpi-value-row"><span class="kpi-value crit">+6</span><span class="kpi-delta up">+1</span></div></div>
+          <div class="kpi"><div class="kpi-label">Delays</div><div class="kpi-value-row"><span class="kpi-value">2</span><span class="kpi-delta down">-1</span></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg>
+            <span class="card-title">Active Project — Schedule Snapshot</span>
+            <span class="card-meta"><a>View Tasks</a></span>
+          </div>
+          <table class="dr-table">
+            <colgroup>
+              <col style="width:8%"><col style="width:42%"><col style="width:18%"><col style="width:16%"><col style="width:8%"><col style="width:8%">
+            </colgroup>
+            <thead><tr><th>Activity</th><th>Description</th><th>Status</th><th>Plan Finish</th><th>%</th><th>Slip</th></tr></thead>
+            <tbody>
+              <tr class="clickable"><td class="mono">1.1</td><td>Notice to Proceed</td><td><span class="pill pill-closed">Complete</span></td><td>05/06/2026</td><td>100%</td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">1.2</td><td>Mobilization</td><td><span class="pill pill-submitted">In Progress</span></td><td>05/05/2026</td><td>80%</td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">1.3</td><td>Plumbing Demo</td><td><span class="pill pill-submitted">In Progress</span></td><td>05/05/2026</td><td>25%</td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">1.4</td><td>Electrical Demo</td><td><span class="pill pill-submitted">In Progress</span></td><td>05/08/2026</td><td>25%</td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">1.5</td><td>Selective Demo</td><td><span class="pill pill-submitted">In Progress</span></td><td>05/12/2026</td><td>60%</td><td><span class="mono" style="color:var(--status-blocker-fg)">+2</span></td></tr>
+              <tr class="clickable"><td class="mono">1.6</td><td>Case-opening framing</td><td><span class="pill pill-closed">Complete</span></td><td>05/14/2026</td><td>100%</td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">1.7</td><td>Plumbing rough-in (DW, sink, …)</td><td><span class="pill pill-submitted">In Progress</span></td><td>05/18/2026</td><td>10%</td><td><span class="mono" style="color:var(--status-blocker-fg)">+3</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PAGE: PROJECTS
+           ============================================================ -->
+      <section class="page" data-page="projects">
+        <div class="page-header">
+          <div><h1 class="page-title">Projects</h1></div>
+          <div class="action-bar">
+            <button class="btn btn-primary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Project
+            </button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="search">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            <input placeholder="Search projects…">
+          </div>
+          <select><option>All Clients</option><option>GSA</option><option>NYCHA</option><option>VA</option></select>
+          <select><option>All Status</option><option>Planning</option><option>Active</option><option>Closeout</option></select>
+        </div>
+
+        <div class="card">
+          <table class="dr-table">
+            <colgroup><col style="width:22%"><col style="width:14%"><col style="width:12%"><col style="width:24%"><col style="width:12%"><col style="width:8%"><col style="width:8%"></colgroup>
+            <thead><tr><th>Name</th><th>Contract #</th><th>Client</th><th>Location</th><th>Status</th><th>Value</th><th>Plan Finish</th></tr></thead>
+            <tbody>
+              <tr class="clickable"><td><strong>MSU · VA Medical Centre Bronx</strong></td><td class="mono">#24608733</td><td>VA</td><td>Bronx, NY</td><td><span class="pill pill-submitted">Active</span></td><td>$1.00M</td><td>—</td></tr>
+              <tr class="clickable"><td><strong>GSA Office Test</strong></td><td class="mono">12356</td><td>GSA</td><td>Harrison, NJ</td><td><span class="pill pill-draft">Planning</span></td><td>$0.00M</td><td>—</td></tr>
+              <tr class="clickable"><td><strong>MSU1</strong></td><td class="mono">#269088</td><td>GSA</td><td>New York, NY</td><td><span class="pill pill-draft">Planning</span></td><td>$1.00M</td><td>—</td></tr>
+              <tr class="clickable"><td><strong>SBD Floorinh</strong></td><td class="mono">123456</td><td>SBD</td><td>Belleville, NJ</td><td><span class="pill pill-draft">Planning</span></td><td>$1.00M</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PAGE: VENDORS (Companies + Employees registry)
+           ============================================================ -->
+      <section class="page" data-page="vendors">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Vendors</h1>
+            <div class="page-subtitle">Subs · suppliers · consultants — central library shared across all projects</div>
+          </div>
+          <div class="action-bar">
+            <button class="btn btn-secondary">Import CSV</button>
+            <button class="btn btn-primary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Vendor
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:18px">
+          <div class="tabs">
+            <span class="tab active">Companies <span class="tab-count">42</span></span>
+            <span class="tab">Employees <span class="tab-count">218</span></span>
+            <span class="tab">Needs Review <span class="tab-count" style="background:var(--status-blocker-bg);color:var(--status-blocker-fg);border-color:var(--status-blocker-fg)">3</span></span>
+          </div>
+
+          <div class="toolbar" style="padding:14px 14px 0">
+            <div class="search">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+              <input placeholder="Search company name or trade…">
+            </div>
+            <select><option>All Kinds</option><option>Subcontractor</option><option>Supplier</option><option>Consultant</option></select>
+            <select><option>All Trades</option><option>Electrical</option><option>Plumbing</option><option>Mechanical</option><option>Demo</option></select>
+          </div>
+
+          <table class="dr-table" style="margin-top:10px">
+            <colgroup><col style="width:24%"><col style="width:14%"><col style="width:18%"><col style="width:18%"><col style="width:14%"><col style="width:12%"></colgroup>
+            <thead><tr><th>Name</th><th>Kind</th><th>Primary Trade</th><th>Contact</th><th>On Projects</th><th>Created</th></tr></thead>
+            <tbody>
+              <tr class="clickable"><td><strong>Accurate Door</strong></td><td><span class="pill pill-submitted">Subcontractor</span></td><td>Doors / Hardware</td><td>Alan Jacob · ajacob@accuratedhi.com</td><td>3 active</td><td>Manual</td></tr>
+              <tr class="clickable"><td><strong>Ark Mechanical</strong></td><td><span class="pill pill-submitted">Subcontractor</span></td><td>Mechanical</td><td>Robert Jannelli · (917) 589-6206</td><td>2 active</td><td>Manual</td></tr>
+              <tr class="clickable"><td><strong>Beta Star Electric</strong></td><td><span class="pill pill-submitted">Subcontractor</span></td><td>Electrical</td><td>Adam Fox · afox@rvii.com</td><td>5 active</td><td>Manual</td></tr>
+              <tr class="clickable"><td><strong>Chelsea Floors</strong></td><td><span class="pill pill-submitted">Subcontractor</span></td><td>Flooring</td><td>—</td><td>1 active</td><td>Manual</td></tr>
+              <tr class="clickable"><td><strong>XYZ Demo</strong> <span class="voice-badge" style="margin-left:6px">Voice</span></td><td><span class="pill pill-submitted">Subcontractor</span></td><td>Demo</td><td>—</td><td>1 active</td><td>Voice · today</td></tr>
+              <tr class="clickable"><td><strong>Concentric Group, LLC</strong></td><td><span class="pill pill-closed">Supplier</span></td><td>Concrete</td><td>—</td><td>4 active</td><td>Manual</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PAGE: DAILY REPORTS LIST
+           ============================================================ -->
+      <section class="page" data-page="dr-list">
+        <div class="page-header">
+          <div><h1 class="page-title">Daily Reports</h1></div>
+          <div class="action-bar">
+            <button class="btn btn-secondary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Upload DR Template
+            </button>
+            <button class="btn btn-primary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New Daily Report
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <table class="dr-table">
+            <colgroup><col style="width:18%"><col style="width:14%"><col style="width:24%"><col style="width:36%"><col style="width:8%"></colgroup>
+            <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th>Author</th><th></th></tr></thead>
+            <tbody>
+              <tr class="clickable" data-page-link="dr-detail"><td class="mono">05/24/2026</td><td><span class="pill pill-draft">Draft</span></td><td>—</td><td>Abhi D.</td><td><a style="color:var(--brand-primary);font-weight:600">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/23/2026</td><td><span class="pill pill-draft">Draft</span></td><td>—</td><td>Abhi D.</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/22/2026</td><td><span class="pill pill-submitted">Submitted</span></td><td>05/22 · 4:21 PM</td><td>Abhi D.</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/21/2026</td><td><span class="pill pill-closed">Approved</span></td><td>05/21 · 6:18 PM</td><td>Abhi D.</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/20/2026</td><td><span class="pill pill-closed">Approved</span></td><td>05/20 · 5:44 PM</td><td>Abhi D.</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PAGE: DR DETAIL (the main page with all v3 polish + v4 ★)
+           ============================================================ -->
+      <section class="page active" data-page="dr-detail">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">
+              Daily Report · 05/24/2026
+              <span class="date-stepper">
+                <button title="Previous day"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
+                <button title="Next day"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></button>
+              </span>
+            </h1>
+            <div class="crumbs">
+              <a data-page-link="dr-list">Daily Reports</a>
+              <span class="sep">/</span>
+              <span>May 24, 2026</span>
+              <span class="sep">/</span>
+              <span class="pill pill-draft">Draft</span>
+            </div>
+          </div>
+          <div class="action-bar">
+            <button class="btn btn-secondary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Export
+            </button>
+            <button class="btn btn-primary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+              Submit Report
+            </button>
+          </div>
+        </div>
+
+        <!-- ★ NEW V4: Progress bar + section pips -->
+        <div class="dr-progress">
+          <div class="dr-progress-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            <span class="count">4 / 7</span> sections done
+          </div>
+          <div class="dr-progress-bar"><div class="dr-progress-bar-fill"></div></div>
+          <div class="dr-pips">
+            <span class="dr-pip complete">01<span class="pip-name">Project</span></span>
+            <span class="dr-pip complete">02<span class="pip-name">Weather</span></span>
+            <span class="dr-pip in-progress">03<span class="pip-name">Manpower</span></span>
+            <span class="dr-pip blocked">04<span class="pip-name">Activity</span></span>
+            <span class="dr-pip">05<span class="pip-name">Events</span></span>
+            <span class="dr-pip">06<span class="pip-name">Photos</span></span>
+            <span class="dr-pip">07<span class="pip-name">Audit</span></span>
+          </div>
+        </div>
+
+        <div class="kpi-band">
+          <div class="kpi"><div class="kpi-label">PPC</div><div class="kpi-value-row"><span class="kpi-value">0%</span></div></div>
+          <div class="kpi"><div class="kpi-label">Headcount</div><div class="kpi-value-row"><span class="kpi-value">9</span><span class="kpi-delta up">+1</span></div></div>
+          <div class="kpi"><div class="kpi-label">Crew Hours</div><div class="kpi-value-row"><span class="kpi-value">72.0</span><span class="kpi-delta up">+8</span></div></div>
+          <div class="kpi"><div class="kpi-label">Activity Hrs</div><div class="kpi-value-row"><span class="kpi-value">0.0</span></div></div>
+          <div class="kpi"><div class="kpi-label">Delays</div><div class="kpi-value-row"><span class="kpi-value warn">2</span><span class="kpi-delta up">+2</span></div></div>
+          <div class="kpi"><div class="kpi-label">RFIs</div><div class="kpi-value-row"><span class="kpi-value">1</span><span class="kpi-delta flat">·</span></div></div>
+          <div class="kpi"><div class="kpi-label">Safety</div><div class="kpi-value-row"><span class="kpi-value">0</span><span class="kpi-delta flat">·</span></div></div>
+          <div class="kpi"><div class="kpi-label">QC</div><div class="kpi-value-row"><span class="kpi-value">0</span><span class="kpi-delta flat">·</span></div></div>
+        </div>
+
+        <div class="spine">
+
+          <!-- 1 -->
+          <section class="step complete" id="step-1">
+            <div class="step-node"><span class="num">1</span></div>
+            <div class="card">
+              <div class="project-row">
+                <span class="eyebrow">Project / Contract</span>
+                <span class="value">MSU · VA Medical Centre Bronx · #24608733 · ICE · Abhi D.</span>
+                <span class="card-meta">Auto-filled</span>
+                <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              </div>
+            </div>
+          </section>
+
+          <!-- 2 -->
+          <section class="step complete" id="step-2">
+            <div class="step-node"><span class="num">2</span></div>
+            <div class="card">
+              <div class="card-header">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+                <span class="card-title">Weather</span>
+                <span class="card-meta">Auto-filled · 8:18 PM</span>
+                <button class="voice-btn" style="margin-left:6px">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                  Add via Voice
+                </button>
+              </div>
+              <div class="card-body">
+                <div class="field-row">
+                  <div class="field"><div class="field-label">Conditions</div>
+                    <select class="field-select"><option>Clear</option><option>Cloudy</option><option>Rain</option></select>
+                  </div>
+                  <div class="field"><div class="field-label">High °F</div><input class="field-input" value="78"></div>
+                  <div class="field"><div class="field-label">Low °F</div><input class="field-input" value="62"></div>
+                  <div class="field"><div class="field-label">Precip In</div><input class="field-input" value="0"></div>
+                  <div class="field"><div class="field-label">Wind Mph</div><input class="field-input" value=""></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 3 -->
+          <section class="step in-progress" id="step-3">
+            <div class="step-node"><span class="num">3</span></div>
+            <div class="card">
+              <div class="card-header">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                <span class="card-title">Manpower Log</span>
+                <span class="card-count">3 rows</span>
+                <span class="card-meta">Total: 9 workers · 72.0 hours</span>
+              </div>
+              <table class="dr-table">
+                <colgroup>
+                  <col style="width:18%"><col style="width:13%"><col style="width:13%"><col style="width:11%"><col style="width:12%"><col style="width:11%"><col style="width:22%">
+                </colgroup>
+                <thead><tr><th>Company</th><th>Trade</th><th>Task</th><th>Headcount</th><th>Hrs / Person</th><th>Sub-Total</th><th>Notes</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td><input class="cell-input" value="XYZ Demo" /><span class="voice-badge" style="margin-left:4px">Voice match</span></td>
+                    <td><select class="cell-select"><option>Demo</option></select></td>
+                    <td><select class="cell-select"><option>— none —</option></select></td>
+                    <td><input class="cell-input" value="5"></td>
+                    <td><input class="cell-input" value="8"></td>
+                    <td>40.0</td>
+                    <td><input class="cell-input" placeholder="Notes…"></td>
+                  </tr>
+                  <tr>
+                    <td><input class="cell-input" placeholder="Search vendors…"></td>
+                    <td><select class="cell-select"><option>Electrical</option></select></td>
+                    <td><select class="cell-select"><option>— none —</option></select></td>
+                    <td><input class="cell-input" value="2"></td>
+                    <td><input class="cell-input" value="8"></td>
+                    <td>16.0</td>
+                    <td><input class="cell-input" placeholder="Notes…"></td>
+                  </tr>
+                  <tr>
+                    <td><input class="cell-input" placeholder="Search vendors…"></td>
+                    <td><select class="cell-select"><option>Mechanical</option></select></td>
+                    <td><select class="cell-select"><option>— none —</option></select></td>
+                    <td><input class="cell-input" value="2"></td>
+                    <td><input class="cell-input" value="8"></td>
+                    <td>16.0</td>
+                    <td><input class="cell-input" value="Duct work"></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style="padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-secondary btn-sm">
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                  Add Trade Row
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- 4 ★ ACTIVITY LOG with corrected columns + Lifecycle Track -->
+          <section class="step blocked" id="step-4">
+            <div class="step-node"><span class="num">4</span></div>
+            <div class="card">
+              <div class="card-header">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                <span class="card-title">Activity Log</span>
+                <span class="card-count">0 / 3</span>
+                <span class="card-meta">Date: 05/24/2026 · <a>Refresh from Schedule</a></span>
+              </div>
+
+              <div class="lifecycle">
+
+                <div class="phase-divider">Before · Reference</div>
+                <div class="phase-ref">
+                  <svg class="lock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <span class="title">Preconstruction &amp; Construction Paperwork</span>
+                  <span class="count">· 0 rows</span>
+                  <span class="ref-tag">Read-Only</span>
+                  <span class="meta">cleared before today's activity began</span>
+                </div>
+
+                <div class="phase-divider now">Today · Action Required</div>
+                <div class="phase-now">
+                  <div class="phase-now-head">
+                    <span class="phase-now-badge">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      Your Job
+                    </span>
+                    <span class="phase-now-title">Today's Planned Activity</span>
+                    <span class="phase-now-count">0 of 3 rows reported · 0% complete</span>
+                  </div>
+                  <div class="phase-now-helper">Mark today's work — SOD %, EOD %, Δ, status, blockers. Submit blocks until every row has progress.</div>
+                  <div class="phase-now-body">
+                    <table class="dr-table">
+                      <colgroup>
+                        <col style="width:8%"><col style="width:26%"><col style="width:8%"><col style="width:9%"><col style="width:9%"><col style="width:7%"><col style="width:13%"><col style="width:10%"><col style="width:10%">
+                      </colgroup>
+                      <thead><tr><th>Code</th><th>Description</th><th>LOC</th><th>SOD %</th><th>EOD %</th><th>Δ</th><th>Status</th><th>Blocker</th><th>Issues</th></tr></thead>
+                      <tbody>
+                        <tr>
+                          <td class="mono">1.8</td>
+                          <td>Mechanical Roughing — L3 East</td>
+                          <td><input class="cell-input" placeholder="Loc"></td>
+                          <td><input class="cell-input" value="0"></td>
+                          <td><input class="cell-input" value="0" placeholder="0"></td>
+                          <td class="mono" style="color:var(--fg-faint)">—</td>
+                          <td><select class="cell-select"><option>Not Started</option><option>In Progress</option><option>Done</option></select></td>
+                          <td><select class="cell-select"><option>— none —</option><option>RFI #18</option></select></td>
+                          <td><a style="color:var(--brand-primary);font-size:12px">+ Add</a></td>
+                        </tr>
+                        <tr>
+                          <td class="mono">1.9</td>
+                          <td>Electrical Rough-In — L3 East</td>
+                          <td><input class="cell-input" placeholder="Loc"></td>
+                          <td><input class="cell-input" value="0"></td>
+                          <td><input class="cell-input" value="0" placeholder="0"></td>
+                          <td class="mono" style="color:var(--fg-faint)">—</td>
+                          <td><select class="cell-select"><option>Not Started</option></select></td>
+                          <td><select class="cell-select"><option>— none —</option></select></td>
+                          <td><a style="color:var(--brand-primary);font-size:12px">+ Add</a></td>
+                        </tr>
+                        <tr>
+                          <td class="mono">1.10</td>
+                          <td>Plumbing Tie-In — Wet Wall A</td>
+                          <td><input class="cell-input" placeholder="Loc"></td>
+                          <td><input class="cell-input" value="0"></td>
+                          <td><input class="cell-input" value="0" placeholder="0"></td>
+                          <td class="mono" style="color:var(--fg-faint)">—</td>
+                          <td><select class="cell-select"><option>Not Started</option></select></td>
+                          <td><select class="cell-select"><option>— none —</option></select></td>
+                          <td><a style="color:var(--brand-primary);font-size:12px">+ Add</a></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div class="phase-divider">After · Reference</div>
+                <div class="phase-ref">
+                  <svg class="lock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <span class="title">Closeout Paperwork</span>
+                  <span class="count">· 0 rows</span>
+                  <span class="ref-tag">Read-Only</span>
+                  <span class="meta">activates once today's rows are submitted</span>
+                </div>
+
+              </div>
+
+              <div class="callout">
+                <div class="callout-title">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                  Create Unplanned Activity <span style="color:var(--fg-muted);font-weight:400">— flagged for PM review</span>
+                </div>
+                <div class="callout-row">
+                  <input class="field-input" placeholder="What was done?">
+                  <select class="field-select"><option>Trade…</option></select>
+                  <button class="btn btn-primary btn-sm">Create</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 5 EVENTS -->
+          <section class="step" id="step-5">
+            <div class="step-node"><span class="num">5</span></div>
+            <div class="card">
+              <div class="card-header">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+                <span class="card-title">Events</span>
+                <span class="card-meta">Log delays, safety, QC, RFIs as they happen</span>
+                <button class="btn btn-primary btn-sm" style="margin-left:auto">
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                  Add Event
+                </button>
+              </div>
+              <div class="tabs">
+                <span class="tab active">Delays <span class="tab-count">2</span></span>
+                <span class="tab">Safety <span class="tab-count">0</span></span>
+                <span class="tab">QC <span class="tab-count">0</span></span>
+                <span class="tab">RFIs <span class="tab-count">1</span></span>
+                <span class="tab">Deliveries <span class="tab-count">0</span></span>
+                <span class="tab">Notes</span>
+              </div>
+              <div style="padding: 14px">
+                <table class="dr-table">
+                  <colgroup><col style="width:14%"><col style="width:12%"><col style="width:46%"><col style="width:16%"><col style="width:12%"></colgroup>
+                  <thead><tr><th>Severity</th><th>Status</th><th>Description</th><th>Linked Task</th><th>Days Open</th></tr></thead>
+                  <tbody>
+                    <tr><td><span class="pill pill-open">Moderate</span></td><td><span class="pill pill-open">Open</span></td><td>Electrical conduit conflict with HVAC duct on Level 3 East</td><td><span class="mono" style="color:var(--brand-primary)">1.18 CP</span></td><td>11</td></tr>
+                    <tr><td><span class="pill pill-open">Moderate</span></td><td><span class="pill pill-closed">Resolved</span></td><td>ConEd shutdown delay on mech roughing</td><td><span class="mono" style="color:var(--brand-primary)">1.4 CP</span></td><td>0</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- 6 PHOTOS -->
+          <section class="step" id="step-6">
+            <div class="step-node"><span class="num">6</span></div>
+            <div class="card">
+              <div class="card-header">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><circle cx="12" cy="13" r="3.5"/></svg>
+                <span class="card-title">Photos</span>
+                <span class="card-count">0</span>
+                <button class="btn btn-primary btn-sm" style="margin-left:auto">
+                  <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                  Upload + Tag
+                </button>
+              </div>
+              <div class="empty">
+                <!-- ★ NEW V4: SVG empty-state illustration -->
+                <svg class="empty-illust" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <rect x="6" y="14" width="52" height="38" rx="3"/>
+                  <rect x="12" y="10" width="40" height="6" rx="1.5" fill="currentColor" opacity="0.15" stroke="none"/>
+                  <circle cx="32" cy="33" r="9"/>
+                  <circle cx="32" cy="33" r="4" fill="currentColor" opacity="0.2" stroke="none"/>
+                  <circle cx="50" cy="22" r="1.5" fill="currentColor" stroke="none"/>
+                </svg>
+                <div style="font-weight:600;color:var(--fg-secondary);font-size:13px">No photos yet for today</div>
+                <div style="margin-top:4px;font-size:12px">Photos upload to the <a style="color:var(--brand-primary)">Photo Tray</a> first. After upload, we'll open the tag wizard with AI suggestions ready.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 7 AUDIT -->
+          <section class="step" id="step-7">
+            <div class="step-node"><span class="num">7</span></div>
+            <div class="card">
+              <div class="card-header">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                <span class="card-title">Audit Trail</span>
+                <span class="card-count">8</span>
+                <span class="card-meta">Append-only ledger · CMMC L2 compliant</span>
+              </div>
+              <div class="audit-row"><span class="pill pill-submitted">Insert</span> <span class="ts">05/24 20:21</span> <span>Daily report created by Abhi D.</span></div>
+              <div class="audit-row"><span class="pill pill-submitted">Update</span> <span class="ts">05/24 20:22</span> <span>Weather auto-filled from forecast (clear, 78/62)</span></div>
+              <div class="audit-row"><span class="pill pill-submitted">Insert</span> <span class="ts">05/24 20:24</span> <span>Manpower row added — Demo, 5 workers @ 8h (voice-matched to "XYZ Demo")</span></div>
+            </div>
+          </section>
+
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PAGE: PHOTOS (sidebar entry)
+           ============================================================ -->
+      <section class="page" data-page="photos">
+        <div class="page-header">
+          <div>
+            <h1 class="page-title">Photos</h1>
+            <div class="page-subtitle">Gallery view across all daily reports · MSU</div>
+          </div>
+          <div class="action-bar">
+            <button class="btn btn-secondary">Evidence Pack</button>
+            <button class="btn btn-primary">Upload + Tag</button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <select><option>All Classes</option><option>Progress</option><option>Safety</option><option>QC</option></select>
+          <select><option>Any Tag</option></select>
+          <input class="field-input" style="width:200px" placeholder="Activity ID…">
+          <label style="font-size:12.5px;color:var(--fg-secondary);display:inline-flex;align-items:center;gap:6px;margin-left:auto">
+            <input type="checkbox"> Evidentiary only
+          </label>
+        </div>
+
+        <div class="card">
+          <div class="empty">
+            <svg class="empty-illust" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="6" y="14" width="52" height="38" rx="3"/>
+              <circle cx="32" cy="33" r="9"/>
+              <circle cx="50" cy="22" r="1.5" fill="currentColor" stroke="none"/>
+            </svg>
+            <div style="font-weight:600;color:var(--fg-secondary);font-size:13px">No photos in the selected window</div>
+            <div style="margin-top:4px;font-size:12px">Adjust filters or upload from the Photo Tray.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================
+           PAGE: DELAYS
+           ============================================================ -->
+      <section class="page" data-page="delays">
+        <div class="page-header">
+          <div><h1 class="page-title">Delays</h1></div>
+          <div class="action-bar">
+            <button class="btn btn-primary">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              New on Today's DR
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <table class="dr-table">
+            <colgroup><col style="width:14%"><col style="width:12%"><col style="width:12%"><col style="width:32%"><col style="width:14%"><col style="width:8%"><col style="width:8%"></colgroup>
+            <thead><tr><th>Date</th><th>Severity</th><th>Status</th><th>Description</th><th>Linked Task</th><th>Days Open</th><th></th></tr></thead>
+            <tbody>
+              <tr class="clickable"><td class="mono">05/15/2026</td><td><span class="pill pill-open">Moderate</span></td><td><span class="pill pill-closed">Resolved</span></td><td>Tetsding</td><td><span class="mono" style="color:var(--brand-primary)">1.20 CP</span></td><td>7</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/15/2026</td><td><span class="pill pill-open">Moderate</span></td><td><span class="pill pill-open">Open</span></td><td>tettete</td><td><span class="mono" style="color:var(--brand-primary)">1.11 CP</span></td><td>9</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/13/2026</td><td><span class="pill pill-open">Moderate</span></td><td><span class="pill pill-open">Open</span></td><td>Electrical conduit conflict with HVAC duct on Level 3 East…</td><td><span class="mono" style="color:var(--brand-primary)">1.18 CP</span></td><td>11</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+              <tr class="clickable"><td class="mono">05/13/2026</td><td><span class="pill pill-open">Moderate</span></td><td><span class="pill pill-closed">Resolved</span></td><td>jfdjjjj</td><td><span class="mono" style="color:var(--brand-primary)">1.14 CP</span></td><td>0</td><td><a style="color:var(--brand-primary)">Open ›</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Stub pages for Safety / QC / Tasks / Look Ahead / DR Archive -->
+      <section class="page" data-page="safety">
+        <div class="page-header"><div><h1 class="page-title">Safety Events</h1></div></div>
+        <div class="card"><div class="empty">
+          <svg class="empty-illust" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M32 6L8 16v14c0 13 10 22 24 28 14-6 24-15 24-28V16L32 6z"/></svg>
+          <div style="font-weight:600;color:var(--fg-secondary);font-size:13px">No safety events logged</div>
+          <div style="margin-top:4px;font-size:12px">Near-miss, first-aid, recordable, lost-time. Severity drives investigation pace.</div>
+        </div></div>
+      </section>
+
+      <section class="page" data-page="qc">
+        <div class="page-header"><div><h1 class="page-title">QC Issues</h1></div></div>
+        <div class="card"><div class="empty">
+          <svg class="empty-illust" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="10" y="8" width="44" height="48" rx="3"/><path d="M20 22h24M20 30h24M20 38h16"/></svg>
+          <div style="font-weight:600;color:var(--fg-secondary);font-size:13px">No QC issues this project</div>
+          <div style="margin-top:4px;font-size:12px">Quality-control deviations from spec. Status moves from open to closed when remediated.</div>
+        </div></div>
+      </section>
+
+      <section class="page" data-page="tasks">
+        <div class="page-header">
+          <div><h1 class="page-title">Schedule Activities</h1><div class="page-subtitle">MSU</div></div>
+          <div class="action-bar">
+            <button class="btn btn-secondary">Export</button>
+            <button class="btn btn-secondary">Recompute CPM</button>
+            <button class="btn btn-primary">New Activity</button>
+          </div>
+        </div>
+        <div class="card">
+          <table class="dr-table">
+            <colgroup><col style="width:6%"><col style="width:32%"><col style="width:10%"><col style="width:11%"><col style="width:11%"><col style="width:7%"><col style="width:11%"><col style="width:12%"></colgroup>
+            <thead><tr><th>#</th><th>Description</th><th>Trade</th><th>Plan Start</th><th>Plan Finish</th><th>%</th><th>Status</th><th>Slip (wd)</th></tr></thead>
+            <tbody>
+              <tr class="clickable"><td class="mono">1</td><td><strong>Notice to Proceed</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.1</span></td><td>—</td><td>05/05/2026</td><td>05/06/2026</td><td>100%</td><td><span class="pill pill-closed">Complete</span></td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">2</td><td><strong>Mobilization</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.2</span></td><td>—</td><td>05/05/2026</td><td>05/05/2026</td><td>80%</td><td><span class="pill pill-submitted">In Progress</span></td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">3</td><td><strong>Plumbing Demo</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.3</span></td><td>Plumbing</td><td>05/05/2026</td><td>05/05/2026</td><td>25%</td><td><span class="pill pill-submitted">In Progress</span></td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">4</td><td><strong>Electrical Demo</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.4</span></td><td>Electrical</td><td>05/08/2026</td><td>05/08/2026</td><td>25%</td><td><span class="pill pill-submitted">In Progress</span></td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">5</td><td><strong>Selective Demo</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.5</span></td><td>Demo</td><td>05/11/2026</td><td>05/12/2026</td><td>60%</td><td><span class="pill pill-submitted">In Progress</span></td><td><span class="mono" style="color:var(--status-blocker-fg)">+2</span></td></tr>
+              <tr class="clickable"><td class="mono">6</td><td><strong>Case-opening framing</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.6</span></td><td>—</td><td>05/13/2026</td><td>05/14/2026</td><td>100%</td><td><span class="pill pill-closed">Complete</span></td><td>—</td></tr>
+              <tr class="clickable"><td class="mono">7</td><td><strong>Plumbing rough-in (DW, sink, …)</strong><br><span class="mono" style="font-size:11px;color:var(--fg-muted)">1.7</span></td><td>Plumbing</td><td>05/15/2026</td><td>05/18/2026</td><td>10%</td><td><span class="pill pill-submitted">In Progress</span></td><td><span class="mono" style="color:var(--status-blocker-fg)">+3</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="page" data-page="lookahead">
+        <div class="page-header"><div><h1 class="page-title">14-Day Look Ahead</h1></div></div>
+        <div class="card">
+          <div class="tabs"><span class="tab">7d</span><span class="tab active">14d</span><span class="tab">21d</span><span class="tab">28d</span></div>
+          <div style="padding:14px">
+            <table class="dr-table">
+              <colgroup><col style="width:8%"><col style="width:34%"><col style="width:10%"><col style="width:12%"><col style="width:12%"><col style="width:9%"><col style="width:15%"></colgroup>
+              <thead><tr><th>Code</th><th>Description</th><th>Trade</th><th>Plan Start</th><th>Plan Finish</th><th>Slip (wd)</th><th>Status</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">1.10</td><td>Patch walls spackle and sand</td><td>—</td><td>05/26/2026</td><td>05/28/2026</td><td><span class="mono" style="color:var(--status-blocker-fg)">+8</span></td><td><span class="pill pill-blocker">Blocked</span></td></tr>
+                <tr><td class="mono">1.11</td><td>Prime coat on all GWB</td><td>—</td><td>05/29/2026</td><td>05/29/2026</td><td><span class="mono" style="color:var(--status-blocker-fg)">+11</span></td><td><span class="pill pill-blocker">Blocked</span></td></tr>
+                <tr><td class="mono">1.12</td><td>Install new ACT ceiling grid &amp; LED fixtures</td><td>—</td><td>06/01/2026</td><td>06/02/2026</td><td><span class="mono" style="color:var(--status-blocker-fg)">+11</span></td><td><span class="pill pill-open">At Risk</span></td></tr>
+                <tr><td class="mono">1.13</td><td>First-coat paint walls</td><td>—</td><td>06/03/2026</td><td>06/03/2026</td><td><span class="mono" style="color:var(--status-blocker-fg)">+11</span></td><td><span class="pill pill-open">At Risk</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ★ NEW V4: Sticky bottom submit bar -->
+<div class="sticky-submit">
+  <div class="sticky-submit-meta">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+    <span class="num">4 / 7</span> sections complete
+  </div>
+  <div class="sticky-submit-fill"><div></div></div>
+  <div style="font-size:11.5px;color:var(--fg-muted)">3 to go — Activity, Events, Photos</div>
+  <div style="flex:1"></div>
+  <button class="btn btn-secondary btn-sm">Save Draft</button>
+  <button class="btn btn-primary btn-sm">
+    Submit Report
+    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+  </button>
+</div>
+
+<script>
+  // Theme toggle
+  const root = document.body;
+  const btn = document.getElementById('themeToggle');
+  const label = document.getElementById('themeLabel');
+  const saved = localStorage.getItem('siteops-mock-theme-v4');
+  if (saved) {
+    root.setAttribute('data-theme', saved);
+    label.textContent = saved === 'dark' ? 'Switch to Light' : 'Switch to Dark';
+  }
+  btn.addEventListener('click', () => {
+    const cur = root.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    label.textContent = next === 'dark' ? 'Switch to Light' : 'Switch to Dark';
+    localStorage.setItem('siteops-mock-theme-v4', next);
+  });
+
+  // Page navigation (sidebar links + in-page page-link)
+  function showPage(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    const target = document.querySelector(`.page[data-page="${name}"]`);
+    if (target) target.classList.add('active');
+    document.querySelectorAll('.sidebar-link').forEach(a => a.classList.remove('active'));
+    const link = document.querySelector(`.sidebar-link[data-page="${name}"]`);
+    if (link) link.classList.add('active');
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('.sidebar-link[data-page]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      showPage(a.getAttribute('data-page'));
+    });
+  });
+  document.querySelectorAll('[data-page-link]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      showPage(a.getAttribute('data-page-link'));
+    });
+  });
+
+  // DR pip jump-to within DR detail page
+  document.querySelectorAll('.dr-pip').forEach((pip, i) => {
+    pip.addEventListener('click', () => {
+      const el = document.getElementById(`step-${i + 1}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+</script>
+
+</body>
+</html>

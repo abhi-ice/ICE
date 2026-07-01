@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SiteOps — Sidebar v5 · light / dark</title>
+<style>
+  /* =====================================================================
+     Sidebar v5 design proposal — modern B2B SaaS patterns mixed in:
+       - Linear: command-palette feel, tight typography, ⌘K hint
+       - Notion: collapsible sections w/ chevrons, generous whitespace
+       - Stripe: subtle section separators, semantic-color status pills
+       - GitHub: keyboard shortcut hints on top items, badge counts
+       - Vercel: minimal color, brand only on active state + accent
+     ALL existing sections + items preserved so user can judge density.
+     ===================================================================== */
+  :root {
+    --emerald: #10b981;
+    --emerald-light: #34d399;
+    --emerald-pale: rgba(16, 185, 129, 0.12);
+    --emerald-rail: rgba(16, 185, 129, 0.95);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0c0c0f;
+    color: #e8e8eb;
+    padding: 28px 24px;
+  }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub { color: #8e8e98; font-size: 13px; margin: 0 0 22px; max-width: 880px; line-height: 1.55; }
+
+  /* Two-panel showcase — light + dark side by side */
+  .compare {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 22px;
+  }
+  .panel {
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .panel-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 14px 18px 6px;
+    color: #b0b0b8;
+  }
+  .panel-sub { padding: 0 18px 14px; color: #7a7a82; font-size: 11.5px; }
+  .frame {
+    background: #f5f6f8;
+    height: 920px;
+    display: flex;
+    overflow: hidden;
+  }
+  .frame.dark { background: #0a0a0c; }
+
+  /* ============================================================
+     V5 SIDEBAR — light theme
+     ============================================================ */
+  .sb {
+    width: 256px;
+    flex: 0 0 256px;
+    background: #1a1a1f;
+    color: #e8e8eb;
+    border-right: 1px solid rgba(255,255,255,0.05);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  .sb::-webkit-scrollbar { width: 5px; }
+  .sb::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 3px; }
+
+  /* Brand block — top */
+  .sb-brand {
+    display: flex; align-items: center; gap: 9px;
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .sb-logo {
+    width: 30px; height: 30px;
+    border-radius: 7px;
+    background: linear-gradient(135deg, #10b981, #34d399);
+    display: grid; place-items: center;
+    box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.5),
+                inset 0 1px 0 rgba(255,255,255,0.2);
+  }
+  .sb-logo svg { width: 14px; height: 14px; color: white; }
+  .sb-brand-text { line-height: 1.2; }
+  .sb-brand-name { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+  .sb-brand-tag {
+    font-size: 9.5px; color: rgba(255,255,255,0.5);
+    margin-top: 1px; font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.04em;
+  }
+  .sb-collapse {
+    margin-left: auto;
+    width: 26px; height: 26px;
+    border-radius: 5px;
+    border: 0; background: transparent;
+    color: rgba(255,255,255,0.45);
+    display: grid; place-items: center; cursor: pointer;
+  }
+  .sb-collapse:hover { background: rgba(255,255,255,0.06); color: white; }
+
+  /* Jump-to / command-palette trigger — Linear's killer feature */
+  .sb-search {
+    margin: 10px 12px 6px;
+    padding: 7px 10px 7px 9px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    display: flex; align-items: center; gap: 8px;
+    cursor: pointer;
+    transition: all 120ms;
+  }
+  .sb-search:hover {
+    background: rgba(255,255,255,0.07);
+    border-color: rgba(255,255,255,0.14);
+  }
+  .sb-search svg { width: 12px; height: 12px; color: rgba(255,255,255,0.45); flex: 0 0 auto; }
+  .sb-search-text { font-size: 11.5px; color: rgba(255,255,255,0.45); flex: 1; }
+  .sb-search-kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.55);
+  }
+
+  /* Section header — color-coded dot + collapsible label */
+  .sb-section {
+    margin-top: 12px;
+    padding: 0 8px;
+  }
+  .sb-section-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sb-section-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .sb-section-name {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.4);
+    flex: 1;
+  }
+  .sb-section-chev {
+    width: 11px; height: 11px;
+    color: rgba(255,255,255,0.35);
+    transition: transform 150ms;
+  }
+  .sb-section.collapsed .sb-section-chev { transform: rotate(-90deg); }
+  .sb-section.collapsed .sb-items { display: none; }
+
+  /* Item rows — tight, scannable */
+  .sb-items { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 4px; }
+  .sb-item {
+    position: relative;
+    display: flex; align-items: center; gap: 9px;
+    padding: 5px 9px;
+    border-radius: 5px;
+    color: rgba(255,255,255,0.78);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms, color 120ms, transform 120ms;
+  }
+  .sb-item:hover {
+    background: rgba(255,255,255,0.05);
+    color: white;
+  }
+  .sb-item svg { width: 13px; height: 13px; opacity: 0.65; flex: 0 0 auto; }
+  .sb-item:hover svg { opacity: 1; }
+  .sb-item-label { flex: 1; }
+  .sb-item.nested { padding-left: 25px; font-size: 11.5px; color: rgba(255,255,255,0.65); }
+  .sb-item.active {
+    background: rgba(16, 185, 129, 0.13);
+    color: white;
+  }
+  .sb-item.active::before {
+    content: "";
+    position: absolute;
+    left: -2px; top: 5px; bottom: 5px;
+    width: 3px;
+    background: var(--emerald-rail);
+    border-radius: 2px;
+  }
+  .sb-item.active svg { color: var(--emerald-light); opacity: 1; }
+
+  /* Inline keyboard hint for top items */
+  .sb-item-kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.45);
+    font-weight: 400;
+  }
+  .sb-item:hover .sb-item-kbd { color: rgba(255,255,255,0.7); }
+
+  /* Semantic count badges */
+  .sb-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 8px;
+    display: grid; place-items: center;
+    font-weight: 600;
+  }
+  .sb-badge.emerald { background: rgba(16,185,129,0.18); color: #6ee7b7; }
+  .sb-badge.amber   { background: rgba(245,158,11,0.18); color: #fcd34d; }
+  .sb-badge.rose    { background: rgba(239,68,68,0.18);  color: #fca5a5; }
+  .sb-badge.blue    { background: rgba(59,130,246,0.18); color: #93c5fd; }
+  .sb-badge.slate   { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.6); }
+
+  /* Sidebar footer — version + theme micro-controls */
+  .sb-footer {
+    margin-top: auto;
+    padding: 10px 14px;
+    border-top: 1px solid rgba(255,255,255,0.05);
+    display: flex; align-items: center; gap: 10px;
+    font-size: 10.5px;
+    color: rgba(255,255,255,0.4);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .sb-footer-spacer { flex: 1; }
+  .sb-footer-btn {
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    border: 0; background: transparent;
+    color: rgba(255,255,255,0.5);
+    display: grid; place-items: center;
+    cursor: pointer;
+  }
+  .sb-footer-btn:hover { background: rgba(255,255,255,0.06); color: white; }
+  .sb-footer-btn svg { width: 11px; height: 11px; }
+
+  /* Section accent colors (the small dot) */
+  .accent-overview     { background: #818cf8; box-shadow: 0 0 6px #818cf8; }
+  .accent-daily        { background: #34d399; box-shadow: 0 0 6px #34d399; }
+  .accent-planning     { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; }
+  .accent-procurement  { background: #60a5fa; box-shadow: 0 0 6px #60a5fa; }
+  .accent-review       { background: #a78bfa; box-shadow: 0 0 6px #a78bfa; }
+  .accent-resources    { background: #2dd4bf; box-shadow: 0 0 6px #2dd4bf; }
+  .accent-system       { background: #94a3b8; box-shadow: 0 0 6px #94a3b8; }
+
+  /* Right side just shows "content area" placeholder */
+  .frame-content { flex: 1; padding: 18px 22px; }
+  .frame-content-head { font-size: 16px; font-weight: 700; color: #181d1f; margin-bottom: 4px; }
+  .frame-content-sub  { font-size: 11px; color: #6b7280; }
+  .frame.dark .frame-content-head { color: #ececf0; }
+  .frame.dark .frame-content-sub  { color: #8e8e98; }
+
+  .frame.dark .sb { background: #131318; border-right-color: rgba(255,255,255,0.04); }
+
+  /* Inspiration panel */
+  .insp {
+    margin-top: 26px;
+    padding: 16px 18px;
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #c0c0c8;
+  }
+  .insp h3 { margin: 0 0 8px; font-size: 13px; color: white; }
+  .insp b { color: white; font-weight: 600; }
+  .insp ul { margin: 6px 0 0 18px; padding: 0; }
+  .insp li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <h1>Sidebar v5 · same sections, modern polish</h1>
+  <p class="sub">Every current section + item is here (Overview, Daily Operations, Planning &amp; Tracking, Procurement &amp; Documents, Review &amp; Actions, Resources, System) so you can judge density. Both themes shown side-by-side. New ingredients borrowed from Linear, Notion, Stripe, and Vercel — see the notes below the mockup.</p>
+
+  <div class="compare">
+
+    <!-- ============= LIGHT-MODE PANEL (sidebar stays dark, content light) ============= -->
+    <div class="panel">
+      <div class="panel-title">Light theme</div>
+      <div class="panel-sub">Sidebar stays dark in both themes (Linear/Vercel pattern). Content area is what changes.</div>
+      <div class="frame">
+        <!-- SIDEBAR ============================================== -->
+        <aside class="sb">
+          <!-- Brand -->
+          <div class="sb-brand">
+            <div class="sb-logo">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+            </div>
+            <div class="sb-brand-text">
+              <div class="sb-brand-name">SiteOps</div>
+              <div class="sb-brand-tag">CONSTRUCTION&nbsp;OS</div>
+            </div>
+            <button class="sb-collapse" title="Collapse to rail">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 19l-7-7 7-7M19 19l-7-7 7-7"/></svg>
+            </button>
+          </div>
+
+          <!-- Jump-to search (⌘K) -->
+          <div class="sb-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            <span class="sb-search-text">Jump to page or action…</span>
+            <span class="sb-search-kbd">⌘K</span>
+          </div>
+
+          <!-- OVERVIEW -->
+          <div class="sb-section">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-overview"></div>
+              <div class="sb-section-name">Overview</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item active">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                <span class="sb-item-label">Dashboard</span>
+                <span class="sb-item-kbd">⌘1</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                <span class="sb-item-label">Getting started</span>
+                <span class="sb-badge slate">3/12</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                <span class="sb-item-label">Projects</span>
+                <span class="sb-item-kbd">⌘2</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                <span class="sb-item-label">Vendors</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg>
+                <span class="sb-item-label">Master doc</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <span class="sb-item-label">Project access</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- DAILY OPERATIONS -->
+          <div class="sb-section">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-daily"></div>
+              <div class="sb-section-name">Daily operations</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11H7v8h2zm4-6h-2v14h2zm4 3h-2v11h2z"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                <span class="sb-item-label">Daily reports</span>
+                <span class="sb-item-kbd">⌘3</span>
+              </div>
+              <div class="sb-item nested">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <span class="sb-item-label">Photos</span>
+              </div>
+              <div class="sb-item nested">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <span class="sb-item-label">Photo tray</span>
+                <span class="sb-badge slate">7</span>
+              </div>
+              <div class="sb-item nested">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span class="sb-item-label">Delays</span>
+                <span class="sb-badge amber">4</span>
+              </div>
+              <div class="sb-item nested">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>
+                <span class="sb-item-label">Safety</span>
+                <span class="sb-badge rose">2</span>
+              </div>
+              <div class="sb-item nested">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M9 12l2 2 4-4M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+                <span class="sb-item-label">QC issues</span>
+              </div>
+              <div class="sb-item nested">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
+                <span class="sb-item-label">Coordination</span>
+                <span class="sb-badge slate">12</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- PLANNING & TRACKING -->
+          <div class="sb-section">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-planning"></div>
+              <div class="sb-section-name">Planning &amp; tracking</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                <span class="sb-item-label">Tasks</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                <span class="sb-item-label">Look ahead</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9"/></svg>
+                <span class="sb-item-label">Schedule updates</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <span class="sb-item-label">Weekly reports</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                <span class="sb-item-label">Calendar reconciliation</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                <span class="sb-item-label">Locations</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                <span class="sb-item-label">Polygon editor</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                <span class="sb-item-label">Spatial 3D</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <span class="sb-item-label">Productivity</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                <span class="sb-item-label">Resource leveling</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- PROCUREMENT & DOCUMENTS -->
+          <div class="sb-section">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-procurement"></div>
+              <div class="sb-section-name">Procurement &amp; docs</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>
+                <span class="sb-item-label">RFIs</span>
+                <span class="sb-badge amber">5</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+                <span class="sb-item-label">Deliveries</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span class="sb-item-label">Drawings</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                <span class="sb-item-label">Specifications</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                <span class="sb-item-label">Submittals</span>
+                <span class="sb-badge blue">8</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M11 18H8a2 2 0 0 1-2-2V9"/></svg>
+                <span class="sb-item-label">Change orders</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span class="sb-item-label">Aging</span>
+                <span class="sb-badge rose">3</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- REVIEW & ACTIONS -->
+          <div class="sb-section">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-review"></div>
+              <div class="sb-section-name">Review &amp; actions</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><path d="M21 12c.552 0 1.005-.449.95-.998a10 10 0 0 0-19.9 0c-.055.55.398.998.95.998s.99-.45 1.1-.99a8 8 0 0 1 15.8 0c.11.54.548.99 1.1.99z"/></svg>
+                <span class="sb-item-label">Approvals</span>
+                <span class="sb-badge emerald">2</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                <span class="sb-item-label">Field issues</span>
+                <span class="sb-badge rose">11</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <span class="sb-item-label">Cascade</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                <span class="sb-item-label">Recovery</span>
+              </div>
+              <div class="sb-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <span class="sb-item-label">TIA generator</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- RESOURCES (collapsed by default) -->
+          <div class="sb-section collapsed">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-resources"></div>
+              <div class="sb-section-name">Resources</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2M21 21v-2a4 4 0 0 0-3-3.87M17 3.13a4 4 0 0 1 0 7.75"/></svg><span class="sb-item-label">Crews</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span class="sb-item-label">Equipment</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20s-1-1-4-1-4 1-4 1-1-1-4-1-4 1-4 1V8s1-1 4-1 4 1 4 1 1-1 4-1 4 1 4 1z"/></svg><span class="sb-item-label">People</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span class="sb-item-label">Certifications</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/></svg><span class="sb-item-label">Availability</span></div>
+            </div>
+          </div>
+
+          <!-- SYSTEM (collapsed by default) -->
+          <div class="sb-section collapsed">
+            <div class="sb-section-head">
+              <div class="sb-section-dot accent-system"></div>
+              <div class="sb-section-name">System</div>
+              <svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="sb-items">
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="sb-item-label">Team</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="sb-item-label">Imports</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/></svg><span class="sb-item-label">Schedule changes</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg><span class="sb-item-label">AI agents</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8"/></svg><span class="sb-item-label">Knowledge base</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/></svg><span class="sb-item-label">Marketplace</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg><span class="sb-item-label">Voice PINs</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="sb-item-label">Compliance</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg><span class="sb-item-label">Audit log</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg><span class="sb-item-label">Edit requests</span><span class="sb-badge blue">4</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33"/></svg><span class="sb-item-label">Settings</span></div>
+            </div>
+          </div>
+
+          <!-- FOOTER -->
+          <div class="sb-footer">
+            <span>v0.3 · Iter 3</span>
+            <span class="sb-footer-spacer"></span>
+            <button class="sb-footer-btn" title="Help">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+            </button>
+            <button class="sb-footer-btn" title="Switch to dark theme">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
+          </div>
+        </aside>
+
+        <div class="frame-content">
+          <div class="frame-content-head">Dashboard</div>
+          <div class="frame-content-sub">Active project: MSU · VA Medical Centre Bronx</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============= DARK-MODE PANEL (identical sidebar, dark content) ============= -->
+    <div class="panel">
+      <div class="panel-title">Dark theme</div>
+      <div class="panel-sub">Sidebar identical — same structure works for both themes.</div>
+      <div class="frame dark">
+        <aside class="sb">
+          <!-- mirror everything from above; copying inline to keep this single-file -->
+          <div class="sb-brand">
+            <div class="sb-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 12h18M3 6h18M3 18h18"/></svg></div>
+            <div class="sb-brand-text"><div class="sb-brand-name">SiteOps</div><div class="sb-brand-tag">CONSTRUCTION&nbsp;OS</div></div>
+            <button class="sb-collapse"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M11 19l-7-7 7-7M19 19l-7-7 7-7"/></svg></button>
+          </div>
+          <div class="sb-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><span class="sb-search-text">Jump to page or action…</span><span class="sb-search-kbd">⌘K</span></div>
+          <div class="sb-section">
+            <div class="sb-section-head"><div class="sb-section-dot accent-overview"></div><div class="sb-section-name">Overview</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items">
+              <div class="sb-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span class="sb-item-label">Dashboard</span><span class="sb-item-kbd">⌘1</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg><span class="sb-item-label">Getting started</span><span class="sb-badge slate">3/12</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="sb-item-label">Projects</span><span class="sb-item-kbd">⌘2</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/></svg><span class="sb-item-label">Vendors</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg><span class="sb-item-label">Master doc</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="sb-item-label">Project access</span></div>
+            </div>
+          </div>
+          <div class="sb-section">
+            <div class="sb-section-head"><div class="sb-section-dot accent-daily"></div><div class="sb-section-name">Daily operations</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items">
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span class="sb-item-label">Daily reports</span><span class="sb-item-kbd">⌘3</span></div>
+              <div class="sb-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="4"/></svg><span class="sb-item-label">Photos</span></div>
+              <div class="sb-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="4"/></svg><span class="sb-item-label">Photo tray</span><span class="sb-badge slate">7</span></div>
+              <div class="sb-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg><span class="sb-item-label">Delays</span><span class="sb-badge amber">4</span></div>
+              <div class="sb-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="sb-item-label">Safety</span><span class="sb-badge rose">2</span></div>
+              <div class="sb-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="4" rx="1"/></svg><span class="sb-item-label">QC issues</span></div>
+              <div class="sb-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7L3 21l1.9-5.7"/></svg><span class="sb-item-label">Coordination</span><span class="sb-badge slate">12</span></div>
+            </div>
+          </div>
+          <div class="sb-section">
+            <div class="sb-section-head"><div class="sb-section-dot accent-planning"></div><div class="sb-section-name">Planning &amp; tracking</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items">
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg><span class="sb-item-label">Tasks</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="sb-item-label">Look ahead</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/></svg><span class="sb-item-label">Schedule updates</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="sb-item-label">Weekly reports</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="sb-item-label">Calendar reconciliation</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg><span class="sb-item-label">Locations</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg><span class="sb-item-label">Polygon editor</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8"/></svg><span class="sb-item-label">Spatial 3D</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span class="sb-item-label">Productivity</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="sb-item-label">Resource leveling</span></div>
+            </div>
+          </div>
+          <div class="sb-section">
+            <div class="sb-section-head"><div class="sb-section-dot accent-procurement"></div><div class="sb-section-name">Procurement &amp; docs</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items">
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8L3 21l1.9-5.7"/></svg><span class="sb-item-label">RFIs</span><span class="sb-badge amber">5</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/></svg><span class="sb-item-label">Deliveries</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="sb-item-label">Drawings</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/></svg><span class="sb-item-label">Specifications</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l7.78-7.78a5.5 5.5 0 0 0 0-7.78z"/></svg><span class="sb-item-label">Submittals</span><span class="sb-badge blue">8</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/></svg><span class="sb-item-label">Change orders</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span class="sb-item-label">Aging</span><span class="sb-badge rose">3</span></div>
+            </div>
+          </div>
+          <div class="sb-section">
+            <div class="sb-section-head"><div class="sb-section-dot accent-review"></div><div class="sb-section-name">Review &amp; actions</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items">
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg><span class="sb-item-label">Approvals</span><span class="sb-badge emerald">2</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6"/></svg><span class="sb-item-label">Field issues</span><span class="sb-badge rose">11</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3"/></svg><span class="sb-item-label">Cascade</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg><span class="sb-item-label">Recovery</span></div>
+              <div class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="sb-item-label">TIA generator</span></div>
+            </div>
+          </div>
+          <div class="sb-section collapsed">
+            <div class="sb-section-head"><div class="sb-section-dot accent-resources"></div><div class="sb-section-name">Resources</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items"></div>
+          </div>
+          <div class="sb-section collapsed">
+            <div class="sb-section-head"><div class="sb-section-dot accent-system"></div><div class="sb-section-name">System</div><svg class="sb-section-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 9l6 6 6-6"/></svg></div>
+            <div class="sb-items"></div>
+          </div>
+          <div class="sb-footer">
+            <span>v0.3 · Iter 3</span>
+            <span class="sb-footer-spacer"></span>
+            <button class="sb-footer-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></button>
+            <button class="sb-footer-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></button>
+          </div>
+        </aside>
+        <div class="frame-content">
+          <div class="frame-content-head">Dashboard</div>
+          <div class="frame-content-sub">Active project: MSU · VA Medical Centre Bronx</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="insp">
+    <h3>What's new (and why)</h3>
+    <ul>
+      <li><b>⌘K Jump-to bar</b> at the top — Linear's killer feature. Type any page name, RFI number, task code → jump instantly. Power users never have to scroll the sidebar again.</li>
+      <li><b>Color-coded section dots</b> (indigo / emerald / amber / blue / violet / teal / slate) — at-a-glance section parity. Eye recognizes "I'm in the green section = Daily Ops" before reading the label.</li>
+      <li><b>Collapsible sections with chevrons</b> — Notion pattern. Resources + System collapsed by default (rarely touched). Frees the top 70% of the sidebar for the daily-use stuff.</li>
+      <li><b>Active item: 3px emerald rail</b> on the left + emerald-tinted bg — unmistakable focus, doesn't depend on color alone (accessibility).</li>
+      <li><b>Inline keyboard hints</b> ⌘1, ⌘2, ⌘3 on the most-used items (Dashboard, Projects, Daily Reports) — train muscle memory.</li>
+      <li><b>Semantic count badges</b> on the right of each item — emerald (approvals waiting), amber (RFIs/delays pending), rose (field issues/aging — needs attention), blue (submittals/edit requests), slate (neutral counts). Visible without opening the section.</li>
+      <li><b>Tighter typography</b> (12px / 1.4 line-height) + 1px row gap — fits the whole nav without scrolling on a 720p monitor.</li>
+      <li><b>Cleaner nested items</b> — no per-item left border (those were the "||||" stack you saw). Just indent + slightly muted color.</li>
+      <li><b>Footer with version + help + theme micro-toggle</b> — moves the theme button out of the topbar (saves topbar space) and gives a clear "you're on v0.3" anchor.</li>
+    </ul>
+    <h3 style="margin-top:14px">If you like this, the wire-up is ~300 lines:</h3>
+    <ul>
+      <li>Sidebar.jsx — restructure to use new <code>.sb-*</code> classes + section collapse state</li>
+      <li>index.css — port these styles (already self-contained in this mockup)</li>
+      <li>Command palette — wire ⌘K to a search modal using existing <code>/search</code> endpoint</li>
+      <li>Per-section collapse state persisted to localStorage</li>
+    </ul>
+  </div>
+</body>
+</html>

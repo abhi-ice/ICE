@@ -96,19 +96,19 @@ export default function CoordinationEvents() {
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
           <select data-testid="coord-filter-topic" value={filters.topic}
             onChange={(e) => setFilters({ ...filters, topic: e.target.value })}
-            className="h-8 px-2 border border-slate-200 rounded text-xs">
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]">
             <option value="">Topic — all</option>
             {Object.entries(TOPIC_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
           <select data-testid="coord-filter-channel" value={filters.channel}
             onChange={(e) => setFilters({ ...filters, channel: e.target.value })}
-            className="h-8 px-2 border border-slate-200 rounded text-xs">
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]">
             <option value="">Channel — all</option>
             {Object.keys(CHANNEL_ICONS).map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
           </select>
           <select data-testid="coord-filter-direction" value={filters.direction}
             onChange={(e) => setFilters({ ...filters, direction: e.target.value })}
-            className="h-8 px-2 border border-slate-200 rounded text-xs">
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]">
             <option value="">Direction — all</option>
             <option value="inbound">Inbound</option>
             <option value="outbound">Outbound</option>
@@ -117,16 +117,16 @@ export default function CoordinationEvents() {
           <input data-testid="coord-filter-from" type="date" value={filters.date_from}
             onChange={(e) => setFilters({ ...filters, date_from: e.target.value })}
             placeholder="From"
-            className="h-8 px-2 border border-slate-200 rounded text-xs" />
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]" />
           <input data-testid="coord-filter-to" type="date" value={filters.date_to}
             onChange={(e) => setFilters({ ...filters, date_to: e.target.value })}
             placeholder="To"
-            className="h-8 px-2 border border-slate-200 rounded text-xs" />
+            className="h-8 px-2 border border-slate-200 rounded text-xs max-md:min-h-[44px]" />
         </div>
       </div>
 
       {/* List */}
-      <div className="surface overflow-hidden">
+      <div className="surface overflow-hidden max-md:overflow-x-auto">
         <table className="dense-table">
           <thead>
             <tr>

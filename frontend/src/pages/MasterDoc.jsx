@@ -56,7 +56,7 @@ export default function MasterDoc() {
 
   return (
     <div data-testid="master-doc-page" className="space-y-4 max-w-5xl">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-md:flex-col max-md:items-start max-md:gap-2">
         <div>
           <div className="flex items-center gap-2">
             <Building2 className="h-5 w-5 text-blue-600" />
@@ -93,7 +93,7 @@ export default function MasterDoc() {
 
       <div className="surface p-4 space-y-3">
         <div className="text-xs font-semibold text-slate-500 tracking-wider">Delivery & sketch review</div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label className="field-label">Delivery method</label>
             <select data-testid="md-delivery" value={doc.delivery_method} onChange={(e) => update("delivery_method", e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
@@ -117,7 +117,7 @@ export default function MasterDoc() {
 
       <div className="surface p-4 space-y-3">
         <div className="text-xs font-semibold text-slate-500 tracking-wider">Site conditions</div>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
           {[
             { k: "occupancy_during_work", label: "Building occupied during work" },
             { k: "historic_designation", label: "Historic designation" },
@@ -144,7 +144,7 @@ export default function MasterDoc() {
                 key={c}
                 data-testid={`md-constraint-${c.slice(0, 12).replace(/\W/g, "")}`}
                 onClick={() => toggleConstraint(c)}
-                className={`px-3 h-7 rounded-full text-xs border ${on ? "bg-blue-600 text-white border-blue-600" : "bg-white border-slate-200 hover:border-slate-300"}`}
+                className={`px-3 h-7 max-md:min-h-[44px] rounded-full text-xs border ${on ? "bg-blue-600 text-white border-blue-600" : "bg-white border-slate-200 hover:border-slate-300"}`}
               >
                 {c}
               </button>

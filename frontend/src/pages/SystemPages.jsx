@@ -1552,7 +1552,9 @@ function WeeklyRollupTab() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">{projects.find(p => p.id === activeId)?.name}</p>
-      <div className="flex items-center gap-2">
+      {/* max-md:flex-wrap -- on phones the label + date input + Download PDF
+          button overflow a 320px row; wrapping keeps the button reachable. */}
+      <div className="flex items-center gap-2 max-md:flex-wrap">
         <label className="field-label mb-0">Week starting</label>
         <input type="date" value={week} onChange={(e) => setWeek(e.target.value)} className="h-8 px-2 rounded border border-input" />
         <button data-testid="weekly-pdf" onClick={downloadPdf} className="ml-2 h-8 px-3 rounded bg-blue-600 text-white text-xs">Download PDF</button>

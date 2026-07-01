@@ -148,7 +148,7 @@ export default function DelayList() {
         )}
       </div>
 
-      <div className="surface overflow-hidden">
+      <div className="surface overflow-hidden crud-list-table-wrap">
         {/* pt.37: dense-table-bordered → header-only vertical
             dividers, small-column table per Option C. */}
         <table className="dense-table dense-table-bordered">
@@ -170,24 +170,24 @@ export default function DelayList() {
               const stat = r.status === "resolved" ? "pill-green" : r.status === "in_progress" ? "pill-amber" : "pill-slate";
               return (
                 <tr key={r.id} data-testid={`delay-row-${r.id}`}>
-                  <td className="font-mono text-xs">
+                  <td className="font-mono text-xs" data-label="Date">
                     {r.daily_report_id ? (
                       <Link to={`/daily-reports?openId=${r.daily_report_id}&openEvent=${r.id}&openEventType=delay`} className="text-blue-700 hover:underline">
                         {formatDateDisplay(r.date)}
                       </Link>
                     ) : formatDateDisplay(r.date)}
                   </td>
-                  <td><span className={`pill ${sev}`}>{r.severity}</span></td>
-                  <td><span className={`pill ${stat}`}>{(r.status || "open").replace(/_/g, " ")}</span></td>
-                  <td className="text-sm max-w-[420px] truncate">
+                  <td data-label="Severity"><span className={`pill ${sev}`}>{r.severity}</span></td>
+                  <td data-label="Status"><span className={`pill ${stat}`}>{(r.status || "open").replace(/_/g, " ")}</span></td>
+                  <td data-label="Description" className="text-sm max-w-[420px] truncate col-fullwidth">
                     <Link to={`/delays/${r.id}`} className="text-blue-600 hover:underline">
                       {(r.description || "").slice(0, 120) || "—"}
                     </Link>
                   </td>
-                  <td className="text-xs">{(r.linked_task_ids || []).length}</td>
-                  <td><GalleryActivityChips projectId={activeId} activityIds={r.linked_task_ids || []} /></td>
-                  <td className="text-xs">{r.duration_days ?? "—"}</td>
-                  <td className="text-right">
+                  <td className="text-xs" data-label="Linked tasks">{(r.linked_task_ids || []).length}</td>
+                  <td data-label="Affected activities" className="col-fullwidth"><GalleryActivityChips projectId={activeId} activityIds={r.linked_task_ids || []} /></td>
+                  <td className="text-xs" data-label="Days open">{r.duration_days ?? "—"}</td>
+                  <td className="text-right" data-label="">
                     <button data-testid={`delays-edit-${r.id}`} onClick={() => startEdit(r)}
                       className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100 text-slate-500"
                       title="Edit">

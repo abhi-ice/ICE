@@ -183,15 +183,27 @@ def test_tag_work_categories_empty_rows_is_safe():
 
 # --- 4. work_category is metadata -- never read by the CPM engine ---------
 
-def test_work_category_absent_from_cpm_engine():
-    """Hard guardrail: the CPM engine must not reference work_category.
-    A future edit that wires it into float / cascade / critical-path
-    breaks this test."""
-    for name in ("cpm.py", "task_status.py", "working_days.py"):
+def test_work_category_absent_from_cpm_pure_math():
+    """Hard guardrail: work_category must never enter the PURE CPM MATH --
+    cpm.py (forward/backward pass, float, critical path) and working_days.py
+    (date arithmetic). These two files compute the network and must stay free
+    of any task-domain status field.
+
+    Refined 2026-06-12: task_status.py is intentionally NOT in this list. Its
+    STATUS MACHINE (derive_status) legitimately reads work_category for the
+    pt.79 paperwork shortcut -- an untouched paperwork task must not read
+    'behind' the instant its planned_start passes. That is a domain status
+    rule, NOT float/cascade logic; the CASCADE in task_status.py
+    (compute_projected_finish_dates) still never branches on work_category
+    (the B2 progress engine deliberately put the paperwork skip in
+    services/progress_cascade.py to keep the cascade clean). task_status.py
+    is still guarded against the DR-grid VIEW layer by
+    test_cpm_engine_never_references_the_dr_grid_view_layer."""
+    for name in ("cpm.py", "working_days.py"):
         text = (Path(_BACKEND) / "services" / name).read_text(encoding="utf-8")
         assert "work_category" not in text, (
-            f"services/{name} references work_category -- the CPM engine "
-            f"must never read this metadata field"
+            f"services/{name} references work_category -- the pure CPM math "
+            f"must never read this domain field"
         )
 
 

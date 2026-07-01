@@ -1,0 +1,1979 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SiteOps — Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Atkinson Hyperlegible (low-vision optimized: each glyph maximally distinct,
+         designed by Braille Institute) is the primary UI font. Lexend (reading-fluency
+         font) loads alongside for the dyslexia-mode toggle. Manrope keeps display
+         duty; JetBrains Mono for codes/numbers. -->
+    <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=Lexend:wght@400;500;600;700&family=Manrope:wght@200;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --accent-red: #ef233c;
+            --accent-red-glow: rgba(239, 35, 60, 0.35);
+        }
+
+        @keyframes fade-in-up {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes border-spin {
+            from { --gradient-angle: 0deg; }
+            to { --gradient-angle: 360deg; }
+        }
+        @keyframes animStar {
+            from { transform: translateY(0px); }
+            to { transform: translateY(-2000px); }
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        @keyframes slide-in-right {
+            from { opacity: 0; transform: translateX(-12px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @property --gradient-angle {
+            syntax: "<angle>";
+            initial-value: 0deg;
+            inherits: false;
+        }
+
+        body { font-family: 'Atkinson Hyperlegible', 'Inter', sans-serif; background: #000; color: #fff; font-size: 15.5px; }
+        .font-manrope { font-family: 'Manrope', sans-serif; }
+        .font-mono-jb { font-family: 'JetBrains Mono', monospace; }
+
+        .selection-red::selection { background: #ef233c; color: white; }
+
+        .stars-1 { box-shadow: 234px 124px #fff, 654px 345px #fff, 876px 12px #fff, 1200px 800px #fff, 400px 1500px #fff, 1800px 200px #fff, 100px 1000px #fff, 900px 1900px #fff, 500px 600px #fff, 1400px 100px #fff; }
+        .stars-2 { box-shadow: 123px 456px #fff, 789px 234px #fff, 456px 890px #fff, 1100px 300px #fff, 200px 1200px #fff, 1500px 500px #fff; }
+
+        .surface {
+            background: rgba(20, 20, 23, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            backdrop-filter: blur(10px);
+        }
+        .surface-hover:hover {
+            border-color: rgba(239, 35, 60, 0.4);
+            box-shadow: 0 0 30px -10px rgba(239, 35, 60, 0.25);
+        }
+
+        /* Sidebar item */
+        .nav-item {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 14px;
+            margin: 1px 8px;
+            border-radius: 8px;
+            color: #a1a1aa;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .nav-item:hover {
+            background: rgba(239, 35, 60, 0.08);
+            color: #fff;
+        }
+        .nav-item.active {
+            background: rgba(239, 35, 60, 0.15);
+            color: #fff;
+        }
+        .nav-item.active::before {
+            content: '';
+            position: absolute;
+            left: -8px;
+            top: 6px;
+            bottom: 6px;
+            width: 3px;
+            background: #ef233c;
+            border-radius: 0 3px 3px 0;
+            box-shadow: 0 0 12px #ef233c;
+        }
+        .nav-item iconify-icon { font-size: 15px; opacity: 0.7; }
+        .nav-item.active iconify-icon { opacity: 1; color: #ef233c; }
+        .section-label {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: rgba(239, 35, 60, 0.6);
+            text-transform: uppercase;
+            padding: 16px 22px 6px;
+        }
+        .nav-badge {
+            margin-left: auto;
+            background: #ef233c;
+            color: #fff;
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 9999px;
+            min-width: 18px;
+            text-align: center;
+        }
+
+        /* Topbar pills */
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #d4d4d8;
+            transition: all 0.15s;
+        }
+        .pill:hover {
+            border-color: rgba(239, 35, 60, 0.4);
+            color: #fff;
+        }
+
+        /* Buttons */
+        .btn-primary {
+            background: #ef233c;
+            color: #fff;
+            font-weight: 600;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 0 0 0 transparent;
+        }
+        .btn-primary:hover {
+            background: #dc2626;
+            box-shadow: 0 0 20px -5px rgba(239, 35, 60, 0.6);
+        }
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: #e4e4e7;
+            font-weight: 500;
+            padding: 8px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            font-size: 13px;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(239, 35, 60, 0.3);
+            color: #fff;
+        }
+        .btn-ghost {
+            color: #a1a1aa;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 6px 10px;
+            border-radius: 6px;
+            transition: all 0.15s;
+        }
+        .btn-ghost:hover { color: #fff; background: rgba(255,255,255,0.04); }
+
+        /* Status pills */
+        .pill-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 10px;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+        .pill-status.draft { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+        .pill-status.submitted { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+        .pill-status.approved { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .pill-status.pending { background: rgba(239, 35, 60, 0.15); color: #f87171; border: 1px solid rgba(239, 35, 60, 0.3); }
+        .pill-status.open { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+
+        /* KPI tile */
+        .kpi-tile {
+            background: rgba(20, 20, 23, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 10px 12px;
+            text-align: center;
+            transition: all 0.15s;
+        }
+        .kpi-tile:hover {
+            border-color: rgba(239, 35, 60, 0.4);
+            box-shadow: 0 0 20px -8px rgba(239, 35, 60, 0.3);
+        }
+        .kpi-tile .label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #71717a;
+            font-weight: 600;
+        }
+        .kpi-tile .value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff;
+            margin-top: 2px;
+        }
+        .kpi-tile .value.red { color: #ef233c; }
+
+        /* Tables */
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table thead tr { border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .data-table th {
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #71717a;
+            font-weight: 700;
+            padding: 10px 14px;
+        }
+        .data-table tbody tr {
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            transition: background 0.1s;
+        }
+        .data-table tbody tr:hover {
+            background: rgba(239, 35, 60, 0.04);
+        }
+        .data-table td { padding: 12px 14px; font-size: 13px; color: #e4e4e7; }
+        .data-table .link { color: #f87171; cursor: pointer; }
+        .data-table .link:hover { color: #fff; text-decoration: underline; }
+
+        /* Shiny CTA (smaller for app) */
+        .shiny-cta-sm {
+            --gradient-angle: 0deg;
+            position: relative;
+            overflow: hidden;
+            border-radius: 8px;
+            padding: 7px 14px;
+            background: linear-gradient(#0a0a0a, #0a0a0a) padding-box,
+                conic-gradient(from var(--gradient-angle), transparent 0%, #ef233c 5%, #ef233c 20%, transparent 30%, transparent 100%) border-box;
+            border: 1.5px solid transparent;
+            cursor: pointer;
+            isolation: isolate;
+            animation: border-spin 2.5s linear infinite;
+        }
+
+        .page { animation: fade-in-up 0.3s ease-out; }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(239, 35, 60, 0.5); }
+
+        /* Gantt bar */
+        .gantt-bar {
+            height: 22px;
+            background: linear-gradient(90deg, rgba(239, 35, 60, 0.7), rgba(239, 35, 60, 0.4));
+            border-radius: 4px;
+            position: relative;
+            box-shadow: 0 0 12px -4px rgba(239, 35, 60, 0.4);
+        }
+        .gantt-bar.completed {
+            background: linear-gradient(90deg, rgba(16, 185, 129, 0.7), rgba(16, 185, 129, 0.4));
+            box-shadow: 0 0 10px -4px rgba(16, 185, 129, 0.4);
+        }
+        .gantt-bar.blocked {
+            background: linear-gradient(90deg, rgba(245, 158, 11, 0.7), rgba(245, 158, 11, 0.4));
+            box-shadow: 0 0 10px -4px rgba(245, 158, 11, 0.4);
+        }
+
+        .glow-border {
+            background: linear-gradient(rgba(20,20,23,0.9), rgba(20,20,23,0.9)) padding-box,
+                linear-gradient(135deg, rgba(239,35,60,0.5), rgba(239,35,60,0.05)) border-box;
+            border: 1px solid transparent;
+        }
+    </style>
+</head>
+<body class="selection-red">
+
+<!-- Starfield background -->
+<div class="fixed inset-0 z-0 pointer-events-none">
+    <div class="absolute inset-0 bg-gradient-to-br from-[#1a0505] via-black to-black"></div>
+    <div class="absolute top-0 left-0 w-[1px] h-[1px] bg-transparent stars-1 animate-[animStar_50s_linear_infinite]"></div>
+    <div class="absolute top-0 left-0 w-[2px] h-[2px] bg-transparent stars-2 animate-[animStar_80s_linear_infinite]"></div>
+    <div class="absolute top-[-200px] right-[-200px] w-[600px] h-[600px] bg-red-600/8 rounded-full blur-[120px]"></div>
+</div>
+
+<div class="relative z-10 flex h-screen overflow-hidden">
+
+    <!-- SIDEBAR -->
+    <aside class="w-64 shrink-0 bg-black/80 backdrop-blur-xl border-r border-white/5 flex flex-col h-screen">
+        <!-- Brand -->
+        <div class="px-6 py-5 border-b border-white/5">
+            <a href="./landing.html" class="flex items-center gap-2.5 group">
+                <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 shrink-0 transition-transform duration-500 group-hover:scale-110" aria-label="SiteOps logo">
+                    <defs>
+                        <linearGradient id="lg-red-sb" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#ef233c"/>
+                            <stop offset="100%" stop-color="#b91c2c"/>
+                        </linearGradient>
+                    </defs>
+                    <rect x="9" y="6" width="14" height="5" rx="1.2" fill="#a1a1aa" class="transition-all duration-500 group-hover:fill-zinc-200"/>
+                    <rect x="5" y="14" width="22" height="5" rx="1.2" fill="#d4d4d8" class="transition-all duration-500 group-hover:fill-white"/>
+                    <rect x="2" y="22" width="28" height="6" rx="1.5" fill="url(#lg-red-sb)"/>
+                    <circle cx="26" cy="4" r="1.5" fill="#ef233c" class="opacity-80"/>
+                </svg>
+                <div>
+                    <div class="text-base font-bold font-manrope tracking-tight leading-tight">SiteOps</div>
+                    <div class="text-[10px] font-mono-jb text-zinc-500 leading-tight">Construction OS</div>
+                </div>
+            </a>
+        </div>
+
+        <!-- Tenant / Project quick-switch -->
+        <div class="px-4 py-3 border-b border-white/5 space-y-2">
+            <button class="w-full text-left flex items-center justify-between bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition">
+                <div>
+                    <div class="text-[9px] uppercase tracking-widest text-zinc-500 font-bold">Tenant</div>
+                    <div class="text-sm font-semibold mt-0.5">ICE Federal</div>
+                </div>
+                <iconify-icon icon="lucide:chevrons-up-down" class="text-zinc-400"></iconify-icon>
+            </button>
+            <button class="w-full text-left flex items-center justify-between bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-2 transition">
+                <div>
+                    <div class="text-[9px] uppercase tracking-widest text-zinc-500 font-bold">Project</div>
+                    <div class="text-sm font-semibold mt-0.5">VA SPD IV — Bronx</div>
+                </div>
+                <iconify-icon icon="lucide:chevrons-up-down" class="text-zinc-400"></iconify-icon>
+            </button>
+        </div>
+
+        <!-- Nav -->
+        <nav class="flex-1 overflow-y-auto py-2">
+            <div class="section-label">Overview</div>
+            <div class="nav-item active" data-target="dashboard"><iconify-icon icon="lucide:layout-dashboard"></iconify-icon> Dashboard</div>
+            <div class="nav-item" data-target="projects"><iconify-icon icon="lucide:folder-kanban"></iconify-icon> Projects</div>
+            <div class="nav-item" data-target="getting-started"><iconify-icon icon="lucide:rocket"></iconify-icon> Getting started</div>
+            <div class="nav-item" data-target="master-doc"><iconify-icon icon="lucide:file-text"></iconify-icon> Master doc</div>
+
+            <div class="section-label">Daily Operations</div>
+            <div class="nav-item" data-target="daily-reports-list"><iconify-icon icon="lucide:clipboard-list"></iconify-icon> Daily reports <span class="nav-badge">3</span></div>
+            <div class="nav-item" data-target="photos"><iconify-icon icon="lucide:image"></iconify-icon> Photos</div>
+            <div class="nav-item" data-target="delays"><iconify-icon icon="lucide:alert-triangle"></iconify-icon> Delays <span class="nav-badge">2</span></div>
+            <div class="nav-item" data-target="safety"><iconify-icon icon="lucide:hard-hat"></iconify-icon> Safety</div>
+            <div class="nav-item" data-target="qc"><iconify-icon icon="lucide:check-circle-2"></iconify-icon> QC issues</div>
+            <div class="nav-item" data-target="coordination"><iconify-icon icon="lucide:message-square"></iconify-icon> Coordination</div>
+
+            <div class="section-label">Planning &amp; Tracking</div>
+            <div class="nav-item" data-target="tasks"><iconify-icon icon="lucide:calendar-check"></iconify-icon> Tasks</div>
+            <div class="nav-item" data-target="lookahead"><iconify-icon icon="lucide:calendar-days"></iconify-icon> Look ahead</div>
+            <div class="nav-item" data-target="weekly-reports"><iconify-icon icon="lucide:file-bar-chart"></iconify-icon> Weekly reports</div>
+            <div class="nav-item" data-target="schedule-updates"><iconify-icon icon="lucide:git-pull-request"></iconify-icon> Schedule updates</div>
+
+            <div class="section-label">Procurement</div>
+            <div class="nav-item" data-target="rfis"><iconify-icon icon="lucide:help-circle"></iconify-icon> RFIs <span class="nav-badge">5</span></div>
+            <div class="nav-item" data-target="deliveries"><iconify-icon icon="lucide:truck"></iconify-icon> Deliveries</div>
+            <div class="nav-item" data-target="drawings"><iconify-icon icon="lucide:pencil-ruler"></iconify-icon> Drawings</div>
+            <div class="nav-item" data-target="submittals"><iconify-icon icon="lucide:file-check"></iconify-icon> Submittals</div>
+
+            <div class="section-label">Review &amp; Actions</div>
+            <div class="nav-item" data-target="approvals"><iconify-icon icon="lucide:gavel"></iconify-icon> Approvals <span class="nav-badge">7</span></div>
+            <div class="nav-item" data-target="recovery"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> Recovery</div>
+            <div class="nav-item" data-target="cascade"><iconify-icon icon="lucide:git-merge"></iconify-icon> Cascade</div>
+            <div class="nav-item" data-target="tia"><iconify-icon icon="lucide:scale"></iconify-icon> TIA</div>
+
+            <div class="section-label">Resources</div>
+            <div class="nav-item" data-target="crews"><iconify-icon icon="lucide:users"></iconify-icon> Crews</div>
+            <div class="nav-item" data-target="equipment"><iconify-icon icon="lucide:wrench"></iconify-icon> Equipment</div>
+            <div class="nav-item" data-target="productivity"><iconify-icon icon="lucide:trending-up"></iconify-icon> Productivity</div>
+
+            <div class="section-label">System</div>
+            <div class="nav-item" data-target="ai-agents"><iconify-icon icon="lucide:bot"></iconify-icon> AI agents</div>
+            <div class="nav-item" data-target="imports"><iconify-icon icon="lucide:upload-cloud"></iconify-icon> Imports</div>
+            <div class="nav-item" data-target="audit-log"><iconify-icon icon="lucide:shield-check"></iconify-icon> Audit log</div>
+            <div class="nav-item" data-target="settings"><iconify-icon icon="lucide:settings"></iconify-icon> Settings</div>
+        </nav>
+
+        <!-- Profile -->
+        <div class="border-t border-white/5 p-4">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-full bg-gradient-to-br from-[#ef233c] to-red-900 flex items-center justify-center text-white text-sm font-bold">A</div>
+                <div class="flex-1 min-w-0">
+                    <div class="text-sm font-semibold truncate">Abhi Deshpande</div>
+                    <div class="text-[10px] text-zinc-500 truncate font-mono-jb">admin · ICE Federal</div>
+                </div>
+                <button class="btn-ghost p-1"><iconify-icon icon="lucide:log-out" class="text-lg"></iconify-icon></button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- MAIN -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+
+        <!-- TOPBAR -->
+        <header class="h-14 border-b border-white/5 bg-black/60 backdrop-blur-xl flex items-center justify-between px-6 shrink-0">
+            <div class="flex items-center gap-3">
+                <h1 class="font-manrope font-semibold text-base text-white" id="page-title">Dashboard</h1>
+                <span class="text-zinc-600">/</span>
+                <span class="text-xs text-zinc-500 font-mono-jb" id="page-breadcrumb">VA SPD IV — Bronx</span>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <div class="relative">
+                    <input type="text" placeholder="Search projects, RFIs, activities…"
+                        class="bg-white/5 border border-white/10 rounded-full pl-9 pr-4 py-1.5 text-sm w-72 focus:outline-none focus:border-[#ef233c]/40 transition" />
+                    <iconify-icon icon="lucide:search" class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"></iconify-icon>
+                    <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500 font-mono-jb border border-white/10 rounded px-1.5 py-0.5">⌘K</kbd>
+                </div>
+                <button class="relative pill !p-2">
+                    <iconify-icon icon="lucide:bell"></iconify-icon>
+                    <span class="absolute -top-1 -right-1 bg-[#ef233c] text-white text-[9px] font-bold rounded-full px-1.5 py-0.5">12</span>
+                </button>
+                <button class="pill !p-2"><iconify-icon icon="lucide:help-circle"></iconify-icon></button>
+                <button class="shiny-cta-sm">
+                    <span class="relative z-10 flex items-center gap-1.5 text-white font-medium text-xs uppercase tracking-wider">
+                        <iconify-icon icon="lucide:sparkles" class="text-xs"></iconify-icon> AI Copilot
+                    </span>
+                </button>
+            </div>
+        </header>
+
+        <!-- CONTENT -->
+        <main class="flex-1 overflow-y-auto p-6">
+
+<!-- ============ PAGE: DASHBOARD ============ -->
+<div class="page" data-page="dashboard">
+
+    <!-- KPI band -->
+    <div class="grid grid-cols-4 md:grid-cols-8 gap-3 mb-6">
+        <div class="kpi-tile"><div class="label">PPC</div><div class="value">68%</div></div>
+        <div class="kpi-tile"><div class="label">Headcount</div><div class="value">42</div></div>
+        <div class="kpi-tile"><div class="label">Crew hrs</div><div class="value">336.0</div></div>
+        <div class="kpi-tile"><div class="label">Activity hrs</div><div class="value">312.0</div></div>
+        <div class="kpi-tile"><div class="label">Delays</div><div class="value red">2</div></div>
+        <div class="kpi-tile"><div class="label">RFIs</div><div class="value">5</div></div>
+        <div class="kpi-tile"><div class="label">Safety</div><div class="value">0</div></div>
+        <div class="kpi-tile"><div class="label">QC</div><div class="value red">3</div></div>
+    </div>
+
+    <!-- Main grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Schedule status -->
+        <div class="surface surface-hover p-6 lg:col-span-2">
+            <div class="flex items-center justify-between mb-5">
+                <div>
+                    <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest mb-1">Schedule Health</div>
+                    <h3 class="text-xl font-semibold font-manrope">Critical Path Status</h3>
+                </div>
+                <button class="btn-secondary">View full CPM</button>
+            </div>
+
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <div class="glow-border p-4 rounded-lg">
+                    <div class="text-3xl font-bold font-manrope">+4d</div>
+                    <div class="text-xs text-zinc-400 mt-1">CP slip this week</div>
+                </div>
+                <div class="surface p-4 !rounded-lg">
+                    <div class="text-3xl font-bold font-manrope text-emerald-400">87%</div>
+                    <div class="text-xs text-zinc-400 mt-1">Tasks on schedule</div>
+                </div>
+                <div class="surface p-4 !rounded-lg">
+                    <div class="text-3xl font-bold font-manrope text-amber-400">12</div>
+                    <div class="text-xs text-zinc-400 mt-1">At risk (next 14d)</div>
+                </div>
+            </div>
+
+            <div class="text-xs font-mono-jb text-zinc-500 uppercase tracking-widest mb-3">Cascade — Active blockers</div>
+            <div class="space-y-2">
+                <div class="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-lg hover:border-[#ef233c]/30 transition">
+                    <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 rounded-full bg-[#ef233c]" style="animation: pulse-dot 2s infinite;"></div>
+                        <div>
+                            <div class="text-sm font-medium">[A1240] Plumbing rough-in — Phase IV</div>
+                            <div class="text-[11px] text-zinc-500 mt-0.5">Blocked by: above-ceiling inspection · Slip: 3d · CP impact: 3d</div>
+                        </div>
+                    </div>
+                    <button class="btn-ghost text-xs">Open →</button>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-lg hover:border-[#ef233c]/30 transition">
+                    <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 rounded-full bg-amber-400"></div>
+                        <div>
+                            <div class="text-sm font-medium">[A1310] Drywall hang — Rooms 305-312</div>
+                            <div class="text-[11px] text-zinc-500 mt-0.5">Successor blocked · Slip: 1d</div>
+                        </div>
+                    </div>
+                    <button class="btn-ghost text-xs">Open →</button>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-lg hover:border-[#ef233c]/30 transition">
+                    <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 rounded-full bg-zinc-500"></div>
+                        <div>
+                            <div class="text-sm font-medium">[A1450] HVAC startup commissioning</div>
+                            <div class="text-[11px] text-zinc-500 mt-0.5">Awaiting permanent power · Float: 12d</div>
+                        </div>
+                    </div>
+                    <button class="btn-ghost text-xs">Open →</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI Recovery suggestions -->
+        <div class="surface p-6">
+            <div class="flex items-center justify-between mb-5">
+                <div>
+                    <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest mb-1">AI Recovery</div>
+                    <h3 class="text-xl font-semibold font-manrope">Suggestions ready</h3>
+                </div>
+                <iconify-icon icon="lucide:wand-sparkles" class="text-[#ef233c] text-xl"></iconify-icon>
+            </div>
+
+            <div class="space-y-3">
+                <div class="p-4 border border-[#ef233c]/40 bg-gradient-to-br from-red-950/40 to-transparent rounded-lg">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="text-xs font-mono-jb text-[#ef233c] uppercase">Option A — Resequence</div>
+                        <div class="text-xs text-emerald-400 font-bold">+2d recovery</div>
+                    </div>
+                    <p class="text-sm text-zinc-300 leading-relaxed mb-3">Authorize Saturday overtime for plumbing crew to close rough-in by Friday; inspection Monday; DW hang Tuesday.</p>
+                    <div class="flex items-center gap-2 text-[10px] font-mono-jb">
+                        <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded">CONFIDENCE 0.82</span>
+                        <span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded">CONSTRUCTIBILITY ✓</span>
+                    </div>
+                </div>
+
+                <div class="p-4 border border-white/10 bg-white/[0.02] rounded-lg">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="text-xs font-mono-jb text-zinc-400 uppercase">Option B — Add crew</div>
+                        <div class="text-xs text-emerald-400 font-bold">+1d recovery</div>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Add second plumbing crew Mon-Tue.</p>
+                    <div class="flex items-center gap-2 text-[10px] font-mono-jb">
+                        <span class="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded">CONFIDENCE 0.61</span>
+                        <span class="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded">DENSITY WARN</span>
+                    </div>
+                </div>
+            </div>
+
+            <button class="btn-secondary w-full mt-4 justify-center">View all recommendations →</button>
+        </div>
+    </div>
+
+    <!-- Bottom: activity + weather -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+        <div class="surface p-5 lg:col-span-2">
+            <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest mb-3">Recent Activity</div>
+            <div class="space-y-2 text-sm">
+                <div class="flex items-start gap-3 p-2 hover:bg-white/[0.02] rounded">
+                    <iconify-icon icon="lucide:clipboard-check" class="text-emerald-400 mt-0.5"></iconify-icon>
+                    <div class="flex-1">
+                        <div>Paul submitted DR for <span class="font-mono-jb text-zinc-400">05/20/2026</span></div>
+                        <div class="text-xs text-zinc-500">2 mins ago</div>
+                    </div>
+                </div>
+                <div class="flex items-start gap-3 p-2 hover:bg-white/[0.02] rounded">
+                    <iconify-icon icon="lucide:wand-sparkles" class="text-[#ef233c] mt-0.5"></iconify-icon>
+                    <div class="flex-1">
+                        <div>AI flagged 1 CP-impact delay · <span class="text-[#ef233c]">Recovery generated</span></div>
+                        <div class="text-xs text-zinc-500">8 mins ago</div>
+                    </div>
+                </div>
+                <div class="flex items-start gap-3 p-2 hover:bg-white/[0.02] rounded">
+                    <iconify-icon icon="lucide:help-circle" class="text-blue-400 mt-0.5"></iconify-icon>
+                    <div class="flex-1">
+                        <div>RFI-024 opened on <span class="text-zinc-400">drywall jamb detail</span></div>
+                        <div class="text-xs text-zinc-500">17 mins ago</div>
+                    </div>
+                </div>
+                <div class="flex items-start gap-3 p-2 hover:bg-white/[0.02] rounded">
+                    <iconify-icon icon="lucide:image" class="text-purple-400 mt-0.5"></iconify-icon>
+                    <div class="flex-1">
+                        <div>14 progress photos · Auto-tagged to <span class="text-zinc-400">Room 308</span></div>
+                        <div class="text-xs text-zinc-500">35 mins ago</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface p-5">
+            <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest mb-3">Site Conditions</div>
+            <div class="flex items-center gap-4">
+                <iconify-icon icon="lucide:cloud" class="text-4xl text-zinc-300"></iconify-icon>
+                <div>
+                    <div class="text-2xl font-bold font-manrope">66°F</div>
+                    <div class="text-xs text-zinc-500">Bronx, NY · Overcast</div>
+                </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mt-4 text-xs">
+                <div class="text-center"><div class="text-zinc-500">High</div><div class="font-mono-jb">66°</div></div>
+                <div class="text-center"><div class="text-zinc-500">Low</div><div class="font-mono-jb">49°</div></div>
+                <div class="text-center"><div class="text-zinc-500">Wind</div><div class="font-mono-jb">13mph</div></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PAGE: PROJECTS ============ -->
+<div class="page hidden" data-page="projects">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Projects</h2>
+            <p class="text-sm text-zinc-500 mt-1">All active federal contracts under ICE Federal</p>
+        </div>
+        <button class="btn-primary"><iconify-icon icon="lucide:plus"></iconify-icon> New project</button>
+    </div>
+
+    <div class="surface">
+        <table class="data-table">
+            <thead><tr>
+                <th>Name</th><th>Contract #</th><th>Client</th><th>Station</th><th>Status</th><th>% Complete</th><th>Substantial Completion</th>
+            </tr></thead>
+            <tbody>
+                <tr><td><span class="link font-medium">VA SPD IV — Bronx Renovation</span></td><td class="font-mono-jb text-zinc-400">#24608733</td><td>VA / MSU</td><td class="font-mono-jb text-zinc-400">526-25-100</td><td><span class="pill-status approved">Active</span></td><td>
+                    <div class="flex items-center gap-2"><div class="w-24 h-1.5 bg-white/10 rounded-full overflow-hidden"><div class="h-full bg-[#ef233c]" style="width: 68%"></div></div><span class="text-xs font-mono-jb text-zinc-400">68%</span></div>
+                </td><td class="font-mono-jb text-zinc-400">08/14/2026</td></tr>
+                <tr><td><span class="link font-medium">USMS — White Plains Annex</span></td><td class="font-mono-jb text-zinc-400">#24608402</td><td>USMS</td><td class="font-mono-jb text-zinc-400">USM-NY-007</td><td><span class="pill-status approved">Active</span></td><td>
+                    <div class="flex items-center gap-2"><div class="w-24 h-1.5 bg-white/10 rounded-full overflow-hidden"><div class="h-full bg-[#ef233c]" style="width: 41%"></div></div><span class="text-xs font-mono-jb text-zinc-400">41%</span></div>
+                </td><td class="font-mono-jb text-zinc-400">11/30/2026</td></tr>
+                <tr><td><span class="link font-medium">GSA — Federal Plaza Lobby</span></td><td class="font-mono-jb text-zinc-400">#24607881</td><td>GSA Region 2</td><td class="font-mono-jb text-zinc-400">GSA-26-002</td><td><span class="pill-status submitted">Planning</span></td><td>
+                    <div class="flex items-center gap-2"><div class="w-24 h-1.5 bg-white/10 rounded-full overflow-hidden"><div class="h-full bg-zinc-500" style="width: 8%"></div></div><span class="text-xs font-mono-jb text-zinc-400">8%</span></div>
+                </td><td class="font-mono-jb text-zinc-400">02/28/2027</td></tr>
+                <tr><td><span class="link font-medium">NYCHA — Webster Houses Roof</span></td><td class="font-mono-jb text-zinc-400">#24607550</td><td>NYCHA</td><td class="font-mono-jb text-zinc-400">NYC-BX-118</td><td><span class="pill-status draft">Closeout</span></td><td>
+                    <div class="flex items-center gap-2"><div class="w-24 h-1.5 bg-white/10 rounded-full overflow-hidden"><div class="h-full bg-emerald-500" style="width: 94%"></div></div><span class="text-xs font-mono-jb text-zinc-400">94%</span></div>
+                </td><td class="font-mono-jb text-zinc-400">06/15/2026</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ PAGE: DAILY REPORTS (LIST) ============ -->
+<div class="page hidden" data-page="daily-reports-list">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Daily reports</h2>
+            <p class="text-sm text-zinc-500 mt-1">One report per day. Voice-dictated. Auto-headers. Client-format export ready.</p>
+        </div>
+        <div class="flex items-center gap-2">
+            <button class="btn-secondary"><iconify-icon icon="lucide:upload"></iconify-icon> Upload DR Template</button>
+            <button class="btn-primary"><iconify-icon icon="lucide:file-plus-2"></iconify-icon> + New daily report</button>
+        </div>
+    </div>
+
+    <div class="surface">
+        <table class="data-table">
+            <thead><tr><th>Date</th><th>Status</th><th>Submitted</th><th style="width: 120px;"></th></tr></thead>
+            <tbody>
+                <tr><td class="font-mono-jb">05/20/2026 · Wed</td><td><span class="pill-status draft">Draft</span></td><td class="text-zinc-500 text-xs">—</td>
+                    <td class="text-right"><span class="link mr-3" onclick="navigateTo('daily-reports-detail')">Open</span><button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button></td></tr>
+                <tr><td class="font-mono-jb">05/19/2026 · Tue</td><td><span class="pill-status submitted">Submitted</span></td><td class="text-zinc-500 text-xs">05/19 18:42</td>
+                    <td class="text-right"><span class="link mr-3">Open</span><button class="btn-ghost p-1" disabled><iconify-icon icon="lucide:trash-2" class="text-zinc-700"></iconify-icon></button></td></tr>
+                <tr><td class="font-mono-jb">05/18/2026 · Mon</td><td><span class="pill-status approved">Approved</span></td><td class="text-zinc-500 text-xs">05/18 19:15</td>
+                    <td class="text-right"><span class="link mr-3">Open</span><button class="btn-ghost p-1" disabled><iconify-icon icon="lucide:trash-2" class="text-zinc-700"></iconify-icon></button></td></tr>
+                <tr><td class="font-mono-jb">05/17/2026 · Sun</td><td><span class="pill-status approved">Approved · No-work</span></td><td class="text-zinc-500 text-xs">05/17 08:00</td>
+                    <td class="text-right"><span class="link mr-3">Open</span><button class="btn-ghost p-1" disabled><iconify-icon icon="lucide:trash-2" class="text-zinc-700"></iconify-icon></button></td></tr>
+                <tr><td class="font-mono-jb">05/16/2026 · Sat</td><td><span class="pill-status approved">Approved</span></td><td class="text-zinc-500 text-xs">05/16 17:30</td>
+                    <td class="text-right"><span class="link mr-3">Open</span><button class="btn-ghost p-1" disabled><iconify-icon icon="lucide:trash-2" class="text-zinc-700"></iconify-icon></button></td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ PAGE: DR DETAIL ============ -->
+<div class="page hidden" data-page="daily-reports-detail">
+    <!-- Header bar with 8-tile KPI band -->
+    <div class="surface p-4 mb-5">
+        <div class="flex flex-wrap items-center gap-3">
+            <button class="btn-ghost shrink-0" onclick="navigateTo('daily-reports-list')"><iconify-icon icon="lucide:chevron-left"></iconify-icon> Back</button>
+            <div class="flex-1 min-w-0 grid grid-cols-4 md:grid-cols-8 gap-2">
+                <div class="kpi-tile"><div class="label">PPC</div><div class="value">75%</div></div>
+                <div class="kpi-tile"><div class="label">Headcount</div><div class="value">12</div></div>
+                <div class="kpi-tile"><div class="label">Crew hrs</div><div class="value">96.0</div></div>
+                <div class="kpi-tile"><div class="label">Activity hrs</div><div class="value">88.0</div></div>
+                <div class="kpi-tile"><div class="label">Delays</div><div class="value red">1</div></div>
+                <div class="kpi-tile"><div class="label">RFIs</div><div class="value">2</div></div>
+                <div class="kpi-tile"><div class="label">Safety</div><div class="value">0</div></div>
+                <div class="kpi-tile"><div class="label">QC</div><div class="value red">1</div></div>
+            </div>
+        </div>
+        <div class="mt-3 pt-3 border-t border-white/5 flex flex-wrap gap-2 justify-end">
+            <button class="btn-secondary"><iconify-icon icon="lucide:message-square"></iconify-icon> + Coordination</button>
+            <button class="btn-primary"><iconify-icon icon="lucide:download"></iconify-icon> Export for Internal</button>
+            <button class="btn-secondary"><iconify-icon icon="lucide:download"></iconify-icon> Export for External</button>
+            <button class="btn-secondary" style="border-color: rgba(16, 185, 129, 0.4); color: #34d399;"><iconify-icon icon="lucide:file-spreadsheet"></iconify-icon> Export: Client Format</button>
+            <button class="btn-primary">Submit</button>
+        </div>
+    </div>
+
+    <!-- DR Auto Header (read-only project / contract info) -->
+    <div class="surface p-5 mb-5">
+        <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest mb-4">Project / Contract Information <span class="text-zinc-600 normal-case">— auto-populated, read-only</span></div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-x-8 gap-y-4">
+            <div><div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Client</div><div class="font-medium mt-1">MSU / VA</div></div>
+            <div><div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Station</div><div class="font-medium mt-1">VA Medical Center, Bronx NY</div></div>
+            <div><div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Project Title</div><div class="font-medium mt-1">SPD Renovation Phase IV</div></div>
+            <div><div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Contract Number</div><div class="font-medium mt-1 font-mono-jb">#24608733</div></div>
+            <div><div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Contractor</div><div class="font-medium mt-1">Integrated Construction Enterprises</div></div>
+            <div><div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Signature</div><div class="font-medium mt-1">Abhi Deshpande</div></div>
+        </div>
+    </div>
+
+    <!-- Weather -->
+    <div class="surface p-5 mb-5">
+        <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+                <iconify-icon icon="lucide:cloud" class="text-zinc-400"></iconify-icon>
+                <div class="text-sm font-semibold">Weather</div>
+            </div>
+            <div class="text-xs text-zinc-500 font-mono-jb">fetched 8:43:37 PM</div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Conditions</div>
+                <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm" value="Overcast" />
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">High °F</div>
+                <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono-jb" value="66.1" />
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Low °F</div>
+                <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono-jb" value="49.3" />
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Precip in</div>
+                <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono-jb" value="0" />
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-1">Wind mph</div>
+                <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono-jb" value="13.5" />
+            </div>
+        </div>
+        <button class="btn-secondary mt-4"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> Auto-fill from forecast</button>
+    </div>
+
+    <!-- Crew presence -->
+    <div class="surface p-5 mb-5">
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+                <iconify-icon icon="lucide:users" class="text-zinc-400"></iconify-icon>
+                <h3 class="text-sm font-semibold">Crew presence</h3>
+                <span class="text-xs text-zinc-500">total: 6 workers · 48.0 hours</span>
+            </div>
+            <button class="btn-ghost text-xs">Show detailed roster</button>
+        </div>
+        <table class="data-table">
+            <thead><tr><th>Trade</th><th>Company</th><th>Headcount</th><th>Hrs/Person</th><th>Sub-total</th><th>Notes</th></tr></thead>
+            <tbody>
+                <tr><td>Plumber</td><td>ICE</td><td class="font-mono-jb">3</td><td class="font-mono-jb">8</td><td class="font-mono-jb">24.0</td><td class="text-xs text-zinc-500">—</td></tr>
+                <tr><td>Plumber</td><td>ICE</td><td class="font-mono-jb">3</td><td class="font-mono-jb">8</td><td class="font-mono-jb">24.0</td><td class="text-xs text-amber-400">Auto-created · linked to open DR</td></tr>
+            </tbody>
+        </table>
+        <button class="btn-secondary mt-3"><iconify-icon icon="lucide:plus"></iconify-icon> + Add trade</button>
+    </div>
+
+    <!-- Activity grid -->
+    <div class="surface p-5">
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+                <iconify-icon icon="lucide:list-checks" class="text-zinc-400"></iconify-icon>
+                <h3 class="text-sm font-semibold">Activity grid</h3>
+            </div>
+            <button class="btn-secondary"><iconify-icon icon="lucide:mic"></iconify-icon> Voice annotate</button>
+        </div>
+        <table class="data-table">
+            <thead><tr><th>Code</th><th>Description</th><th>Start %</th><th>End %</th><th>Crew</th><th>Hours</th><th>Blocker</th></tr></thead>
+            <tbody>
+                <tr><td class="font-mono-jb text-[#ef233c]">A1240</td><td>Plumbing rough-in (DW, sink, shut-offs)</td><td class="font-mono-jb">60</td><td class="font-mono-jb">75</td><td class="font-mono-jb">3</td><td class="font-mono-jb">24</td><td><span class="pill-status pending">RFI-024</span></td></tr>
+                <tr><td class="font-mono-jb text-[#ef233c]">A1250</td><td>Drain stack vent up</td><td class="font-mono-jb">40</td><td class="font-mono-jb">55</td><td class="font-mono-jb">2</td><td class="font-mono-jb">16</td><td>—</td></tr>
+                <tr><td class="font-mono-jb text-[#ef233c]">A1310</td><td>DW hang Rooms 305–312</td><td class="font-mono-jb">0</td><td class="font-mono-jb">0</td><td class="font-mono-jb">0</td><td class="font-mono-jb">0</td><td><span class="pill-status pending">Blocked</span></td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ PAGE: TASKS ============ -->
+<div class="page hidden" data-page="tasks">
+    <div class="flex items-start justify-between mb-5 gap-4 flex-wrap">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Tasks</h2>
+            <p class="text-sm text-zinc-500 mt-1">Master schedule · 247 activities · 14 critical path · Last CPM recompute 2m ago</p>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+            <button class="btn-secondary"><iconify-icon icon="lucide:arrow-down-narrow-wide"></iconify-icon> Sort by Slip ↓</button>
+            <button class="btn-secondary"><iconify-icon icon="lucide:download"></iconify-icon> Export CSV</button>
+            <button class="btn-secondary"><iconify-icon icon="lucide:refresh-cw"></iconify-icon> Recompute CPM</button>
+            <button class="btn-primary"><iconify-icon icon="lucide:plus"></iconify-icon> New activity</button>
+        </div>
+    </div>
+
+    <!-- Filter row -->
+    <div class="surface p-3 mb-4 flex flex-wrap items-center gap-4">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" class="accent-[#ef233c] w-4 h-4" />
+            <span class="text-zinc-300">Show only impacted (slip &gt; 0)</span>
+        </label>
+        <div class="text-sm text-zinc-500"><span class="text-[#ef233c] font-bold font-mono-jb">3</span> impacted of <span class="text-zinc-300 font-mono-jb">247</span> tasks</div>
+        <div class="ml-auto flex items-center gap-2">
+            <span class="text-xs text-zinc-500">Project finish:</span>
+            <span class="font-mono-jb text-sm">08/14/2026</span>
+            <span class="text-xs text-zinc-500 ml-3">· Critical:</span>
+            <span class="font-mono-jb text-sm text-[#ef233c]">14</span>
+        </div>
+    </div>
+
+    <!-- Full task table — 19 columns matching the actual Tasks.jsx page in the React codebase -->
+    <div class="surface overflow-x-auto">
+        <table class="data-table" style="min-width: 2000px;">
+            <thead><tr>
+                <th>#</th>
+                <th>Description</th>
+                <th>Resource</th>
+                <th>Predecessors</th>
+                <th>Trade</th>
+                <th>Plan start</th>
+                <th>Plan finish</th>
+                <th>Impacted start</th>
+                <th>Impacted finish</th>
+                <th>Slip (wd)</th>
+                <th>Dur (d)</th>
+                <th>%</th>
+                <th>Status</th>
+                <th>Blockers</th>
+                <th>CP</th>
+                <th>Float (d)</th>
+                <th>Rem float</th>
+                <th>Gap</th>
+                <th>Actions</th>
+            </tr></thead>
+            <tbody>
+                <!-- Row 1: A1240 plumbing rough-in -- CP, blocked, slipping -->
+                <tr style="background: rgba(239, 35, 60, 0.04);">
+                    <td class="font-mono-jb text-zinc-500">1</td>
+                    <td>
+                        <div class="font-medium">Plumbing rough-in (DW, sink, shut-offs)</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A1240</span>
+                            <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider">Construction</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">P. DiCristina, J. Ortiz</td>
+                    <td class="font-mono-jb text-xs">A1230FS</td>
+                    <td>Plumbing</td>
+                    <td class="font-mono-jb">05/15/2026</td>
+                    <td class="font-mono-jb">05/22/2026</td>
+                    <td class="font-mono-jb">05/15/2026</td>
+                    <td class="font-mono-jb">05/25/2026</td>
+                    <td class="font-mono-jb text-[#ef233c] font-bold">+3</td>
+                    <td class="font-mono-jb">7</td>
+                    <td class="font-mono-jb">75</td>
+                    <td><span class="pill-status pending">behind</span></td>
+                    <td>
+                        <div class="flex items-center gap-1 text-xs font-mono-jb">
+                            <span class="px-1.5 py-0.5 bg-[#ef233c]/20 text-[#ef233c] rounded border border-[#ef233c]/40 font-bold">2</span>
+                            <span class="text-zinc-500">r&middot;1</span><span class="text-zinc-500">d&middot;1</span>
+                        </div>
+                    </td>
+                    <td><span class="pill-status pending">CP</span></td>
+                    <td class="font-mono-jb">0</td>
+                    <td class="font-mono-jb text-[#ef233c] font-bold">-3</td>
+                    <td>—</td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+
+                <!-- Row 2: A1250 drain stack -- has gap -->
+                <tr>
+                    <td class="font-mono-jb text-zinc-500">2</td>
+                    <td>
+                        <div class="font-medium">Drain stack vent up · Levels 2-3</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A1250</span>
+                            <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider">Construction</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">J. Ortiz</td>
+                    <td class="font-mono-jb text-xs">A1240SS+2d</td>
+                    <td>Plumbing</td>
+                    <td class="font-mono-jb">05/19/2026</td>
+                    <td class="font-mono-jb">05/26/2026</td>
+                    <td class="font-mono-jb">05/19/2026</td>
+                    <td class="font-mono-jb">05/27/2026</td>
+                    <td class="font-mono-jb text-[#ef233c] font-bold">+1</td>
+                    <td class="font-mono-jb">7</td>
+                    <td class="font-mono-jb">55</td>
+                    <td><span class="pill-status pending">at risk</span></td>
+                    <td>
+                        <div class="flex items-center gap-1 text-xs font-mono-jb">
+                            <span class="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded border border-amber-500/40 font-bold">1</span>
+                            <span class="text-zinc-500">d&middot;1</span>
+                        </div>
+                    </td>
+                    <td>—</td>
+                    <td class="font-mono-jb">2</td>
+                    <td class="font-mono-jb">1</td>
+                    <td>
+                        <span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 text-[10px] font-bold uppercase">
+                            <iconify-icon icon="lucide:users" class="text-[9px]"></iconify-icon> minor
+                        </span>
+                    </td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+
+                <!-- Row 3: A1310 DW hang -- not started, has blocker, currently critical (CP*) -->
+                <tr>
+                    <td class="font-mono-jb text-zinc-500">3</td>
+                    <td>
+                        <div class="font-medium">DW hang · Rooms 305-312</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A1310</span>
+                            <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider">Construction</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">DUA Electric · subbed DW</td>
+                    <td class="font-mono-jb text-xs">A1240FS, A1250FS</td>
+                    <td>Drywall</td>
+                    <td class="font-mono-jb">05/25/2026</td>
+                    <td class="font-mono-jb">05/29/2026</td>
+                    <td class="font-mono-jb">05/26/2026</td>
+                    <td class="font-mono-jb">05/30/2026</td>
+                    <td class="font-mono-jb text-[#ef233c] font-bold">+1</td>
+                    <td class="font-mono-jb">5</td>
+                    <td class="font-mono-jb">0</td>
+                    <td><span class="pill-status pending">blocked</span></td>
+                    <td>
+                        <div class="flex items-center gap-1 text-xs font-mono-jb">
+                            <span class="px-1.5 py-0.5 bg-[#ef233c]/20 text-[#ef233c] rounded border border-[#ef233c]/40 font-bold">3</span>
+                            <span class="text-zinc-500">r&middot;1</span><span class="text-zinc-500">s&middot;1</span><span class="text-zinc-500">w&middot;1</span>
+                        </div>
+                    </td>
+                    <td><span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold uppercase">CP*</span></td>
+                    <td class="font-mono-jb">1</td>
+                    <td class="font-mono-jb">0</td>
+                    <td>
+                        <span class="px-2 py-0.5 rounded bg-[#ef233c]/15 text-[#ef233c] border border-[#ef233c]/40 text-[10px] font-bold uppercase">
+                            <iconify-icon icon="lucide:users" class="text-[9px]"></iconify-icon> major · CP
+                        </span>
+                    </td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+
+                <!-- Row 4: A1320 DW finishing -- clean -->
+                <tr>
+                    <td class="font-mono-jb text-zinc-500">4</td>
+                    <td>
+                        <div class="font-medium">DW finishing · Level 3</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A1320</span>
+                            <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider">Construction</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">DUA Electric</td>
+                    <td class="font-mono-jb text-xs">A1310FS</td>
+                    <td>Drywall</td>
+                    <td class="font-mono-jb">05/28/2026</td>
+                    <td class="font-mono-jb">06/03/2026</td>
+                    <td class="font-mono-jb">05/28/2026</td>
+                    <td class="font-mono-jb">06/03/2026</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">6</td>
+                    <td class="font-mono-jb">0</td>
+                    <td><span class="pill-status submitted">on track</span></td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">2</td>
+                    <td class="font-mono-jb">2</td>
+                    <td>—</td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+
+                <!-- Row 5: A1410 paint -- clean -->
+                <tr>
+                    <td class="font-mono-jb text-zinc-500">5</td>
+                    <td>
+                        <div class="font-medium">Paint primer · Rooms 305-312</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A1410</span>
+                            <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[9px] font-bold uppercase tracking-wider">Construction</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">M. Reyes (Painters)</td>
+                    <td class="font-mono-jb text-xs">A1320FS</td>
+                    <td>Paint</td>
+                    <td class="font-mono-jb">06/01/2026</td>
+                    <td class="font-mono-jb">06/04/2026</td>
+                    <td class="font-mono-jb">06/01/2026</td>
+                    <td class="font-mono-jb">06/04/2026</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">3</td>
+                    <td class="font-mono-jb">0</td>
+                    <td><span class="pill-status submitted">on track</span></td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">3</td>
+                    <td class="font-mono-jb">3</td>
+                    <td>—</td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+
+                <!-- Row 6: A1500 equipment milestone -->
+                <tr>
+                    <td class="font-mono-jb text-zinc-500">6</td>
+                    <td>
+                        <div class="font-medium">SPD washer-disinfector install &amp; commission</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A1500</span>
+                            <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[9px] font-bold uppercase tracking-wider">Closeout</span>
+                            <span class="text-zinc-500">· milestone</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">STERIS field engineer</td>
+                    <td class="font-mono-jb text-xs">A1410FS, A1450FS</td>
+                    <td>Equipment</td>
+                    <td class="font-mono-jb">06/05/2026</td>
+                    <td class="font-mono-jb">06/12/2026</td>
+                    <td class="font-mono-jb">06/05/2026</td>
+                    <td class="font-mono-jb">06/12/2026</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">7</td>
+                    <td class="font-mono-jb">0</td>
+                    <td><span class="pill-status submitted">on track</span></td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">5</td>
+                    <td class="font-mono-jb">5</td>
+                    <td>—</td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:trash-2" class="text-red-400"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+
+                <!-- Row 7: A0980 carpenter -- completed, recovery applied -->
+                <tr style="opacity: 0.7;">
+                    <td class="font-mono-jb text-zinc-500">7</td>
+                    <td>
+                        <div class="font-medium">Carpenter blocking &amp; door frames</div>
+                        <div class="text-[11px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                            <span class="font-mono-jb">A0980</span>
+                            <span class="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30 text-[9px] font-bold uppercase tracking-wider">Preconstruction</span>
+                        </div>
+                    </td>
+                    <td class="text-xs">F&amp;C JV LLC</td>
+                    <td class="font-mono-jb text-xs">—</td>
+                    <td>Carpenter</td>
+                    <td class="font-mono-jb">04/28/2026</td>
+                    <td class="font-mono-jb">05/12/2026</td>
+                    <td class="font-mono-jb">05/05/2026</td>
+                    <td class="font-mono-jb">05/15/2026</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">14</td>
+                    <td class="font-mono-jb">100</td>
+                    <td><span class="pill-status approved">complete</span></td>
+                    <td>—</td>
+                    <td>—</td>
+                    <td class="font-mono-jb">—</td>
+                    <td class="font-mono-jb">—</td>
+                    <td>—</td>
+                    <td>
+                        <div class="flex items-center gap-1">
+                            <button class="btn-ghost p-1"><iconify-icon icon="lucide:pencil"></iconify-icon></button>
+                            <button class="btn-ghost p-1" disabled><iconify-icon icon="lucide:trash-2" class="text-zinc-700"></iconify-icon></button>
+                        </div>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Legend -->
+    <div class="mt-3 text-[11px] text-zinc-500 flex flex-wrap gap-4 px-1">
+        <span class="flex items-center gap-1.5"><span class="pill-status pending">CP</span> Critical path · structural</span>
+        <span class="flex items-center gap-1.5"><span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold uppercase">CP*</span> Currently critical · float consumed by cascade</span>
+        <span class="flex items-center gap-1.5"><span class="font-mono-jb text-[#ef233c]">+N</span> Working-day slip · planned vs CPM-projected</span>
+        <span class="flex items-center gap-1.5"><span class="font-mono-jb">d/r/s/w</span> Open blocker counts · delays/RFIs/submittals/work-items</span>
+    </div>
+</div>
+
+<!-- ============ PAGE: LOOKAHEAD ============ -->
+<div class="page hidden" data-page="lookahead">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Look ahead</h2>
+            <p class="text-sm text-zinc-500 mt-1">3-week pull plan · committed work + at-risk items</p>
+        </div>
+        <button class="btn-primary"><iconify-icon icon="lucide:download"></iconify-icon> Export PDF</button>
+    </div>
+
+    <div class="grid grid-cols-3 gap-4">
+        <div class="surface p-5">
+            <div class="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
+                <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest">Week 1</div>
+                <div class="text-xs text-zinc-500">05/20 — 05/26</div>
+            </div>
+            <div class="space-y-2">
+                <div class="p-3 bg-white/[0.03] border border-white/5 rounded-lg">
+                    <div class="text-xs font-mono-jb text-zinc-500 mb-1">A1240 · Mon-Fri</div>
+                    <div class="text-sm font-medium">Plumbing rough-in finish</div>
+                    <div class="flex items-center gap-2 mt-2 text-[10px]"><span class="pill-status pending">CP</span></div>
+                </div>
+                <div class="p-3 bg-white/[0.03] border border-white/5 rounded-lg">
+                    <div class="text-xs font-mono-jb text-zinc-500 mb-1">A1250 · Wed-Mon</div>
+                    <div class="text-sm font-medium">Drain stack vent up</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface p-5">
+            <div class="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
+                <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest">Week 2</div>
+                <div class="text-xs text-zinc-500">05/27 — 06/02</div>
+            </div>
+            <div class="space-y-2">
+                <div class="p-3 bg-white/[0.03] border border-white/5 rounded-lg">
+                    <div class="text-xs font-mono-jb text-zinc-500 mb-1">A1310 · Mon-Fri</div>
+                    <div class="text-sm font-medium">DW hang R305-312</div>
+                </div>
+                <div class="p-3 bg-white/[0.03] border border-white/5 rounded-lg">
+                    <div class="text-xs font-mono-jb text-zinc-500 mb-1">A1320 · Thu-Wed</div>
+                    <div class="text-sm font-medium">DW finishing Level 3</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface p-5">
+            <div class="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
+                <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest">Week 3</div>
+                <div class="text-xs text-zinc-500">06/03 — 06/09</div>
+            </div>
+            <div class="space-y-2">
+                <div class="p-3 bg-white/[0.03] border border-white/5 rounded-lg">
+                    <div class="text-xs font-mono-jb text-zinc-500 mb-1">A1410 · Mon-Wed</div>
+                    <div class="text-sm font-medium">Paint primer R305-312</div>
+                </div>
+                <div class="p-3 bg-white/[0.03] border border-white/5 rounded-lg">
+                    <div class="text-xs font-mono-jb text-zinc-500 mb-1">A1500 · Fri+</div>
+                    <div class="text-sm font-medium">SPD equipment install</div>
+                    <div class="flex items-center gap-2 mt-2 text-[10px]"><span class="pill-status submitted">5d float</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PAGE: APPROVALS ============ -->
+<div class="page hidden" data-page="approvals">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Approvals</h2>
+            <p class="text-sm text-zinc-500 mt-1">7 pending items routed to you</p>
+        </div>
+        <div class="flex items-center gap-2 pill"><iconify-icon icon="lucide:filter"></iconify-icon> All types</div>
+    </div>
+
+    <div class="space-y-3">
+        <div class="surface surface-hover p-5 flex items-center gap-5">
+            <div class="w-10 h-10 rounded-lg bg-red-950/40 border border-red-500/30 flex items-center justify-center"><iconify-icon icon="lucide:alert-triangle" class="text-[#ef233c]"></iconify-icon></div>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm font-semibold">Recovery scenario approval</span>
+                    <span class="pill-status pending">High</span>
+                </div>
+                <div class="text-xs text-zinc-500 mt-1">AI proposed Saturday overtime for A1240 plumbing crew · projected +2d recovery · cost +$3,200</div>
+                <div class="text-[10px] font-mono-jb text-zinc-500 mt-1.5">Requested by Paul DiCristina · 14m ago</div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="btn-ghost"><iconify-icon icon="lucide:eye"></iconify-icon> Review</button>
+                <button class="btn-secondary text-emerald-400 border-emerald-500/30">Approve</button>
+                <button class="btn-secondary text-red-400 border-red-500/30">Reject</button>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-5 flex items-center gap-5">
+            <div class="w-10 h-10 rounded-lg bg-blue-950/40 border border-blue-500/30 flex items-center justify-center"><iconify-icon icon="lucide:help-circle" class="text-blue-400"></iconify-icon></div>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm font-semibold">RFI-024 response draft</span>
+                    <span class="pill-status submitted">Medium</span>
+                </div>
+                <div class="text-xs text-zinc-500 mt-1">AI-drafted response to "drywall jamb detail at corridor doors" — cites Section 09 21 16 §3.4.A</div>
+                <div class="text-[10px] font-mono-jb text-zinc-500 mt-1.5">SLA: 11d remaining (FAR 52.236-15)</div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="btn-ghost"><iconify-icon icon="lucide:eye"></iconify-icon> Review</button>
+                <button class="btn-secondary text-emerald-400 border-emerald-500/30">Approve</button>
+                <button class="btn-secondary text-red-400 border-red-500/30">Reject</button>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-5 flex items-center gap-5">
+            <div class="w-10 h-10 rounded-lg bg-purple-950/40 border border-purple-500/30 flex items-center justify-center"><iconify-icon icon="lucide:file-check" class="text-purple-400"></iconify-icon></div>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm font-semibold">Schedule update proposal</span>
+                    <span class="pill-status submitted">Medium</span>
+                </div>
+                <div class="text-xs text-zinc-500 mt-1">14 activities shifted, 2 added, 1 dropped · AI risk: Medium · CP impact: +1d</div>
+                <div class="text-[10px] font-mono-jb text-zinc-500 mt-1.5">Imported 1h ago · awaiting PM sign-off</div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="btn-ghost"><iconify-icon icon="lucide:eye"></iconify-icon> Review</button>
+                <button class="btn-secondary text-emerald-400 border-emerald-500/30">Approve</button>
+                <button class="btn-secondary text-red-400 border-red-500/30">Reject</button>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-5 flex items-center gap-5">
+            <div class="w-10 h-10 rounded-lg bg-amber-950/40 border border-amber-500/30 flex items-center justify-center"><iconify-icon icon="lucide:clipboard-check" class="text-amber-400"></iconify-icon></div>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <span class="text-sm font-semibold">DR 05/18 — final approve</span>
+                    <span class="pill-status draft">Low</span>
+                </div>
+                <div class="text-xs text-zinc-500 mt-1">Submitted by Paul · activity grid clean · 0 blockers logged</div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="btn-ghost"><iconify-icon icon="lucide:eye"></iconify-icon> Review</button>
+                <button class="btn-secondary text-emerald-400 border-emerald-500/30">Approve</button>
+                <button class="btn-secondary text-red-400 border-red-500/30">Reject</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PAGE: RECOVERY ============ -->
+<div class="page hidden" data-page="recovery">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Recovery</h2>
+            <p class="text-sm text-zinc-500 mt-1">AI-generated mitigation for cascade-impacting delays</p>
+        </div>
+        <button class="btn-primary"><iconify-icon icon="lucide:wand-sparkles"></iconify-icon> Generate new</button>
+    </div>
+
+    <!-- Active recovery suggestion -->
+    <div class="surface p-6 mb-6 border border-[#ef233c]/40 bg-gradient-to-br from-red-950/20 to-transparent">
+        <div class="flex items-start justify-between mb-4">
+            <div>
+                <div class="flex items-center gap-2 mb-2">
+                    <iconify-icon icon="lucide:wand-sparkles" class="text-[#ef233c]"></iconify-icon>
+                    <div class="text-xs font-mono-jb text-[#ef233c] uppercase tracking-widest">AI Recovery · A1240 Plumbing rough-in</div>
+                </div>
+                <h3 class="text-2xl font-semibold font-manrope">3 mitigation scenarios generated</h3>
+                <p class="text-sm text-zinc-400 mt-1">Delay: 3 days · CP impact: 3d · Confidence weighted by 12 prior similar mitigations</p>
+            </div>
+            <div class="text-xs font-mono-jb text-emerald-400 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+                <iconify-icon icon="lucide:shield-check"></iconify-icon> CONSTRUCTIBILITY-CHECKED · 247 RULES
+            </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4 mt-6">
+            <!-- A -->
+            <div class="surface p-5 border-2 border-[#ef233c]">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xl font-bold font-manrope text-[#ef233c]">A</span>
+                    <span class="text-xs font-mono-jb px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded">RECOMMEND</span>
+                </div>
+                <h4 class="font-semibold mb-2">Saturday OT — plumbing</h4>
+                <p class="text-xs text-zinc-400 leading-relaxed mb-4">Authorize Sat 7am-3pm for the existing plumbing crew. Closes rough-in Friday EOD, inspection clears Monday, DW Tuesday.</p>
+                <div class="space-y-2 text-xs">
+                    <div class="flex justify-between"><span class="text-zinc-500">Recovery</span><span class="text-emerald-400 font-mono-jb">+2d</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Cost</span><span class="font-mono-jb">$3,200</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Risk</span><span class="text-emerald-400">LOW</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Confidence</span><span class="font-mono-jb">0.82</span></div>
+                </div>
+                <button class="btn-primary w-full mt-4 justify-center">Apply scenario</button>
+            </div>
+            <!-- B -->
+            <div class="surface p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xl font-bold font-manrope text-zinc-300">B</span>
+                    <span class="text-xs font-mono-jb px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded">CAUTION</span>
+                </div>
+                <h4 class="font-semibold mb-2">Second crew Mon-Tue</h4>
+                <p class="text-xs text-zinc-400 leading-relaxed mb-4">Add a second 3-man plumbing crew Mon &amp; Tue. <span class="text-amber-400">Density warning</span>: 2nd crew in same 200sf zone exceeds OSHA spacing.</p>
+                <div class="space-y-2 text-xs">
+                    <div class="flex justify-between"><span class="text-zinc-500">Recovery</span><span class="text-emerald-400 font-mono-jb">+1d</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Cost</span><span class="font-mono-jb">$4,800</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Risk</span><span class="text-amber-400">MED</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Confidence</span><span class="font-mono-jb">0.61</span></div>
+                </div>
+                <button class="btn-secondary w-full mt-4 justify-center">Apply scenario</button>
+            </div>
+            <!-- C -->
+            <div class="surface p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xl font-bold font-manrope text-zinc-300">C</span>
+                    <span class="text-xs font-mono-jb px-2 py-0.5 bg-zinc-500/10 text-zinc-400 border border-zinc-500/30 rounded">PASSIVE</span>
+                </div>
+                <h4 class="font-semibold mb-2">Re-sequence DW</h4>
+                <p class="text-xs text-zinc-400 leading-relaxed mb-4">Re-sequence DW hanging — start in Rooms 305-308 (independent of A1240 zone) Mon, recover other rooms after.</p>
+                <div class="space-y-2 text-xs">
+                    <div class="flex justify-between"><span class="text-zinc-500">Recovery</span><span class="text-zinc-300 font-mono-jb">0d</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Cost</span><span class="font-mono-jb">$0</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Risk</span><span class="text-emerald-400">LOW</span></div>
+                    <div class="flex justify-between"><span class="text-zinc-500">Confidence</span><span class="font-mono-jb">0.71</span></div>
+                </div>
+                <button class="btn-secondary w-full mt-4 justify-center">Apply scenario</button>
+            </div>
+        </div>
+
+        <!-- Blocked AI suggestion -->
+        <div class="mt-6 p-4 bg-red-950/30 border border-red-500/30 rounded-lg">
+            <div class="flex items-start gap-3">
+                <iconify-icon icon="lucide:shield-x" class="text-red-400 text-xl shrink-0 mt-0.5"></iconify-icon>
+                <div>
+                    <div class="text-sm font-semibold text-red-300 mb-1">1 AI suggestion BLOCKED by constructibility rule</div>
+                    <div class="text-xs text-zinc-400">Original AI suggestion D ("Overlap drywall finishing with flooring install in Room 305") rejected by rule <span class="font-mono-jb text-red-300">DW-FL-001</span> — "Drywall finishing dust contaminates new flooring." Cited: GSA P100 §9.7.2. AI retried; result is scenario A above.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Historical recoveries -->
+    <div class="surface">
+        <div class="px-5 py-3 border-b border-white/5 text-xs font-mono-jb text-zinc-500 uppercase tracking-widest">Recent recoveries · last 30 days</div>
+        <table class="data-table">
+            <thead><tr><th>Activity</th><th>Scenario</th><th>Projected</th><th>Actual</th><th>Outcome</th></tr></thead>
+            <tbody>
+                <tr><td class="font-mono-jb">A0980</td><td>Add carpenter sub</td><td class="font-mono-jb text-emerald-400">+3d</td><td class="font-mono-jb text-emerald-400">+3d</td><td><span class="pill-status approved">On-target</span></td></tr>
+                <tr><td class="font-mono-jb">A0820</td><td>Saturday OT</td><td class="font-mono-jb text-emerald-400">+2d</td><td class="font-mono-jb">+1d</td><td><span class="pill-status submitted">Partial</span></td></tr>
+                <tr><td class="font-mono-jb">A0640</td><td>Premium freight (HVAC)</td><td class="font-mono-jb text-emerald-400">+5d</td><td class="font-mono-jb text-emerald-400">+5d</td><td><span class="pill-status approved">On-target</span></td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ PAGE: AI AGENTS ============ -->
+<div class="page hidden" data-page="ai-agents">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">AI Agents</h2>
+            <p class="text-sm text-zinc-500 mt-1">claude-sonnet-4-5 · all calls audit-logged · cost: $3.42 today</p>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="surface surface-hover p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-red-950/40 border border-red-500/30 flex items-center justify-center shrink-0"><iconify-icon icon="lucide:wand-sparkles" class="text-[#ef233c]"></iconify-icon></div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">Recovery Agent</h3>
+                        <span class="pill-status approved">ENABLED</span>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Generates 3 mitigation scenarios for delays with CP impact. Cites prior mitigation outcomes.</p>
+                    <div class="flex items-center gap-4 text-xs text-zinc-500 font-mono-jb">
+                        <span>67 runs · 30d</span>
+                        <span>Avg 4.2s</span>
+                        <span>$0.84 avg</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-blue-950/40 border border-blue-500/30 flex items-center justify-center shrink-0"><iconify-icon icon="lucide:help-circle" class="text-blue-400"></iconify-icon></div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">RFI Drafter</h3>
+                        <span class="pill-status approved">ENABLED</span>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Drafts spec-citing RFI responses using <code class="text-xs font-mono-jb text-blue-300">&lt;spec_citation&gt;</code> tags.</p>
+                    <div class="flex items-center gap-4 text-xs text-zinc-500 font-mono-jb">
+                        <span>23 runs · 30d</span>
+                        <span>Avg 2.8s</span>
+                        <span>$0.32 avg</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-purple-950/40 border border-purple-500/30 flex items-center justify-center shrink-0"><iconify-icon icon="lucide:mic" class="text-purple-400"></iconify-icon></div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">Voice Annotation</h3>
+                        <span class="pill-status approved">ENABLED</span>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Whisper STT → structured DR fields. Detects no-work day reasons.</p>
+                    <div class="flex items-center gap-4 text-xs text-zinc-500 font-mono-jb">
+                        <span>184 runs · 30d</span>
+                        <span>Avg 6.1s</span>
+                        <span>$0.18 avg</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-center shrink-0"><iconify-icon icon="lucide:file-spreadsheet" class="text-emerald-400"></iconify-icon></div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">Client Template Mapper</h3>
+                        <span class="pill-status approved">ENABLED</span>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Semantic mapping of DR data into client xlsx templates. FILL/BLANK/LEAVE per-cell decisions.</p>
+                    <div class="flex items-center gap-4 text-xs text-zinc-500 font-mono-jb">
+                        <span>12 runs · 30d</span>
+                        <span>Avg 8.4s</span>
+                        <span>$0.91 avg</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-amber-950/40 border border-amber-500/30 flex items-center justify-center shrink-0"><iconify-icon icon="lucide:shield-check" class="text-amber-400"></iconify-icon></div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">Constructibility Filter</h3>
+                        <span class="pill-status pending">PROPOSED</span>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Filters AI recommendations against trade-conflict, sequence, cure-time, OSHA, density rules. Not yet enabled — rule DB seeding in progress.</p>
+                    <div class="flex items-center gap-4 text-xs text-zinc-500 font-mono-jb">
+                        <span>0 runs</span>
+                        <span>Target: Q3 2026</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="surface surface-hover p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-pink-950/40 border border-pink-500/30 flex items-center justify-center shrink-0"><iconify-icon icon="lucide:bot" class="text-pink-400"></iconify-icon></div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold">Copilot (Q&amp;A)</h3>
+                        <span class="pill-status approved">ENABLED</span>
+                    </div>
+                    <p class="text-sm text-zinc-400 mb-3">Project-scoped Q&amp;A with RAG over master docs, RFIs, specs. Cites schedule activities by code.</p>
+                    <div class="flex items-center gap-4 text-xs text-zinc-500 font-mono-jb">
+                        <span>342 runs · 30d</span>
+                        <span>Avg 3.4s</span>
+                        <span>$0.21 avg</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PAGE: SETTINGS ============ -->
+<div class="page hidden" data-page="settings">
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-2xl font-semibold font-manrope">Settings</h2>
+            <p class="text-sm text-zinc-500 mt-1">Tenant · workspace · integrations</p>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <!-- Sidebar nav -->
+        <div class="surface p-2">
+            <div class="space-y-1">
+                <div class="nav-item active" style="margin: 1px 0;"><iconify-icon icon="lucide:building-2"></iconify-icon> Tenant</div>
+                <div class="nav-item" style="margin: 1px 0;"><iconify-icon icon="lucide:users"></iconify-icon> Team</div>
+                <div class="nav-item" style="margin: 1px 0;"><iconify-icon icon="lucide:shield"></iconify-icon> Security</div>
+                <div class="nav-item" style="margin: 1px 0;"><iconify-icon icon="lucide:plug-zap"></iconify-icon> Integrations</div>
+                <div class="nav-item" style="margin: 1px 0;"><iconify-icon icon="lucide:credit-card"></iconify-icon> Billing</div>
+                <div class="nav-item" style="margin: 1px 0;"><iconify-icon icon="lucide:bell"></iconify-icon> Notifications</div>
+                <div class="nav-item" style="margin: 1px 0;"><iconify-icon icon="lucide:database"></iconify-icon> Data export</div>
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="lg:col-span-3 space-y-5">
+            <div class="surface p-6">
+                <h3 class="font-semibold mb-4 text-lg">Tenant profile</h3>
+                <div class="grid grid-cols-2 gap-5">
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-1">Tenant name</div>
+                        <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm" value="ICE Federal Group" />
+                    </div>
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-1">Type</div>
+                        <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm" value="General Contractor" />
+                    </div>
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-1">Default time zone</div>
+                        <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm" value="America/New_York" />
+                    </div>
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-1">DUNS</div>
+                        <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono-jb" value="831-450-220" />
+                    </div>
+                </div>
+            </div>
+
+            <div class="surface p-6">
+                <h3 class="font-semibold mb-4 text-lg">AI gating</h3>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-lg cursor-pointer hover:border-[#ef233c]/30 transition">
+                        <div>
+                            <div class="text-sm font-medium">AI enabled tenant-wide</div>
+                            <div class="text-xs text-zinc-500 mt-0.5">Master switch · individual projects can override</div>
+                        </div>
+                        <div class="w-10 h-5 rounded-full bg-[#ef233c] relative cursor-pointer">
+                            <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full"></div>
+                        </div>
+                    </label>
+                    <label class="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-lg cursor-pointer hover:border-[#ef233c]/30 transition">
+                        <div>
+                            <div class="text-sm font-medium">Photo AI analysis</div>
+                            <div class="text-xs text-zinc-500 mt-0.5">Object detection · auto-classification · disabled for CUI projects</div>
+                        </div>
+                        <div class="w-10 h-5 rounded-full bg-[#ef233c] relative cursor-pointer">
+                            <div class="absolute top-0.5 right-0.5 w-4 h-4 bg-white rounded-full"></div>
+                        </div>
+                    </label>
+                    <label class="flex items-center justify-between p-3 bg-white/[0.02] border border-white/5 rounded-lg cursor-pointer hover:border-[#ef233c]/30 transition">
+                        <div>
+                            <div class="text-sm font-medium">Constructibility filter</div>
+                            <div class="text-xs text-zinc-500 mt-0.5">Beta · rules database seeding · disabled until Q3 2026</div>
+                        </div>
+                        <div class="w-10 h-5 rounded-full bg-white/10 relative cursor-pointer">
+                            <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full"></div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <div class="surface p-6">
+                <h3 class="font-semibold mb-4 text-lg">A/E review SLA</h3>
+                <div class="grid grid-cols-2 gap-5">
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-1">Default review SLA</div>
+                        <input class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono-jb" value="14 days" />
+                        <div class="text-xs text-zinc-500 mt-1">Per FAR 52.236-15 / GSAM</div>
+                    </div>
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-zinc-500 font-bold mb-1">Calendar basis</div>
+                        <select class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm">
+                            <option>Working days</option>
+                            <option>Calendar days</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ PAGE: GENERIC PLACEHOLDER ============ -->
+<div class="page hidden" data-page="generic">
+    <div class="flex items-center justify-center min-h-[400px]">
+        <div class="text-center max-w-md">
+            <div class="w-16 h-16 mx-auto rounded-2xl bg-red-950/40 border border-red-500/30 flex items-center justify-center mb-4">
+                <iconify-icon icon="lucide:layout-grid" class="text-2xl text-[#ef233c]"></iconify-icon>
+            </div>
+            <h3 class="text-2xl font-semibold font-manrope mb-2" id="placeholder-title">Module placeholder</h3>
+            <p class="text-zinc-500 text-sm mb-6">This page uses the same red noir design language as the rest of the platform. Build content lives in the React codebase — this mockup demonstrates the shell.</p>
+            <button class="btn-secondary" onclick="navigateTo('dashboard')">← Back to dashboard</button>
+        </div>
+    </div>
+</div>
+
+        </main>
+    </div>
+</div>
+
+<script>
+    const TITLES = {
+        'dashboard': ['Dashboard', 'VA SPD IV — Bronx'],
+        'projects': ['Projects', 'ICE Federal Group'],
+        'getting-started': ['Getting started', 'Onboarding'],
+        'master-doc': ['Master doc', 'Project Master Document'],
+        'daily-reports-list': ['Daily reports', 'VA SPD IV — Bronx'],
+        'daily-reports-detail': ['Daily report · 05/20/2026', 'VA SPD IV — Bronx'],
+        'photos': ['Photos', 'Auto-tagged by spatial AI'],
+        'delays': ['Delays', '2 active · 1 CP impact'],
+        'safety': ['Safety events', '0 incidents'],
+        'qc': ['QC issues', '3 open'],
+        'coordination': ['Coordination', 'Cross-trade events'],
+        'tasks': ['Tasks', 'Master schedule · 247 activities'],
+        'lookahead': ['Look ahead', '3-week pull plan'],
+        'weekly-reports': ['Weekly reports', 'Owner-facing summary'],
+        'schedule-updates': ['Schedule updates', 'AI-reviewed diffs'],
+        'rfis': ['RFIs', '5 open · SLA tracked'],
+        'deliveries': ['Deliveries', 'Logistics & receivers'],
+        'drawings': ['Drawings', 'Plan sheets & specs'],
+        'submittals': ['Submittals', 'Sub-Construction track'],
+        'approvals': ['Approvals', '7 pending'],
+        'recovery': ['Recovery', 'AI mitigation engine'],
+        'cascade': ['Cascade dashboard', 'CP impact projection'],
+        'tia': ['TIA', 'Time-impact analysis'],
+        'crews': ['Crews', 'Active labor'],
+        'equipment': ['Equipment', 'Asset tracking'],
+        'productivity': ['Productivity', 'Crew throughput'],
+        'ai-agents': ['AI agents', 'claude-sonnet-4-5'],
+        'imports': ['Imports', 'XER · MS Project · IFC'],
+        'audit-log': ['Audit log', 'SHA-256 chain · tamper-evident'],
+        'settings': ['Settings', 'Tenant · workspace · integrations']
+    };
+
+    const REAL_PAGES = new Set([
+        'dashboard', 'projects', 'daily-reports-list', 'daily-reports-detail',
+        'tasks', 'lookahead', 'approvals', 'recovery', 'ai-agents', 'settings'
+    ]);
+
+    function navigateTo(target) {
+        // Active nav item
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        document.querySelectorAll(`.nav-item[data-target="${target}"]`).forEach(n => n.classList.add('active'));
+
+        // Page content
+        document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+
+        if (REAL_PAGES.has(target)) {
+            const target_el = document.querySelector(`.page[data-page="${target}"]`);
+            if (target_el) target_el.classList.remove('hidden');
+        } else {
+            // Generic placeholder
+            const placeholder = document.querySelector('.page[data-page="generic"]');
+            placeholder.classList.remove('hidden');
+            const t = TITLES[target];
+            if (t) document.getElementById('placeholder-title').textContent = t[0];
+        }
+
+        // Topbar title + breadcrumb
+        const t = TITLES[target];
+        if (t) {
+            document.getElementById('page-title').textContent = t[0];
+            document.getElementById('page-breadcrumb').textContent = t[1];
+        }
+
+        // Scroll to top
+        document.querySelector('main').scrollTop = 0;
+    }
+
+    document.querySelectorAll('.nav-item[data-target]').forEach(item => {
+        item.addEventListener('click', () => navigateTo(item.dataset.target));
+    });
+</script>
+
+<!-- ============================================================
+     ACCESSIBILITY TOOLBAR
+     Researched against Atkinson Hyperlegible (Braille Institute, designed
+     specifically for low-vision and aging eyes), Lexend (reading-fluency
+     font), UserWay / Apple Accessibility Reader feature sets, and WCAG 2.2
+     (text scaling to 200%, 1.4:1 contrast minimum, text spacing controls).
+     Every toggle is wired up and persists via localStorage.
+     ============================================================ -->
+<style>
+/* ----- Body classes the toolbar applies ----- */
+body.a11y-text-125 { font-size: 19.5px !important; }
+body.a11y-text-150 { font-size: 23px !important; }
+body.a11y-text-200 { font-size: 30px !important; }
+body.a11y-line-1-5, body.a11y-line-1-5 * { line-height: 1.7 !important; }
+body.a11y-line-2,   body.a11y-line-2 *   { line-height: 2.1 !important; }
+body.a11y-dyslexia, body.a11y-dyslexia button, body.a11y-dyslexia input, body.a11y-dyslexia td, body.a11y-dyslexia th, body.a11y-dyslexia div, body.a11y-dyslexia span, body.a11y-dyslexia p, body.a11y-dyslexia h1, body.a11y-dyslexia h2, body.a11y-dyslexia h3, body.a11y-dyslexia h4, body.a11y-dyslexia label { font-family: 'Lexend', sans-serif !important; }
+body.a11y-large-targets button, body.a11y-large-targets .btn-primary, body.a11y-large-targets .btn-secondary, body.a11y-large-targets .btn-ghost, body.a11y-large-targets .pill { min-height: 48px !important; padding-top: 12px !important; padding-bottom: 12px !important; padding-left: 18px !important; padding-right: 18px !important; font-size: 14px !important; }
+body.a11y-large-targets input { min-height: 44px !important; font-size: 15px !important; }
+body.a11y-reduce-motion *, body.a11y-reduce-motion *::before, body.a11y-reduce-motion *::after {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001s !important;
+}
+/* High contrast — strict black + white + bright red */
+body.a11y-high-contrast { background: #000 !important; color: #fff !important; }
+body.a11y-high-contrast .surface, body.a11y-high-contrast .kpi-tile, body.a11y-high-contrast aside, body.a11y-high-contrast header { background: #0a0a0a !important; border-color: #fff !important; border-width: 1.5px !important; }
+body.a11y-high-contrast .text-zinc-400, body.a11y-high-contrast .text-zinc-500, body.a11y-high-contrast .text-zinc-600, body.a11y-high-contrast .text-zinc-700 { color: #e4e4e7 !important; }
+body.a11y-high-contrast [class*="text-[#ef233c]"], body.a11y-high-contrast .text-\[\#ef233c\] { color: #ff5566 !important; }
+body.a11y-high-contrast .btn-primary { background: #ff3344 !important; color: #fff !important; }
+/* Sunlight mode — maximum legibility for outdoor screens, all gradients off */
+body.a11y-sunlight { background: #000 !important; color: #fff !important; }
+body.a11y-sunlight .fixed.inset-0.z-0, body.a11y-sunlight .gradient-blur { display: none !important; }
+body.a11y-sunlight .surface, body.a11y-sunlight .kpi-tile, body.a11y-sunlight aside, body.a11y-sunlight header, body.a11y-sunlight nav { background: #000 !important; border: 2px solid #fff !important; backdrop-filter: none !important; }
+body.a11y-sunlight .text-zinc-400, body.a11y-sunlight .text-zinc-500, body.a11y-sunlight .text-zinc-600 { color: #f4f4f5 !important; }
+body.a11y-sunlight .btn-primary { background: #ff0000 !important; color: #fff !important; border: 2px solid #fff !important; }
+body.a11y-sunlight .pill-status { border-width: 2px !important; font-weight: 700 !important; }
+body.a11y-sunlight .shiny-cta-sm { animation: none !important; background: #000 !important; border: 2px solid #ff0000 !important; }
+/* Magnifier: hovering text-rich elements scales them 1.4× */
+body.a11y-magnifier td:hover, body.a11y-magnifier .kpi-tile:hover, body.a11y-magnifier h1:hover, body.a11y-magnifier h2:hover, body.a11y-magnifier h3:hover, body.a11y-magnifier h4:hover, body.a11y-magnifier label:hover, body.a11y-magnifier .nav-item:hover {
+    transform: scale(1.35);
+    transform-origin: left center;
+    position: relative;
+    z-index: 1000;
+    background: rgba(0,0,0,0.97) !important;
+    border: 2px solid #ef233c !important;
+    border-radius: 8px;
+    padding: 8px 12px !important;
+    box-shadow: 0 0 40px rgba(239, 35, 60, 0.5);
+    transition: transform 0.15s ease-out;
+}
+/* Reading guide */
+.reading-guide {
+    position: fixed; left: 0; right: 0; height: 38px;
+    background: rgba(239, 35, 60, 0.10);
+    border-top: 2px solid #ef233c;
+    border-bottom: 2px solid #ef233c;
+    pointer-events: none; z-index: 9990;
+    display: none;
+    box-shadow: 0 0 24px rgba(239, 35, 60, 0.3);
+}
+body.a11y-reading-guide .reading-guide { display: block; }
+
+/* ----- Floating button + panel ----- */
+.a11y-fab {
+    position: fixed; bottom: 22px; right: 22px; z-index: 10001;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: #ef233c; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; box-shadow: 0 10px 32px rgba(239, 35, 60, 0.45);
+    border: 2px solid rgba(255,255,255,0.85);
+    font-size: 26px;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.a11y-fab:hover { transform: scale(1.08); box-shadow: 0 14px 40px rgba(239, 35, 60, 0.6); }
+.a11y-fab:active { transform: scale(0.95); }
+.a11y-fab iconify-icon { color: #fff; }
+
+.a11y-panel {
+    position: fixed; bottom: 92px; right: 22px; z-index: 10000;
+    width: 360px; max-height: 84vh; overflow-y: auto;
+    background: rgba(10, 10, 10, 0.97); border: 1px solid rgba(239, 35, 60, 0.5);
+    border-radius: 14px; padding: 20px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 40px rgba(239,35,60,0.15);
+    transform: translateY(20px); opacity: 0; pointer-events: none;
+    transition: all 0.25s ease-out;
+    backdrop-filter: blur(20px);
+    font-family: 'Atkinson Hyperlegible', sans-serif;
+}
+.a11y-panel.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+.a11y-panel h3 { color: #fff; font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 17px; margin: 0; }
+.a11y-panel .subtitle { color: #a1a1aa; font-size: 11.5px; margin-top: 3px; margin-bottom: 8px; line-height: 1.4; }
+.a11y-panel .section { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; margin-top: 14px; }
+.a11y-panel .section-label { font-size: 10px; font-weight: 700; color: #ef233c; text-transform: uppercase; letter-spacing: 0.11em; margin-bottom: 10px; }
+.a11y-btn-group { display: flex; gap: 6px; }
+.a11y-btn { flex: 1; padding: 9px 6px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #d4d4d8; border-radius: 7px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+.a11y-btn:hover { border-color: rgba(239, 35, 60, 0.5); color: #fff; }
+.a11y-btn.active { background: #ef233c; color: #fff; border-color: #ef233c; box-shadow: 0 0 16px -4px rgba(239,35,60,0.6); }
+.a11y-toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; cursor: pointer; gap: 12px; }
+.a11y-toggle-row:hover .a11y-row-label { color: #fff; }
+.a11y-row-label { color: #e4e4e7; font-size: 13.5px; font-weight: 500; transition: color 0.15s; }
+.a11y-row-desc { display: block; color: #71717a; font-size: 11px; margin-top: 2px; font-weight: 400; }
+.a11y-switch { width: 38px; height: 22px; background: rgba(255,255,255,0.15); border-radius: 9999px; position: relative; transition: all 0.2s; flex-shrink: 0; }
+.a11y-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: all 0.2s; }
+.a11y-toggle-row.on .a11y-switch { background: #ef233c; }
+.a11y-toggle-row.on .a11y-switch::after { left: 18px; }
+.a11y-tool-btn { width: 100%; padding: 11px; background: rgba(239,35,60,0.1); border: 1px solid rgba(239,35,60,0.3); color: #ffaeb7; border-radius: 8px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.a11y-tool-btn:hover { background: rgba(239,35,60,0.2); color: #fff; border-color: #ef233c; }
+.a11y-reset-btn { color: #f87171 !important; background: rgba(239,68,68,0.05) !important; border-color: rgba(239,68,68,0.3) !important; }
+.a11y-kbd { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #71717a; padding: 2px 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; }
+</style>
+
+<button class="a11y-fab" id="a11y-fab" title="Accessibility settings (Alt+A)" aria-label="Open accessibility settings">
+    <iconify-icon icon="lucide:accessibility"></iconify-icon>
+</button>
+
+<div class="a11y-panel" id="a11y-panel" role="dialog" aria-label="Accessibility settings">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap: 8px;">
+        <div>
+            <h3>Accessibility</h3>
+            <div class="subtitle">Tune the UI to your eyes &amp; conditions.<br/>Saved on this device.</div>
+        </div>
+        <span class="a11y-kbd">Alt+A</span>
+    </div>
+
+    <div class="section">
+        <div class="section-label">Text size</div>
+        <div class="a11y-btn-group">
+            <button class="a11y-btn" data-text="100">A</button>
+            <button class="a11y-btn" data-text="125">A+</button>
+            <button class="a11y-btn" data-text="150">A++</button>
+            <button class="a11y-btn" data-text="200">A+++</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-label">Line spacing</div>
+        <div class="a11y-btn-group">
+            <button class="a11y-btn" data-line="1">1×</button>
+            <button class="a11y-btn" data-line="1.5">1.5×</button>
+            <button class="a11y-btn" data-line="2">2×</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-label">Display modes</div>
+        <div class="a11y-toggle-row" data-toggle="a11y-high-contrast">
+            <div><div class="a11y-row-label">High contrast</div><div class="a11y-row-desc">Pure black + white + bright red. For low-vision or low-light.</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+        <div class="a11y-toggle-row" data-toggle="a11y-sunlight">
+            <div><div class="a11y-row-label">Sunlight mode</div><div class="a11y-row-desc">Maximum contrast, no gradients. For outdoor screens.</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+        <div class="a11y-toggle-row" data-toggle="a11y-dyslexia">
+            <div><div class="a11y-row-label">Dyslexia-friendly font</div><div class="a11y-row-desc">Switches to Lexend (reading-fluency optimized).</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+        <div class="a11y-toggle-row" data-toggle="a11y-large-targets">
+            <div><div class="a11y-row-label">Large click targets</div><div class="a11y-row-desc">48-px+ buttons for gloves or imprecise touch.</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+        <div class="a11y-toggle-row" data-toggle="a11y-reduce-motion">
+            <div><div class="a11y-row-label">Reduce motion</div><div class="a11y-row-desc">Disable parallax &amp; animations.</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-label">Reading tools</div>
+        <div class="a11y-toggle-row" data-toggle="a11y-magnifier">
+            <div><div class="a11y-row-label">Magnifier (hover-zoom)</div><div class="a11y-row-desc">Hover any cell, label, or heading to scale it 1.35×.</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+        <div class="a11y-toggle-row" data-toggle="a11y-reading-guide">
+            <div><div class="a11y-row-label">Reading guide</div><div class="a11y-row-desc">Horizontal band follows your cursor.</div></div>
+            <div class="a11y-switch"></div>
+        </div>
+        <button class="a11y-tool-btn" id="a11y-read">
+            <iconify-icon icon="lucide:volume-2"></iconify-icon>
+            Read selection aloud
+        </button>
+        <div class="a11y-row-desc" style="margin-top: 6px; padding-left: 4px;">Highlight any text on the page, then click. Uses your browser's voice.</div>
+    </div>
+
+    <div class="section">
+        <button class="a11y-tool-btn a11y-reset-btn" id="a11y-reset">
+            <iconify-icon icon="lucide:rotate-ccw"></iconify-icon>
+            Reset all settings
+        </button>
+    </div>
+</div>
+
+<div class="reading-guide" id="reading-guide"></div>
+
+<script>
+(function(){
+    const body = document.body;
+    const KEY = 'siteops_a11y_v1';
+    const DEFAULT = {
+        text: '100', line: '1',
+        toggles: {
+            'a11y-high-contrast': false, 'a11y-sunlight': false,
+            'a11y-dyslexia': false, 'a11y-large-targets': false,
+            'a11y-reduce-motion': false, 'a11y-magnifier': false,
+            'a11y-reading-guide': false
+        }
+    };
+    let state;
+    try { state = Object.assign({}, DEFAULT, JSON.parse(localStorage.getItem(KEY) || '{}')); state.toggles = Object.assign({}, DEFAULT.toggles, state.toggles || {}); }
+    catch(e) { state = JSON.parse(JSON.stringify(DEFAULT)); }
+
+    function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e) {} }
+
+    function applyState() {
+        body.classList.remove('a11y-text-125','a11y-text-150','a11y-text-200');
+        if (state.text === '125') body.classList.add('a11y-text-125');
+        else if (state.text === '150') body.classList.add('a11y-text-150');
+        else if (state.text === '200') body.classList.add('a11y-text-200');
+
+        body.classList.remove('a11y-line-1-5','a11y-line-2');
+        if (state.line === '1.5') body.classList.add('a11y-line-1-5');
+        else if (state.line === '2')   body.classList.add('a11y-line-2');
+
+        Object.keys(state.toggles).forEach(cls => {
+            body.classList.toggle(cls, !!state.toggles[cls]);
+        });
+
+        document.querySelectorAll('.a11y-btn[data-text]').forEach(b => b.classList.toggle('active', b.dataset.text === state.text));
+        document.querySelectorAll('.a11y-btn[data-line]').forEach(b => b.classList.toggle('active', b.dataset.line === state.line));
+        document.querySelectorAll('.a11y-toggle-row').forEach(r => r.classList.toggle('on', !!state.toggles[r.dataset.toggle]));
+    }
+
+    document.getElementById('a11y-fab').addEventListener('click', () => {
+        document.getElementById('a11y-panel').classList.toggle('open');
+    });
+    document.addEventListener('keydown', e => {
+        if (e.altKey && (e.key === 'a' || e.key === 'A')) {
+            e.preventDefault();
+            document.getElementById('a11y-panel').classList.toggle('open');
+        }
+        if (e.key === 'Escape') document.getElementById('a11y-panel').classList.remove('open');
+    });
+
+    document.querySelectorAll('.a11y-btn[data-text]').forEach(btn => {
+        btn.addEventListener('click', () => { state.text = btn.dataset.text; save(); applyState(); });
+    });
+    document.querySelectorAll('.a11y-btn[data-line]').forEach(btn => {
+        btn.addEventListener('click', () => { state.line = btn.dataset.line; save(); applyState(); });
+    });
+    document.querySelectorAll('.a11y-toggle-row').forEach(row => {
+        row.addEventListener('click', () => {
+            const k = row.dataset.toggle;
+            state.toggles[k] = !state.toggles[k];
+            // High-contrast and sunlight are mutually exclusive
+            if (k === 'a11y-high-contrast' && state.toggles[k]) state.toggles['a11y-sunlight'] = false;
+            if (k === 'a11y-sunlight' && state.toggles[k]) state.toggles['a11y-high-contrast'] = false;
+            save(); applyState();
+        });
+    });
+    document.getElementById('a11y-reset').addEventListener('click', () => {
+        state = JSON.parse(JSON.stringify(DEFAULT));
+        save(); applyState();
+    });
+    document.getElementById('a11y-read').addEventListener('click', () => {
+        const sel = (window.getSelection && window.getSelection().toString().trim()) || '';
+        const text = sel || 'Please highlight any text on the page first, then tap this button to hear it read aloud.';
+        try {
+            if (!('speechSynthesis' in window)) throw new Error('unsupported');
+            const utter = new SpeechSynthesisUtterance(text);
+            utter.rate = 0.95; utter.pitch = 1;
+            speechSynthesis.cancel();
+            speechSynthesis.speak(utter);
+        } catch (e) {
+            alert('Read-aloud is not supported in this browser. Try Chrome, Edge, or Safari.');
+        }
+    });
+
+    const guide = document.getElementById('reading-guide');
+    document.addEventListener('mousemove', e => {
+        if (body.classList.contains('a11y-reading-guide')) {
+            guide.style.top = (e.clientY - 19) + 'px';
+        }
+    });
+
+    applyState();
+})();
+</script>
+
+</body>
+</html>

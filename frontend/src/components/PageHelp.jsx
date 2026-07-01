@@ -36,7 +36,7 @@ export default function PageHelp({ title, children, side = "bottom" }) {
           /* small, inline, low-chrome — sits next to the page title
              without competing with it. Hover state lifts to a slightly
              stronger fill so users discover it's clickable. */
-          className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors align-baseline"
+          className="ml-1 inline-flex h-4 w-4 max-md:min-h-[32px] max-md:min-w-[32px] items-center justify-center rounded-full text-muted-foreground/70 hover:text-foreground hover:bg-muted transition-colors align-baseline"
         >
           <HelpCircle className="h-3.5 w-3.5" strokeWidth={1.8} />
         </button>

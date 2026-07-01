@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SiteOps — Sidebar v5b · two-tier icon rail</title>
+<style>
+  /* =====================================================================
+     SIDEBAR v5b — TWO-TIER ICON RAIL
+     Pattern: VSCode activity-bar + Discord server list + Slack workspaces.
+     Far-left rail (54px) holds ONE icon per section, color-coded.
+     Right content column (220px) shows ONLY the active section's items.
+     Result: no scrolling through 35+ items — pick a section first, then
+     pick the item. Cuts cognitive load in half and looks like a real
+     desktop app, not a long list.
+     ===================================================================== */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0c0c0f; color: #e8e8eb;
+    padding: 28px 24px; min-height: 100vh;
+  }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .sub {
+    color: #8e8e98; font-size: 13px; margin: 0 0 22px; max-width: 920px;
+    line-height: 1.55;
+  }
+
+  .compare { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; }
+  .panel {
+    background: #17171c; border: 1px solid #28282f; border-radius: 12px;
+    overflow: hidden;
+  }
+  .panel-title {
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.05em;
+    text-transform: uppercase; padding: 14px 18px 6px; color: #b0b0b8;
+  }
+  .panel-sub { padding: 0 18px 14px; color: #7a7a82; font-size: 11.5px; }
+  .frame {
+    background: #f5f6f8; height: 820px; display: flex; overflow: hidden;
+  }
+  .frame.dark { background: #0a0a0c; }
+
+  /* ============================================================
+     RAIL — far-left, 54px wide, icon-only, color-coded
+     ============================================================ */
+  .rail {
+    width: 54px; flex: 0 0 54px;
+    background: #0a0a0d;
+    border-right: 1px solid rgba(255,255,255,0.04);
+    display: flex; flex-direction: column;
+    padding: 10px 0;
+  }
+  .rail-logo {
+    width: 38px; height: 38px;
+    margin: 0 auto 8px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #10b981, #34d399);
+    display: grid; place-items: center;
+    box-shadow: 0 4px 14px -3px rgba(16, 185, 129, 0.55),
+                inset 0 1px 0 rgba(255,255,255,0.2);
+  }
+  .rail-logo svg { width: 16px; height: 16px; color: white; }
+  .rail-divider {
+    width: 24px; height: 1px; margin: 4px auto 6px;
+    background: rgba(255,255,255,0.08);
+  }
+  .rail-icon {
+    width: 38px; height: 38px;
+    margin: 4px auto;
+    border-radius: 9px;
+    border: 0; background: transparent;
+    color: rgba(255,255,255,0.5);
+    display: grid; place-items: center;
+    cursor: pointer; position: relative;
+    transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .rail-icon:hover {
+    background: rgba(255,255,255,0.08);
+    color: white; border-radius: 12px;
+  }
+  .rail-icon svg { width: 17px; height: 17px; transition: transform 200ms; }
+  .rail-icon:hover svg { transform: scale(1.08); }
+  .rail-icon.active {
+    background: rgba(255,255,255,0.06);
+    border-radius: 12px;
+  }
+  .rail-icon.active svg { transform: scale(1.05); }
+  /* Active-icon left rail — color-coded by section */
+  .rail-icon.active::before {
+    content: ""; position: absolute;
+    left: -10px; top: 6px; bottom: 6px;
+    width: 4px; border-radius: 0 4px 4px 0;
+  }
+  .rail-icon[data-section="overview"].active     { color: #818cf8; }
+  .rail-icon[data-section="overview"].active::before  { background: #818cf8; }
+  .rail-icon[data-section="daily"].active        { color: #34d399; }
+  .rail-icon[data-section="daily"].active::before     { background: #34d399; }
+  .rail-icon[data-section="planning"].active     { color: #fbbf24; }
+  .rail-icon[data-section="planning"].active::before  { background: #fbbf24; }
+  .rail-icon[data-section="procurement"].active  { color: #60a5fa; }
+  .rail-icon[data-section="procurement"].active::before { background: #60a5fa; }
+  .rail-icon[data-section="review"].active       { color: #a78bfa; }
+  .rail-icon[data-section="review"].active::before    { background: #a78bfa; }
+  .rail-icon[data-section="resources"].active    { color: #2dd4bf; }
+  .rail-icon[data-section="resources"].active::before { background: #2dd4bf; }
+  .rail-icon[data-section="system"].active       { color: #94a3b8; }
+  .rail-icon[data-section="system"].active::before    { background: #94a3b8; }
+  /* Count notification dot — for sections with pending items */
+  .rail-icon-dot {
+    position: absolute; top: 3px; right: 3px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #f97316; border: 2px solid #0a0a0d;
+  }
+  /* Tooltip on hover */
+  .rail-icon::after {
+    content: attr(data-tip);
+    position: absolute; left: calc(100% + 14px);
+    top: 50%; transform: translateY(-50%);
+    padding: 4px 8px;
+    background: #1a1a1f;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 6px;
+    font-size: 11.5px; font-weight: 500;
+    color: white; white-space: nowrap;
+    opacity: 0; pointer-events: none;
+    transition: opacity 150ms;
+    z-index: 100;
+  }
+  .rail-icon:hover::after { opacity: 1; }
+
+  .rail-spacer { flex: 1; }
+
+  /* ============================================================
+     CONTENT COLUMN — 220px, shows active section's items
+     ============================================================ */
+  .content-col {
+    width: 230px; flex: 0 0 230px;
+    background: #131318;
+    border-right: 1px solid rgba(255,255,255,0.05);
+    display: flex; flex-direction: column;
+    overflow-y: auto;
+  }
+  .col-header {
+    padding: 16px 16px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .col-section-tag {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 9px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 4px;
+    margin-bottom: 8px;
+  }
+  .col-section-tag[data-section="overview"]    { background: rgba(129,140,248,0.12); color: #a5b4fc; }
+  .col-section-tag[data-section="daily"]       { background: rgba(52,211,153,0.14);  color: #6ee7b7; }
+  .col-section-tag[data-section="planning"]    { background: rgba(251,191,36,0.14);  color: #fcd34d; }
+  .col-section-tag[data-section="procurement"] { background: rgba(96,165,250,0.14);  color: #93c5fd; }
+  .col-section-tag[data-section="review"]      { background: rgba(167,139,250,0.14); color: #c4b5fd; }
+  .col-section-tag[data-section="resources"]   { background: rgba(45,212,191,0.14);  color: #5eead4; }
+  .col-section-tag[data-section="system"]      { background: rgba(148,163,184,0.14); color: #cbd5e1; }
+  .col-section-tag-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .col-title {
+    font-size: 16px; font-weight: 700;
+    color: white; letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+  .col-subtitle {
+    font-size: 11px; color: rgba(255,255,255,0.5);
+    margin-top: 3px;
+  }
+  .col-search {
+    margin: 10px 0 4px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 9px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 6px;
+  }
+  .col-search svg { width: 11px; height: 11px; color: rgba(255,255,255,0.4); }
+  .col-search input {
+    flex: 1; background: transparent; border: 0; outline: none;
+    font-size: 11px; color: white; font-family: inherit;
+  }
+  .col-search input::placeholder { color: rgba(255,255,255,0.35); }
+
+  .col-items { padding: 8px 8px 12px; display: flex; flex-direction: column; gap: 1px; }
+  .col-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 10px; border-radius: 5px;
+    color: rgba(255,255,255,0.78);
+    font-size: 12.5px; font-weight: 500;
+    cursor: pointer;
+    transition: all 100ms;
+  }
+  .col-item:hover {
+    background: rgba(255,255,255,0.05); color: white;
+  }
+  .col-item svg { width: 13px; height: 13px; opacity: 0.6; flex: 0 0 auto; }
+  .col-item:hover svg { opacity: 1; }
+  .col-item.active {
+    background: rgba(255,255,255,0.07); color: white;
+  }
+  .col-item.active svg { opacity: 1; color: var(--section-color, white); }
+  .col-item-label { flex: 1; }
+  .col-item-kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; font-weight: 500;
+    padding: 1px 4px; border-radius: 3px;
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.5);
+  }
+  .col-item-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px; font-weight: 600;
+    min-width: 16px; height: 16px; padding: 0 5px;
+    border-radius: 8px;
+    display: grid; place-items: center;
+  }
+  .col-item-badge.emerald { background: rgba(16,185,129,0.20); color: #6ee7b7; }
+  .col-item-badge.amber   { background: rgba(245,158,11,0.20); color: #fcd34d; }
+  .col-item-badge.rose    { background: rgba(239,68,68,0.20);  color: #fca5a5; }
+  .col-item-badge.blue    { background: rgba(59,130,246,0.20); color: #93c5fd; }
+  .col-item-badge.slate   { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.6); }
+
+  /* Sub-items (nested) */
+  .col-item.nested { padding-left: 28px; font-size: 11.5px; color: rgba(255,255,255,0.65); }
+
+  /* Content rendering — only one section visible at a time */
+  .section-content { display: none; }
+  .section-content.active { display: block; }
+
+  /* Bottom of rail — user avatar + ⌘K trigger */
+  .rail-cmdk {
+    width: 38px; height: 38px;
+    margin: 4px auto;
+    border-radius: 9px;
+    border: 0;
+    background: rgba(255,255,255,0.04);
+    color: rgba(255,255,255,0.5);
+    display: grid; place-items: center;
+    cursor: pointer;
+    transition: all 150ms;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px; font-weight: 600;
+  }
+  .rail-cmdk:hover {
+    background: rgba(16,185,129,0.14);
+    color: white;
+  }
+  .rail-avatar {
+    width: 34px; height: 34px;
+    margin: 6px auto 0;
+    border-radius: 50%;
+    background: rgba(16,185,129,0.15);
+    border: 1.5px solid rgba(16,185,129,0.40);
+    color: #34d399;
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 700;
+    cursor: pointer;
+    transition: all 150ms;
+  }
+  .rail-avatar:hover {
+    border-color: #34d399;
+    box-shadow: 0 0 0 3px rgba(16,185,129,0.20);
+  }
+
+  /* Right side — placeholder content */
+  .frame-content { flex: 1; padding: 24px 28px; }
+  .frame-content-head { font-size: 18px; font-weight: 700; color: #181d1f; margin-bottom: 4px; }
+  .frame-content-sub  { font-size: 12px; color: #6b7280; }
+  .frame.dark .frame-content-head { color: #ececf0; }
+  .frame.dark .frame-content-sub  { color: #8e8e98; }
+
+  .insp {
+    margin-top: 26px;
+    padding: 16px 18px;
+    background: #17171c;
+    border: 1px solid #28282f;
+    border-radius: 10px;
+    font-size: 12px; line-height: 1.7;
+    color: #c0c0c8;
+  }
+  .insp h3 { margin: 0 0 8px; font-size: 13px; color: white; }
+  .insp b { color: white; font-weight: 600; }
+  .insp ul { margin: 6px 0 0 18px; padding: 0; }
+  .insp li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <h1>Sidebar v5b · two-tier icon rail (VSCode / Discord / Linear)</h1>
+  <p class="sub">Far-left rail picks the <b>section</b>, content column shows the <b>items</b>. Active section's accent color paints the rail indicator + section tag. Click any rail icon to swap the content column — try it.</p>
+
+  <div class="compare">
+    <!-- ============= LIGHT THEME ============= -->
+    <div class="panel">
+      <div class="panel-title">Light theme</div>
+      <div class="panel-sub">Rail + column stay dark in both themes (Linear/Discord pattern). Try clicking different rail icons.</div>
+      <div class="frame">
+        <!-- ===== RAIL (left, 54px) ===== -->
+        <aside class="rail">
+          <div class="rail-logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+          </div>
+          <div class="rail-divider"></div>
+
+          <button class="rail-icon active" data-section="overview" data-tip="Overview" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          </button>
+          <button class="rail-icon" data-section="daily" data-tip="Daily Operations" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 11h2v8H9zm4-3h2v11h-2zm4-3h2v14h-2z"/></svg>
+            <span class="rail-icon-dot"></span>
+          </button>
+          <button class="rail-icon" data-section="planning" data-tip="Planning &amp; Tracking" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </button>
+          <button class="rail-icon" data-section="procurement" data-tip="Procurement &amp; Docs" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span class="rail-icon-dot"></span>
+          </button>
+          <button class="rail-icon" data-section="review" data-tip="Review &amp; Actions" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+          </button>
+          <button class="rail-icon" data-section="resources" data-tip="Resources" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>
+          </button>
+          <button class="rail-icon" data-section="system" data-tip="System" onclick="pick(this,'L')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33"/></svg>
+          </button>
+
+          <div class="rail-spacer"></div>
+
+          <button class="rail-cmdk" data-tip="Command palette (⌘K)">⌘K</button>
+          <button class="rail-avatar" data-tip="Abhi Deshpande">AD</button>
+        </aside>
+
+        <!-- ===== CONTENT COLUMN (active section's items) ===== -->
+        <aside class="content-col" id="col-L">
+          <!-- OVERVIEW -->
+          <div class="section-content active" data-section="overview">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="overview"><span class="col-section-tag-dot"></span>OVERVIEW</div>
+              <div class="col-title">Overview</div>
+              <div class="col-subtitle">Top-level project visibility</div>
+              <div class="col-search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                <input placeholder="Filter overview…">
+              </div>
+            </div>
+            <div class="col-items">
+              <div class="col-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span class="col-item-label">Dashboard</span><span class="col-item-kbd">⌘1</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg><span class="col-item-label">Getting started</span><span class="col-item-badge slate">3/12</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="col-item-label">Projects</span><span class="col-item-kbd">⌘2</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/></svg><span class="col-item-label">Vendors</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/></svg><span class="col-item-label">Master doc</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="col-item-label">Project access</span></div>
+            </div>
+          </div>
+
+          <!-- DAILY OPERATIONS -->
+          <div class="section-content" data-section="daily">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="daily"><span class="col-section-tag-dot"></span>DAILY OPERATIONS</div>
+              <div class="col-title">Daily ops</div>
+              <div class="col-subtitle">Field actions logged today</div>
+              <div class="col-search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+                <input placeholder="Filter daily ops…">
+              </div>
+            </div>
+            <div class="col-items">
+              <div class="col-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span class="col-item-label">Daily reports</span><span class="col-item-kbd">⌘3</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="4"/></svg><span class="col-item-label">Photos</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="4"/></svg><span class="col-item-label">Photo tray</span><span class="col-item-badge slate">7</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg><span class="col-item-label">Delays</span><span class="col-item-badge amber">4</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="col-item-label">Safety</span><span class="col-item-badge rose">2</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="4" rx="1"/></svg><span class="col-item-label">QC issues</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8L3 21l1.9-5.7"/></svg><span class="col-item-label">Coordination</span><span class="col-item-badge slate">12</span></div>
+            </div>
+          </div>
+
+          <!-- PLANNING -->
+          <div class="section-content" data-section="planning">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="planning"><span class="col-section-tag-dot"></span>PLANNING &amp; TRACKING</div>
+              <div class="col-title">Planning &amp; tracking</div>
+              <div class="col-subtitle">Schedule, weekly cadence, locations</div>
+              <div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter planning…"></div>
+            </div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg><span class="col-item-label">Tasks</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="col-item-label">Look ahead</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/></svg><span class="col-item-label">Schedule updates</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">Weekly reports</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="col-item-label">Calendar reconciliation</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg><span class="col-item-label">Locations</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg><span class="col-item-label">Polygon editor</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8"/></svg><span class="col-item-label">Spatial 3D</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3"/></svg><span class="col-item-label">Productivity</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="col-item-label">Resource leveling</span></div>
+            </div>
+          </div>
+
+          <!-- PROCUREMENT -->
+          <div class="section-content" data-section="procurement">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="procurement"><span class="col-section-tag-dot"></span>PROCUREMENT &amp; DOCS</div>
+              <div class="col-title">Procurement &amp; docs</div>
+              <div class="col-subtitle">RFIs, submittals, deliveries, drawings</div>
+              <div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter procurement…"></div>
+            </div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8L3 21l1.9-5.7"/></svg><span class="col-item-label">RFIs</span><span class="col-item-badge amber">5</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/></svg><span class="col-item-label">Deliveries</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">Drawings</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/></svg><span class="col-item-label">Specifications</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78L12 21.23l7.78-7.78a5.5 5.5 0 0 0 0-7.78z"/></svg><span class="col-item-label">Submittals</span><span class="col-item-badge blue">8</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/></svg><span class="col-item-label">Change orders</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span class="col-item-label">Aging</span><span class="col-item-badge rose">3</span></div>
+            </div>
+          </div>
+
+          <!-- REVIEW -->
+          <div class="section-content" data-section="review">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="review"><span class="col-section-tag-dot"></span>REVIEW &amp; ACTIONS</div>
+              <div class="col-title">Review &amp; actions</div>
+              <div class="col-subtitle">Approvals, recovery, TIA</div>
+              <div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter review…"></div>
+            </div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg><span class="col-item-label">Approvals</span><span class="col-item-badge emerald">2</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6"/></svg><span class="col-item-label">Field issues</span><span class="col-item-badge rose">11</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3"/></svg><span class="col-item-label">Cascade</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg><span class="col-item-label">Recovery</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">TIA generator</span></div>
+            </div>
+          </div>
+
+          <!-- RESOURCES -->
+          <div class="section-content" data-section="resources">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="resources"><span class="col-section-tag-dot"></span>RESOURCES</div>
+              <div class="col-title">Resources</div>
+              <div class="col-subtitle">Crews, equipment, people</div>
+              <div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter resources…"></div>
+            </div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="col-item-label">Crews</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6"/></svg><span class="col-item-label">Equipment</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20s-1-1-4-1-4 1-4 1V8s1-1 4-1 4 1 4 1z"/></svg><span class="col-item-label">People</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span class="col-item-label">Certifications</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="col-item-label">Availability</span></div>
+            </div>
+          </div>
+
+          <!-- SYSTEM -->
+          <div class="section-content" data-section="system">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="system"><span class="col-section-tag-dot"></span>SYSTEM</div>
+              <div class="col-title">System</div>
+              <div class="col-subtitle">Admin, governance, settings</div>
+              <div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter system…"></div>
+            </div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="col-item-label">Team</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">Imports</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/></svg><span class="col-item-label">Schedule changes</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg><span class="col-item-label">AI agents</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8"/></svg><span class="col-item-label">Knowledge base</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/></svg><span class="col-item-label">Marketplace</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg><span class="col-item-label">Voice PINs</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="col-item-label">Compliance</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg><span class="col-item-label">Audit log</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg><span class="col-item-label">Edit requests</span><span class="col-item-badge blue">4</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg><span class="col-item-label">Settings</span></div>
+            </div>
+          </div>
+        </aside>
+
+        <div class="frame-content">
+          <div class="frame-content-head">Dashboard</div>
+          <div class="frame-content-sub">Active project: MSU · VA Medical Centre Bronx</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============= DARK THEME (rail + col identical) ============= -->
+    <div class="panel">
+      <div class="panel-title">Dark theme</div>
+      <div class="panel-sub">Rail + content column unchanged. Try clicking the section icons here too.</div>
+      <div class="frame dark">
+        <aside class="rail">
+          <div class="rail-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 12h18M3 6h18M3 18h18"/></svg></div>
+          <div class="rail-divider"></div>
+          <button class="rail-icon active" data-section="overview" data-tip="Overview" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
+          <button class="rail-icon" data-section="daily" data-tip="Daily Operations" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span class="rail-icon-dot"></span></button>
+          <button class="rail-icon" data-section="planning" data-tip="Planning &amp; Tracking" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>
+          <button class="rail-icon" data-section="procurement" data-tip="Procurement &amp; Docs" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="rail-icon-dot"></span></button>
+          <button class="rail-icon" data-section="review" data-tip="Review &amp; Actions" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg></button>
+          <button class="rail-icon" data-section="resources" data-tip="Resources" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg></button>
+          <button class="rail-icon" data-section="system" data-tip="System" onclick="pick(this,'R')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg></button>
+          <div class="rail-spacer"></div>
+          <button class="rail-cmdk" data-tip="Command palette (⌘K)">⌘K</button>
+          <button class="rail-avatar" data-tip="Abhi Deshpande">AD</button>
+        </aside>
+        <aside class="content-col" id="col-R">
+          <div class="section-content active" data-section="overview">
+            <div class="col-header">
+              <div class="col-section-tag" data-section="overview"><span class="col-section-tag-dot"></span>OVERVIEW</div>
+              <div class="col-title">Overview</div>
+              <div class="col-subtitle">Top-level project visibility</div>
+              <div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter overview…"></div>
+            </div>
+            <div class="col-items">
+              <div class="col-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span class="col-item-label">Dashboard</span><span class="col-item-kbd">⌘1</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/></svg><span class="col-item-label">Getting started</span><span class="col-item-badge slate">3/12</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="col-item-label">Projects</span><span class="col-item-kbd">⌘2</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/></svg><span class="col-item-label">Vendors</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 21V7l8-4v18M19 21V11l-6-4"/></svg><span class="col-item-label">Master doc</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="col-item-label">Project access</span></div>
+            </div>
+          </div>
+          <div class="section-content" data-section="daily">
+            <div class="col-header"><div class="col-section-tag" data-section="daily"><span class="col-section-tag-dot"></span>DAILY OPERATIONS</div><div class="col-title">Daily ops</div><div class="col-subtitle">Field actions logged today</div><div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><input placeholder="Filter daily ops…"></div></div>
+            <div class="col-items">
+              <div class="col-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span class="col-item-label">Daily reports</span><span class="col-item-kbd">⌘3</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="4"/></svg><span class="col-item-label">Photos</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="4"/></svg><span class="col-item-label">Photo tray</span><span class="col-item-badge slate">7</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg><span class="col-item-label">Delays</span><span class="col-item-badge amber">4</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="col-item-label">Safety</span><span class="col-item-badge rose">2</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="4" rx="1"/></svg><span class="col-item-label">QC issues</span></div>
+              <div class="col-item nested"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5L3 21l1.9-5.7"/></svg><span class="col-item-label">Coordination</span><span class="col-item-badge slate">12</span></div>
+            </div>
+          </div>
+          <div class="section-content" data-section="planning">
+            <div class="col-header"><div class="col-section-tag" data-section="planning"><span class="col-section-tag-dot"></span>PLANNING &amp; TRACKING</div><div class="col-title">Planning &amp; tracking</div><div class="col-subtitle">Schedule, weekly cadence, locations</div><div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/></svg><input placeholder="Filter planning…"></div></div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg><span class="col-item-label">Tasks</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="col-item-label">Look ahead</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/></svg><span class="col-item-label">Schedule updates</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">Weekly reports</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="col-item-label">Calendar reconciliation</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg><span class="col-item-label">Locations</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg><span class="col-item-label">Polygon editor</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8"/></svg><span class="col-item-label">Spatial 3D</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3"/></svg><span class="col-item-label">Productivity</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="col-item-label">Resource leveling</span></div>
+            </div>
+          </div>
+          <div class="section-content" data-section="procurement">
+            <div class="col-header"><div class="col-section-tag" data-section="procurement"><span class="col-section-tag-dot"></span>PROCUREMENT &amp; DOCS</div><div class="col-title">Procurement &amp; docs</div><div class="col-subtitle">RFIs, submittals, deliveries, drawings</div><div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/></svg><input placeholder="Filter procurement…"></div></div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5L3 21"/></svg><span class="col-item-label">RFIs</span><span class="col-item-badge amber">5</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/></svg><span class="col-item-label">Deliveries</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">Drawings</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/></svg><span class="col-item-label">Specifications</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67"/></svg><span class="col-item-label">Submittals</span><span class="col-item-badge blue">8</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/></svg><span class="col-item-label">Change orders</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg><span class="col-item-label">Aging</span><span class="col-item-badge rose">3</span></div>
+            </div>
+          </div>
+          <div class="section-content" data-section="review">
+            <div class="col-header"><div class="col-section-tag" data-section="review"><span class="col-section-tag-dot"></span>REVIEW &amp; ACTIONS</div><div class="col-title">Review &amp; actions</div><div class="col-subtitle">Approvals, recovery, TIA</div><div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/></svg><input placeholder="Filter review…"></div></div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg><span class="col-item-label">Approvals</span><span class="col-item-badge emerald">2</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6"/></svg><span class="col-item-label">Field issues</span><span class="col-item-badge rose">11</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3"/></svg><span class="col-item-label">Cascade</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg><span class="col-item-label">Recovery</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">TIA generator</span></div>
+            </div>
+          </div>
+          <div class="section-content" data-section="resources">
+            <div class="col-header"><div class="col-section-tag" data-section="resources"><span class="col-section-tag-dot"></span>RESOURCES</div><div class="col-title">Resources</div><div class="col-subtitle">Crews, equipment, people</div><div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/></svg><input placeholder="Filter resources…"></div></div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="col-item-label">Crews</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3"/></svg><span class="col-item-label">Equipment</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20s-1-1-4-1-4 1-4 1V8s1-1 4-1 4 1 4 1z"/></svg><span class="col-item-label">People</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg><span class="col-item-label">Certifications</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span class="col-item-label">Availability</span></div>
+            </div>
+          </div>
+          <div class="section-content" data-section="system">
+            <div class="col-header"><div class="col-section-tag" data-section="system"><span class="col-section-tag-dot"></span>SYSTEM</div><div class="col-title">System</div><div class="col-subtitle">Admin, governance, settings</div><div class="col-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/></svg><input placeholder="Filter system…"></div></div>
+            <div class="col-items">
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="4"/></svg><span class="col-item-label">Team</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg><span class="col-item-label">Imports</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/></svg><span class="col-item-label">Schedule changes</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg><span class="col-item-label">AI agents</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8"/></svg><span class="col-item-label">Knowledge base</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/></svg><span class="col-item-label">Marketplace</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg><span class="col-item-label">Voice PINs</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="col-item-label">Compliance</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg><span class="col-item-label">Audit log</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg><span class="col-item-label">Edit requests</span><span class="col-item-badge blue">4</span></div>
+              <div class="col-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg><span class="col-item-label">Settings</span></div>
+            </div>
+          </div>
+        </aside>
+        <div class="frame-content">
+          <div class="frame-content-head">Dashboard</div>
+          <div class="frame-content-sub">Active project: MSU · VA Medical Centre Bronx</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="insp">
+    <h3>What makes this genuinely different from v5</h3>
+    <ul>
+      <li><b>Two columns, not one.</b> Far-left 54px <b>rail</b> = one icon per section. Right 230px <b>content column</b> = items for the active section ONLY. The other ~28 items don't exist on screen until you ask for them.</li>
+      <li><b>Section identity is spatial.</b> Color is reinforced in 3 places at once — the rail-icon highlight, the rail's slim accent stripe, and the content column's section tag. Your eye literally follows the same color from rail → column → header.</li>
+      <li><b>Hover tooltips on the rail.</b> While the icon-only rail is dense, hovering shows the label — like VSCode and Slack do. Power users learn the icons in a week and stop reading tooltips.</li>
+      <li><b>Per-section filter input</b> at the top of each content column. Type "delay" inside Daily Ops → only Delays remains. Different from a global ⌘K because it's scoped.</li>
+      <li><b>Notification dots on the rail</b> (the orange pip on Daily Ops + Procurement) — same as Discord/Slack unread indicators. Signal "this section has pending stuff" without opening it.</li>
+      <li><b>⌘K still at the bottom</b> of the rail for global navigation. Avatar at the very bottom (always reachable).</li>
+      <li><b>Visual rhythm changes.</b> v5 was a long flat list with section dividers. v5b feels like a desktop app (think iCal, Mac Mail, VSCode) — pick a "module," then work inside it.</li>
+      <li><b>Mobile-friendly base.</b> The 54px rail can collapse to a horizontal bottom bar on mobile; the content column slides over the page. Pattern translates 1:1 to phone.</li>
+    </ul>
+    <h3 style="margin-top:14px">Trade-offs (honest)</h3>
+    <ul>
+      <li>One extra click to change sections (vs. v5 where everything's already visible).</li>
+      <li>Slightly more horizontal real estate (54 + 230 = 284px vs. v5's 256px). +28px.</li>
+      <li>Users have to learn the rail icons. Tooltips help but the first day feels less obvious.</li>
+    </ul>
+  </div>
+
+  <script>
+    // Section switcher — both panels work independently
+    function pick(btn, side) {
+      const section = btn.dataset.section;
+      // Update rail active state in the SAME panel
+      btn.parentNode.querySelectorAll('.rail-icon').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // Swap content column in this side's column
+      const col = document.getElementById('col-' + side);
+      col.querySelectorAll('.section-content').forEach(s => s.classList.remove('active'));
+      const target = col.querySelector(`.section-content[data-section="${section}"]`);
+      if (target) target.classList.add('active');
+      col.scrollTop = 0;
+    }
+  </script>
+</body>
+</html>

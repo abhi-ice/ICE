@@ -300,7 +300,32 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks = N
     )
     # Trigger CPM recompute (debounced via BackgroundTasks — substitution for Celery debounce)
     if any(k in updates for k in ("planned_start", "planned_finish", "duration_days", "predecessors")):
-        bg.add_task(compute_cpm, ctx["tenant_id"], before["project_id"])
+        # CPM Mode 2 (2026-06-29) / Enterprise CPM ("Diagram 2"): on a mode2
+        # project MS Project is authoritative for the computed schedule, and on
+        # an enterprise-engine project OUR enterprise engine owns the columns —
+        # running bare compute_cpm here would overwrite either's results a
+        # second later. Route the recompute through the engine-aware hook
+        # (auto_recompute_after_event dispatches to the right engine) for both;
+        # a plain mode1/impact-days project keeps the identical bare compute_cpm.
+        # With BOTH flags OFF this is byte-identical to before (no project read,
+        # plain compute_cpm).
+        from services.feature_flags import (
+            schedule_mode_2_enabled, schedule_mode_for_project,
+            enterprise_cpm_enabled, schedule_engine_for_project,
+        )
+        _route_hook = False
+        if schedule_mode_2_enabled() or enterprise_cpm_enabled():
+            _proj = await db.projects.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": before["project_id"]}),
+                {"_id": 0, "schedule_mode": 1, "schedule_engine": 1}) or {}
+            _route_hook = (
+                (schedule_mode_2_enabled() and schedule_mode_for_project(_proj) == "mode2")
+                or (enterprise_cpm_enabled() and schedule_engine_for_project(_proj) == "enterprise")
+            )
+        if _route_hook:
+            bg.add_task(auto_recompute_after_event, ctx["tenant_id"], before["project_id"])
+        else:
+            bg.add_task(compute_cpm, ctx["tenant_id"], before["project_id"])
     # Bucket H Phase 4 -- recompute demand if any demand-affecting field
     # moved. Union of pre + post date ranges so dates that USED to have
     # demand but no longer do also get cleared.

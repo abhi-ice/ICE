@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SiteOps — DR Procore Polish Mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* =========================================================
+   THEME TOKENS
+   Light = Procore-flavored (white bg, black text, subtle gray borders).
+   Dark  = Claude-Code-flavored warm gray (NOT pure black).
+   Brand = premium emerald, consistent across both themes.
+   ========================================================= */
+:root {
+  --brand-primary:   #10b981;
+  --brand-hover:     #059669;
+  --brand-light:     #34d399;
+  --brand-pale-bg:   rgba(16, 185, 129, 0.10);
+  --brand-pale-bd:   rgba(16, 185, 129, 0.32);
+
+  /* Light theme */
+  --bg-page:         #f7f8f9;
+  --bg-surface:      #ffffff;
+  --bg-surface-2:    #f0f2f4;
+  --bg-input:        #ffffff;
+  --bg-hover:        #f0f2f4;
+  --bg-topbar:       #2f3437;
+  --bg-sidebar:      #232729;
+
+  --fg-primary:      #181d1f;
+  --fg-secondary:    #4a5256;
+  --fg-muted:        #6b7280;
+  --fg-faint:        #9aa1a8;
+  --fg-on-dark:      #e3e6e8;
+
+  --border:          #e3e6e8;
+  --border-strong:   #c9cdd0;
+
+  --status-closed-bg:   #e8f7e9;
+  --status-closed-fg:   #26732d;
+  --status-open-bg:     #fff5e6;
+  --status-open-fg:     #8a5500;
+  --status-draft-bg:    #eef0f2;
+  --status-draft-fg:    #4a5256;
+  --status-submitted-bg:#e3f0ff;
+  --status-submitted-fg:#1a55a3;
+  --status-blocker-bg:  #fde8e8;
+  --status-blocker-fg:  #a3261a;
+
+  --radius-card:     6px;
+  --radius-btn:      4px;
+  --radius-pill:     999px;
+
+  --shadow-card:     0 1px 2px rgba(0,0,0,0.04);
+  --shadow-card-hover: 0 4px 12px rgba(0,0,0,0.06);
+}
+
+[data-theme="dark"] {
+  --bg-page:         #1a1a1c;
+  --bg-surface:      #232326;
+  --bg-surface-2:    #2a2a2e;
+  --bg-input:        #1f1f22;
+  --bg-hover:        #2e2e33;
+  --bg-topbar:       #1a1a1c;
+  --bg-sidebar:      #161618;
+
+  --fg-primary:      #e8e8ed;
+  --fg-secondary:    #b8b8c0;
+  --fg-muted:        #8b8b95;
+  --fg-faint:        #5d5d65;
+  --fg-on-dark:      #e8e8ed;
+
+  --border:          #34343a;
+  --border-strong:   #45454d;
+
+  --status-closed-bg:   rgba(38, 115, 45, 0.18);
+  --status-closed-fg:   #4fc960;
+  --status-open-bg:     rgba(138, 85, 0, 0.22);
+  --status-open-fg:     #f5b54a;
+  --status-draft-bg:    rgba(74, 82, 86, 0.30);
+  --status-draft-fg:    #b8b8c0;
+  --status-submitted-bg:rgba(26, 85, 163, 0.25);
+  --status-submitted-fg:#6ba2f0;
+  --status-blocker-bg:  rgba(163, 38, 26, 0.22);
+  --status-blocker-fg:  #f06a5d;
+
+  --shadow-card:     none;
+  --shadow-card-hover: 0 0 0 1px rgba(255,255,255,0.06);
+}
+
+/* =========================================================
+   RESET + BASE
+   ========================================================= */
+* { box-sizing: border-box; }
+html { overflow-x: hidden; }
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-ligatures: none; }
+
+a { color: inherit; text-decoration: none; }
+button { font: inherit; cursor: pointer; }
+
+/* =========================================================
+   LAYOUT
+   ========================================================= */
+.shell {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  min-height: 100vh;
+  min-width: 0;
+}
+.sidebar {
+  background: var(--bg-sidebar);
+  color: var(--fg-on-dark);
+  border-right: 1px solid var(--border);
+  padding: 14px 10px;
+}
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin-bottom: 12px;
+}
+.sidebar-brand-logo { width: 28px; height: 28px; flex: 0 0 auto; }
+.sidebar-brand-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: white;
+}
+.sidebar-brand-tag {
+  font-size: 9.5px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.45);
+  margin-top: 1px;
+}
+.sidebar-group { margin-top: 16px; }
+.sidebar-group-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.55);
+  padding: 0 8px;
+  margin-bottom: 6px;
+}
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(255,255,255,0.78);
+  border-radius: var(--radius-btn);
+  transition: background 150ms;
+}
+.sidebar-link:hover { background: rgba(255,255,255,0.05); color: white; }
+.sidebar-link.active {
+  background: var(--brand-pale-bg);
+  color: var(--brand-light);
+  font-weight: 500;
+}
+.sidebar-link.nested { padding-left: 26px; font-size: 12.5px; }
+.sidebar-icon { width: 15px; height: 15px; opacity: 0.8; flex: 0 0 auto; }
+
+/* Top bar */
+.topbar {
+  background: var(--bg-topbar);
+  color: var(--fg-on-dark);
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.tb-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius-btn);
+  padding: 0 9px;
+  height: 32px;
+  font-size: 12.5px;
+  color: rgba(255,255,255,0.92);
+  min-width: 140px;
+}
+.tb-select.wide { min-width: 220px; }
+.tb-select .label { font-size: 10.5px; color: rgba(255,255,255,0.5); }
+.tb-search { position: relative; flex: 0 0 280px; }
+.tb-search input {
+  width: 100%;
+  height: 34px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius-btn);
+  padding: 0 36px 0 34px;
+  color: white;
+  font-size: 12.5px;
+  font-family: inherit;
+}
+.tb-search input::placeholder { color: rgba(255,255,255,0.45); }
+.tb-search .search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  opacity: 0.5;
+}
+.tb-search .kbd {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 3px;
+  padding: 2px 5px;
+  color: rgba(255,255,255,0.6);
+}
+.tb-spacer { flex: 1; }
+.tb-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-pill);
+  background: var(--brand-pale-bg);
+  border: 1px solid var(--brand-pale-bd);
+  color: var(--brand-light);
+  display: grid;
+  place-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.tb-icon-btn {
+  width: 32px; height: 32px;
+  border: 0;
+  background: transparent;
+  color: rgba(255,255,255,0.7);
+  border-radius: var(--radius-btn);
+  display: grid;
+  place-items: center;
+}
+.tb-icon-btn:hover { background: rgba(255,255,255,0.08); color: white; }
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-btn);
+  padding: 0 11px;
+  height: 32px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.85);
+}
+.theme-toggle:hover { background: rgba(255,255,255,0.14); color: white; }
+
+/* =========================================================
+   MAIN CONTENT
+   ========================================================= */
+.main {
+  padding: 20px 28px 60px;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.page-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.15px;
+  margin: 0;
+  color: var(--fg-primary);
+}
+.crumbs {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.crumbs .sep { color: var(--fg-faint); }
+.crumbs a:hover { color: var(--brand-primary); }
+
+/* KPI band — auto-fit so it never overflows */
+.kpi-band {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.kpi {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 8px 11px;
+  min-width: 0;
+}
+.kpi-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kpi-value {
+  font-size: 17px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+  color: var(--fg-primary);
+}
+.kpi-value.warn { color: var(--status-open-fg); }
+.kpi-value.crit { color: var(--status-blocker-fg); }
+.kpi-value.ok { color: var(--brand-primary); }
+
+/* Action bar */
+.action-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: var(--radius-btn);
+  border: 1px solid transparent;
+  transition: background 120ms, border-color 120ms, transform 80ms;
+}
+.btn:active { transform: translateY(0.5px); }
+.btn-icon { width: 15px; height: 15px; flex: 0 0 auto; }
+.btn-primary { background: var(--brand-primary); color: white; }
+.btn-primary:hover { background: var(--brand-hover); }
+.btn-secondary {
+  background: var(--bg-surface-2);
+  color: var(--fg-primary);
+  border-color: var(--border);
+}
+.btn-secondary:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.btn-ghost {
+  background: transparent;
+  color: var(--fg-secondary);
+}
+.btn-ghost:hover { background: var(--bg-hover); color: var(--fg-primary); }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+
+/* =========================================================
+   THE SPINE — slim, status-tinted per-segment rail
+   Each .step gets its OWN border-left "rail segment" so the
+   color of the rail between sections reflects the status of
+   the section ABOVE it. Adds rhythm + status semantics.
+   ========================================================= */
+.spine {
+  position: relative;
+  padding-left: 38px;       /* was 64px — much slimmer */
+  min-width: 0;
+}
+.step {
+  position: relative;
+  margin-bottom: 30px;       /* was 22px — more breathing room */
+}
+/* Per-step rail segment that extends BELOW the card into the gap */
+.step::after {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 30px;                 /* below the node */
+  bottom: -38px;             /* extend through the margin to next node */
+  width: 0;
+  border-left: 1.5px dashed var(--border-strong);
+  opacity: 0.55;
+  transition: border-color 200ms, opacity 200ms;
+}
+.step.complete::after {
+  border-left: 1.5px solid var(--brand-primary);
+  opacity: 0.75;
+}
+.step.in-progress::after {
+  border-left: 1.5px dashed var(--brand-primary);
+  opacity: 0.85;
+}
+.step.blocked::after {
+  border-left: 1.5px dashed var(--status-blocker-fg);
+  opacity: 0.85;
+}
+.step:last-child::after { display: none; }
+
+/* Round numbered badge — smaller (26px) */
+.step-node {
+  position: absolute;
+  left: -35px;
+  top: 11px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+  transition: all 200ms;
+}
+.step.complete .step-node {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: white;
+}
+.step.complete .step-node::before {
+  content: "✓";
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+.step.complete .step-node .num { display: none; }
+.step.in-progress .step-node {
+  background: var(--brand-pale-bg);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  box-shadow: 0 0 0 4px var(--brand-pale-bg);
+}
+.step.blocked .step-node {
+  background: var(--status-blocker-bg);
+  border-color: var(--status-blocker-fg);
+  color: var(--status-blocker-fg);
+  box-shadow: 0 0 0 4px var(--status-blocker-bg);
+}
+
+/* Section card */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  transition: box-shadow 200ms, transform 200ms;
+}
+.card:hover { box-shadow: var(--shadow-card-hover); }
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-wrap: wrap;
+}
+.card-header.collapsed { border-bottom: 0; }
+.card-header .icon { width: 15px; height: 15px; color: var(--brand-primary); flex: 0 0 auto; }
+.card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg-primary);
+  letter-spacing: 0.1px;
+}
+.card-count {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  background: var(--bg-surface-2);
+  border-radius: 4px;
+  color: var(--fg-muted);
+}
+.card-meta {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  margin-left: auto;
+}
+.card-meta a { color: var(--brand-primary); font-weight: 500; }
+.card-body { padding: 14px; }
+
+/* Project compact row */
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  flex-wrap: wrap;
+}
+.project-row .eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.project-row .value {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg-primary);
+}
+.project-row .chev { margin-left: auto; color: var(--fg-faint); }
+
+/* Field labels & inputs */
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.field-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.field-input {
+  height: 32px;
+  padding: 0 9px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  color: var(--fg-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 120ms;
+  min-width: 0;
+  width: 100%;
+}
+.field-input:focus {
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 2px var(--brand-pale-bg);
+}
+
+/* Table */
+.dr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+.dr-table th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--fg-primary);
+  padding: 9px 10px;
+  background: var(--bg-surface-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dr-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-feature-settings: "tnum";
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dr-table tbody tr:last-child td { border-bottom: 0; }
+.dr-table tbody tr:hover td { background: var(--bg-hover); }
+.cell-input {
+  height: 26px;
+  padding: 0 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--fg-primary);
+  width: 100%;
+}
+.cell-input:hover { border-color: var(--border); }
+.cell-input:focus {
+  outline: none;
+  background: var(--bg-input);
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 2px var(--brand-pale-bg);
+}
+
+/* Status pills */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+}
+.pill-closed    { background: var(--status-closed-bg);    color: var(--status-closed-fg); }
+.pill-open      { background: var(--status-open-bg);      color: var(--status-open-fg); }
+.pill-draft     { background: var(--status-draft-bg);     color: var(--status-draft-fg); }
+.pill-submitted { background: var(--status-submitted-bg); color: var(--status-submitted-fg); }
+.pill-blocker   { background: var(--status-blocker-bg);   color: var(--status-blocker-fg); }
+
+/* Sub-section row */
+.subsection {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.subsection:hover { background: var(--bg-hover); }
+.subsection:last-child { border-bottom: 0; }
+.subsection .chev { color: var(--fg-faint); flex: 0 0 auto; }
+.subsection .title { font-weight: 600; color: var(--fg-primary); }
+.subsection .count { font-size: 11.5px; color: var(--fg-muted); font-weight: 400; }
+.subsection .meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 14px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--fg-primary); }
+.tab.active {
+  color: var(--brand-primary);
+  border-bottom-color: var(--brand-primary);
+  font-weight: 600;
+}
+.tab-icon { width: 13px; height: 13px; }
+.tab-count {
+  font-size: 10.5px;
+  background: var(--bg-surface-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+/* Voice chip */
+.voice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--brand-primary);
+  background: var(--brand-pale-bg);
+  border: 1px solid var(--brand-pale-bd);
+  border-radius: var(--radius-btn);
+  padding: 3px 9px;
+  height: 24px;
+}
+.voice-btn:hover { background: var(--brand-primary); color: white; }
+
+/* Unplanned activity callout */
+.callout {
+  display: block;
+  margin: 10px 14px 14px;
+  padding: 11px 13px;
+  border: 1px dashed var(--status-open-fg);
+  background: var(--status-open-bg);
+  border-radius: var(--radius-btn);
+  color: var(--fg-primary);
+}
+.callout-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--status-open-fg);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.callout-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr auto;
+  gap: 8px;
+}
+
+/* Empty */
+.empty {
+  padding: 24px 14px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+.empty .icon-lg {
+  width: 30px; height: 30px;
+  margin: 0 auto 8px;
+  opacity: 0.4;
+}
+
+/* Audit */
+.audit-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.audit-row:last-child { border-bottom: 0; }
+.audit-row .ts {
+  color: var(--fg-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+/* Spine legend at the bottom — small explainer */
+.spine-legend {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-swatch {
+  width: 22px;
+  height: 12px;
+  display: inline-block;
+}
+.legend-swatch.complete  { border-bottom: 2px solid var(--brand-primary); }
+.legend-swatch.progress  { border-bottom: 2px dashed var(--brand-primary); }
+.legend-swatch.blocked   { border-bottom: 2px dashed var(--status-blocker-fg); }
+.legend-swatch.empty     { border-bottom: 2px dashed var(--border-strong); }
+
+/* Responsive — collapse sidebar to rail on narrow */
+@media (max-width: 1100px) {
+  .kpi-band { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .shell { grid-template-columns: 56px 1fr; }
+  .sidebar-link span,
+  .sidebar-group-title,
+  .sidebar-brand-name,
+  .sidebar-brand-tag { display: none; }
+  .field-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+</style>
+</head>
+<body data-theme="light">
+
+<div class="shell">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <svg class="sidebar-brand-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="lg-foundation" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"  stop-color="#34D399"/>
+            <stop offset="100%" stop-color="#059669"/>
+          </linearGradient>
+        </defs>
+        <rect x="9"  y="6"  width="14" height="5" rx="1.2" fill="#a1a1aa"/>
+        <rect x="5"  y="14" width="22" height="5" rx="1.2" fill="#d4d4d8"/>
+        <rect x="2"  y="22" width="28" height="6" rx="1.5" fill="url(#lg-foundation)"/>
+        <circle cx="26" cy="4" r="1.5" fill="#34D399" opacity="0.85"/>
+      </svg>
+      <div>
+        <div class="sidebar-brand-name">SiteOps</div>
+        <div class="sidebar-brand-tag">Construction OS</div>
+      </div>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Overview</div>
+      <a class="sidebar-link"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+      <a class="sidebar-link"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg><span>Projects</span></a>
+      <a class="sidebar-link"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 22V8l10-5 10 5v14"/><path d="M9 22V12h6v10"/></svg><span>Vendors</span></a>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Daily Operations</div>
+      <a class="sidebar-link active"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span>Daily Reports</span></a>
+      <a class="sidebar-link nested"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><circle cx="12" cy="13" r="3.5"/></svg><span>Photos</span></a>
+      <a class="sidebar-link nested"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg><span>Delays</span></a>
+      <a class="sidebar-link nested"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>Safety</span></a>
+      <a class="sidebar-link nested"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M9 11l2 2 4-4"/></svg><span>QC Issues</span></a>
+    </div>
+
+    <div class="sidebar-group">
+      <div class="sidebar-group-title">Planning</div>
+      <a class="sidebar-link"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Tasks</span></a>
+      <a class="sidebar-link"><svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg><span>Look Ahead</span></a>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div style="min-width:0">
+
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <div class="tb-select">
+        <span class="label">Tenant</span>
+        <span>ICE</span>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="tb-select wide">
+        <span class="label">Project</span>
+        <span>MSU · VA Medical Centre Bronx</span>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="tb-search">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input placeholder="Search projects, RFIs, activities…">
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <div class="tb-spacer"></div>
+      <button class="theme-toggle" id="themeToggle">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span id="themeLabel">Switch to Dark</span>
+      </button>
+      <button class="tb-icon-btn" title="Notifications">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      </button>
+      <div class="tb-avatar">AD</div>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main class="main">
+
+      <!-- Page header -->
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Daily Report · 05/24/2026</h1>
+          <div class="crumbs">
+            <a>Daily Reports</a>
+            <span class="sep">/</span>
+            <span>May 24, 2026</span>
+            <span class="sep">/</span>
+            <span class="pill pill-draft">Draft</span>
+          </div>
+        </div>
+        <div class="action-bar">
+          <button class="btn btn-secondary">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+            Export
+          </button>
+          <button class="btn btn-secondary">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            Add Coordination
+          </button>
+          <button class="btn btn-primary">
+            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+            Submit Report
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI band -->
+      <div class="kpi-band">
+        <div class="kpi"><div class="kpi-label">PPC</div><div class="kpi-value">0%</div></div>
+        <div class="kpi"><div class="kpi-label">Headcount</div><div class="kpi-value">9</div></div>
+        <div class="kpi"><div class="kpi-label">Crew Hours</div><div class="kpi-value">72.0</div></div>
+        <div class="kpi"><div class="kpi-label">Activity Hrs</div><div class="kpi-value">0.0</div></div>
+        <div class="kpi"><div class="kpi-label">Delays</div><div class="kpi-value warn">2</div></div>
+        <div class="kpi"><div class="kpi-label">RFIs</div><div class="kpi-value">1</div></div>
+        <div class="kpi"><div class="kpi-label">Safety</div><div class="kpi-value">0</div></div>
+        <div class="kpi"><div class="kpi-label">QC</div><div class="kpi-value">0</div></div>
+      </div>
+
+      <!-- SPINE -->
+      <div class="spine">
+
+        <!-- 1. PROJECT / CONTRACT -->
+        <section class="step complete">
+          <div class="step-node"><span class="num">1</span></div>
+          <div class="card">
+            <div class="project-row">
+              <span class="eyebrow">Project / Contract</span>
+              <span class="value">MSU · VA Medical Centre Bronx · #24608733 · ICE · Abhi D.</span>
+              <span class="card-meta">Auto-filled</span>
+              <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. WEATHER -->
+        <section class="step complete">
+          <div class="step-node"><span class="num">2</span></div>
+          <div class="card">
+            <div class="card-header">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+              <span class="card-title">Weather</span>
+              <span class="card-meta">Auto-filled · 8:18 PM</span>
+              <button class="voice-btn" style="margin-left:6px">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4M8 23h8"/></svg>
+                Add via Voice
+              </button>
+            </div>
+            <div class="card-body">
+              <div class="field-row">
+                <div class="field"><div class="field-label">Conditions</div><input class="field-input" value="Clear"></div>
+                <div class="field"><div class="field-label">High °F</div><input class="field-input" value="78"></div>
+                <div class="field"><div class="field-label">Low °F</div><input class="field-input" value="62"></div>
+                <div class="field"><div class="field-label">Precip In</div><input class="field-input" value="0"></div>
+                <div class="field"><div class="field-label">Wind Mph</div><input class="field-input" value=""></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. MANPOWER LOG -->
+        <section class="step in-progress">
+          <div class="step-node"><span class="num">3</span></div>
+          <div class="card">
+            <div class="card-header">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              <span class="card-title">Manpower Log</span>
+              <span class="card-count">3 rows</span>
+              <span class="card-meta">Total: 9 workers · 72.0 hours</span>
+            </div>
+            <table class="dr-table">
+              <colgroup>
+                <col style="width:18%"><col style="width:13%"><col style="width:13%"><col style="width:11%"><col style="width:12%"><col style="width:11%"><col style="width:22%">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Company</th>
+                  <th>Trade</th>
+                  <th>Task</th>
+                  <th>Headcount</th>
+                  <th>Hrs / Person</th>
+                  <th>Sub-Total</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><input class="cell-input" placeholder="Search vendors…"></td>
+                  <td><input class="cell-input" value="Demo"></td>
+                  <td><input class="cell-input" placeholder="— none —"></td>
+                  <td><input class="cell-input" value="5"></td>
+                  <td><input class="cell-input" value="8"></td>
+                  <td>40.0</td>
+                  <td><input class="cell-input" placeholder="Notes…"></td>
+                </tr>
+                <tr>
+                  <td><input class="cell-input" placeholder="Search vendors…"></td>
+                  <td><input class="cell-input" value="Electrical"></td>
+                  <td><input class="cell-input" placeholder="— none —"></td>
+                  <td><input class="cell-input" value="2"></td>
+                  <td><input class="cell-input" value="8"></td>
+                  <td>16.0</td>
+                  <td><input class="cell-input" placeholder="Notes…"></td>
+                </tr>
+                <tr>
+                  <td><input class="cell-input" placeholder="Search vendors…"></td>
+                  <td><input class="cell-input" value="Mechanical"></td>
+                  <td><input class="cell-input" placeholder="— none —"></td>
+                  <td><input class="cell-input" value="2"></td>
+                  <td><input class="cell-input" value="8"></td>
+                  <td>16.0</td>
+                  <td><input class="cell-input" value="Duct work"></td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-secondary btn-sm">
+                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                Add Trade Row
+              </button>
+              <button class="voice-btn">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                Add via Voice
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. ACTIVITY LOG -->
+        <section class="step blocked">
+          <div class="step-node"><span class="num">4</span></div>
+          <div class="card">
+            <div class="card-header">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+              <span class="card-title">Activity Log</span>
+              <span class="card-count">0 / 3</span>
+              <span class="card-meta">Date: 05/24/2026 · <a>Refresh from Schedule</a></span>
+            </div>
+            <div class="subsection">
+              <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              <span class="title">Preconstruction &amp; Construction Paperwork</span>
+              <span class="count">· 0 rows</span>
+              <span class="pill pill-draft">Read-Only</span>
+              <span class="meta">click to expand</span>
+            </div>
+            <div class="subsection">
+              <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              <span class="title">Today's Planned Activity</span>
+              <span class="count">· 0 rows</span>
+              <span class="meta">click to expand</span>
+            </div>
+            <div class="subsection">
+              <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+              <span class="title">Closeout Paperwork</span>
+              <span class="count">· 0 rows</span>
+              <span class="pill pill-draft">Read-Only</span>
+              <span class="meta">click to expand</span>
+            </div>
+            <div class="callout">
+              <div class="callout-title">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                Create Unplanned Activity <span style="color:var(--fg-muted);font-weight:400">— flagged for PM review</span>
+              </div>
+              <div class="callout-row">
+                <input class="field-input" placeholder="What was done?">
+                <input class="field-input" placeholder="Trade">
+                <button class="btn btn-primary btn-sm">Create</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. EVENTS -->
+        <section class="step">
+          <div class="step-node"><span class="num">5</span></div>
+          <div class="card">
+            <div class="card-header">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+              <span class="card-title">Events</span>
+              <span class="card-meta">Log delays, safety, QC, RFIs as they happen</span>
+              <button class="btn btn-primary btn-sm" style="margin-left:auto">
+                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                Add Event
+              </button>
+            </div>
+            <div class="tabs">
+              <span class="tab active">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+                Delays <span class="tab-count">2</span>
+              </span>
+              <span class="tab">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Safety <span class="tab-count">0</span>
+              </span>
+              <span class="tab">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M9 11l2 2 4-4"/></svg>
+                QC <span class="tab-count">0</span>
+              </span>
+              <span class="tab">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                RFIs <span class="tab-count">1</span>
+              </span>
+              <span class="tab">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><path d="M16 8h4l3 3v5h-7M5.5 21a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM18.5 21a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                Deliveries <span class="tab-count">0</span>
+              </span>
+              <span class="tab">
+                <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                Notes
+              </span>
+            </div>
+            <div style="padding: 14px">
+              <table class="dr-table">
+                <colgroup>
+                  <col style="width:14%"><col style="width:12%"><col style="width:46%"><col style="width:16%"><col style="width:12%">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>Status</th>
+                    <th>Description</th>
+                    <th>Linked Task</th>
+                    <th>Days Open</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="pill pill-open">Moderate</span></td>
+                    <td><span class="pill pill-open">Open</span></td>
+                    <td>Electrical conduit conflict with HVAC duct on Level 3 East</td>
+                    <td><span class="mono" style="color:var(--brand-primary)">1.18 CP</span></td>
+                    <td>11</td>
+                  </tr>
+                  <tr>
+                    <td><span class="pill pill-open">Moderate</span></td>
+                    <td><span class="pill pill-closed">Resolved</span></td>
+                    <td>ConEd shutdown delay on mech roughing</td>
+                    <td><span class="mono" style="color:var(--brand-primary)">1.4 CP</span></td>
+                    <td>0</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 6. PHOTOS -->
+        <section class="step">
+          <div class="step-node"><span class="num">6</span></div>
+          <div class="card">
+            <div class="card-header">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="2"/><circle cx="12" cy="13" r="3.5"/></svg>
+              <span class="card-title">Photos</span>
+              <span class="card-count">0</span>
+              <button class="btn btn-primary btn-sm" style="margin-left:auto">
+                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                Upload + Tag
+              </button>
+            </div>
+            <div class="empty">
+              <svg class="icon-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="6" width="20" height="14" rx="2"/><circle cx="12" cy="13" r="3.5"/></svg>
+              <div>No photos yet for today.</div>
+              <div style="margin-top:4px;font-size:12px">Photos upload to the <a style="color:var(--brand-primary)">Photo Tray</a> first. After upload, we'll open the tag wizard with AI suggestions ready.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 7. AUDIT TRAIL -->
+        <section class="step">
+          <div class="step-node"><span class="num">7</span></div>
+          <div class="card">
+            <div class="card-header">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              <span class="card-title">Audit Trail</span>
+              <span class="card-count">8</span>
+              <span class="card-meta">Append-only ledger · CMMC L2 compliant</span>
+            </div>
+            <div class="audit-row"><span class="pill pill-submitted">Insert</span> <span class="ts">05/24 20:21</span> <span>Daily report created by Abhi D.</span></div>
+            <div class="audit-row"><span class="pill pill-submitted">Update</span> <span class="ts">05/24 20:22</span> <span>Weather auto-filled from forecast (clear, 78/62)</span></div>
+            <div class="audit-row"><span class="pill pill-submitted">Insert</span> <span class="ts">05/24 20:24</span> <span>Manpower row added — Demo, 5 workers @ 8h</span></div>
+            <div class="audit-row"><span class="pill pill-submitted">Insert</span> <span class="ts">05/24 20:24</span> <span>Manpower row added — Electrical, 2 workers @ 8h</span></div>
+            <div class="audit-row"><span class="pill pill-submitted">Insert</span> <span class="ts">05/24 20:25</span> <span>Manpower row added — Mechanical, 2 workers @ 8h, "duct work"</span></div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Spine legend -->
+      <div class="spine-legend">
+        <span style="font-weight:600;color:var(--fg-secondary)">Spine reads:</span>
+        <span class="legend-item"><span class="legend-swatch complete"></span>Solid emerald = section complete</span>
+        <span class="legend-item"><span class="legend-swatch progress"></span>Dashed emerald = in progress</span>
+        <span class="legend-item"><span class="legend-swatch blocked"></span>Dashed red = validation blocker</span>
+        <span class="legend-item"><span class="legend-swatch empty"></span>Dashed gray = not started</span>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  const root = document.body;
+  const btn = document.getElementById('themeToggle');
+  const label = document.getElementById('themeLabel');
+  const saved = localStorage.getItem('siteops-mock-theme');
+  if (saved) {
+    root.setAttribute('data-theme', saved);
+    label.textContent = saved === 'dark' ? 'Switch to Light' : 'Switch to Dark';
+  }
+  btn.addEventListener('click', () => {
+    const cur = root.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    label.textContent = next === 'dark' ? 'Switch to Light' : 'Switch to Dark';
+    localStorage.setItem('siteops-mock-theme', next);
+  });
+</script>
+
+</body>
+</html>

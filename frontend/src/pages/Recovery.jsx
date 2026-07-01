@@ -59,7 +59,7 @@ export default function Recovery() {
       </p>
 
       <div className="bg-card border border-border rounded-lg p-4 flex flex-wrap items-end gap-3">
-        <div className="flex-1 min-w-[280px]">
+        <div className="flex-1 min-w-[200px] sm:min-w-[280px]">
           <FieldLabel required className="field-label">Target activity</FieldLabel>
           <select data-testid="recovery-target" value={target} onChange={(e) => setTarget(e.target.value)} className="w-full h-9 px-2 rounded border border-input bg-background text-sm">
             <option value="">— select activity —</option>
@@ -68,7 +68,7 @@ export default function Recovery() {
             ))}
           </select>
         </div>
-        <button data-testid="recovery-generate" onClick={generate} disabled={!target || busy} className="h-9 px-4 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50">
+        <button data-testid="recovery-generate" onClick={generate} disabled={!target || busy} className="h-9 max-md:min-h-[44px] px-4 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50">
           {busy ? "Generating…" : "Generate suggestions"}
         </button>
       </div>
@@ -106,7 +106,7 @@ export default function Recovery() {
                     </div>
                     <div className="font-medium text-sm">{s.title}</div>
                     <div className="text-xs text-muted-foreground mt-1">{s.rationale}</div>
-                    <div className="mt-2 grid grid-cols-2 gap-1 text-xs">
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
                       <div>Recover: <span className="font-mono">{s.predicted_time_recovery_days}d</span></div>
                       <div>Cost: <span className="font-mono">${s.predicted_cost_usd?.toLocaleString()}</span></div>
                     </div>
@@ -114,7 +114,7 @@ export default function Recovery() {
                       <button
                         data-testid={`rec-apply-${h.id}-${i}`}
                         onClick={() => apply(h.id, i)}
-                        className="mt-3 h-7 px-3 rounded bg-blue-600 text-white text-xs inline-flex items-center gap-1"
+                        className="mt-3 h-7 max-md:min-h-[44px] px-3 rounded bg-blue-600 text-white text-xs inline-flex items-center gap-1"
                       >
                         <Check className="h-3 w-3" /> Apply
                       </button>

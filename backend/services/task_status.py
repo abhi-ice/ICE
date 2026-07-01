@@ -35,6 +35,12 @@ from typing import Optional
 
 from database import tenant_filter
 from models import gen_id, pred_code, pred_relationship
+# CPM B2 (2026-06-12) -- the progress-cascade feature flag. Imported at
+# module top (feature_flags has no service deps, so no import cycle). The
+# progress_cascade module itself is imported LAZILY inside
+# compute_projected_finish_dates to avoid the task_status <-> progress_cascade
+# cycle (progress_cascade imports planned_pct_at from this module).
+from services.feature_flags import progress_cascade_enabled
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -400,6 +406,7 @@ async def compute_projected_finish_dates(
     db, tenant_id: str, project_id: str, *,
     actor_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    data_date: Optional[date] = None,
 ) -> dict:
     """Phase 4 — walk the dependency graph forward, computing each
     task's IMPACTED start / finish date when open blockers push it.
@@ -475,6 +482,22 @@ async def compute_projected_finish_dates(
 
     Returns {recomputed: int, changed: list[task_id]}.
     """
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- double-application guard
+    # (judge m4). When the project runs on the enterprise engine, the
+    # progress-driven slip is EMERGENT in that engine's forward pass and the
+    # engine writes the forecast columns itself; running this impact-days
+    # overlay too would apply the shift twice and clobber the engine's
+    # writeback. Skip it. The check is gated by enterprise_cpm_enabled() so
+    # with the flag OFF there is NO extra query and this is byte-identical to
+    # before.
+    from services.feature_flags import enterprise_cpm_enabled, schedule_engine_for_project
+    if enterprise_cpm_enabled():
+        _proj = await db.projects.find_one(
+            tenant_filter(tenant_id, {"id": project_id}),
+            {"_id": 0, "schedule_engine": 1},
+        ) or {}
+        if schedule_engine_for_project(_proj) == "enterprise":
+            return {"recomputed": 0, "changed": [], "skipped": "enterprise_engine"}
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
@@ -486,6 +509,34 @@ async def compute_projected_finish_dates(
          "slip_days": 1},
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
+
+    # CPM B2 (2026-06-12) -- progress-driven slip map. FF_PROGRESS_CASCADE.
+    # A task behind its planned percent at the data date grows its remaining
+    # duration; that shift folds into the task's OWN shift below (via MAX with
+    # the impact-days value) and then cascades to successors through the SAME
+    # float-aware overflow machinery a logged delay uses. Flag OFF -> empty
+    # map -> own shift is the impact-days value alone (byte-identical to
+    # pre-B2).
+    #
+    # The map is built by services.progress_cascade (lazy import -- avoids the
+    # task_status <-> progress_cascade module-load cycle). That module owns
+    # the progress query + the paperwork-category skip, so the CPM engine
+    # files stay free of DR view-metadata tokens: this function never reads
+    # those view fields itself. It only consumes a {task_id -> working-day
+    # shift} map.
+    progress_shift: dict[str, int] = {}
+    if progress_cascade_enabled():
+        from services.progress_cascade import build_progress_shift_map_from_db
+        # Data date: the project-global as-of date the forward pass measures
+        # "behind-ness" against. We use date.today() (the default) rather than
+        # any single Daily Report's report_date BY DESIGN -- a CPM data date
+        # is one date for the WHOLE schedule walk; binding it to one row's
+        # report date would mis-size every OTHER task's planned-percent. The
+        # `data_date` param exists only so tests can pin a deterministic date.
+        dd = data_date or date.today()
+        progress_shift = await build_progress_shift_map_from_db(
+            db, tenant_id, project_id, dd,
+        )
 
     # Per-task own_impact (open-blocker sum across delays + RFIs +
     # over-SLA submittals). One walk per task.
@@ -527,7 +578,14 @@ async def compute_projected_finish_dates(
         pf = _parse(task.get("planned_finish"))
         dur = int(round(float(task.get("duration_days") or 1.0)))
         dur_minus_one = max(0, dur - 1)
-        own = max(0, int(round(own_impact.get(tid, 0.0))))
+        own_days = max(0, int(round(own_impact.get(tid, 0.0))))
+        # CPM B2 (2026-06-12) -- combine the impact-days own shift with the
+        # progress-driven shift via MAX (not sum): a logged delay's
+        # impact_days and a visible progress shortfall are two views of the
+        # SAME lateness, so taking the larger is conservative and never
+        # double-counts. progress_shift is empty when FF_PROGRESS_CASCADE is
+        # off, so own == own_days there (pre-B2 behaviour, byte-identical).
+        own = max(own_days, progress_shift.get(tid, 0))
 
         if depth > 300:
             # Cycle guard -- treat as un-impacted (planned dates,
@@ -739,6 +797,20 @@ async def compute_remaining_float_for_tasks(
     AFTER compute_projected_finish_dates (Bug 3.E ordering).
     """
     from services.working_days import working_days_between
+
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- double-application guard
+    # (judge m4): the enterprise engine writes remaining_float_days /
+    # is_currently_critical itself (from finish-float, signed), so this
+    # impact-days overlay must not run for an enterprise project. Gated by
+    # enterprise_cpm_enabled() -> no extra query, byte-identical, when OFF.
+    from services.feature_flags import enterprise_cpm_enabled, schedule_engine_for_project
+    if enterprise_cpm_enabled():
+        _proj = await db.projects.find_one(
+            tenant_filter(tenant_id, {"id": project_id}),
+            {"_id": 0, "schedule_engine": 1},
+        ) or {}
+        if schedule_engine_for_project(_proj) == "enterprise":
+            return {"scanned": 0, "changed": 0, "skipped": "enterprise_engine"}
 
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {

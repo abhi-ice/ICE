@@ -617,6 +617,77 @@ def _to_date(v):
 # ---------------------------------------------------------------------------
 # CPM Part E (2026-05-15) -- auto-recompute hook
 # ---------------------------------------------------------------------------
+async def _run_internal_cpm_chain(
+    tenant_id: str,
+    project_id: str,
+    *,
+    actor_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> Optional[dict]:
+    """The internal (Mode 1) CPM chain: compute_cpm -> projected dates ->
+    remaining float. This is the VERBATIM pre-Mode-2 body of
+    auto_recompute_after_event, extracted unchanged so the Mode-1 path stays
+    byte-identical (CPM Mode 2 seam, 2026-06-29). Returns the compute_cpm
+    result dict (or None when compute_cpm raised)."""
+    import logging
+    log = logging.getLogger(__name__)
+
+    db = get_db()
+
+    # Step 1 -- compute_cpm (silent, no audit). Capture the result
+    # so the recompute_cpm endpoint (Bug 2.E) has a payload to
+    # return; event-flow callers ignore it.
+    cpm_result: Optional[dict] = None
+    try:
+        cpm_result = await compute_cpm(tenant_id, project_id)
+    except Exception as exc:
+        log.warning(
+            "Part E auto-recompute: compute_cpm failed "
+            "(tenant=%s, project=%s): %s",
+            tenant_id, project_id, exc,
+        )
+
+    # Step 2 -- compute_projected_finish_dates (writes the EXISTING
+    # CPM_RECOMPUTE audit on change; pre-Part-E behavior preserved).
+    try:
+        # Lazy import to avoid the services.cpm <-> services.task_status
+        # circular at module load.
+        from services.task_status import compute_projected_finish_dates
+        await compute_projected_finish_dates(
+            db, tenant_id, project_id,
+            actor_id=actor_id, request_id=request_id,
+        )
+    except Exception as exc:
+        log.warning(
+            "Part E auto-recompute: compute_projected_finish_dates "
+            "failed (tenant=%s, project=%s): %s",
+            tenant_id, project_id, exc,
+        )
+
+    # Step 3 -- live remaining-float refresh (CPM Part L + Bug 3.E/3.F).
+    # Stamps remaining_float_days (signed; Bug 3.E -- derived from the
+    # projected_finish_date Step 2 just wrote, NOT clamped at 0) +
+    # is_currently_critical (Bug 3.F). MUST run after Step 2 -- the
+    # remaining-float formula reads projected_finish_date. Independent
+    # try/except so a remaining-float bug doesn't break the CPM +
+    # projected-finish chain. Idempotent.
+    try:
+        from services.task_status import compute_remaining_float_for_tasks
+        await compute_remaining_float_for_tasks(
+            db, tenant_id, project_id,
+        )
+    except Exception as exc:
+        log.warning(
+            "Part L auto-recompute: compute_remaining_float_for_tasks "
+            "failed (tenant=%s, project=%s): %s",
+            tenant_id, project_id, exc,
+        )
+
+    # Bug 2.E -- return the compute_cpm result for the recompute_cpm
+    # endpoint. None when compute_cpm raised (handled above).
+    return cpm_result
+
+
 async def auto_recompute_after_event(
     tenant_id: str,
     project_id: str,
@@ -682,60 +753,32 @@ async def auto_recompute_after_event(
     -- for delays specifically -- the re-resolved per_task_impacts
     snapshot is captured in the audit with the fresh float values.
     """
-    import logging
-    log = logging.getLogger(__name__)
-
+    # CPM Mode 2 (2026-06-29) -- schedule-engine strategy seam. With the
+    # FF_SCHEDULE_MODE_2 flag OFF this is a BYTE-IDENTICAL fast path: we do
+    # not even read the project doc, and run the verbatim internal chain
+    # (_run_internal_cpm_chain) that this hook has always run. Only when the
+    # flag is ON do we read the project's schedule_mode and dispatch -- and
+    # mode1 still routes to the same internal chain, so behavior changes
+    # solely for a project explicitly switched to mode2 (MS Project drives).
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- the guard now covers BOTH
+    # schedule flags: with neither FF_SCHEDULE_MODE_2 nor FF_ENTERPRISE_CPM on,
+    # this stays a byte-identical fast path (no project read, verbatim internal
+    # chain). When either flag is on we read the project and dispatch -- the
+    # projection MUST carry BOTH schedule_mode (Mode 2) and schedule_engine
+    # (enterprise) so get_engine_for can see them; impact-days/mode1 still
+    # route to the same internal chain, so behavior changes only for a project
+    # explicitly switched to enterprise or mode2.
+    from services.feature_flags import schedule_mode_2_enabled, enterprise_cpm_enabled
+    if not schedule_mode_2_enabled() and not enterprise_cpm_enabled():
+        return await _run_internal_cpm_chain(
+            tenant_id, project_id, actor_id=actor_id, request_id=request_id,
+        )
     db = get_db()
-
-    # Step 1 -- compute_cpm (silent, no audit). Capture the result
-    # so the recompute_cpm endpoint (Bug 2.E) has a payload to
-    # return; event-flow callers ignore it.
-    cpm_result: Optional[dict] = None
-    try:
-        cpm_result = await compute_cpm(tenant_id, project_id)
-    except Exception as exc:
-        log.warning(
-            "Part E auto-recompute: compute_cpm failed "
-            "(tenant=%s, project=%s): %s",
-            tenant_id, project_id, exc,
-        )
-
-    # Step 2 -- compute_projected_finish_dates (writes the EXISTING
-    # CPM_RECOMPUTE audit on change; pre-Part-E behavior preserved).
-    try:
-        # Lazy import to avoid the services.cpm <-> services.task_status
-        # circular at module load.
-        from services.task_status import compute_projected_finish_dates
-        await compute_projected_finish_dates(
-            db, tenant_id, project_id,
-            actor_id=actor_id, request_id=request_id,
-        )
-    except Exception as exc:
-        log.warning(
-            "Part E auto-recompute: compute_projected_finish_dates "
-            "failed (tenant=%s, project=%s): %s",
-            tenant_id, project_id, exc,
-        )
-
-    # Step 3 -- live remaining-float refresh (CPM Part L + Bug 3.E/3.F).
-    # Stamps remaining_float_days (signed; Bug 3.E -- derived from the
-    # projected_finish_date Step 2 just wrote, NOT clamped at 0) +
-    # is_currently_critical (Bug 3.F). MUST run after Step 2 -- the
-    # remaining-float formula reads projected_finish_date. Independent
-    # try/except so a remaining-float bug doesn't break the CPM +
-    # projected-finish chain. Idempotent.
-    try:
-        from services.task_status import compute_remaining_float_for_tasks
-        await compute_remaining_float_for_tasks(
-            db, tenant_id, project_id,
-        )
-    except Exception as exc:
-        log.warning(
-            "Part L auto-recompute: compute_remaining_float_for_tasks "
-            "failed (tenant=%s, project=%s): %s",
-            tenant_id, project_id, exc,
-        )
-
-    # Bug 2.E -- return the compute_cpm result for the recompute_cpm
-    # endpoint. None when compute_cpm raised (handled above).
-    return cpm_result
+    project = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "id": 1, "schedule_mode": 1, "schedule_engine": 1},
+    ) or {}
+    from services.schedule_engine import get_engine_for
+    return await get_engine_for(project).recompute(
+        tenant_id, project_id, actor_id=actor_id, request_id=request_id,
+    )

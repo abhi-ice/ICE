@@ -451,7 +451,7 @@ export default function Spatial3D() {
         if (!planRev) {
           return (
             <div className="fixed inset-0 z-50 bg-slate-900/60 grid place-items-center">
-              <div className="bg-white rounded p-5 w-[400px]">
+              <div className="bg-white rounded p-5 w-full max-w-[400px] mx-3">
                 <div className="font-medium mb-2">No plan revision available</div>
                 <p className="text-xs text-slate-500 mb-3">Upload a plan PDF in <a href="/drawings" className="text-blue-600 hover:underline">Drawings</a> first.</p>
                 <button onClick={() => setSectionOpen(false)} className="h-9 px-3 rounded bg-slate-200 text-sm">Close</button>

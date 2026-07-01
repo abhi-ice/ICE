@@ -178,7 +178,7 @@ function ProposalDetail({ id, onBack }) {
   return (
     <div data-testid="proposal-detail" className="space-y-5">
       <div className="flex items-center gap-3">
-        <button onClick={onBack} className="text-sm text-blue-600 hover:underline flex items-center gap-1">
+        <button onClick={onBack} className="text-sm text-blue-600 hover:underline flex items-center gap-1 max-md:min-h-[44px] max-md:px-2 max-md:-ml-2">
           <ChevronLeft className="h-4 w-4" /> Back
         </button>
         <h1 className="text-xl font-semibold flex items-center gap-2 truncate">

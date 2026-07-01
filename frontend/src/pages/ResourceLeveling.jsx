@@ -215,11 +215,11 @@ export default function ResourceLeveling() {
           <div className="flex items-center gap-2">
             <Link to="/resources/crews"
               data-testid="rl-add-crew"
-              className="h-8 px-3 rounded bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm inline-flex items-center gap-1">
+              className="h-8 max-md:min-h-[44px] px-3 rounded bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm inline-flex items-center gap-1">
               Add crew
             </Link>
             <button data-testid="rl-refresh" onClick={onRecompute} disabled={recomputing}
-              className="h-8 px-3 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50 inline-flex items-center gap-1">
+              className="h-8 px-3 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-50 inline-flex items-center gap-1 max-md:min-h-[44px]">
               <RefreshCw className={`h-3.5 w-3.5 ${recomputing ? "animate-spin" : ""}`} />
               {recomputing ? "Recomputing…" : "Refresh"}
             </button>
@@ -247,14 +247,14 @@ export default function ResourceLeveling() {
             <input data-testid="rl-filter-trade" value={filters.trade}
               onChange={(e) => setFilters({ ...filters, trade: e.target.value })}
               placeholder="Plumber,Electrician"
-              className="h-8 px-2 rounded border border-slate-300 text-sm w-48" />
+              className="h-8 px-2 rounded border border-slate-300 text-sm w-48 max-md:w-full max-md:min-h-[44px]" />
           </div>
           <div>
             <label className="text-xs text-slate-500 block">Project id (csv)</label>
             <input data-testid="rl-filter-project" value={filters.project_id}
               onChange={(e) => setFilters({ ...filters, project_id: e.target.value })}
               placeholder="project id"
-              className="h-8 px-2 rounded border border-slate-300 text-sm w-48" />
+              className="h-8 px-2 rounded border border-slate-300 text-sm w-48 max-md:w-full max-md:min-h-[44px]" />
           </div>
           {(filters.trade || filters.project_id) && (
             <button onClick={() => setFilters({ ...filters, trade: "", project_id: "" })}
@@ -298,7 +298,7 @@ export default function ResourceLeveling() {
       )}
 
       {/* Tabs */}
-      <div className="flex border-b border-slate-200 mb-3">
+      <div className="flex border-b border-slate-200 mb-3 overflow-x-auto">
         {TABS.map((t) => {
           const Icon = t.icon;
           const active = filters.tab === t.key;
@@ -314,7 +314,7 @@ export default function ResourceLeveling() {
           );
         })}
         {dashboard?.summary && (
-          <div className="ml-auto self-end pb-2 text-xs text-slate-500 flex items-center gap-3">
+          <div className="ml-auto self-end pb-2 text-xs text-slate-500 flex items-center gap-3 max-md:hidden">
             <span data-testid="rl-summary-cells">{dashboard.summary.total_cells} cells</span>
             <span className="text-rose-700">{dashboard.summary.shortage_cells} shortage</span>
             <span className="text-sky-700">{dashboard.summary.surplus_cells} surplus</span>
@@ -500,7 +500,7 @@ function HeatMapTab({ dashboard, onCellClick, showFirstRun, loading }) {
               <span>{t}</span>
               <ChevronRight className="h-4 w-4" />
             </summary>
-            <div className="border-t border-slate-100 p-2 grid grid-cols-3 gap-1">
+            <div className="border-t border-slate-100 p-2 grid grid-cols-2 sm:grid-cols-3 gap-1">
               {dates.map((d) => {
                 const cell = (cells[t] || {})[d];
                 if (!cell) return null;
@@ -509,7 +509,7 @@ function HeatMapTab({ dashboard, onCellClick, showFirstRun, loading }) {
                 return (
                   <button key={d}
                     onClick={() => onCellClick(t, d, cell)}
-                    className={`p-1 rounded border ${cls} text-left`}>
+                    className={`p-1 rounded border ${cls} text-left min-h-[44px]`}>
                     <div className="text-xs font-mono text-slate-600">{d.slice(5)}</div>
                     <div className="text-xs">s{cell.supply}/d{cell.demand}/g{cell.gap}</div>
                   </button>
@@ -580,7 +580,7 @@ function GapListTab({ gaps, onGapClick, loading }) {
               <td className="p-2 text-right">
                 <button onClick={() => onGapClick(r)}
                   data-testid={`rl-gap-action-${r.id}`}
-                  className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700">
+                  className="h-7 px-2 rounded bg-blue-600 text-white text-xs hover:bg-blue-700 max-md:min-h-[44px]">
                   Suggest fix
                 </button>
               </td>
@@ -684,7 +684,7 @@ function UtilizationCell({ pct }) {
 function DrillDown({ cell, onReallocate }) {
   return (
     <div className="space-y-3 text-sm">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         <Metric label="Supply" value={cell.supply} />
         <Metric label="Demand" value={cell.demand} />
         <Metric label="Gap" value={cell.gap >= 0 ? "+" + cell.gap : String(cell.gap)}
@@ -867,7 +867,7 @@ function ReallocationForm({ onClose, onCommitted }) {
           {crews.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.trade})</option>)}
         </select>
       </div>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <div>
           <label className="field-label">From project</label>
           <select data-testid="rl-realloc-from" value={form.from_project_id}
@@ -887,7 +887,7 @@ function ReallocationForm({ onClose, onCommitted }) {
           </select>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         <div>
           <label className="field-label">Start date</label>
           <input type="date" value={form.date_range_start}
@@ -936,7 +936,7 @@ function ReallocationForm({ onClose, onCommitted }) {
 function OverCommitBanner({ result, onDismiss }) {
   return (
     <div data-testid="rl-overcommit-banner"
-      className="fixed bottom-4 right-4 max-w-md p-4 rounded shadow-lg border-l-4 border-amber-500 bg-amber-50 text-amber-900 z-50">
+      className="fixed bottom-4 right-4 max-w-md max-md:left-4 max-md:right-4 max-md:max-w-none p-4 rounded shadow-lg border-l-4 border-amber-500 bg-amber-50 text-amber-900 z-50">
       <div className="flex items-start gap-2">
         <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
         <div className="flex-1">
@@ -988,7 +988,7 @@ function HelpContent() {
         <strong>Heat map</strong>: trade rows × date columns. Each cell shows
         supply/demand. Color codes:
       </div>
-      <div className="grid grid-cols-2 gap-1 text-xs">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
         <div className="p-1 bg-emerald-50 border border-emerald-200 rounded">balanced / no demand</div>
         <div className="p-1 bg-sky-50 border border-sky-200 rounded">surplus (supply &gt; demand)</div>
         <div className="p-1 bg-amber-50 border border-amber-200 rounded">minor shortage (&lt;20%)</div>

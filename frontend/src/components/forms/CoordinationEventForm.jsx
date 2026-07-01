@@ -249,7 +249,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
 
   return (
     <div data-testid="coordination-event-form" className="space-y-3 text-sm">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div>
           <FieldLabel required>Occurred at</FieldLabel>
           <input data-testid="coord-occurred-at" type="datetime-local"
@@ -279,7 +279,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <FieldLabel required>Other party name</FieldLabel>
           <input data-testid="coord-other-name" value={form.other_party_name}
@@ -297,7 +297,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
       </div>
 
       {!abbreviated && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label className="text-xs text-slate-500">Other party role</label>
             <input value={form.other_party_role}
@@ -319,7 +319,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div>
           <label className="text-xs text-slate-500">Topic</label>
           <JigsawField entityType="coordination_event" entityId={entityId}

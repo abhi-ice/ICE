@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SiteOps — Copilot Panel Designs · A/B/C/D × Light/Dark</title>
+<style>
+  /* ============================================================
+     SHARED PAGE CHROME — these are just the showcase frame, not
+     part of any individual design.
+     ============================================================ */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0a0a0c;
+    color: #e8e8eb;
+    padding: 32px 24px;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 0 0 6px;
+    letter-spacing: -0.02em;
+  }
+  .sub {
+    color: #8e8e98;
+    font-size: 13px;
+    margin: 0 0 24px;
+    max-width: 800px;
+    line-height: 1.55;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 32px;
+  }
+  @media (min-width: 1700px) {
+    .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+  .card {
+    background: #1a1a1f;
+    border: 1px solid #2a2a30;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card-title {
+    padding: 14px 18px 6px;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .card-desc {
+    padding: 0 18px 14px;
+    color: #8e8e98;
+    font-size: 11.5px;
+    line-height: 1.55;
+  }
+  .card-desc b { color: #c0c0c8; font-weight: 600; }
+  .theme-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: #2a2a30;
+  }
+  .theme-frame {
+    background: #fff;
+    aspect-ratio: 9 / 16;
+    overflow: hidden;
+    position: relative;
+    font-family: 'Inter', sans-serif;
+  }
+  .theme-tag {
+    position: absolute; top: 6px; left: 8px;
+    z-index: 10;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: rgba(0,0,0,0.55);
+    color: white;
+    padding: 2px 6px;
+    border-radius: 3px;
+    pointer-events: none;
+  }
+
+  /* ============================================================
+     OPTION A — WARM PARCHMENT (Claude.ai-inspired)
+     Inspiration: anthropic.com chat, Notion docs, premium magazines.
+     Psychology: intellectual, trustworthy, slowed-down thinking.
+     ============================================================ */
+  .A-light { background: #faf7f2; color: #2d2724; }
+  .A-light .head { background: linear-gradient(180deg, #f3ede2 0%, #faf7f2 100%); border-bottom: 1px solid #ebe4d5; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .A-light .badge-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #c97f4f 0%, #b86b3a 100%); display: grid; place-items: center; color: #faf7f2; font-weight: 700; font-size: 12px; box-shadow: 0 2px 8px -2px rgba(184, 107, 58, 0.4); }
+  .A-light .title { font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em; }
+  .A-light .tagline { font-size: 10px; color: #8a7e6d; margin-top: 1px; letter-spacing: 0.04em; }
+  .A-light .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .A-light .ai-bubble { background: #fcfaf6; border: 1px solid #ebe4d5; border-left: 3px solid #c97f4f; border-radius: 10px; padding: 10px 12px; font-size: 11px; line-height: 1.55; color: #2d2724; }
+  .A-light .user-bubble { align-self: flex-end; background: linear-gradient(135deg, #2d2724 0%, #1a1614 100%); color: #faf7f2; padding: 8px 11px; border-radius: 10px 10px 4px 10px; font-size: 11px; max-width: 75%; }
+  .A-light .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid #ebe4d5; background: #f3ede2; }
+  .A-light .input { background: #fcfaf6; border: 1px solid #ebe4d5; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #8a7e6d; display: flex; justify-content: space-between; align-items: center; }
+  .A-light .input::after { content: "↗"; color: #c97f4f; font-weight: 700; }
+
+  .A-dark { background: #1b1816; color: #e8e3dc; }
+  .A-dark .head { background: linear-gradient(180deg, #25201d 0%, #1b1816 100%); border-bottom: 1px solid #322b26; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .A-dark .badge-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #c97f4f 0%, #b86b3a 100%); display: grid; place-items: center; color: #1b1816; font-weight: 700; font-size: 12px; box-shadow: 0 2px 8px -2px rgba(201, 127, 79, 0.4); }
+  .A-dark .title { font-size: 13.5px; font-weight: 700; }
+  .A-dark .tagline { font-size: 10px; color: #8a7e6d; margin-top: 1px; }
+  .A-dark .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .A-dark .ai-bubble { background: #25201d; border: 1px solid #322b26; border-left: 3px solid #d18960; border-radius: 10px; padding: 10px 12px; font-size: 11px; line-height: 1.55; }
+  .A-dark .user-bubble { align-self: flex-end; background: linear-gradient(135deg, #c97f4f 0%, #a8623a 100%); color: #1b1816; padding: 8px 11px; border-radius: 10px 10px 4px 10px; font-size: 11px; max-width: 75%; font-weight: 500; }
+  .A-dark .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid #322b26; background: #211d1a; }
+  .A-dark .input { background: #1b1816; border: 1px solid #322b26; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #6e655c; display: flex; justify-content: space-between; }
+  .A-dark .input::after { content: "↗"; color: #c97f4f; font-weight: 700; }
+
+  /* ============================================================
+     OPTION B — DEEP SLATE TOOL (GitHub Copilot / Cursor-inspired)
+     Panel ALWAYS DARK, even in light mode. Signals "developer
+     tool surface" — distinct from the content canvas.
+     Psychology: technical, focused, "this is for power users".
+     ============================================================ */
+  .B-light { background: #0d1117; color: #e6edf3; }
+  .B-light .head { background: linear-gradient(180deg, #161b22 0%, #0d1117 100%); border-bottom: 1px solid #21262d; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .B-light .badge-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); display: grid; place-items: center; color: white; font-weight: 700; font-size: 12px; box-shadow: 0 2px 8px -2px rgba(16, 185, 129, 0.5); }
+  .B-light .title { font-size: 13.5px; font-weight: 700; }
+  .B-light .tagline { font-size: 10px; color: #7d8590; margin-top: 1px; font-family: 'JetBrains Mono', monospace; }
+  .B-light .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .B-light .ai-bubble { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; font-size: 11px; line-height: 1.55; }
+  .B-light .ai-bubble::before { content: "AI ▸"; display: block; font-family: 'JetBrains Mono', monospace; font-size: 9px; color: #34d399; letter-spacing: 0.05em; margin-bottom: 5px; }
+  .B-light .user-bubble { align-self: flex-end; background: #10b981; color: white; padding: 8px 11px; border-radius: 6px; font-size: 11px; max-width: 75%; font-family: 'JetBrains Mono', monospace; }
+  .B-light .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid #21262d; background: #0d1117; }
+  .B-light .input { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; font-size: 11px; color: #7d8590; display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; }
+  .B-light .input::after { content: "↵"; color: #34d399; }
+
+  .B-dark { background: #0d1117; color: #e6edf3; }
+  .B-dark .head { background: linear-gradient(180deg, #161b22 0%, #0d1117 100%); border-bottom: 1px solid #21262d; padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .B-dark .badge-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); display: grid; place-items: center; color: white; font-weight: 700; font-size: 12px; box-shadow: 0 2px 8px -2px rgba(16, 185, 129, 0.5); }
+  .B-dark .title { font-size: 13.5px; font-weight: 700; }
+  .B-dark .tagline { font-size: 10px; color: #7d8590; margin-top: 1px; font-family: 'JetBrains Mono', monospace; }
+  .B-dark .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .B-dark .ai-bubble { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; font-size: 11px; line-height: 1.55; }
+  .B-dark .ai-bubble::before { content: "AI ▸"; display: block; font-family: 'JetBrains Mono', monospace; font-size: 9px; color: #34d399; letter-spacing: 0.05em; margin-bottom: 5px; }
+  .B-dark .user-bubble { align-self: flex-end; background: #10b981; color: white; padding: 8px 11px; border-radius: 6px; font-size: 11px; max-width: 75%; font-family: 'JetBrains Mono', monospace; }
+  .B-dark .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid #21262d; background: #0d1117; }
+  .B-dark .input { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; font-size: 11px; color: #7d8590; display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; }
+  .B-dark .input::after { content: "↵"; color: #34d399; }
+
+  /* ============================================================
+     OPTION C — FROSTED GLASS (Linear / iOS-inspired)
+     Translucent panel with backdrop-blur. Sees the page behind
+     so it feels like an OVERLAY, not a wall.
+     Psychology: lightweight, modern, "I'm here to help, not
+     interrupt". Premium SaaS feel.
+     ============================================================ */
+  .C-light {
+    background:
+      linear-gradient(135deg, rgba(255,255,255,0.78) 0%, rgba(248,250,252,0.85) 100%);
+    color: #1e293b;
+    backdrop-filter: blur(20px);
+    position: relative;
+  }
+  .C-light::before {
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(400px 200px at 100% 0%, rgba(16,185,129,0.08), transparent 70%),
+      radial-gradient(300px 200px at 0% 100%, rgba(16,185,129,0.05), transparent 70%);
+    pointer-events: none; z-index: 0;
+  }
+  .C-light .head, .C-light .body, .C-light .composer { position: relative; z-index: 1; }
+  .C-light .head { border-bottom: 1px solid rgba(15,23,42,0.08); padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .C-light .badge-icon { width: 30px; height: 30px; border-radius: 10px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); display: grid; place-items: center; color: white; font-weight: 700; font-size: 12px; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.4); }
+  .C-light .title { font-size: 13.5px; font-weight: 700; }
+  .C-light .tagline { font-size: 10px; color: #64748b; margin-top: 1px; }
+  .C-light .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .C-light .ai-bubble { background: rgba(255,255,255,0.7); backdrop-filter: blur(8px); border: 1px solid rgba(15,23,42,0.06); border-radius: 14px; padding: 10px 12px; font-size: 11px; line-height: 1.55; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .C-light .user-bubble { align-self: flex-end; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 8px 11px; border-radius: 14px 14px 4px 14px; font-size: 11px; max-width: 75%; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.45); }
+  .C-light .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid rgba(15,23,42,0.08); }
+  .C-light .input { background: rgba(255,255,255,0.7); border: 1px solid rgba(15,23,42,0.08); border-radius: 10px; padding: 8px 10px; font-size: 11px; color: #64748b; display: flex; justify-content: space-between; }
+  .C-light .input::after { content: "→"; color: #10b981; font-weight: 700; }
+
+  .C-dark {
+    background:
+      linear-gradient(135deg, rgba(15,23,42,0.75) 0%, rgba(30,41,59,0.85) 100%);
+    color: #e2e8f0;
+    backdrop-filter: blur(20px);
+    position: relative;
+  }
+  .C-dark::before {
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(400px 200px at 100% 0%, rgba(16,185,129,0.10), transparent 70%),
+      radial-gradient(300px 200px at 0% 100%, rgba(16,185,129,0.06), transparent 70%);
+    pointer-events: none; z-index: 0;
+  }
+  .C-dark .head, .C-dark .body, .C-dark .composer { position: relative; z-index: 1; }
+  .C-dark .head { border-bottom: 1px solid rgba(255,255,255,0.08); padding: 14px 16px; display: flex; align-items: center; gap: 10px; }
+  .C-dark .badge-icon { width: 30px; height: 30px; border-radius: 10px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); display: grid; place-items: center; color: white; font-weight: 700; font-size: 12px; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.5); }
+  .C-dark .title { font-size: 13.5px; font-weight: 700; }
+  .C-dark .tagline { font-size: 10px; color: #94a3b8; margin-top: 1px; }
+  .C-dark .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .C-dark .ai-bubble { background: rgba(30,41,59,0.6); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 10px 12px; font-size: 11px; line-height: 1.55; }
+  .C-dark .user-bubble { align-self: flex-end; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 8px 11px; border-radius: 14px 14px 4px 14px; font-size: 11px; max-width: 75%; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.5); }
+  .C-dark .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid rgba(255,255,255,0.08); }
+  .C-dark .input { background: rgba(15,23,42,0.6); border: 1px solid rgba(255,255,255,0.10); border-radius: 10px; padding: 8px 10px; font-size: 11px; color: #94a3b8; display: flex; justify-content: space-between; }
+  .C-dark .input::after { content: "→"; color: #34d399; font-weight: 700; }
+
+  /* ============================================================
+     OPTION D — DEEP NAVY ENTERPRISE (Stripe / Vercel-inspired)
+     Cool deep navy with brand emerald accent. Feels expensive,
+     authoritative, "this is the brain of the platform".
+     Psychology: confidence, intelligence, premium B2B SaaS.
+     ============================================================ */
+  .D-light { background: #f8fafc; color: #0f172a; }
+  .D-light .head { background: #0f172a; color: white; padding: 14px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.06); position: relative; overflow: hidden; }
+  .D-light .head::after { content: ""; position: absolute; top: -50%; right: -30%; width: 200px; height: 200px; border-radius: 50%; background: radial-gradient(circle, rgba(16,185,129,0.25), transparent 70%); pointer-events: none; }
+  .D-light .badge-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); display: grid; place-items: center; color: white; font-weight: 700; font-size: 12px; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.55); position: relative; z-index: 1; }
+  .D-light .title { font-size: 13.5px; font-weight: 700; color: white; position: relative; z-index: 1; }
+  .D-light .tagline { font-size: 10px; color: #34d399; margin-top: 1px; letter-spacing: 0.05em; font-weight: 600; position: relative; z-index: 1; }
+  .D-light .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .D-light .ai-bubble { background: white; border: 1px solid #e2e8f0; border-left: 3px solid #10b981; border-radius: 10px 10px 10px 2px; padding: 10px 12px; font-size: 11px; line-height: 1.55; box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.06); }
+  .D-light .ai-bubble::before { content: "■ AI"; display: block; font-family: 'JetBrains Mono', monospace; font-size: 8.5px; color: #10b981; letter-spacing: 0.1em; margin-bottom: 5px; font-weight: 700; }
+  .D-light .user-bubble { align-self: flex-end; background: #0f172a; color: white; padding: 8px 11px; border-radius: 10px 10px 2px 10px; font-size: 11px; max-width: 75%; box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.2); }
+  .D-light .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid #e2e8f0; background: white; }
+  .D-light .input { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #64748b; display: flex; justify-content: space-between; align-items: center; }
+  .D-light .input::after { content: "↗"; background: #10b981; color: white; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 9px; }
+
+  .D-dark { background: #020617; color: #e2e8f0; }
+  .D-dark .head { background: linear-gradient(180deg, #0f172a 0%, #020617 100%); padding: 14px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(255,255,255,0.06); position: relative; overflow: hidden; }
+  .D-dark .head::after { content: ""; position: absolute; top: -50%; right: -30%; width: 200px; height: 200px; border-radius: 50%; background: radial-gradient(circle, rgba(16,185,129,0.20), transparent 70%); pointer-events: none; }
+  .D-dark .badge-icon { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #10b981 0%, #34d399 100%); display: grid; place-items: center; color: white; font-weight: 700; font-size: 12px; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.55); position: relative; z-index: 1; }
+  .D-dark .title { font-size: 13.5px; font-weight: 700; color: white; position: relative; z-index: 1; }
+  .D-dark .tagline { font-size: 10px; color: #34d399; margin-top: 1px; letter-spacing: 0.05em; font-weight: 600; position: relative; z-index: 1; }
+  .D-dark .body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .D-dark .ai-bubble { background: #0f172a; border: 1px solid #1e293b; border-left: 3px solid #10b981; border-radius: 10px 10px 10px 2px; padding: 10px 12px; font-size: 11px; line-height: 1.55; }
+  .D-dark .ai-bubble::before { content: "■ AI"; display: block; font-family: 'JetBrains Mono', monospace; font-size: 8.5px; color: #34d399; letter-spacing: 0.1em; margin-bottom: 5px; font-weight: 700; }
+  .D-dark .user-bubble { align-self: flex-end; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 8px 11px; border-radius: 10px 10px 2px 10px; font-size: 11px; max-width: 75%; box-shadow: 0 4px 12px -3px rgba(16, 185, 129, 0.4); }
+  .D-dark .composer { margin-top: auto; padding: 12px 14px; border-top: 1px solid #1e293b; background: #020617; }
+  .D-dark .input { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #64748b; display: flex; justify-content: space-between; align-items: center; }
+  .D-dark .input::after { content: "↗"; background: #10b981; color: white; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 9px; }
+
+  /* legend */
+  .legend {
+    margin: 30px 0 0;
+    padding: 16px 18px;
+    background: #15151a;
+    border: 1px solid #2a2a30;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #c0c0c8;
+  }
+  .legend h3 { margin: 0 0 8px; font-size: 13px; color: white; }
+  .legend code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #1f1f24; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <h1>Copilot Panel · 4 Design Options × Light/Dark</h1>
+  <p class="sub">Each panel sits on the right side of the SiteOps app — currently 440 px wide on desktop, full-screen on mobile. Frame ratio below is portrait-clipped so all 8 variants fit on one page. Pick one (or mix-and-match a header from X with bubbles from Y) and I'll wire it as <code>pt.25</code>. Backend stays untouched as before.</p>
+
+  <div class="grid">
+
+    <!-- ============= OPTION A ============= -->
+    <div class="card">
+      <div class="card-title">A · Warm Parchment</div>
+      <div class="card-desc">Cream/ivory surface with copper-orange brand mark (Claude.ai feel). AI thoughts in soft ivory bubble with copper left rail; user replies in espresso-black bubble. <b>Vibe: intellectual, slow-thought, premium magazine.</b></div>
+      <div class="theme-row">
+        <div class="theme-frame A-light"><span class="theme-tag">LIGHT</span>
+          <div class="head">
+            <div class="badge-icon">SO</div>
+            <div><div class="title">SiteOps Copilot</div><div class="tagline">Schedule · RFIs · KB · Reports</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">Draft RFI about wall vent conflict</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>Ask the copilot...</span></div></div>
+        </div>
+        <div class="theme-frame A-dark"><span class="theme-tag">DARK</span>
+          <div class="head">
+            <div class="badge-icon">SO</div>
+            <div><div class="title">SiteOps Copilot</div><div class="tagline">Schedule · RFIs · KB · Reports</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">Draft RFI about wall vent conflict</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>Ask the copilot...</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============= OPTION B ============= -->
+    <div class="card">
+      <div class="card-title">B · Deep Slate Tool</div>
+      <div class="card-desc">Panel is ALWAYS dark — even in light mode the page stays bright but the Copilot reads as a dev-tool surface (GitHub Copilot Chat / Cursor pattern). Mono accents on AI label + composer. <b>Vibe: technical, focused, "tool not document".</b></div>
+      <div class="theme-row">
+        <div class="theme-frame B-light"><span class="theme-tag">LIGHT (panel still dark)</span>
+          <div class="head">
+            <div class="badge-icon">▣</div>
+            <div><div class="title">AI Copilot</div><div class="tagline">v1 · schedule · rfis · kb</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">draft rfi wall vent</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>$ ask...</span></div></div>
+        </div>
+        <div class="theme-frame B-dark"><span class="theme-tag">DARK</span>
+          <div class="head">
+            <div class="badge-icon">▣</div>
+            <div><div class="title">AI Copilot</div><div class="tagline">v1 · schedule · rfis · kb</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">draft rfi wall vent</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>$ ask...</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============= OPTION C ============= -->
+    <div class="card">
+      <div class="card-title">C · Frosted Glass</div>
+      <div class="card-desc">Translucent panel with backdrop blur + subtle emerald radial wash. AI bubbles are semi-transparent so the page peeks through. User bubbles use brand-emerald gradient. <b>Vibe: modern Linear/iOS — lightweight overlay, premium SaaS.</b></div>
+      <div class="theme-row">
+        <div class="theme-frame C-light"><span class="theme-tag">LIGHT</span>
+          <div class="head">
+            <div class="badge-icon">⌘</div>
+            <div><div class="title">AI Copilot</div><div class="tagline">Schedule · RFIs · KB · Reports</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">Draft RFI about wall vent conflict</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>Ask the copilot...</span></div></div>
+        </div>
+        <div class="theme-frame C-dark"><span class="theme-tag">DARK</span>
+          <div class="head">
+            <div class="badge-icon">⌘</div>
+            <div><div class="title">AI Copilot</div><div class="tagline">Schedule · RFIs · KB · Reports</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">Draft RFI about wall vent conflict</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>Ask the copilot...</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============= OPTION D ============= -->
+    <div class="card">
+      <div class="card-title">D · Deep Navy Enterprise <span style="color:#34d399">(my pick)</span></div>
+      <div class="card-desc">Dark navy header in BOTH themes (authoritative band), light/dark body that adapts. AI bubble has emerald left rail + tiny "■ AI" mono label. User bubble: navy in light, emerald in dark. <b>Vibe: Stripe/Vercel enterprise. Confident, intelligent, on-brand.</b></div>
+      <div class="theme-row">
+        <div class="theme-frame D-light"><span class="theme-tag">LIGHT</span>
+          <div class="head">
+            <div class="badge-icon">SO</div>
+            <div><div class="title">AI Copilot</div><div class="tagline">SCHEDULE · RFIS · KB · REPORTS</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">Draft RFI about wall vent conflict</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>Ask the copilot...</span></div></div>
+        </div>
+        <div class="theme-frame D-dark"><span class="theme-tag">DARK</span>
+          <div class="head">
+            <div class="badge-icon">SO</div>
+            <div><div class="title">AI Copilot</div><div class="tagline">SCHEDULE · RFIS · KB · REPORTS</div></div>
+          </div>
+          <div class="body">
+            <div class="ai-bubble">I can read your schedule and draft RFIs. Try: "what's slipping this week?"</div>
+            <div class="user-bubble">Draft RFI about wall vent conflict</div>
+            <div class="ai-bubble">Drafted RFI-0014. Linked to task 1.9 and 2.3.</div>
+          </div>
+          <div class="composer"><div class="input"><span>Ask the copilot...</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <h3>Reasoning — pick on these axes</h3>
+    <b style="color:#fff">Distinction</b> from the main app surface — strongest is B (always-dark tool) and D (navy header is unmistakable). Weakest is C (frosted glass is subtle by design).<br>
+    <b style="color:#fff">Brand cohesion</b> with the emerald palette — best is D (uses emerald as accent, navy as authority). A swaps emerald for copper which breaks brand. B keeps emerald but uses dark slate which is off-brand.<br>
+    <b style="color:#fff">Psychological signal</b> — A reads "slow thought, intellectual"; B reads "developer tool"; C reads "polite overlay, gets out of the way"; D reads "enterprise authority, this is the brain".<br>
+    <b style="color:#fff">Implementation risk</b> — C requires <code>backdrop-filter</code> support which can be heavy on Chromebooks/older Windows; A introduces copper which is a new color we don't use elsewhere; B is simplest (always dark); D is moderate (navy header is one new band).<br>
+    <b style="color:#fff">My recommendation: D</b> — it's the only option that strengthens your brand (emerald) while signaling "this is the AI surface" via the dark authoritative header. It also works identically across themes which simplifies QA. Tell me which one (or a hybrid like "D header + C bubbles") and I'll ship it.
+  </div>
+</body>
+</html>

@@ -18,7 +18,10 @@ export default function Productivity() {
 
   return (
     <div data-testid="productivity-page" className="space-y-4">
-      <div className="flex items-center justify-between">
+      {/* max-md:flex-wrap -- on phones the title + the 30/60/90/180-day
+          window buttons can't share one 320px row; wrapping drops the button
+          group below the title instead of clipping it. Desktop unchanged. */}
+      <div className="flex items-center justify-between max-md:flex-wrap max-md:gap-2">
         <div>
           <div className="flex items-center gap-2">
             <Activity className="h-5 w-5 text-blue-600" />

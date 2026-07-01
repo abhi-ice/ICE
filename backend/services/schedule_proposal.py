@@ -51,6 +51,13 @@ def parsed_to_task_create_payload(parsed: dict, project_id: str) -> dict:
         "actual_start": parsed.get("actual_start"),
         "actual_finish": parsed.get("actual_finish"),
         "status": parsed.get("status"),
+        # Enterprise CPM ("Diagram 2", 2026-06-29) -- carry optional
+        # scheduling inputs through to the task. None when the source
+        # schedule had no such columns; the None-drop below keeps them out
+        # of a baseline import so it is byte-identical to before.
+        "constraint_type": parsed.get("constraint_type"),
+        "constraint_date": parsed.get("constraint_date"),
+        "calendar_id": parsed.get("calendar_id"),
     }
     # Drop None values so StrictModel validation doesn't trip on Optional fields
     # that don't accept None at construction time. BUT keep keys that exist

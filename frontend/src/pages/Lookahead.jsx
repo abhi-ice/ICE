@@ -54,7 +54,7 @@ export default function Lookahead() {
 
   return (
     <div data-testid="lookahead-page" className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between max-md:flex-col max-md:items-start max-md:gap-2">
         <div>
           <div className="flex items-center gap-2">
             <CalendarRange className="h-5 w-5 text-blue-600" />
@@ -62,17 +62,17 @@ export default function Lookahead() {
           </div>
           <p className="text-sm text-slate-500">Date-bounded query · {rows.length} activities</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex max-md:flex-wrap items-center gap-2">
           {[7, 14, 21, 28].map((d) => (
-            <button key={d} data-testid={`lookahead-window-${d}`} onClick={() => setDays(d)} className={`h-8 px-3 rounded border text-sm ${days === d ? "bg-blue-600 text-white border-blue-600" : "border-slate-200"}`}>
+            <button key={d} data-testid={`lookahead-window-${d}`} onClick={() => setDays(d)} className={`h-8 max-md:min-h-[44px] px-3 rounded border text-sm ${days === d ? "bg-blue-600 text-white border-blue-600" : "border-slate-200"}`}>
               {d}d
             </button>
           ))}
           <div className="ml-2 flex items-center gap-1 border border-slate-200 rounded p-0.5">
-            <button data-testid="lookahead-list" onClick={() => setView("list")} className={`h-7 px-3 rounded text-xs flex items-center gap-1 ${view === "list" ? "bg-slate-100" : ""}`}>
+            <button data-testid="lookahead-list" onClick={() => setView("list")} className={`h-7 max-md:min-h-[44px] px-3 rounded text-xs flex items-center gap-1 ${view === "list" ? "bg-slate-100" : ""}`}>
               <List className="h-3 w-3" /> List
             </button>
-            <button data-testid="lookahead-gantt" onClick={() => setView("gantt")} className={`h-7 px-3 rounded text-xs flex items-center gap-1 ${view === "gantt" ? "bg-slate-100" : ""}`}>
+            <button data-testid="lookahead-gantt" onClick={() => setView("gantt")} className={`h-7 max-md:min-h-[44px] px-3 rounded text-xs flex items-center gap-1 ${view === "gantt" ? "bg-slate-100" : ""}`}>
               <BarChart3 className="h-3 w-3" /> Gantt
             </button>
           </div>
@@ -95,11 +95,11 @@ export default function Lookahead() {
               the muscle memory carries between surfaces. Only shown
               when there are rows to operate on. */}
           {rows.length > 0 && (
-            <div className="flex items-center gap-2 text-xs text-slate-600">
+            <div className="flex max-md:flex-wrap items-center gap-2 text-xs text-slate-600">
               <button
                 data-testid="lookahead-sort-by-slip"
                 onClick={() => setSortBySlipDesc((v) => !v)}
-                className={`h-7 px-2 rounded border text-xs ${sortBySlipDesc ? "bg-rose-50 border-rose-300 text-rose-700" : "bg-white border-slate-200"}`}
+                className={`h-7 max-md:min-h-[44px] px-2 rounded border text-xs ${sortBySlipDesc ? "bg-rose-50 border-rose-300 text-rose-700" : "bg-white border-slate-200"}`}
                 title="Sort by Slip descending so the worst-hit tasks land at the top."
               >
                 {sortBySlipDesc ? "✓ Sorted by slip ↓" : "Sort by slip ↓"}
@@ -287,6 +287,13 @@ function GanttView({ rows, days, onRefresh }) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const totalDays = days + 7;
   const start = new Date(today); start.setDate(start.getDate() - 3);
+  // Phone: a 240px activity-label column eats most of the timeline -> narrow
+  // it so more days are visible. ONE constant keeps the header label, row
+  // labels, the canvas min-width, and the bar left-offset in lockstep (so
+  // bars stay aligned). Desktop stays 240 (matchMedia false) -> the Gantt is
+  // byte-identical >=768px.
+  const LABEL_W = (typeof window !== "undefined"
+    && window.matchMedia("(max-width: 767.98px)").matches) ? 124 : 240;
 
   const dayHeaders = useMemo(() => {
     const arr = [];
@@ -356,10 +363,10 @@ function GanttView({ rows, days, onRefresh }) {
   return (
     <div data-testid="lookahead-gantt-view" className="surface overflow-hidden">
       <div className="overflow-x-auto scrollbar-soft">
-        <div style={{ minWidth: 240 + totalDays * DAY_PX }}>
+        <div style={{ minWidth: LABEL_W + totalDays * DAY_PX }}>
           {/* Day header */}
           <div className="flex border-b border-slate-200 sticky top-0 bg-slate-50">
-            <div style={{ width: 240, minWidth: 240 }} className="h-8 px-3 flex items-center text-xs font-semibold text-slate-500 border-r border-slate-200">Activity</div>
+            <div style={{ width: LABEL_W, minWidth: LABEL_W }} className="h-8 px-3 flex items-center text-xs font-semibold text-slate-500 border-r border-slate-200">Activity</div>
             {dayHeaders.map((d, i) => (
               <div key={i} style={{ width: DAY_PX, minWidth: DAY_PX }} className={`h-8 grid place-items-center text-xs font-mono ${d.getTime() === today.getTime() ? "bg-blue-50 text-blue-700 font-semibold" : "text-slate-500"}`}>
                 {d.getDate()}
@@ -369,7 +376,7 @@ function GanttView({ rows, days, onRefresh }) {
           {rows.map((t) => {
             const sIdx = dayIndex(t.planned_start);
             const fIdx = dayIndex(t.planned_finish);
-            const left = 240 + sIdx * DAY_PX;
+            const left = LABEL_W + sIdx * DAY_PX;
             const width = Math.max(DAY_PX, (fIdx - sIdx + 1) * DAY_PX);
             const isCP = t.is_critical_path;
             // Bucket C1 Phase 4 — bar color reflects computed_status when
@@ -387,7 +394,7 @@ function GanttView({ rows, days, onRefresh }) {
             const projWidth = projShiftDays > 0 ? projShiftDays * DAY_PX : 0;
             return (
               <div key={t.id} className="flex relative border-b border-slate-100 hover:bg-slate-50" style={{ height: ROW_H }} data-testid={`gantt-row-${t.activity_code}`}>
-                <div style={{ width: 240, minWidth: 240 }} className="px-3 flex items-center gap-2 border-r border-slate-200 text-xs">
+                <div style={{ width: LABEL_W, minWidth: LABEL_W }} className="px-3 flex items-center gap-2 border-r border-slate-200 text-xs">
                   <span className="font-mono text-slate-500">{t.activity_code}</span>
                   <span className="truncate">{t.description}</span>
                 </div>
@@ -419,7 +426,9 @@ function GanttView({ rows, days, onRefresh }) {
         </div>
       </div>
       <div className="px-3 py-2 text-xs text-slate-500 border-t border-slate-200">
-        Click + drag a Gantt bar horizontally to reschedule. Red = critical path.
+        {/* drag-to-reschedule is mouse-only; hide that instruction on touch
+            where it doesn't apply, keep the critical-path legend. */}
+        <span className="max-md:hidden">Click + drag a Gantt bar horizontally to reschedule. </span>Red = critical path.
       </div>
     </div>
   );

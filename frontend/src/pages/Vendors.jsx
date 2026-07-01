@@ -211,12 +211,16 @@ function VendorTable({ kind }) {
         <div className="text-sm" style={{ color: "var(--v4-fg-secondary)" }}>
           {rows.length} {kind === "subcontractor" ? "subcontractor" : "supplier"}{rows.length === 1 ? "" : "s"} in this organization
         </div>
-        <div className="flex items-center gap-2">
+        {/* max-md:flex-wrap -- on phones (<=767px) the 3 action buttons
+            (Template/Import/Add) total ~366px and were clipped by MAIN's
+            overflow-x:hidden at 320px; wrapping keeps the primary "Add"
+            button reachable. Desktop (>=768px) stays one nowrap row. */}
+        <div className="flex items-center gap-2 max-md:flex-wrap">
           <button
             data-testid={`vendors-import-template-${kind}`}
             onClick={downloadTemplate}
             title="Download a starter .xlsx with the expected headers"
-            className="h-8 px-3 rounded text-xs font-medium inline-flex items-center gap-1.5 transition"
+            className="h-8 max-md:min-h-[44px] px-3 rounded text-xs font-medium inline-flex items-center gap-1.5 transition"
             style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)", border: "1px solid var(--v4-border)" }}
           >
             <Download className="h-3.5 w-3.5" /> Template
@@ -225,7 +229,7 @@ function VendorTable({ kind }) {
             data-testid={`vendors-import-${kind}`}
             onClick={() => fileInputRef.current?.click()}
             title={`Import ${titleSingular.toLowerCase()}s from .xlsx or .csv`}
-            className="h-8 px-3 rounded text-xs font-medium inline-flex items-center gap-1.5 transition"
+            className="h-8 max-md:min-h-[44px] px-3 rounded text-xs font-medium inline-flex items-center gap-1.5 transition"
             style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-primary)", border: "1px solid var(--v4-border-strong)" }}
           >
             <Upload className="h-3.5 w-3.5" /> Import
@@ -252,6 +256,10 @@ function VendorTable({ kind }) {
         {/* pt.37: header-only vertical dividers via
             .dense-table-bordered. Vendors is 5 columns (small-table
             tier) per the table-column-lines mockup recommendation. */}
+        {/* Mobile-only horizontal scroll so the 5-col table never clips
+            inside the overflow-hidden surface on phones; emits zero CSS
+            >=768px (max-md variant), so desktop is byte-identical. */}
+        <div className="max-md:overflow-x-auto">
         <table className="w-full text-sm dense-table-bordered">
           <thead className="bg-white/[0.03] border-b border-white/[0.06]">
             <tr className="text-xs text-slate-400">
@@ -274,11 +282,11 @@ function VendorTable({ kind }) {
                 </td>
                 <td className="px-3 py-2 text-slate-400">{v.contact_phone || "—"}</td>
                 <td className="px-3 py-2 text-right">
-                  <button onClick={() => openEdit(v)} className="text-xs text-slate-400 hover:text-white mr-3 inline-flex items-center gap-1">
+                  <button onClick={() => openEdit(v)} className="text-xs text-slate-400 hover:text-white mr-3 inline-flex items-center gap-1 max-md:min-h-[44px] max-md:px-3">
                     <Pencil className="h-3 w-3" /> Edit
                   </button>
                   <button data-testid={`vendor-delete-${v.id}`}
-                    onClick={() => remove(v)} className="text-xs text-rose-500 hover:text-rose-400 inline-flex items-center gap-1">
+                    onClick={() => remove(v)} className="text-xs text-rose-500 hover:text-rose-400 inline-flex items-center gap-1 max-md:min-h-[44px] max-md:px-3">
                     <Trash2 className="h-3 w-3" /> Delete
                   </button>
                 </td>
@@ -291,6 +299,7 @@ function VendorTable({ kind }) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       <Dialog open={editing != null} onOpenChange={(v) => { if (!v) close(); }}>
@@ -305,7 +314,7 @@ function VendorTable({ kind }) {
               value={Array.isArray(form.trades) ? form.trades.join(", ") : form.trades}
               onChange={(v) => setForm({ ...form, trades: v })}
               testid="vendor-form-trades" />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Contact name" optional value={form.contact_name} onChange={(v) => setForm({ ...form, contact_name: v })} />
               <Field label="Phone" optional value={form.contact_phone} onChange={(v) => setForm({ ...form, contact_phone: v })} />
             </div>
@@ -313,8 +322,8 @@ function VendorTable({ kind }) {
             <Field label="Notes" optional value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} textarea />
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <button onClick={close} className="h-8 px-3 rounded border border-white/10 text-xs">Cancel</button>
-            <button data-testid="vendor-save" onClick={save} className="h-8 px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-500">Save</button>
+            <button onClick={close} className="h-8 max-md:min-h-[44px] px-3 rounded border border-white/10 text-xs">Cancel</button>
+            <button data-testid="vendor-save" onClick={save} className="h-8 max-md:min-h-[44px] px-3 rounded bg-emerald-600 text-white text-xs hover:bg-emerald-500">Save</button>
           </div>
         </DialogContent>
       </Dialog>
@@ -350,7 +359,7 @@ function VendorTable({ kind }) {
                   </span>
                 )}
               </div>
-              <div className="mt-3 overflow-auto" style={{ maxHeight: "50vh", border: "1px solid var(--v4-border)", borderRadius: 6 }}>
+              <div className="mt-3 overflow-auto" style={{ maxHeight: "50vh", WebkitOverflowScrolling: "touch", border: "1px solid var(--v4-border)", borderRadius: 6 }}>
                 <table className="w-full text-xs">
                   <thead style={{ background: "var(--v4-bg-surface-2)", borderBottom: "1px solid var(--v4-border)" }}>
                     <tr>
@@ -377,7 +386,7 @@ function VendorTable({ kind }) {
                         </td>
                         <td className="px-2 py-1.5" style={{ color: "var(--v4-fg-secondary)" }}>
                           {r.contact_name || "—"}
-                          {r.contact_email && <div className="text-[10px]" style={{ color: "var(--v4-fg-muted)" }}>{r.contact_email}</div>}
+                          {r.contact_email && <div className="text-[10px] max-md:text-xs" style={{ color: "var(--v4-fg-muted)" }}>{r.contact_email}</div>}
                         </td>
                         <td className="px-2 py-1.5" style={{ color: "var(--v4-fg-secondary)" }}>{r.contact_phone || "—"}</td>
                       </tr>
@@ -385,7 +394,7 @@ function VendorTable({ kind }) {
                   </tbody>
                 </table>
               </div>
-              <div className="mt-2 text-[11px]" style={{ color: "var(--v4-fg-muted)" }}>
+              <div className="mt-2 text-[11px] max-md:text-xs" style={{ color: "var(--v4-fg-muted)" }}>
                 Header aliases supported: <code>Name</code> / <code>Company</code> / <code>Vendor</code>,
                 {" "}<code>Trades</code> / <code>Trade</code> / <code>Categories</code> (comma-separated),
                 {" "}<code>Contact Email</code>, <code>Contact Phone</code>, <code>Notes</code>.
@@ -396,7 +405,7 @@ function VendorTable({ kind }) {
             <button
               onClick={() => setImportPreview(null)}
               disabled={importing}
-              className="h-8 px-3 rounded border text-xs disabled:opacity-50"
+              className="h-8 max-md:min-h-[44px] px-3 rounded border text-xs disabled:opacity-50"
               style={{ borderColor: "var(--v4-border-strong)", color: "var(--v4-fg-secondary)" }}
             >
               Cancel
@@ -405,7 +414,7 @@ function VendorTable({ kind }) {
               data-testid={`vendors-import-confirm-${kind}`}
               onClick={confirmImport}
               disabled={importing || !importPreview?.rows?.some((r) => r.name)}
-              className="h-8 px-3 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 transition disabled:opacity-50 inline-flex items-center gap-1.5"
+              className="h-8 max-md:min-h-[44px] px-3 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 transition disabled:opacity-50 inline-flex items-center gap-1.5"
             >
               {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
               {importing ? "Importing…" : `Import ${importPreview?.rows?.filter((r) => r.name).length || 0} row${(importPreview?.rows?.filter((r) => r.name).length || 0) === 1 ? "" : "s"}`}
@@ -427,7 +436,7 @@ function Field({ label, value, onChange, testid, textarea, required, optional })
             className="w-full px-2 py-1.5 rounded bg-slate-900/60 border border-white/10 text-sm focus:border-emerald-500 outline-none" />
         : <input data-testid={testid} value={value || ""}
             onChange={(e) => onChange(e.target.value)}
-            className="w-full h-8 px-2 rounded bg-slate-900/60 border border-white/10 text-sm focus:border-emerald-500 outline-none" />
+            className="w-full h-8 max-md:min-h-[44px] px-2 rounded bg-slate-900/60 border border-white/10 text-sm focus:border-emerald-500 outline-none" />
       }
     </div>
   );
@@ -444,10 +453,13 @@ export default function Vendors() {
       </div>
       <Tabs defaultValue="subs">
         <TabsList className="v4-tabs-strip mb-4">
-          <TabsTrigger value="subs" data-testid="vendors-tab-subs" className="v4-tab gap-1.5 px-3">
+          {/* max-md:px-2 -- shave the tab padding on phones so the
+              "Subcontractors | Suppliers" strip fits inside the 320px content
+              box (was 311px wide -> 3px past the viewport edge). Desktop keeps px-3. */}
+          <TabsTrigger value="subs" data-testid="vendors-tab-subs" className="v4-tab gap-1.5 px-3 max-md:!px-2">
             <Briefcase className="h-3.5 w-3.5" /> Subcontractors
           </TabsTrigger>
-          <TabsTrigger value="suppliers" data-testid="vendors-tab-suppliers" className="v4-tab gap-1.5 px-3">
+          <TabsTrigger value="suppliers" data-testid="vendors-tab-suppliers" className="v4-tab gap-1.5 px-3 max-md:!px-2">
             <Truck className="h-3.5 w-3.5" /> Suppliers
           </TabsTrigger>
         </TabsList>

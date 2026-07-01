@@ -126,10 +126,10 @@ export default function ProjectAccess() {
        Earlier pt.35 sweep only caught `p-6`; the `p-4 sm:p-6` and
        similar variants escaped the grep. */
     <div data-testid="project-access-page">
-      <header className="mb-4 flex items-center gap-2">
+      <header className="mb-4 flex items-center gap-2 max-md:flex-wrap">
         <ShieldCheck className="h-5 w-5 text-slate-700" />
         <h1 className="text-xl font-semibold text-slate-800">Project Access</h1>
-        <span className="ml-2 text-xs text-slate-500">
+        <span className="ml-2 text-xs text-slate-500 max-md:hidden">
           Manage who can see and act on each project. PMs and Admins only.
         </span>
         <span className="flex-1" />
@@ -172,7 +172,7 @@ export default function ProjectAccess() {
                 <li key={p.id}>
                   <button data-testid={`pa-project-${p.id}`}
                     onClick={() => setSelectedId(p.id)}
-                    className={`w-full text-left px-3 py-2 border-b border-slate-100 flex items-center justify-between hover:bg-slate-50 ${
+                    className={`w-full text-left px-3 py-2 max-md:min-h-[44px] border-b border-slate-100 flex items-center justify-between hover:bg-slate-50 ${
                       selectedId === p.id ? "bg-blue-50 border-l-2 border-l-blue-600" : ""
                     }`}>
                     <span className="truncate">{p.name}</span>
@@ -206,6 +206,7 @@ export default function ProjectAccess() {
                   No members yet. Click <strong>Add member</strong> to grant access.
                 </div>
               ) : (
+                <div className="max-md:overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 border-b border-slate-200 text-xs">
                     <tr>
@@ -227,7 +228,7 @@ export default function ProjectAccess() {
                           <select data-testid={`pa-role-${m.user_id}`}
                             value={m.role_on_project}
                             onChange={(e) => onChangeRole(m, e.target.value)}
-                            className={`h-7 px-2 rounded text-xs border ${ROLE_PILL[m.role_on_project]}`}>
+                            className={`h-7 max-md:min-h-[44px] px-2 rounded text-xs border ${ROLE_PILL[m.role_on_project]}`}>
                             {ROLES.map((r) => <option key={r.value} value={r.value}>{r.value}</option>)}
                           </select>
                         </td>
@@ -237,7 +238,7 @@ export default function ProjectAccess() {
                         <td className="p-2 text-right">
                           <button data-testid={`pa-remove-${m.user_id}`}
                             onClick={() => onRemove(m)}
-                            className="h-7 w-7 grid place-items-center rounded hover:bg-rose-50 text-rose-500"
+                            className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded hover:bg-rose-50 text-rose-500"
                             title="Remove member">
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -246,6 +247,7 @@ export default function ProjectAccess() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </>
           )}

@@ -391,18 +391,67 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
     daily_report_activities collection or read by the CPM engine.
     Mutates `rows` in place and returns it."""
     from services.dr_activity_grid import enrich_grid_row
+    from services.feature_flags import slider_gating_enabled
     task_ids = [r["schedule_activity_id"] for r in rows if r.get("schedule_activity_id")]
     by_id: dict = {}
+    gate_by_task_id: dict = {}
     if task_ids:
+        # CPM B1 (2026-06-12) -- when FF_SLIDER_GATING is on, also pull the
+        # fields the slider gate needs (predecessors + pct + status); the
+        # original lean projection otherwise. Additive: the existing view
+        # fields are unchanged either way.
+        gating = slider_gating_enabled()
+        projection = {"_id": 0, "id": 1, "updated_at": 1, "work_category": 1,
+                      "open_blocker_count": 1, "open_blocker_summary": 1}
+        if gating:
+            projection.update({"predecessors": 1, "pct_complete": 1,
+                               "status": 1, "activity_code": 1, "project_id": 1})
         tasks = await db.tasks.find(
             tenant_filter(tenant_id, {"id": {"$in": task_ids}}),
-            {"_id": 0, "id": 1, "updated_at": 1, "work_category": 1,
-             "open_blocker_count": 1, "open_blocker_summary": 1},
+            projection,
         ).to_list(len(task_ids))
         by_id = {t["id"]: t for t in tasks}
+        if gating and tasks:
+            gate_by_task_id = await _compute_grid_slider_gates(db, tenant_id, tasks)
     for r in rows:
         enrich_grid_row(r, by_id.get(r.get("schedule_activity_id")))
+        # CPM B1 -- stamp the read-time slider gate (None when the flag is
+        # off, so the frontend slider keeps its pre-B1 free [0,100] behaviour).
+        if gate_by_task_id:
+            g = gate_by_task_id.get(r.get("schedule_activity_id"))
+            if g is not None:
+                r["slider_gate"] = g
     return rows
+
+
+async def _compute_grid_slider_gates(db, tenant_id: str, tasks: list) -> dict:
+    """CPM B1 (2026-06-12) -- {task_id -> slider gate} for the grid's linked
+    tasks. One extra $in query for the predecessor states, then the pure
+    compute_slider_gate. Called only when FF_SLIDER_GATING is on."""
+    from services.slider_gating import compute_slider_gate
+    from models import pred_code as _pc
+    pred_codes: set = set()
+    project_id = None
+    for t in tasks:
+        project_id = project_id or t.get("project_id")
+        for p in (t.get("predecessors") or []):
+            c = _pc(p)
+            if c:
+                pred_codes.add(c)
+    pred_states: dict = {}
+    if pred_codes and project_id:
+        pred_rows = await db.tasks.find(
+            tenant_filter(tenant_id, {
+                "project_id": project_id,
+                "activity_code": {"$in": list(pred_codes)},
+                "status": {"$ne": "deleted"},
+            }),
+            {"_id": 0, "activity_code": 1, "pct_complete": 1, "status": 1},
+        ).to_list(len(pred_codes))
+        pred_states = {
+            r["activity_code"]: r for r in pred_rows if r.get("activity_code")
+        }
+    return {t["id"]: compute_slider_gate(t, pred_states) for t in tasks if t.get("id")}
 
 
 @router.get("/daily-reports/{daily_report_id}/grid", response_model=list[DailyReportActivity])
@@ -564,6 +613,10 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     client_task_lmt = raw.pop("task_last_modified_at", None)
     # Addition 5 (2026-05-12) -- edit_reason is metadata, not a row field.
     edit_reason = raw.pop("edit_reason", None)
+    # CPM B1 (2026-06-12) -- slider-gate override reason is a control field,
+    # not a row field (popped like edit_reason). Only consumed when
+    # FF_SLIDER_GATING blocks an EOD% increase past the predecessor gate.
+    slider_override_reason = raw.pop("slider_gate_override_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
 
     before = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
@@ -658,6 +711,72 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             # If timestamp comparison fails for any weird reason, fall
             # through to normal write rather than blocking the user.
             pass
+
+    # CPM B1 (2026-06-12) -- EOD-slider gate enforcement. FF_SLIDER_GATING.
+    # A successor cannot earn progress its predecessors don't yet allow
+    # (Sid's pinned table -- FS lock < 100%, SS lock until started, FF cap
+    # ~95%, SF cap ~99%, most-restrictive predecessor wins). Only an
+    # INCREASE past the gate is blocked; lowering progress or staying within
+    # the cap is always fine. A PM/Admin may override with a logged reason.
+    # Runs BEFORE any row/task write so a blocked edit is fully rejected.
+    # No-op when the flag is off (pre-B1 behaviour, byte-identical).
+    from services.feature_flags import slider_gating_enabled
+    if (slider_gating_enabled()
+            and "pct_complete_end_of_day" in updates
+            and task_before is not None):
+        new_eod = float(updates["pct_complete_end_of_day"])
+        old_eod = float(before.get("pct_complete_end_of_day") or 0)
+        if new_eod > old_eod:  # only constrain increases
+            from services.slider_gating import evaluate_eod_gate
+            from models import pred_code as _pred_code
+            pred_codes = [c for c in (
+                _pred_code(p) for p in (task_before.get("predecessors") or [])
+            ) if c]
+            pred_states: dict = {}
+            if pred_codes:
+                pred_rows = await db.tasks.find(
+                    tenant_filter(ctx["tenant_id"], {
+                        "project_id": task_before.get("project_id"),
+                        "activity_code": {"$in": pred_codes},
+                        "status": {"$ne": "deleted"},
+                    }),
+                    {"_id": 0, "activity_code": 1, "pct_complete": 1, "status": 1},
+                ).to_list(len(pred_codes))
+                pred_states = {
+                    r["activity_code"]: r for r in pred_rows if r.get("activity_code")
+                }
+            decision = evaluate_eod_gate(
+                task_before, pred_states,
+                old_eod=old_eod, new_eod=new_eod,
+                role=ctx["user"].get("role"),
+                override_reason=slider_override_reason,
+            )
+            if decision["action"] == "override":
+                # Authorised PM/Admin override -- allow the edit + audit it.
+                gate = decision["gate"]
+                await write_audit(
+                    tenant_id=ctx["tenant_id"],
+                    table_name="daily_report_activities",
+                    op="SLIDER_GATE_OVERRIDE", record_id=row_id,
+                    before={"max_pct": gate["max_pct"],
+                            "relationship": gate["relationship"],
+                            "binding_pred_code": gate["binding_pred_code"]},
+                    after={"requested_eod": new_eod,
+                           "reason": str(slider_override_reason).strip()},
+                    actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                )
+            elif decision["action"] == "block":
+                gate = decision["gate"]
+                raise HTTPException(status_code=422, detail={
+                    "error": "slider_gate_blocked",
+                    "message": gate["reason"] or (
+                        "This activity's progress is gated by its predecessors."
+                    ),
+                    "relationship": gate["relationship"],
+                    "binding_pred_code": gate["binding_pred_code"],
+                    "max_pct": gate["max_pct"],
+                    "requested": new_eod,
+                })
 
     # 1. Update the grid row itself (existing behaviour) and stamp the
     #    sync_state metadata so the UI can show the provisional indicator.
@@ -785,6 +904,23 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             db, ctx["tenant_id"], task_id,
             actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
         )
+
+        # CPM B2 (2026-06-12) -- progress-driven cascade trigger.
+        # FF_PROGRESS_CASCADE. The EOD% write above just moved the linked
+        # task's pct_complete; re-flow the schedule so a task now behind its
+        # planned percent slips its finish and cascades downstream
+        # (compute_cpm -> projected dates -> remaining float), the same
+        # engine a logged delay drives. auto_recompute_after_event wraps
+        # each step in try/except, so a CPM hiccup never blocks the grid
+        # edit. No new call when the flag is off (pre-B2 behaviour).
+        from services.feature_flags import progress_cascade_enabled
+        if "pct_complete_end_of_day" in updates and progress_cascade_enabled():
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(
+                ctx["tenant_id"],
+                dr.get("project_id") or task_before.get("project_id"),
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
 
         # Bucket C3b Phase 3 — auto-create a daily_presence row tying
         # the picked crew to the activity at first shift. Idempotent on

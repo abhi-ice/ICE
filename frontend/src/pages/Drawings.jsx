@@ -88,7 +88,7 @@ export default function Drawings() {
         </Dialog>
       </div>
 
-      <div className="surface overflow-hidden">
+      <div className="surface overflow-hidden max-md:overflow-x-auto">
         <table className="dense-table">
           <thead><tr><th>Sheet</th><th>Title</th><th>Discipline</th><th>Set</th><th>Rev</th><th>Status</th><th></th></tr></thead>
           <tbody>
@@ -101,9 +101,9 @@ export default function Drawings() {
                 <td className="tabular-nums">{d.revision_count}</td>
                 <td><span className="pill pill-green">{d.status}</span></td>
                 <td className="text-right space-x-2">
-                  <button data-testid={`upload-rev-${d.sheet_number}`} onClick={() => setRevisionDialogFor(d)} className="text-xs text-blue-600 hover:underline">Upload PDF</button>
+                  <button data-testid={`upload-rev-${d.sheet_number}`} onClick={() => setRevisionDialogFor(d)} className="text-xs text-blue-600 hover:underline max-md:min-h-[44px] max-md:inline-flex max-md:items-center">Upload PDF</button>
                   {d.current_revision_id && (
-                    <button data-testid={`view-rev-${d.sheet_number}`} onClick={() => setViewerRev(d.current_revision_id)} className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
+                    <button data-testid={`view-rev-${d.sheet_number}`} onClick={() => setViewerRev(d.current_revision_id)} className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline max-md:min-h-[44px] max-md:inline-flex max-md:items-center">
                       <Eye className="h-3 w-3" /> View
                     </button>
                   )}

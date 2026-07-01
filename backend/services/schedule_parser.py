@@ -19,8 +19,16 @@ parser branch (XLSX, CSV, MPXJ).
   "1.5FS+8h"           -> {"code": "1.5", "type": "FS", "lag_days": 1}  (8 working hours -> 1d)
   "1.5SS+2w"           -> {"code": "1.5", "type": "SS", "lag_days": 14} (2 calendar weeks)
 
-All lag values are CALENDAR days (not working days), per the build
-spec. Conversion documented inline at each helper.
+Lag-unit note (corrected 2026-06-29): the parser stores the lag MAGNITUDE
+that the source expressed (e.g. "+2w" -> 14). BOTH downstream CPM engines --
+the impact-days engine (services/cpm.py) and the enterprise engine
+(services/enterprise_cpm.py) -- consume Predecessor.lag_days as WORKING days
+via working_days.add_working_days. So the stored integer is treated as working
+days end-to-end, and the two engines never disagree on lag. The original
+"calendar days" wording above the examples is therefore the SOURCE magnitude,
+not the consumption unit. True calendar-day -> working-day lag canonicalization
+("Diagram 2" backlog item B1) is a deliberate, separable follow-up; it is
+DEFERRED so it cannot disturb Mode-1's existing stored lags.
 """
 import csv
 import io
@@ -256,6 +264,13 @@ COL_ALIASES = {
     "actual_finish": ["actual finish", "actual_finish", "act finish", "actual end",
                       "actual finish date"],
     "status": ["status", "task_status", "task status", "activity status", "state"],
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- optional scheduling-input
+    # columns. A schedule WITHOUT these columns parses exactly as before
+    # (keys stay absent -> TaskCreate defaults them to None); they are read
+    # only by the enterprise engine for schedule_engine="enterprise" projects.
+    "constraint_type": ["constraint type", "constraint_type", "constraint"],
+    "constraint_date": ["constraint date", "constraint_date", "constraint dt"],
+    "calendar_id": ["calendar", "calendar id", "calendar_id", "calendar name"],
 }
 
 
@@ -311,6 +326,41 @@ def _parse_status(v):
     return None
 
 
+# Enterprise CPM ("Diagram 2", 2026-06-29) -- schedule-constraint cell parser.
+# Maps the spreadsheet / MS-Project constraint label to one of the 9 canonical
+# models.ScheduleConstraintType values. Returns None when empty / unrecognized
+# so an un-constrained row (the overwhelming majority) stays None and the
+# enterprise engine treats it as the implicit "as soon as possible".
+_CONSTRAINT_TYPE_ALIASES = {
+    "mso": ["must start on", "mso", "must_start_on", "must-start-on"],
+    "mfo": ["must finish on", "mfo", "must_finish_on", "must-finish-on"],
+    "start_on": ["start on", "start_on", "start-on"],
+    "snet": ["start no earlier than", "snet", "start_no_earlier_than",
+             "start-no-earlier-than"],
+    "snlt": ["start no later than", "snlt", "start_no_later_than",
+             "start-no-later-than"],
+    "fnet": ["finish no earlier than", "fnet", "finish_no_earlier_than",
+             "finish-no-earlier-than"],
+    "fnlt": ["finish no later than", "fnlt", "finish_no_later_than",
+             "finish-no-later-than", "deadline"],
+    "asap": ["as soon as possible", "asap"],
+    "alap": ["as late as possible", "alap"],
+}
+
+
+def _parse_constraint_type(v):
+    """Normalize a source constraint label to a ScheduleConstraintType, or None."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if not s:
+        return None
+    for canon, aliases in _CONSTRAINT_TYPE_ALIASES.items():
+        if s in aliases:
+            return canon
+    return None
+
+
 def parse_xlsx(content: bytes) -> Tuple[List[dict], List[str]]:
     """Returns (parsed_rows, errors). Each row is a dict with keys matching
     schedule_proposal.parsed_to_task_create_payload's expected input."""
@@ -349,6 +399,10 @@ def parse_xlsx(content: bytes) -> Tuple[List[dict], List[str]]:
                 "actual_start": _parse_date(row[cols["actual_start"]]) if "actual_start" in cols else None,
                 "actual_finish": _parse_date(row[cols["actual_finish"]]) if "actual_finish" in cols else None,
                 "status": _parse_status(row[cols["status"]]) if "status" in cols else None,
+                # Enterprise CPM ("Diagram 2") -- optional scheduling inputs.
+                "constraint_type": _parse_constraint_type(row[cols["constraint_type"]]) if "constraint_type" in cols else None,
+                "constraint_date": _parse_date(row[cols["constraint_date"]]) if "constraint_date" in cols else None,
+                "calendar_id": (str(row[cols["calendar_id"]]).strip() or None) if "calendar_id" in cols and row[cols["calendar_id"]] else None,
             }
             rows.append(parsed)
         except Exception as e:
@@ -387,6 +441,10 @@ def parse_csv(content: bytes) -> Tuple[List[dict], List[str]]:
                 "actual_start": _parse_date(row[cols["actual_start"]]) if "actual_start" in cols and len(row) > cols["actual_start"] else None,
                 "actual_finish": _parse_date(row[cols["actual_finish"]]) if "actual_finish" in cols and len(row) > cols["actual_finish"] else None,
                 "status": _parse_status(row[cols["status"]]) if "status" in cols and len(row) > cols["status"] else None,
+                # Enterprise CPM ("Diagram 2") -- optional scheduling inputs.
+                "constraint_type": _parse_constraint_type(row[cols["constraint_type"]]) if "constraint_type" in cols and len(row) > cols["constraint_type"] else None,
+                "constraint_date": _parse_date(row[cols["constraint_date"]]) if "constraint_date" in cols and len(row) > cols["constraint_date"] else None,
+                "calendar_id": (str(row[cols["calendar_id"]]).strip() or None) if "calendar_id" in cols and len(row) > cols["calendar_id"] and row[cols["calendar_id"]] else None,
             }
             if not parsed["activity_code"] or not parsed["description"]:
                 continue

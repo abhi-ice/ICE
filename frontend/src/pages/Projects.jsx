@@ -110,7 +110,7 @@ function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
                   data-testid={`np-${kind}-chip-${v.id}`}
                   onClick={() => onToggle(v.id)}
                   title={v.trades?.length ? `Trades: ${v.trades.join(", ")}` : "Remove"}
-                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-600/15 border border-emerald-600/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600/25 transition"
+                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-600/15 border border-emerald-600/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600/25 transition max-md:min-h-[44px] max-md:px-3"
                 >
                   <span>{v.name}</span>
                   <span className="opacity-60 hover:opacity-100">×</span>
@@ -131,7 +131,7 @@ function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
                 ? `Add ${singular}…`
                 : `Add another ${singular}…`}
             </span>
-            <span className="text-[10px] opacity-60">
+            <span className="text-[10px] max-md:text-xs opacity-60">
               {available.length} available
             </span>
           </button>
@@ -163,7 +163,7 @@ function VendorPicker({ kind, vendors, selectedIds, onToggle }) {
                     >
                       <div className="text-xs font-medium text-foreground">{v.name}</div>
                       {v.trades?.length > 0 && (
-                        <div className="text-[10px] text-muted-foreground truncate">
+                        <div className="text-[10px] max-md:text-xs text-muted-foreground truncate">
                           {v.trades.join(", ")}
                         </div>
                       )}
@@ -330,7 +330,7 @@ export default function Projects() {
                 <FieldLabel optional className="field-label">Client</FieldLabel>
                 <input data-testid="np-client" placeholder="e.g. VA Medical Center, Bronx NY" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel optional className="field-label">Station</FieldLabel>
                   <input data-testid="np-station" placeholder="e.g. 526-25-100" value={form.station_id} onChange={(e) => setForm({ ...form, station_id: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
@@ -352,7 +352,7 @@ export default function Projects() {
                 <FieldLabel optional className="field-label">City</FieldLabel>
                 <input data-testid="np-city" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel optional className="field-label">State</FieldLabel>
                   <input data-testid="np-state" placeholder="e.g. NY or New York" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
@@ -395,7 +395,7 @@ export default function Projects() {
                       value={form.agency} onChange={(e) => setForm({ ...form, agency: e.target.value })}
                       className="w-full h-9 px-3 rounded border border-input bg-background" />
                   </div>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <FieldLabel optional className="field-label">NTP date</FieldLabel>
                       <input data-testid="np-ntp" type="date"
@@ -418,7 +418,7 @@ export default function Projects() {
                       </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <FieldLabel optional className="field-label">Original substantial completion</FieldLabel>
                       <input data-testid="np-osc" type="date"
@@ -467,7 +467,7 @@ export default function Projects() {
                     <button
                       data-testid={`edit-project-${p.id}`}
                       onClick={() => openEdit(p)}
-                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mr-3"
+                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mr-3 max-md:min-h-[44px] max-md:px-3"
                     >
                       <Pencil className="h-3 w-3" /> Edit
                     </button>
@@ -476,7 +476,7 @@ export default function Projects() {
                         data-testid={`delete-project-${p.id}`}
                         onClick={() => removeProject(p)}
                         title="Permanently delete this project (admin only)"
-                        className="inline-flex items-center gap-1 text-xs text-rose-500 hover:text-rose-400"
+                        className="inline-flex items-center gap-1 text-xs text-rose-500 hover:text-rose-400 max-md:min-h-[44px] max-md:px-3"
                       >
                         <Trash2 className="h-3 w-3" /> Delete
                       </button>

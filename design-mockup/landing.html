@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SiteOps — Federal Construction Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Atkinson Hyperlegible (low-vision optimized: each glyph maximally distinct,
+         designed by Braille Institute) is the primary UI font. Lexend (reading-fluency
+         font) loads alongside for the dyslexia-mode toggle. Manrope keeps display
+         duty; JetBrains Mono for codes/numbers. -->
+    <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=Lexend:wght@400;500;600;700&family=Manrope:wght@200;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --accent-red: #ef233c;
+            --accent-red-glow: rgba(239, 35, 60, 0.5);
+        }
+
+        @keyframes fade-in-up {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes border-spin {
+            from { --gradient-angle: 0deg; }
+            to { --gradient-angle: 360deg; }
+        }
+
+        @keyframes animStar {
+            from { transform: translateY(0px); }
+            to { transform: translateY(-2000px); }
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        @property --gradient-angle {
+            syntax: "<angle>";
+            initial-value: 0deg;
+            inherits: false;
+        }
+
+        .animate-fade-up { animation: fade-in-up 0.8s ease-out forwards; opacity: 0; }
+        body, .font-inter { font-family: 'Atkinson Hyperlegible', 'Inter', sans-serif; font-size: 16.5px; }
+        .font-manrope { font-family: 'Manrope', sans-serif; }
+        .font-mono-jb { font-family: 'JetBrains Mono', monospace; }
+
+        .shiny-cta {
+            --gradient-angle: 0deg;
+            position: relative;
+            overflow: hidden;
+            border-radius: 9999px;
+            padding: 1rem 2.5rem;
+            background: linear-gradient(#000, #000) padding-box,
+                conic-gradient(from var(--gradient-angle), transparent 0%, #ef233c 5%, #ef233c 15%, #ef233c 30%, transparent 40%, transparent 100%) border-box;
+            border: 2px solid transparent;
+            cursor: pointer;
+            isolation: isolate;
+            animation: border-spin 2.5s linear infinite;
+        }
+
+        .shiny-cta::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 50% 50%, white 0.5px, transparent 0);
+            background-size: 4px 4px;
+            opacity: 0.1;
+            z-index: 0;
+        }
+
+        .stars-1 { box-shadow: 234px 124px #fff, 654px 345px #fff, 876px 12px #fff, 1200px 800px #fff, 400px 1500px #fff, 1800px 200px #fff, 100px 1000px #fff, 900px 1900px #fff, 500px 600px #fff, 1400px 100px #fff, 300px 400px #fff, 1600px 1200px #fff, 750px 1700px #fff, 1700px 1500px #fff, 350px 200px #fff; }
+        .stars-2 { box-shadow: 123px 456px #fff, 789px 234px #fff, 456px 890px #fff, 1100px 300px #fff, 200px 1200px #fff, 1500px 500px #fff, 600px 1700px #fff, 1300px 900px #fff, 50px 50px #fff, 1900px 1100px #fff; }
+
+        .gradient-blur {
+            position: fixed;
+            z-index: 40;
+            inset: 0 0 auto 0;
+            height: 120px;
+            pointer-events: none;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.85), transparent);
+            backdrop-filter: blur(8px);
+            mask-image: linear-gradient(to bottom, black, transparent);
+        }
+
+        .selection-red::selection { background: #ef233c; color: white; }
+
+        .text-stroke {
+            -webkit-text-stroke: 1px rgba(255, 255, 255, 0.1);
+            color: transparent;
+        }
+
+        .card-glow:hover { box-shadow: 0 0 60px -10px rgba(239, 35, 60, 0.15); }
+
+        .status-pulse {
+            animation: pulse-dot 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="selection-red">
+<div class="min-h-screen bg-black text-white font-inter relative overflow-x-hidden">
+
+    <!-- Global Background -->
+    <div class="fixed inset-0 z-0 pointer-events-none">
+        <div class="absolute inset-0 bg-gradient-to-b from-[#1a0505] to-black"></div>
+        <div class="absolute top-0 left-0 w-[1px] h-[1px] bg-transparent stars-1 animate-[animStar_50s_linear_infinite]"></div>
+        <div class="absolute top-0 left-0 w-[2px] h-[2px] bg-transparent stars-2 animate-[animStar_80s_linear_infinite]"></div>
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-red-600/5 rounded-full blur-[120px]"></div>
+        <div class="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:40px_40px] [mask-image:radial-gradient(circle_at_center,black_40%,transparent_80%)]"></div>
+    </div>
+
+    <div class="gradient-blur"></div>
+
+    <!-- Navbar -->
+    <header class="fixed top-0 left-0 w-full z-50 pt-6 px-4">
+        <nav class="max-w-6xl mx-auto flex items-center justify-between bg-black/60 backdrop-blur-xl border border-white/10 rounded-full px-6 py-3 shadow-2xl">
+            <a href="#" class="flex items-center gap-2.5 group">
+                <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 shrink-0 transition-transform duration-500 group-hover:scale-110" aria-label="SiteOps logo">
+                    <defs>
+                        <linearGradient id="lg-red-1" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stop-color="#ef233c"/>
+                            <stop offset="100%" stop-color="#b91c2c"/>
+                        </linearGradient>
+                    </defs>
+                    <rect x="9" y="6" width="14" height="5" rx="1.2" fill="#a1a1aa"/>
+                    <rect x="5" y="14" width="22" height="5" rx="1.2" fill="#d4d4d8"/>
+                    <rect x="2" y="22" width="28" height="6" rx="1.5" fill="url(#lg-red-1)"/>
+                    <circle cx="26" cy="4" r="1.5" fill="#ef233c" class="opacity-80"/>
+                </svg>
+                <span class="text-lg font-bold font-manrope tracking-tight">SiteOps</span>
+                <span class="text-xs text-zinc-500 font-mono-jb hidden sm:inline ml-0.5">/ Construction OS</span>
+            </a>
+
+            <div class="hidden md:flex items-center gap-8">
+                <a href="#features" class="text-sm font-medium text-zinc-400 hover:text-white transition-colors">Platform</a>
+                <a href="#solutions" class="text-sm font-medium text-zinc-400 hover:text-white transition-colors">Solutions</a>
+                <a href="#compliance" class="text-sm font-medium text-zinc-400 hover:text-white transition-colors">Compliance</a>
+                <a href="#pricing" class="text-sm font-medium text-zinc-400 hover:text-white transition-colors">Pricing</a>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <a href="./app-mockup.html" class="hidden md:block text-sm font-medium text-zinc-300 hover:text-white">Sign In</a>
+                <button class="group relative inline-flex items-center justify-center overflow-hidden rounded-full bg-white/5 px-6 py-2 transition-transform active:scale-95">
+                    <span class="absolute inset-0 border border-white/10 rounded-full"></span>
+                    <span class="absolute inset-[-100%] animate-[spin_3s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,transparent_0%,transparent_75%,#ef233c_100%)] opacity-0 group-hover:opacity-100 transition-opacity"></span>
+                    <span class="absolute inset-[1px] rounded-full bg-black"></span>
+                    <span class="relative z-10 flex items-center gap-2 text-xs font-bold uppercase tracking-wider">
+                        Request Demo <iconify-icon icon="lucide:arrow-right" class="w-3 h-3 group-hover:translate-x-0.5 transition-transform"></iconify-icon>
+                    </span>
+                </button>
+            </div>
+        </nav>
+    </header>
+
+    <main class="relative z-10">
+
+        <!-- Hero -->
+        <section class="min-h-screen flex flex-col items-center justify-center pt-32 pb-20 px-6">
+            <div class="text-center max-w-5xl mx-auto">
+                <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 backdrop-blur-md mb-8 animate-fade-up" style="animation-delay: 0.1s;">
+                    <span class="relative flex h-2 w-2">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-[#ef233c]"></span>
+                    </span>
+                    <span class="text-xs font-medium text-red-100/90 tracking-wide font-manrope">
+                        AI Recovery Engine v2 — now with constructibility filtering
+                    </span>
+                    <iconify-icon icon="lucide:arrow-right" class="w-3 h-3 text-red-400"></iconify-icon>
+                </div>
+
+                <h1 class="text-6xl md:text-8xl font-semibold tracking-tighter font-manrope leading-[1.05] mb-8 animate-fade-up" style="animation-delay: 0.2s;">
+                    <span class="block text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40">Federal construction</span>
+                    <span class="block text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40">
+                        built on <span class="text-[#ef233c] inline-block relative">
+                            schedule
+                            <svg class="absolute w-full h-3 -bottom-2 left-0 text-[#ef233c] opacity-60" viewBox="0 0 100 10" preserveAspectRatio="none">
+                                <path d="M0 5 Q 50 10 100 5" stroke="currentColor" stroke-width="2" fill="none" />
+                            </svg>
+                        </span>
+                    </span>
+                </h1>
+
+                <p class="text-xl md:text-2xl text-zinc-400 max-w-3xl mx-auto mb-12 leading-relaxed animate-fade-up" style="animation-delay: 0.3s;">
+                    SiteOps fuses CPM math, AI mitigation, and field-team daily reports into one audit-clean platform — built for GSA, VA, and USMS work.
+                </p>
+
+                <div class="flex flex-col md:flex-row items-center justify-center gap-6 animate-fade-up" style="animation-delay: 0.4s;">
+                    <a href="./app-mockup.html" class="shiny-cta group">
+                        <span class="relative z-10 flex items-center gap-2 text-white font-medium">
+                            Open Platform <iconify-icon icon="lucide:arrow-right" class="transition-transform group-hover:translate-x-1"></iconify-icon>
+                        </span>
+                    </a>
+
+                    <button class="group px-8 py-4 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-300 font-medium hover:text-white hover:bg-zinc-800 transition-all flex items-center gap-2">
+                        <iconify-icon icon="lucide:play" class="w-5 h-5"></iconify-icon>
+                        Watch 2-min Demo
+                    </button>
+                </div>
+            </div>
+
+            <!-- Federal logo strip -->
+            <div class="w-full mt-32 border-y border-white/5 bg-white/[0.02] backdrop-blur-sm py-10 opacity-60 hover:opacity-100 transition-opacity">
+                <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center gap-8 md:gap-16">
+                    <p class="text-sm font-bold tracking-widest text-zinc-500 uppercase shrink-0">Deployed across:</p>
+                    <div class="flex flex-wrap justify-center gap-8 md:gap-16 items-center w-full">
+                        <div class="flex items-center gap-2 font-manrope font-semibold tracking-tight">
+                            <iconify-icon icon="lucide:landmark" class="w-5 h-5 text-zinc-400"></iconify-icon>GSA</div>
+                        <div class="flex items-center gap-2 font-manrope font-semibold tracking-tight">
+                            <iconify-icon icon="lucide:hospital" class="w-5 h-5 text-zinc-400"></iconify-icon>VA</div>
+                        <div class="flex items-center gap-2 font-manrope font-semibold tracking-tight">
+                            <iconify-icon icon="lucide:shield" class="w-5 h-5 text-zinc-400"></iconify-icon>USMS</div>
+                        <div class="flex items-center gap-2 font-manrope font-semibold tracking-tight">
+                            <iconify-icon icon="lucide:building-2" class="w-5 h-5 text-zinc-400"></iconify-icon>NYCHA</div>
+                        <div class="flex items-center gap-2 font-manrope font-semibold tracking-tight">
+                            <iconify-icon icon="lucide:flag" class="w-5 h-5 text-zinc-400"></iconify-icon>DOD</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features bento -->
+        <section id="features" class="py-32 px-6">
+            <div class="max-w-7xl mx-auto">
+                <div class="mb-20 text-center max-w-3xl mx-auto">
+                    <h2 class="text-4xl md:text-5xl font-semibold text-white tracking-tight font-manrope mb-6">
+                        The Operating System for <br />
+                        <span class="text-[#ef233c]">Federal Schedule Teams</span>
+                    </h2>
+                    <p class="text-lg text-zinc-400 font-light">
+                        Replace the patchwork of Primavera, Procore, and SharePoint with one cohesive platform driven by AI you can actually trust.
+                    </p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 h-auto lg:h-[720px]">
+                    <!-- Big card: Recovery -->
+                    <div class="card-glow lg:col-span-2 lg:row-span-2 group relative overflow-hidden p-8 border border-white/10 bg-gradient-to-b from-zinc-900/50 to-black hover:border-white/20 transition-all rounded-xl">
+                        <div class="relative z-10 h-full flex flex-col">
+                            <div class="mb-6 inline-flex p-3 rounded-lg bg-white/5 border border-white/10 text-[#ef233c]">
+                                <iconify-icon icon="lucide:wand-sparkles" class="w-6 h-6"></iconify-icon>
+                            </div>
+                            <h3 class="text-3xl font-semibold text-white font-manrope mb-4 tracking-tight">AI Recovery Engine</h3>
+                            <p class="text-zinc-400 text-lg leading-relaxed mb-6">When a delay lands, the platform walks the cascade graph, identifies CP impact, and proposes three mitigation scenarios — each cited against prior outcomes on similar delays.</p>
+                            <div class="space-y-2 text-sm font-mono-jb mb-6">
+                                <div class="flex items-center gap-2 text-zinc-400"><span class="text-emerald-400">›</span> Recovery suggestions with confidence scoring</div>
+                                <div class="flex items-center gap-2 text-zinc-400"><span class="text-emerald-400">›</span> Cascade-aware impact projection</div>
+                                <div class="flex items-center gap-2 text-zinc-400"><span class="text-emerald-400">›</span> Audit-chain of every AI decision</div>
+                            </div>
+                            <div class="mt-auto flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0">
+                                <span class="text-xs font-mono-jb text-[#ef233c] tracking-widest">EXPLORE RECOVERY →</span>
+                                <iconify-icon icon="lucide:arrow-right" class="w-4 h-4 text-[#ef233c]"></iconify-icon>
+                            </div>
+                        </div>
+                        <div class="absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none" style="background: radial-gradient(circle at top right, #ef233c, transparent 70%);"></div>
+                    </div>
+
+                    <!-- Constructibility rules -->
+                    <div class="card-glow lg:col-span-2 group relative overflow-hidden p-8 border border-white/10 bg-black hover:border-white/20 transition-all rounded-xl">
+                        <div class="relative z-10 flex flex-col h-full">
+                            <div class="mb-4 inline-flex p-3 rounded-lg bg-white/5 border border-white/10 text-amber-400">
+                                <iconify-icon icon="lucide:shield-check" class="w-6 h-6"></iconify-icon>
+                            </div>
+                            <h3 class="text-2xl font-semibold text-white font-manrope mb-2">Constructibility Filter</h3>
+                            <p class="text-zinc-400">Every AI proposal passes through a typed rules engine — trade conflicts, cure times, OSHA exclusion zones, density caps. No more nonsense suggestions.</p>
+                        </div>
+                        <div class="absolute inset-0 opacity-0 group-hover:opacity-10 transition-opacity pointer-events-none" style="background: radial-gradient(circle at top right, #f59e0b, transparent 70%);"></div>
+                    </div>
+
+                    <!-- Spatial -->
+                    <div class="card-glow group relative overflow-hidden p-8 border border-white/10 bg-black hover:border-white/20 transition-all rounded-xl">
+                        <div class="relative z-10">
+                            <div class="mb-4 inline-flex p-3 rounded-lg bg-white/5 border border-white/10 text-blue-400">
+                                <iconify-icon icon="lucide:box" class="w-6 h-6"></iconify-icon>
+                            </div>
+                            <h3 class="text-xl font-semibold text-white font-manrope mb-2">Spatial Awareness</h3>
+                            <p class="text-sm text-zinc-400">Click a room on the plan, see every RFI, photo, and delay tagged to it. 2.5D extruded model for federal client demos.</p>
+                        </div>
+                    </div>
+
+                    <!-- Daily Reports -->
+                    <div class="card-glow group relative overflow-hidden p-8 border border-white/10 bg-black hover:border-white/20 transition-all rounded-xl">
+                        <div class="relative z-10">
+                            <div class="mb-4 inline-flex p-3 rounded-lg bg-white/5 border border-white/10 text-emerald-400">
+                                <iconify-icon icon="lucide:clipboard-check" class="w-6 h-6"></iconify-icon>
+                            </div>
+                            <h3 class="text-xl font-semibold text-white font-manrope mb-2">Smart Daily Reports</h3>
+                            <p class="text-sm text-zinc-400">Auto-populated header, AI exports into your client's exact xlsx template. Voice-dictated activity grid.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Stat band -->
+        <section class="py-20 px-6 border-y border-white/5">
+            <div class="max-w-7xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-8">
+                <div class="text-center">
+                    <div class="text-5xl font-bold font-manrope text-[#ef233c] mb-2">90%</div>
+                    <div class="text-sm text-zinc-400 uppercase tracking-widest">Less DR Filing Time</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-5xl font-bold font-manrope text-[#ef233c] mb-2">17</div>
+                    <div class="text-sm text-zinc-400 uppercase tracking-widest">Functional Modules</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-5xl font-bold font-manrope text-[#ef233c] mb-2">FAR</div>
+                    <div class="text-sm text-zinc-400 uppercase tracking-widest">52.236-15 Compliant</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-5xl font-bold font-manrope text-[#ef233c] mb-2">SHA-256</div>
+                    <div class="text-sm text-zinc-400 uppercase tracking-widest">Audit Chain</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Workflow steps -->
+        <section id="solutions" class="py-32 px-6">
+            <div class="max-w-7xl mx-auto">
+                <div class="mb-20 text-center max-w-3xl mx-auto">
+                    <h2 class="text-4xl md:text-5xl font-semibold text-white tracking-tight font-manrope mb-6">
+                        From <span class="text-[#ef233c]">field log</span> to client deliverable in one flow.
+                    </h2>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="p-6 border border-white/10 bg-zinc-900/30 rounded-xl">
+                        <div class="text-xs font-mono-jb text-[#ef233c] mb-3 tracking-widest">01 · CAPTURE</div>
+                        <h4 class="font-semibold text-xl font-manrope mb-3">Field super logs the day</h4>
+                        <p class="text-sm text-zinc-400 leading-relaxed">Voice annotation, crew presence by trade, weather autofill, photos auto-tagged to rooms.</p>
+                    </div>
+                    <div class="p-6 border border-white/10 bg-zinc-900/30 rounded-xl">
+                        <div class="text-xs font-mono-jb text-[#ef233c] mb-3 tracking-widest">02 · ANALYZE</div>
+                        <h4 class="font-semibold text-xl font-manrope mb-3">AI scans for slip + risk</h4>
+                        <p class="text-sm text-zinc-400 leading-relaxed">CPM cascade, blocker detection, mitigation scenarios — every recommendation cited and traceable.</p>
+                    </div>
+                    <div class="p-6 border border-white/10 bg-zinc-900/30 rounded-xl">
+                        <div class="text-xs font-mono-jb text-[#ef233c] mb-3 tracking-widest">03 · DELIVER</div>
+                        <h4 class="font-semibold text-xl font-manrope mb-3">Client gets their format</h4>
+                        <p class="text-sm text-zinc-400 leading-relaxed">Client's exact xlsx template filled by AI semantic mapping. Labels preserved, values fresh.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Testimonial -->
+        <div class="w-full bg-[#ef233c] py-20 px-6">
+            <div class="max-w-4xl mx-auto text-center">
+                <div class="flex justify-center gap-1 text-black mb-6">
+                    <iconify-icon icon="lucide:star" class="w-6 h-6" fill="currentColor"></iconify-icon>
+                    <iconify-icon icon="lucide:star" class="w-6 h-6" fill="currentColor"></iconify-icon>
+                    <iconify-icon icon="lucide:star" class="w-6 h-6" fill="currentColor"></iconify-icon>
+                    <iconify-icon icon="lucide:star" class="w-6 h-6" fill="currentColor"></iconify-icon>
+                    <iconify-icon icon="lucide:star" class="w-6 h-6" fill="currentColor"></iconify-icon>
+                </div>
+                <h3 class="text-3xl md:text-5xl font-bold text-black font-manrope leading-tight mb-8">
+                    "The AI doesn't pretend to know more than it does. When it can't recover a slip, it tells me — and when it can, it cites the prior project. That's what I trust."
+                </h3>
+                <div class="flex items-center justify-center gap-4">
+                    <div class="w-12 h-12 bg-black rounded-full overflow-hidden flex items-center justify-center">
+                        <iconify-icon icon="lucide:user" class="text-white w-6 h-6"></iconify-icon>
+                    </div>
+                    <div class="text-left">
+                        <div class="text-black font-bold text-lg">Paul DiCristina</div>
+                        <div class="text-black/70 font-medium">Sr. Project Manager · ICE Federal Group</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Compliance -->
+        <section id="compliance" class="py-32 px-6 bg-black relative border-t border-white/5">
+            <div class="max-w-5xl mx-auto">
+                <div class="text-center mb-16">
+                    <h2 class="text-4xl md:text-5xl font-semibold text-white font-manrope mb-4">Federal-grade by default</h2>
+                    <p class="text-zinc-400">Every artifact is hash-chained. Every AI decision is logged. Every override is documented.</p>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="p-5 border border-white/10 bg-zinc-900/40 rounded-xl text-center">
+                        <iconify-icon icon="lucide:lock" class="w-8 h-8 text-[#ef233c] mb-3"></iconify-icon>
+                        <div class="font-semibold text-sm">CUI Gated</div>
+                        <div class="text-xs text-zinc-500 mt-1">Per-project AI off-switch</div>
+                    </div>
+                    <div class="p-5 border border-white/10 bg-zinc-900/40 rounded-xl text-center">
+                        <iconify-icon icon="lucide:scroll-text" class="w-8 h-8 text-[#ef233c] mb-3"></iconify-icon>
+                        <div class="font-semibold text-sm">SHA-256 Audit</div>
+                        <div class="text-xs text-zinc-500 mt-1">Tamper-evident chain</div>
+                    </div>
+                    <div class="p-5 border border-white/10 bg-zinc-900/40 rounded-xl text-center">
+                        <iconify-icon icon="lucide:scale" class="w-8 h-8 text-[#ef233c] mb-3"></iconify-icon>
+                        <div class="font-semibold text-sm">FAR / GSAM</div>
+                        <div class="text-xs text-zinc-500 mt-1">52.236-15 SLA defaults</div>
+                    </div>
+                    <div class="p-5 border border-white/10 bg-zinc-900/40 rounded-xl text-center">
+                        <iconify-icon icon="lucide:fingerprint" class="w-8 h-8 text-[#ef233c] mb-3"></iconify-icon>
+                        <div class="font-semibold text-sm">Voice PIN</div>
+                        <div class="text-xs text-zinc-500 mt-1">Field-safe ID</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Pricing -->
+        <section id="pricing" class="py-32 px-6 bg-black relative border-t border-white/5">
+            <div class="max-w-7xl mx-auto">
+                <div class="text-center mb-20">
+                    <h2 class="text-4xl md:text-5xl font-semibold text-white font-manrope mb-4">Pricing built for ACV, not seat tax</h2>
+                    <p class="text-zinc-400">No per-seat surprise renewals. No platform fees doubling year over year.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                    <!-- Field Team -->
+                    <div class="p-8 border border-zinc-800 bg-black hover:border-zinc-700 transition-all rounded-xl flex flex-col">
+                        <h3 class="text-xl font-bold font-manrope mb-2">Field Team</h3>
+                        <p class="text-zinc-500 text-sm mb-8 h-10">For a single supe running a single federal project.</p>
+                        <div class="mb-8 flex items-baseline gap-1">
+                            <span class="text-zinc-500">$</span>
+                            <span class="text-5xl font-bold text-white">499</span>
+                            <span class="text-zinc-500 text-sm">/mo</span>
+                        </div>
+                        <ul class="space-y-4 mb-8 flex-1 text-sm">
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> 1 active project</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Daily reports + client xlsx export</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Photos & voice annotation</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Email support</li>
+                        </ul>
+                        <button class="w-full py-3 px-4 bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg text-sm font-bold uppercase tracking-wider transition-all">Start Trial</button>
+                    </div>
+
+                    <!-- Project Office (recommended) -->
+                    <div class="relative p-8 border border-[#ef233c] bg-zinc-900/40 shadow-[0_0_40px_rgba(239,35,60,0.15)] rounded-xl flex flex-col scale-105 z-10">
+                        <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#ef233c] text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full">Most Popular</div>
+                        <h3 class="text-xl font-bold font-manrope mb-2">Project Office</h3>
+                        <p class="text-zinc-400 text-sm mb-8 h-10">For a small GC running multiple federal projects.</p>
+                        <div class="mb-8 flex items-baseline gap-1">
+                            <span class="text-zinc-500">$</span>
+                            <span class="text-5xl font-bold text-white">2,499</span>
+                            <span class="text-zinc-500 text-sm">/mo</span>
+                        </div>
+                        <ul class="space-y-4 mb-8 flex-1 text-sm">
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Up to 10 projects</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> AI Recovery + Cascade Engine</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Constructibility filter</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Spatial 2.5D model</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Priority support · SLA</li>
+                        </ul>
+                        <button class="w-full py-3 px-4 bg-[#ef233c] hover:bg-red-700 text-white rounded-lg text-sm font-bold uppercase tracking-wider transition-all">Get Started</button>
+                    </div>
+
+                    <!-- Federal Enterprise -->
+                    <div class="p-8 border border-zinc-800 bg-black hover:border-zinc-700 transition-all rounded-xl flex flex-col">
+                        <h3 class="text-xl font-bold font-manrope mb-2">Federal Enterprise</h3>
+                        <p class="text-zinc-500 text-sm mb-8 h-10">For mid-size GCs with $50M+ ACV across GSA / VA / DOD.</p>
+                        <div class="mb-8 flex items-baseline gap-1">
+                            <span class="text-5xl font-bold text-white">Custom</span>
+                        </div>
+                        <ul class="space-y-4 mb-8 flex-1 text-sm">
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Unlimited projects</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> SSO · Active Directory</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Custom AI agents</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Dedicated CSM</li>
+                            <li class="flex items-center gap-3 text-zinc-300"><iconify-icon icon="lucide:check" class="text-[#ef233c]"></iconify-icon> Sovereign / on-prem option</li>
+                        </ul>
+                        <button class="w-full py-3 px-4 bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg text-sm font-bold uppercase tracking-wider transition-all">Contact Sales</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA Waitlist -->
+        <section class="py-32 px-6 text-center bg-zinc-950/40">
+            <div class="max-w-3xl mx-auto">
+                <h2 class="text-5xl md:text-7xl font-bold font-manrope mb-8 tracking-tighter">Ready to <span class="text-[#ef233c]">deploy?</span></h2>
+                <p class="text-xl text-zinc-400 mb-12">Walk through ICE on a real project in 30 minutes. We'll show you the AI Recovery, the Client Format Export, and the audit chain. No slideware.</p>
+
+                <form class="max-w-md mx-auto flex flex-col sm:flex-row gap-4" onsubmit="event.preventDefault(); alert('Demo request received.');">
+                    <input type="email" placeholder="your-name@your-gc.com" class="flex-1 bg-white/5 border border-white/10 rounded-full px-6 py-4 text-white focus:outline-none focus:border-[#ef233c] transition-all">
+                    <button type="submit" class="bg-[#ef233c] hover:bg-red-700 text-white font-bold rounded-full px-8 py-4 transition-all">Book Demo</button>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-black border-t border-zinc-900 pt-20 pb-10 relative overflow-hidden">
+        <div class="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-4 gap-12 mb-24 relative z-10">
+            <div class="md:col-span-2">
+                <div class="flex items-center gap-3 mb-6">
+                    <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" class="w-9 h-9 shrink-0" aria-label="SiteOps logo">
+                        <defs>
+                            <linearGradient id="lg-red-2" x1="0" y1="0" x2="1" y2="1">
+                                <stop offset="0%" stop-color="#ef233c"/>
+                                <stop offset="100%" stop-color="#b91c2c"/>
+                            </linearGradient>
+                        </defs>
+                        <rect x="9" y="6" width="14" height="5" rx="1.2" fill="#a1a1aa"/>
+                        <rect x="5" y="14" width="22" height="5" rx="1.2" fill="#d4d4d8"/>
+                        <rect x="2" y="22" width="28" height="6" rx="1.5" fill="url(#lg-red-2)"/>
+                        <circle cx="26" cy="4" r="1.5" fill="#ef233c" class="opacity-80"/>
+                    </svg>
+                    <span class="text-2xl font-bold font-manrope tracking-tight">SiteOps</span>
+                </div>
+                <p class="text-zinc-500 max-w-xs leading-relaxed">Federal-grade construction OS. Built by an AE-credentialed GC, deployed on real federal contracts. A product of Integrated Construction Enterprises.</p>
+            </div>
+
+            <div>
+                <h4 class="text-xs font-bold text-[#ef233c] uppercase tracking-widest mb-6">Platform</h4>
+                <ul class="space-y-4 text-zinc-400 text-sm">
+                    <li><a href="#features" class="hover:text-white transition-colors">Modules</a></li>
+                    <li><a href="#solutions" class="hover:text-white transition-colors">Workflows</a></li>
+                    <li><a href="#compliance" class="hover:text-white transition-colors">Compliance</a></li>
+                    <li><a href="#pricing" class="hover:text-white transition-colors">Pricing</a></li>
+                </ul>
+            </div>
+
+            <div>
+                <h4 class="text-xs font-bold text-[#ef233c] uppercase tracking-widest mb-6">Company</h4>
+                <ul class="space-y-4 text-zinc-400 text-sm">
+                    <li><a href="#" class="hover:text-white transition-colors">About ICE</a></li>
+                    <li><a href="#" class="hover:text-white transition-colors">Case Studies</a></li>
+                    <li><a href="#" class="hover:text-white transition-colors">Federal Contracts</a></li>
+                    <li><a href="#" class="hover:text-white transition-colors">Contact</a></li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Huge Footer Text -->
+        <div class="flex justify-center items-center py-10 opacity-20 pointer-events-none">
+            <h1 class="text-[18vw] leading-none font-bold font-manrope tracking-tighter text-stroke select-none">SITEOPS</h1>
+        </div>
+
+        <div class="max-w-7xl mx-auto px-6 border-t border-zinc-900 pt-8 flex flex-col md:flex-row items-center justify-between text-zinc-600 text-[10px] uppercase tracking-widest">
+            <p>&copy; 2026 Integrated Construction Enterprises, LLC. All rights reserved.</p>
+            <div class="flex gap-6 mt-4 md:mt-0">
+                <a href="#" class="hover:text-zinc-400">Status</a>
+                <a href="#" class="hover:text-zinc-400">Security</a>
+                <a href="#" class="hover:text-zinc-400">Privacy</a>
+                <a href="#" class="hover:text-zinc-400">Terms</a>
+            </div>
+        </div>
+    </footer>
+</div>
+
+<!-- ============================================================
+     ACCESSIBILITY TOOLBAR (mirrored from app-mockup.html)
+     ============================================================ -->
+<style>
+body.a11y-text-125 { font-size: 20.5px !important; }
+body.a11y-text-150 { font-size: 24px !important; }
+body.a11y-text-200 { font-size: 31px !important; }
+body.a11y-line-1-5, body.a11y-line-1-5 * { line-height: 1.7 !important; }
+body.a11y-line-2,   body.a11y-line-2 *   { line-height: 2.1 !important; }
+body.a11y-dyslexia, body.a11y-dyslexia * { font-family: 'Lexend', sans-serif !important; }
+body.a11y-large-targets button, body.a11y-large-targets a.shiny-cta, body.a11y-large-targets input { min-height: 52px !important; padding-top: 14px !important; padding-bottom: 14px !important; font-size: 15px !important; }
+body.a11y-reduce-motion *, body.a11y-reduce-motion *::before, body.a11y-reduce-motion *::after {
+    animation-duration: 0.001s !important; animation-iteration-count: 1 !important; transition-duration: 0.001s !important;
+}
+body.a11y-high-contrast { background: #000 !important; color: #fff !important; }
+body.a11y-high-contrast .text-zinc-400, body.a11y-high-contrast .text-zinc-500, body.a11y-high-contrast .text-zinc-600 { color: #e4e4e7 !important; }
+body.a11y-sunlight { background: #000 !important; color: #fff !important; }
+body.a11y-sunlight .fixed.inset-0.z-0, body.a11y-sunlight .gradient-blur { display: none !important; }
+body.a11y-sunlight nav, body.a11y-sunlight section, body.a11y-sunlight footer { background: #000 !important; backdrop-filter: none !important; }
+body.a11y-sunlight .text-zinc-400, body.a11y-sunlight .text-zinc-500, body.a11y-sunlight .text-zinc-600 { color: #f4f4f5 !important; }
+body.a11y-magnifier p:hover, body.a11y-magnifier h1:hover, body.a11y-magnifier h2:hover, body.a11y-magnifier h3:hover, body.a11y-magnifier h4:hover, body.a11y-magnifier li:hover, body.a11y-magnifier label:hover {
+    transform: scale(1.25); transform-origin: left center; position: relative; z-index: 1000;
+    background: rgba(0,0,0,0.95) !important; border: 2px solid #ef233c !important;
+    border-radius: 8px; padding: 8px 12px !important;
+    box-shadow: 0 0 40px rgba(239, 35, 60, 0.5); transition: transform 0.15s ease-out;
+}
+.reading-guide { position: fixed; left: 0; right: 0; height: 38px; background: rgba(239, 35, 60, 0.10); border-top: 2px solid #ef233c; border-bottom: 2px solid #ef233c; pointer-events: none; z-index: 9990; display: none; box-shadow: 0 0 24px rgba(239, 35, 60, 0.3); }
+body.a11y-reading-guide .reading-guide { display: block; }
+
+.a11y-fab { position: fixed; bottom: 22px; right: 22px; z-index: 10001; width: 56px; height: 56px; border-radius: 50%; background: #ef233c; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 32px rgba(239, 35, 60, 0.45); border: 2px solid rgba(255,255,255,0.85); font-size: 26px; transition: transform 0.2s; }
+.a11y-fab:hover { transform: scale(1.08); }
+.a11y-fab:active { transform: scale(0.95); }
+.a11y-panel { position: fixed; bottom: 92px; right: 22px; z-index: 10000; width: 360px; max-height: 84vh; overflow-y: auto; background: rgba(10, 10, 10, 0.97); border: 1px solid rgba(239, 35, 60, 0.5); border-radius: 14px; padding: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 40px rgba(239,35,60,0.15); transform: translateY(20px); opacity: 0; pointer-events: none; transition: all 0.25s ease-out; backdrop-filter: blur(20px); font-family: 'Atkinson Hyperlegible', sans-serif; }
+.a11y-panel.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+.a11y-panel h3 { color: #fff; font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 17px; margin: 0; }
+.a11y-panel .subtitle { color: #a1a1aa; font-size: 11.5px; margin-top: 3px; margin-bottom: 8px; line-height: 1.4; }
+.a11y-panel .section { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; margin-top: 14px; }
+.a11y-panel .section-label { font-size: 10px; font-weight: 700; color: #ef233c; text-transform: uppercase; letter-spacing: 0.11em; margin-bottom: 10px; }
+.a11y-btn-group { display: flex; gap: 6px; }
+.a11y-btn { flex: 1; padding: 9px 6px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #d4d4d8; border-radius: 7px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+.a11y-btn:hover { border-color: rgba(239, 35, 60, 0.5); color: #fff; }
+.a11y-btn.active { background: #ef233c; color: #fff; border-color: #ef233c; box-shadow: 0 0 16px -4px rgba(239,35,60,0.6); }
+.a11y-toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; cursor: pointer; gap: 12px; }
+.a11y-row-label { color: #e4e4e7; font-size: 13.5px; font-weight: 500; }
+.a11y-row-desc { display: block; color: #71717a; font-size: 11px; margin-top: 2px; }
+.a11y-switch { width: 38px; height: 22px; background: rgba(255,255,255,0.15); border-radius: 9999px; position: relative; transition: all 0.2s; flex-shrink: 0; }
+.a11y-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: all 0.2s; }
+.a11y-toggle-row.on .a11y-switch { background: #ef233c; }
+.a11y-toggle-row.on .a11y-switch::after { left: 18px; }
+.a11y-tool-btn { width: 100%; padding: 11px; background: rgba(239,35,60,0.1); border: 1px solid rgba(239,35,60,0.3); color: #ffaeb7; border-radius: 8px; font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; transition: all 0.15s; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.a11y-tool-btn:hover { background: rgba(239,35,60,0.2); color: #fff; border-color: #ef233c; }
+.a11y-reset-btn { color: #f87171 !important; background: rgba(239,68,68,0.05) !important; border-color: rgba(239,68,68,0.3) !important; }
+.a11y-kbd { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #71717a; padding: 2px 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; }
+</style>
+
+<button class="a11y-fab" id="a11y-fab" title="Accessibility settings (Alt+A)" aria-label="Open accessibility settings">
+    <iconify-icon icon="lucide:accessibility"></iconify-icon>
+</button>
+<div class="a11y-panel" id="a11y-panel" role="dialog" aria-label="Accessibility settings">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap: 8px;">
+        <div><h3>Accessibility</h3><div class="subtitle">Tune the UI to your eyes &amp; conditions.<br/>Saved on this device.</div></div>
+        <span class="a11y-kbd">Alt+A</span>
+    </div>
+    <div class="section"><div class="section-label">Text size</div><div class="a11y-btn-group">
+        <button class="a11y-btn" data-text="100">A</button>
+        <button class="a11y-btn" data-text="125">A+</button>
+        <button class="a11y-btn" data-text="150">A++</button>
+        <button class="a11y-btn" data-text="200">A+++</button>
+    </div></div>
+    <div class="section"><div class="section-label">Line spacing</div><div class="a11y-btn-group">
+        <button class="a11y-btn" data-line="1">1×</button>
+        <button class="a11y-btn" data-line="1.5">1.5×</button>
+        <button class="a11y-btn" data-line="2">2×</button>
+    </div></div>
+    <div class="section">
+        <div class="section-label">Display modes</div>
+        <div class="a11y-toggle-row" data-toggle="a11y-high-contrast"><div><div class="a11y-row-label">High contrast</div><div class="a11y-row-desc">Pure black + white + bright red. For low-vision or low-light.</div></div><div class="a11y-switch"></div></div>
+        <div class="a11y-toggle-row" data-toggle="a11y-sunlight"><div><div class="a11y-row-label">Sunlight mode</div><div class="a11y-row-desc">Maximum contrast, no gradients. For outdoor screens.</div></div><div class="a11y-switch"></div></div>
+        <div class="a11y-toggle-row" data-toggle="a11y-dyslexia"><div><div class="a11y-row-label">Dyslexia-friendly font</div><div class="a11y-row-desc">Switches to Lexend (reading-fluency optimized).</div></div><div class="a11y-switch"></div></div>
+        <div class="a11y-toggle-row" data-toggle="a11y-large-targets"><div><div class="a11y-row-label">Large click targets</div><div class="a11y-row-desc">52-px+ buttons for gloves or imprecise touch.</div></div><div class="a11y-switch"></div></div>
+        <div class="a11y-toggle-row" data-toggle="a11y-reduce-motion"><div><div class="a11y-row-label">Reduce motion</div><div class="a11y-row-desc">Disable parallax &amp; animations.</div></div><div class="a11y-switch"></div></div>
+    </div>
+    <div class="section">
+        <div class="section-label">Reading tools</div>
+        <div class="a11y-toggle-row" data-toggle="a11y-magnifier"><div><div class="a11y-row-label">Magnifier (hover-zoom)</div><div class="a11y-row-desc">Hover any paragraph or heading to scale it 1.25×.</div></div><div class="a11y-switch"></div></div>
+        <div class="a11y-toggle-row" data-toggle="a11y-reading-guide"><div><div class="a11y-row-label">Reading guide</div><div class="a11y-row-desc">Horizontal band follows your cursor.</div></div><div class="a11y-switch"></div></div>
+        <button class="a11y-tool-btn" id="a11y-read"><iconify-icon icon="lucide:volume-2"></iconify-icon> Read selection aloud</button>
+    </div>
+    <div class="section"><button class="a11y-tool-btn a11y-reset-btn" id="a11y-reset"><iconify-icon icon="lucide:rotate-ccw"></iconify-icon> Reset all settings</button></div>
+</div>
+<div class="reading-guide" id="reading-guide"></div>
+
+<script>
+(function(){
+    const body = document.body;
+    const KEY = 'siteops_a11y_v1';
+    const DEFAULT = { text: '100', line: '1', toggles: { 'a11y-high-contrast': false, 'a11y-sunlight': false, 'a11y-dyslexia': false, 'a11y-large-targets': false, 'a11y-reduce-motion': false, 'a11y-magnifier': false, 'a11y-reading-guide': false } };
+    let state;
+    try { state = Object.assign({}, DEFAULT, JSON.parse(localStorage.getItem(KEY) || '{}')); state.toggles = Object.assign({}, DEFAULT.toggles, state.toggles || {}); } catch(e) { state = JSON.parse(JSON.stringify(DEFAULT)); }
+    function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e) {} }
+    function applyState() {
+        body.classList.remove('a11y-text-125','a11y-text-150','a11y-text-200');
+        if (state.text === '125') body.classList.add('a11y-text-125');
+        else if (state.text === '150') body.classList.add('a11y-text-150');
+        else if (state.text === '200') body.classList.add('a11y-text-200');
+        body.classList.remove('a11y-line-1-5','a11y-line-2');
+        if (state.line === '1.5') body.classList.add('a11y-line-1-5');
+        else if (state.line === '2') body.classList.add('a11y-line-2');
+        Object.keys(state.toggles).forEach(cls => body.classList.toggle(cls, !!state.toggles[cls]));
+        document.querySelectorAll('.a11y-btn[data-text]').forEach(b => b.classList.toggle('active', b.dataset.text === state.text));
+        document.querySelectorAll('.a11y-btn[data-line]').forEach(b => b.classList.toggle('active', b.dataset.line === state.line));
+        document.querySelectorAll('.a11y-toggle-row').forEach(r => r.classList.toggle('on', !!state.toggles[r.dataset.toggle]));
+    }
+    document.getElementById('a11y-fab').addEventListener('click', () => document.getElementById('a11y-panel').classList.toggle('open'));
+    document.addEventListener('keydown', e => {
+        if (e.altKey && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); document.getElementById('a11y-panel').classList.toggle('open'); }
+        if (e.key === 'Escape') document.getElementById('a11y-panel').classList.remove('open');
+    });
+    document.querySelectorAll('.a11y-btn[data-text]').forEach(btn => btn.addEventListener('click', () => { state.text = btn.dataset.text; save(); applyState(); }));
+    document.querySelectorAll('.a11y-btn[data-line]').forEach(btn => btn.addEventListener('click', () => { state.line = btn.dataset.line; save(); applyState(); }));
+    document.querySelectorAll('.a11y-toggle-row').forEach(row => row.addEventListener('click', () => {
+        const k = row.dataset.toggle;
+        state.toggles[k] = !state.toggles[k];
+        if (k === 'a11y-high-contrast' && state.toggles[k]) state.toggles['a11y-sunlight'] = false;
+        if (k === 'a11y-sunlight' && state.toggles[k]) state.toggles['a11y-high-contrast'] = false;
+        save(); applyState();
+    }));
+    document.getElementById('a11y-reset').addEventListener('click', () => { state = JSON.parse(JSON.stringify(DEFAULT)); save(); applyState(); });
+    document.getElementById('a11y-read').addEventListener('click', () => {
+        const sel = (window.getSelection && window.getSelection().toString().trim()) || '';
+        const text = sel || 'Please highlight any text on the page first, then tap this button to hear it read aloud.';
+        try { if (!('speechSynthesis' in window)) throw new Error('x'); const u = new SpeechSynthesisUtterance(text); u.rate = 0.95; speechSynthesis.cancel(); speechSynthesis.speak(u); }
+        catch (e) { alert('Read-aloud is not supported in this browser. Try Chrome, Edge, or Safari.'); }
+    });
+    const guide = document.getElementById('reading-guide');
+    document.addEventListener('mousemove', e => { if (body.classList.contains('a11y-reading-guide')) guide.style.top = (e.clientY - 19) + 'px'; });
+    applyState();
+})();
+</script>
+
+</body>
+</html>

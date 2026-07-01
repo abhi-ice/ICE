@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, LogOut, User2, Trash2, Sun, Moon, Building2 } from "lucide-react";
+import { ChevronDown, LogOut, User2, Trash2, Sun, Moon, Building2, Menu } from "lucide-react";
 import { getUser, getTenant, clearAuth } from "../lib/auth";
 import { toast } from "./ui/sonner";
 import { useProjects } from "../lib/projects";
@@ -14,11 +14,12 @@ import {
 import api from "../lib/api";
 import NotificationsBell from "./NotificationsBell";
 import GlobalSearch from "./GlobalSearch";
+import MobileSearch from "./MobileSearch";
 
 // TopBar (2026-05-24 rev 3) — 56px height, larger search field + avatar.
 // Profile dropdown given a proper structured header card with the
 // avatar at top-left, name + email + role pill in a clean stack.
-export default function TopBar() {
+export default function TopBar({ navOpen = false, onToggleNav }) {
   const [user] = useState(getUser());
   const [tenant] = useState(getTenant());
   const { projects, activeId, setActiveId } = useProjects();
@@ -36,20 +37,35 @@ export default function TopBar() {
       data-testid="app-topbar"
       // pt.29 — match v4 mockup exactly: 52px tall (was 56), 14px
       // horizontal padding, 10px gap, sticky.
-      className="v4-topbar h-[52px] flex items-center gap-2.5 px-3.5 sticky top-0 z-10"
+      className="v4-topbar h-[52px] flex items-center gap-2.5 px-3.5 max-md:!px-2 sticky top-0 z-10"
     >
+      {/* P1 (2026-06-29): mobile hamburger -- opens the off-canvas sidebar
+          drawer. `md:hidden` so it never renders on tablet/desktop (the
+          desktop topbar is byte-identical). 44px tap target. */}
+      <button
+        type="button"
+        data-testid="mobile-nav-toggle"
+        aria-label={navOpen ? "Close menu" : "Open menu"}
+        aria-expanded={navOpen}
+        aria-controls="app-sidebar"
+        onClick={() => (onToggleNav ? onToggleNav() : document.body.classList.toggle("mobile-nav-open"))}
+        className="md:hidden h-11 w-11 -ml-1.5 grid place-items-center rounded-md text-white/80 hover:bg-white/10 shrink-0"
+      >
+        <Menu className="h-5 w-5" strokeWidth={1.8} />
+      </button>
+
       {/* pt.59 (2026-05-28): the tenant "switcher" was a no-op dropdown
           (one user = one tenant; switching was never wired). Replaced with
           a static org label — new orgs are created via /signup, not here. */}
       <div data-testid="tenant-label" title={tenant?.display_name || ""}
-        className="v4-topbar-tenant flex items-center gap-1.5 h-8 px-2 text-xs font-medium"
+        className="v4-topbar-tenant max-md:hidden flex items-center gap-1.5 h-8 px-2 text-xs font-medium"
         style={{ color: "rgba(255,255,255,0.82)" }}>
         <Building2 className="h-3.5 w-3.5" style={{ opacity: 0.65 }} />
         <span className="truncate max-w-[150px]">{tenant?.display_name || "—"}</span>
       </div>
 
       <Select value={activeId || ""} onValueChange={(v) => setActiveId(v)}>
-        <SelectTrigger className="v4-topbar-select h-8 w-[230px] text-xs" data-testid="project-switcher">
+        <SelectTrigger className="v4-topbar-select h-8 w-[230px] max-md:w-auto max-md:flex-1 max-md:min-w-0 text-xs" data-testid="project-switcher">
           <SelectValue placeholder="Project" />
         </SelectTrigger>
         <SelectContent>
@@ -69,14 +85,20 @@ export default function TopBar() {
           search in the middle of whatever horizontal space is left,
           which scales nicely as the window resizes. (Pattern matches
           GitHub / Notion top-bar search placement.) */}
-      <div className="flex-1" aria-hidden="true" />
-      <GlobalSearch />
-      <div className="flex-1" aria-hidden="true" />
+      {/* P1: the centered global search + its two flex spacers are hidden on
+          phones ONLY (max-md, <=767.98px) to keep the topbar within the
+          viewport. GlobalSearch is internally `hidden md:block`, so gating the
+          wrappers at max-md keeps the search + centering spacers byte-identical
+          to HEAD for every viewport >=768px (tablet + desktop). The phone search
+          entry point is the md:hidden <MobileSearch/> magnifier below. */}
+      <div className="flex-1 max-md:hidden" aria-hidden="true" />
+      <div className="max-md:hidden shrink-0 flex items-center"><GlobalSearch /></div>
+      <div className="flex-1 max-md:hidden" aria-hidden="true" />
 
       <div className="flex items-center gap-2.5">
         {/* v4: subtle save-state indicator (placeholder until wired to
             DR autosave state — for now indicates the app is healthy). */}
-        <div className="v4-save-state hidden lg:inline-flex" title="Your work is auto-saved">
+        <div className="v4-save-state hidden lg:inline-flex max-lg:!hidden" title="Your work is auto-saved">
           <span className="dot"></span>
           <span>All changes saved</span>
         </div>
@@ -94,6 +116,7 @@ export default function TopBar() {
           <span className="hidden md:inline">{theme === "dark" ? "Light" : "Dark"}</span>
         </button>
 
+        <MobileSearch />
         <NotificationsBell />
 
         <DropdownMenu>

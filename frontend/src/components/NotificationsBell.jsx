@@ -54,7 +54,7 @@ export default function NotificationsBell() {
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <button data-testid="topbar-notifications" className="relative h-8 w-8 grid place-items-center rounded hover:bg-muted">
+        <button data-testid="topbar-notifications" className="relative h-8 w-8 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded hover:bg-muted">
           <Bell className="h-4 w-4" />
           {count > 0 && (
             <span data-testid="notif-badge" className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center text-xs h-4 min-w-[16px] px-1 rounded-full bg-amber-500 text-slate-900 font-semibold">
@@ -82,7 +82,7 @@ export default function NotificationsBell() {
                 <div className="text-xs text-slate-400 mt-1">{new Date(n.created_at).toLocaleString()}</div>
               </div>
               {!n.read_at && (
-                <button data-testid={`notif-read-${n.id}`} onClick={() => markRead(n.id)} title="Mark read" className="h-6 w-6 grid place-items-center rounded hover:bg-slate-100">
+                <button data-testid={`notif-read-${n.id}`} onClick={() => markRead(n.id)} title="Mark read" className="h-6 w-6 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded hover:bg-slate-100">
                   <Check className="h-3.5 w-3.5 text-slate-500" />
                 </button>
               )}

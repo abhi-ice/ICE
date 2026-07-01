@@ -47,7 +47,6 @@ import MarketplaceFull from "./pages/MarketplaceFull";
 import MasterDoc from "./pages/MasterDoc";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import ComplianceFull from "./pages/ComplianceFull";
-import MobileForeman from "./pages/MobileForeman";
 import { AuditLog, AiAgentsPage, Settings, WeeklyReports } from "./pages/SystemPages";
 import EditRequestsQueue from "./pages/EditRequestsQueue";
 // Bucket H Phase 3 (2026-05-08) -- new pages.
@@ -79,7 +78,6 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/accept-invite" element={<AcceptInvite />} />
-          <Route path="/m/foreman" element={<Guard><MobileForeman /></Guard>} />
           <Route element={<Guard><AppLayout /></Guard>}>
             <Route index element={<Dashboard />} />
             <Route path="projects" element={<Projects />} />

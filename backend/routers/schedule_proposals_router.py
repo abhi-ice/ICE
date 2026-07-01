@@ -381,10 +381,44 @@ async def approve_proposal(
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     # Recompute critical path now that the schedule changed.
-    try:
-        await compute_cpm(ctx["tenant_id"], project_id)
-    except Exception:
-        pass
+    # CPM Mode 2 (2026-06-29): MS Project is authoritative for the computed
+    # schedule on a mode2 project, so skip our compute_cpm when the proposal is
+    # an ms_project_pull OR the project is on schedule_mode="mode2" (a file
+    # uploaded onto a mode2 project) — our recompute would overwrite Project's
+    # dates. The default Mode-1 ("file_upload" on a mode1 project) path is
+    # unchanged, and with FF_SCHEDULE_MODE_2 off this is byte-identical.
+    # Enterprise CPM ("Diagram 2", 2026-06-29): on an enterprise-engine project
+    # OUR enterprise engine owns the schedule columns, so a file_upload applied
+    # there must recompute through the engine-aware hook (auto_recompute_after_
+    # event -> EnterpriseCpmEngine), NOT bare compute_cpm. mode2/ms_project_pull
+    # still SKIP our recompute entirely (MS Project authoritative). With both
+    # flags off this is byte-identical (plain compute_cpm).
+    _skip_cpm = proposal.get("source") == "ms_project_pull"
+    _route_enterprise = False
+    if not _skip_cpm:
+        from services.feature_flags import (
+            schedule_mode_2_enabled, schedule_mode_for_project,
+            enterprise_cpm_enabled, schedule_engine_for_project,
+        )
+        if schedule_mode_2_enabled() or enterprise_cpm_enabled():
+            _proj = await db.projects.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": project_id}),
+                {"_id": 0, "schedule_mode": 1, "schedule_engine": 1}) or {}
+            if schedule_mode_2_enabled() and schedule_mode_for_project(_proj) == "mode2":
+                _skip_cpm = True
+            elif enterprise_cpm_enabled() and schedule_engine_for_project(_proj) == "enterprise":
+                _route_enterprise = True
+    if _route_enterprise:
+        try:
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(ctx["tenant_id"], project_id)
+        except Exception:
+            pass
+    elif not _skip_cpm:
+        try:
+            await compute_cpm(ctx["tenant_id"], project_id)
+        except Exception:
+            pass
 
     # Bucket H Phase 4 hook -- the schedule import is a major demand
     # event for resource leveling. Walks every task on the project and

@@ -157,7 +157,7 @@ export default function PhotoTray() {
               the underlying blob.
             </PageHelp>
           </h1>
-          <span className="text-xs text-slate-400 ml-2">
+          <span className="text-xs text-slate-400 ml-2 max-md:hidden">
             Untagged + partially-tagged staging. Tag to events from here.
           </span>
         </div>
@@ -172,11 +172,11 @@ export default function PhotoTray() {
       </header>
 
       <div className="bg-white border border-slate-200 rounded p-3 mb-4 flex items-end gap-3 flex-wrap">
-        <Filter className="h-4 w-4 text-slate-500 mb-2" />
+        <Filter className="h-4 w-4 text-slate-500 mb-2 max-md:hidden" />
         <div>
           <label className="text-xs text-slate-500">Status</label>
           <select data-testid="tray-filter-status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value, untagged_only: false })}
-            className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white" disabled={filters.untagged_only}>
+            className="block h-8 max-md:min-h-[44px] px-2 rounded border border-slate-300 text-sm bg-white" disabled={filters.untagged_only}>
             <option value="">(any)</option>
             <option value="untagged">Untagged</option>
             <option value="partially_tagged">Partially tagged</option>
@@ -187,7 +187,7 @@ export default function PhotoTray() {
         <div>
           <label className="text-xs text-slate-500">Source</label>
           <select data-testid="tray-filter-source" value={filters.capture_source} onChange={(e) => setFilters({ ...filters, capture_source: e.target.value })}
-            className="block h-8 px-2 rounded border border-slate-300 text-sm bg-white">
+            className="block h-8 max-md:min-h-[44px] px-2 rounded border border-slate-300 text-sm bg-white">
             <option value="">(any)</option>
             <option value="mobile_camera">Mobile camera</option>
             <option value="manual_upload">Manual upload</option>
@@ -197,12 +197,12 @@ export default function PhotoTray() {
         <div>
           <label className="text-xs text-slate-500">From</label>
           <input data-testid="tray-filter-from" type="date" value={filters.date_from} onChange={(e) => setFilters({ ...filters, date_from: e.target.value })}
-            className="block h-8 px-2 rounded border border-slate-300 text-sm" />
+            className="block h-8 max-md:min-h-[44px] px-2 rounded border border-slate-300 text-sm" />
         </div>
         <div>
           <label className="text-xs text-slate-500">To</label>
           <input data-testid="tray-filter-to" type="date" value={filters.date_to} onChange={(e) => setFilters({ ...filters, date_to: e.target.value })}
-            className="block h-8 px-2 rounded border border-slate-300 text-sm" />
+            className="block h-8 max-md:min-h-[44px] px-2 rounded border border-slate-300 text-sm" />
         </div>
         <label className="text-xs flex items-center gap-1">
           <input data-testid="tray-filter-untagged" type="checkbox" checked={filters.untagged_only}
@@ -302,8 +302,8 @@ function DetailContent({ row, onTagClick, onArchive, onDelete }) {
         <div><span className="text-slate-500 uppercase text-xs">Uploaded:</span> {new Date(row.uploaded_at).toLocaleString()}</div>
         {row.exif_taken_at && <div><span className="text-slate-500 uppercase text-xs">EXIF taken:</span> {new Date(row.exif_taken_at).toLocaleString()}</div>}
         <div><span className="text-slate-500 uppercase text-xs">Size:</span> {row.width}×{row.height} · {Math.round((row.file_size_bytes || 0) / 1024)} KB</div>
-        {row.phash && <div><span className="text-slate-500 uppercase text-xs">pHash:</span> <span className="font-mono">{row.phash}</span></div>}
-        {row.sha256 && <div className="col-span-2"><span className="text-slate-500 uppercase text-xs">SHA-256:</span> <span className="font-mono text-xs">{row.sha256}</span></div>}
+        {row.phash && <div><span className="text-slate-500 uppercase text-xs">pHash:</span> <span className="font-mono max-md:break-all">{row.phash}</span></div>}
+        {row.sha256 && <div className="col-span-2"><span className="text-slate-500 uppercase text-xs">SHA-256:</span> <span className="font-mono text-xs max-md:break-all">{row.sha256}</span></div>}
       </div>
 
       {tags.length > 0 && (

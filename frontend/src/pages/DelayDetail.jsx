@@ -87,11 +87,11 @@ export default function DelayDetail() {
 
       <div className="surface p-4">
         <div className="flex flex-wrap items-start gap-3">
-          <div className="flex-1 min-w-[280px]">
+          <div className="flex-1 min-w-[280px] max-md:min-w-0 max-md:w-full">
             <div className="text-xs text-slate-500">Delay logged {formatDateDisplay(delay.date)}</div>
             <div className="text-base mt-1 whitespace-pre-wrap">{delay.description}</div>
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1 max-md:w-full">
             <span className={`pill ${sevColor}`}>{delay.severity}</span>
             <span className={`pill ${statColor}`}>{(delay.status || "open").replace(/_/g, " ")}</span>
             {delay.reason_category && <span className="text-xs text-slate-500">{delay.reason_category}</span>}
@@ -170,13 +170,13 @@ export default function DelayDetail() {
       </div>
 
       <div className="surface p-4">
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex max-md:flex-wrap items-center gap-2 mb-3">
           <Sparkles className="h-4 w-4 text-blue-600" />
           <div className="font-medium text-sm">AI delay report</div>
           {delay.ai_report_generated_at && (
             <span className="text-xs text-slate-400 ml-2">last generated {new Date(delay.ai_report_generated_at).toLocaleString()}</span>
           )}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-2 max-md:w-full max-md:mt-1">
             <Button data-testid="delay-ai-generate" onClick={generateAIReport} disabled={generating} className="gap-1 bg-blue-600 hover:bg-blue-700">
               <RefreshCw className={`h-3.5 w-3.5 ${generating ? "animate-spin" : ""}`} />
               {delay.ai_report ? "Regenerate" : "Generate AI delay report"}
@@ -416,13 +416,13 @@ function ScenariosSection({ delayId, delayStatus }) {
 
   return (
     <div className="surface p-4" data-testid="delay-scenarios">
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex max-md:flex-wrap items-center gap-2 mb-3">
         <Lightbulb className="h-4 w-4 text-amber-600" />
         <div className="font-medium text-sm">AI mitigation scenarios</div>
         {lastGen && (
           <span className="text-xs text-slate-400 ml-2">last generated {new Date(lastGen).toLocaleString()}</span>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2 max-md:w-full max-md:mt-1">
           {/* Block regenerate while a scenario is chosen — would orphan
               the chosen pointer and confuse the schedule reflow. User
               must Change choice first. */}
@@ -447,7 +447,7 @@ function ScenariosSection({ delayId, delayStatus }) {
 
       {chosen && (
         <div data-testid="scenarios-executing-banner"
-          className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-center gap-2 text-sm">
+          className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-center gap-2 text-sm max-md:flex-wrap">
           <CheckCircle2 className="h-4 w-4 text-emerald-700" />
           <div className="flex-1">
             <span className="font-mono text-emerald-700 mr-2">EXECUTING: Scenario {chosen.scenario_label}</span>
@@ -457,7 +457,7 @@ function ScenariosSection({ delayId, delayStatus }) {
             )}
           </div>
           <button data-testid="scenarios-change-choice" onClick={() => unchoose(chosen)} disabled={busy}
-            className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 underline">
+            className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 underline max-md:mt-1 max-md:w-full max-md:justify-end">
             <RotateCcw className="h-3 w-3" /> Change choice
           </button>
         </div>
@@ -484,8 +484,8 @@ function ScenariosSection({ delayId, delayStatus }) {
           {showHistory && (
             <div className="mt-2 space-y-1 text-xs">
               {data.history.map((h) => (
-                <div key={h.id} className="flex items-center gap-2 text-slate-600 border-b border-slate-100 py-1">
-                  <span className="text-xs font-mono text-slate-400">{h.generation_at?.slice(0, 16)?.replace("T", " ")}</span>
+                <div key={h.id} className="flex items-center gap-2 text-slate-600 border-b border-slate-100 py-1 max-md:flex-wrap">
+                  <span className="text-xs font-mono text-slate-400 max-md:hidden">{h.generation_at?.slice(0, 16)?.replace("T", " ")}</span>
                   <span className="font-mono text-xs">{h.scenario_label}</span>
                   <span className="flex-1 truncate">{h.strategy_name}</span>
                   <span className="text-slate-400">{h.estimated_schedule_impact_days}d · ${h.estimated_cost_impact_usd}</span>

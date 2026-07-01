@@ -30,6 +30,14 @@ export function BlockerPopover({ count, summary, testid }) {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
+  // When the mobile bottom-sheet is open, hide the Copilot FAB so it doesn't
+  // clip the sheet's corner (the sheet's z-50 is trapped below the FAB's z-20
+  // by an ancestor stacking context). Phone-only via CSS; desktop unaffected.
+  useEffect(() => {
+    document.body.classList.toggle("blocker-sheet-open", open);
+    return () => document.body.classList.remove("blocker-sheet-open");
+  }, [open]);
+
   if (n <= 0) {
     return <span data-testid={testid} className="text-slate-300 text-xs">—</span>;
   }
@@ -67,7 +75,13 @@ export function BlockerPopover({ count, summary, testid }) {
       {open && (
         <div
           data-testid={`${testid}-popover`}
-          className="absolute z-30 right-0 mt-1 w-72 bg-white border border-slate-200 rounded shadow-lg p-2 text-xs"
+          /* Desktop: absolute right-aligned dropdown (unchanged). Phones
+             (<768px, max-md only -> zero desktop CSS): a fixed bottom sheet
+             pinned to the viewport so it can NEVER clip inside a
+             horizontally-scrolled table. position:fixed changes only the
+             rendering box, not the DOM tree, so the ref outside-click-close
+             and link onClick still work exactly as before. */
+          className="absolute z-30 right-0 mt-1 w-72 bg-white border border-slate-200 rounded shadow-lg p-2 text-xs max-md:fixed max-md:inset-x-3 max-md:bottom-3 max-md:top-auto max-md:w-auto max-md:mt-0 max-md:z-50 max-md:max-h-[55vh] max-md:overflow-y-auto max-md:shadow-2xl"
         >
           <div className="font-medium mb-1 text-slate-700">
             Open blockers ({n})

@@ -28,7 +28,10 @@ export default function Approvals() {
         <h1 className="text-2xl font-semibold">Approvals & AI suggestions</h1>
       </div>
 
-      <div className="flex border-b border-slate-200 text-sm">
+      {/* max-md:flex-wrap -- the "Pending suggestions" tab label is long; on a
+          320px phone the two tabs overflow one row, so wrap instead of clipping
+          (both tabs stay fully tappable). Desktop keeps the single-row strip. */}
+      <div className="flex border-b border-slate-200 text-sm max-md:flex-wrap">
         <ApprovalsTab
           tab="approvals" active={tab} onClick={setTab}
           label="Approvals" Icon={BadgeCheck}
@@ -84,11 +87,15 @@ function ApprovalsList() {
 
   return (
     <div className="space-y-4" data-testid="approvals-list">
-      <div className="flex items-center justify-end">
-        <div className="flex gap-2">
+      {/* max-md:justify-start + inner max-md:flex-wrap -- on phones the
+          right-aligned Pending/Approved/Rejected group (~316px) was pushed off
+          the LEFT edge of the 320px viewport (justify-end). Left-align + wrap
+          on phones so no button is clipped. Desktop keeps the right-aligned row. */}
+      <div className="flex items-center justify-end max-md:justify-start">
+        <div className="flex gap-2 max-md:flex-wrap">
           {["pending", "approved", "rejected"].map((s) => (
             <button key={s} data-testid={`approvals-filter-${s}`} onClick={() => setFilter(s)}
-              className={`h-8 px-3 rounded border text-sm capitalize ${filter === s ? "bg-primary text-primary-foreground border-primary" : "border-border"}`}>
+              className={`h-8 px-3 rounded border text-sm capitalize max-md:min-h-[44px] ${filter === s ? "bg-primary text-primary-foreground border-primary" : "border-border"}`}>
               {s}
             </button>
           ))}
@@ -97,14 +104,18 @@ function ApprovalsList() {
       <div className="space-y-3">
         {items.map((a) => (
           <div key={a.id} data-testid={`approval-card-${a.id}`} className="bg-card border border-border rounded-lg p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1">
+            <div className="flex items-start justify-between gap-4 max-md:flex-col">
+              {/* max-md:min-w-0 + max-md:break-all -- only let the info column
+                  shrink + wrap a long entity id on phones (where the card is
+                  stacked). Desktop (>=768px) keeps HEAD behavior (flex-1 with
+                  default min-width:auto, no break-all) to stay byte-identical. */}
+              <div className="flex-1 max-md:min-w-0">
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-mono">{a.id.slice(0, 8)}</span>
                   <span>•</span>
                   <span className="capitalize">{a.kind.replace(/_/g, " ")}</span>
                   <span>•</span>
-                  <span>{a.subject_entity_type}: {a.subject_entity_id}</span>
+                  <span className="max-md:break-all">{a.subject_entity_type}: {a.subject_entity_id}</span>
                 </div>
                 <pre className="mt-2 text-xs bg-muted/50 p-2 rounded overflow-x-auto">
                   {JSON.stringify(a.proposed_payload, null, 2)}
@@ -624,7 +635,7 @@ function SuggestionRow({ row, selected, onToggle, onNavigate, onChanged }) {
       data-testid={`suggestion-row-${row.id}`}
       className="bg-white border border-slate-200 rounded p-2"
     >
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-2 max-md:flex-col">
         {/* Bucket G Phase 5 mobile polish: thumb-friendly checkbox
             target (~44px tap area at 380px width). Larger box +
             padding so power-users on phones can rapidly bulk-select
@@ -672,25 +683,25 @@ function SuggestionRow({ row, selected, onToggle, onNavigate, onChanged }) {
             {new Date(row.created_at).toLocaleString()}
           </div>
         </div>
-        <div className="flex flex-col gap-1 shrink-0">
+        <div className="flex flex-col gap-1 shrink-0 max-md:flex-row max-md:w-full">
           <button
             data-testid={`suggestion-accept-${row.id}`}
             onClick={accept} disabled={busy}
-            className="h-7 px-2 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50"
+            className="h-7 px-2 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50 max-md:min-h-[44px]"
           >
             <Check className="h-3 w-3" /> Accept
           </button>
           <button
             data-testid={`suggestion-reject-${row.id}`}
             onClick={() => setRejectOpen(true)} disabled={busy}
-            className="h-7 px-2 rounded border border-rose-300 bg-white text-rose-700 text-xs inline-flex items-center gap-1 hover:bg-rose-50 disabled:opacity-50"
+            className="h-7 px-2 rounded border border-rose-300 bg-white text-rose-700 text-xs inline-flex items-center gap-1 hover:bg-rose-50 disabled:opacity-50 max-md:min-h-[44px]"
           >
             <X className="h-3 w-3" /> Reject
           </button>
           <button
             data-testid={`suggestion-navigate-${row.id}`}
             onClick={onNavigate}
-            className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50"
+            className="h-7 px-2 rounded border border-slate-300 bg-white text-slate-700 text-xs inline-flex items-center gap-1 hover:bg-slate-50 max-md:min-h-[44px]"
             title="Open the entity"
           >
             <ChevronRight className="h-3 w-3" /> Open

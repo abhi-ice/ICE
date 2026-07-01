@@ -219,8 +219,52 @@ export default function Tasks() {
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [activeId]);
 
+  // CPM Mode 2 (2026-06-29) -- MS Project schedule sync state for this project.
+  const isMode2 = project?.schedule_mode === "mode2";
+  const [syncState, setSyncState] = useState(null);
+  const refreshSyncState = useCallback(() => {
+    if (!activeId || !isMode2) return;
+    api.get(`/projects/${activeId}/ms-project/sync-state`)
+      .then(({ data }) => setSyncState(data))
+      .catch(() => {});
+  }, [activeId, isMode2]);
+  useEffect(() => { refreshSyncState(); }, [refreshSyncState]);
+
+  // Mode 2 recompute is asynchronous: MS Project recalculates out-of-band via
+  // the worker. Poll the job to completion, then refresh the table.
+  const pollRecompute = async (jobId, tries = 0) => {
+    if (!jobId || tries > 60) { load(); return; }
+    try {
+      const { data } = await api.get(`/projects/${activeId}/recompute-status/${jobId}`);
+      const s = data?.status;
+      if (s === "done") {
+        const n = data.summary?.ingested_tasks;
+        toast.success(`MS Project recompute applied${n != null ? ` — ${n} task(s) updated` : ""}.`);
+        load(); refreshSyncState(); return;
+      }
+      if (s === "conflict") {
+        toast.error("MS Project was changed outside ICE — use “Sync from MS Project” to reconcile.");
+        load(); refreshSyncState(); return;
+      }
+      if (s === "error" || s === "parked") {
+        toast.error("MS Project recompute failed — check the worker, or open the plan in Project.");
+        load(); return;
+      }
+    } catch { /* backend asleep / transient — keep polling */ }
+    setTimeout(() => pollRecompute(jobId, tries + 1), 3000);
+  };
+
   const recompute = async () => {
     const { data } = await api.post(`/projects/${activeId}/critical-path/recompute`);
+    // CPM Mode 2: a Mode-2 project returns {status:"queued"} — MS Project's
+    // engine recomputes via the worker; poll to completion. Mode-1 keeps the
+    // synchronous {critical_count, project_finish} path below, unchanged.
+    if (data?.status === "queued") {
+      const f = data.stale?.project_finish;
+      toast.info(`Sent to MS Project — recalculating…${f ? ` (showing as of finish ${f})` : ""}`);
+      await pollRecompute(data.job_id);
+      return;
+    }
     // services/cpm.py:56 returns {error: "cycle_detected"} on cycle without
     // a project_finish; guard so the toast doesn't render "Finish: undefined".
     if (data?.error === "cycle_detected") {
@@ -235,6 +279,16 @@ export default function Tasks() {
     }
     toast.success(`CPM updated. ${data.critical_count} on critical path. Finish: ${data.project_finish}`);
     load();
+  };
+
+  const syncFromProject = async () => {
+    try {
+      await api.post(`/projects/${activeId}/ms-project/pull`);
+      toast.info("Sync from MS Project queued — changes will arrive as a schedule proposal to review.");
+      setTimeout(refreshSyncState, 4000);
+    } catch {
+      toast.error("Could not start MS Project sync.");
+    }
   };
 
   const openNew = () => { setEditing(null); setForm(EMPTY); setOpen(true); };
@@ -313,7 +367,39 @@ export default function Tasks() {
       {activeId && (
         <ScheduleAiSuggestionsBanner projectId={activeId} />
       )}
-      <div className="flex items-center justify-between">
+      {/* CPM Mode 2 (2026-06-29) -- MS Project engine banner. Rendered ONLY for
+          a project on schedule_mode="mode2"; Mode-1 projects never see it (and
+          never fetch sync-state). Shows the engine source, a standing
+          out-of-band-edit conflict, and a "Sync from MS Project" action. */}
+      {isMode2 && (
+        <div
+          data-testid="msproject-mode-banner"
+          className={`mb-3 flex items-center gap-3 rounded-md border px-3 py-2 text-sm max-md:flex-wrap ${
+            syncState?.conflict
+              ? "border-rose-300 bg-rose-50 text-rose-800"
+              : "border-sky-200 bg-sky-50 text-sky-800"
+          }`}
+        >
+          <span className="font-medium">MS Project engine</span>
+          {syncState?.conflict ? (
+            <span data-testid="msproject-conflict">
+              ⚠ MS Project was changed outside ICE — sync to reconcile.
+            </span>
+          ) : (
+            <span className="text-sky-700/80">
+              Dates &amp; critical path are computed by Microsoft Project.
+            </span>
+          )}
+          <button
+            data-testid="msproject-sync"
+            onClick={syncFromProject}
+            className="ml-auto sbtn sbtn-sm sbtn-secondary max-md:mt-1"
+          >
+            Sync from MS Project
+          </button>
+        </div>
+      )}
+      <div className="flex items-center justify-between max-md:flex-col max-md:items-start max-md:gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight inline-flex items-baseline">
             Schedule activities
@@ -343,7 +429,7 @@ export default function Tasks() {
           </h1>
           <p className="text-sm text-slate-500">{project?.name}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 max-md:flex-wrap">
           {/* Bug #42 (2026-05-12) -- Tasks export dropdown. Same audit-
               honest pattern as the Audit Log CSV / Photo Evidence Pack
               from Bucket K -- single-click download, server writes
@@ -367,7 +453,7 @@ export default function Tasks() {
             </DialogTrigger>
             <DialogContent className="max-w-xl">
               <DialogHeader><DialogTitle>{editing ? `Edit ${editing.activity_code}` : "New activity"}</DialogTitle></DialogHeader>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <FieldLabel required className="field-label">Activity code</FieldLabel>
                   <input data-testid="ac-code" value={form.activity_code} disabled={!!editing} onChange={(e) => setForm({ ...form, activity_code: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200 disabled:bg-slate-50" />
@@ -434,11 +520,11 @@ export default function Tasks() {
           shift). Both toggle on/off independently. The slip-count
           summary is purely informational. */}
       {tasks.length > 0 && (
-        <div className="flex items-center gap-2 text-xs text-slate-600">
+        <div className="flex items-center gap-2 text-xs text-slate-600 max-md:flex-wrap">
           <button
             data-testid="tasks-sort-by-slip"
             onClick={() => setSortBySlipDesc((v) => !v)}
-            className={`h-7 px-2 rounded border text-xs ${sortBySlipDesc ? "bg-rose-50 border-rose-300 text-rose-700" : "bg-white border-slate-200"}`}
+            className={`h-7 max-md:min-h-[44px] px-2 rounded border text-xs ${sortBySlipDesc ? "bg-rose-50 border-rose-300 text-rose-700" : "bg-white border-slate-200"}`}
             title="Sort by Slip descending so the worst-hit tasks land at the top."
           >
             {sortBySlipDesc ? "✓ Sorted by slip ↓" : "Sort by slip ↓"}
@@ -672,10 +758,10 @@ export default function Tasks() {
                 </td>
                 <td><TaskGapIcon gap={gapByTaskId[t.id]} /></td>
                 <td className="text-right">
-                  <button data-testid={`edit-task-${t.activity_code}`} onClick={() => openEdit(t)} title="Edit" className="h-7 w-7 grid place-items-center rounded hover:bg-slate-100">
+                  <button data-testid={`edit-task-${t.activity_code}`} onClick={() => openEdit(t)} title="Edit" className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded hover:bg-slate-100">
                     <Pencil className="h-3.5 w-3.5" />
                   </button>
-                  <button data-testid={`delete-task-${t.activity_code}`} onClick={() => remove(t)} title="Delete" className="h-7 w-7 grid place-items-center rounded hover:bg-red-50 text-red-600">
+                  <button data-testid={`delete-task-${t.activity_code}`} onClick={() => remove(t)} title="Delete" className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded hover:bg-red-50 text-red-600">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </td>
@@ -756,6 +842,13 @@ function ComputedStatusPill({ task }) {
 function BlockerCell({ task, open, onToggle }) {
   const summary = task.open_blocker_summary || [];
   const count = task.open_blocker_count || 0;
+  // Hide the Copilot FAB while this blocker bottom-sheet is open on phones so
+  // it doesn't clip the sheet corner (same z-trap as the shared BlockerPopover).
+  // Hook must run before the early return below (Rules of Hooks).
+  useEffect(() => {
+    document.body.classList.toggle("blocker-sheet-open", open);
+    return () => document.body.classList.remove("blocker-sheet-open");
+  }, [open]);
   if (!count) return <span className="text-slate-300 text-xs">—</span>;
   const counts = summary.reduce((acc, s) => {
     acc[s.entity_type] = (acc[s.entity_type] || 0) + 1;
@@ -783,7 +876,7 @@ function BlockerCell({ task, open, onToggle }) {
       {open && (
         <div
           data-testid={`task-blockers-popover-${task.activity_code}`}
-          className="absolute z-20 right-0 mt-1 w-72 bg-white border border-slate-200 rounded shadow-lg p-2 text-xs"
+          className="absolute z-20 right-0 mt-1 w-72 bg-white border border-slate-200 rounded shadow-lg p-2 text-xs max-md:fixed max-md:inset-x-3 max-md:bottom-3 max-md:top-auto max-md:w-auto max-md:z-50 max-md:max-h-[55vh] max-md:overflow-y-auto max-md:shadow-2xl"
         >
           <div className="font-medium mb-1 text-slate-700">Open blockers ({count})</div>
           <div className="space-y-1 max-h-56 overflow-y-auto">
@@ -967,7 +1060,7 @@ function ScheduleAiSuggestionsBanner({ projectId }) {
           <button
             data-testid="tasks-ai-banner-review"
             onClick={reviewAll}
-            className="h-8 px-3 rounded bg-white border border-blue-300 text-blue-900 text-xs hover:bg-blue-100"
+            className="h-8 max-md:min-h-[44px] px-3 rounded bg-white border border-blue-300 text-blue-900 text-xs hover:bg-blue-100"
           >
             Review all
           </button>
@@ -975,7 +1068,7 @@ function ScheduleAiSuggestionsBanner({ projectId }) {
             data-testid="tasks-ai-banner-bulk-accept"
             onClick={bulkAcceptDefaults}
             disabled={busy}
-            className="h-8 px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50"
+            className="h-8 max-md:min-h-[44px] px-3 rounded bg-emerald-600 text-white text-xs inline-flex items-center gap-1 hover:bg-emerald-700 disabled:opacity-50"
           >
             {busy
               ? <Loader2 className="h-3 w-3 animate-spin" />
@@ -986,7 +1079,7 @@ function ScheduleAiSuggestionsBanner({ projectId }) {
             data-testid="tasks-ai-banner-refresh"
             onClick={load}
             disabled={busy || loading}
-            className="h-8 px-2 rounded border border-blue-300 bg-white text-blue-700 text-xs"
+            className="h-8 max-md:min-h-[44px] px-2 rounded border border-blue-300 bg-white text-blue-700 text-xs"
             title="Re-check"
           >
             <Loader2 className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />

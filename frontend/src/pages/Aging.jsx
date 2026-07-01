@@ -63,7 +63,7 @@ export default function Aging() {
             const list = detail[s.key] || [];
             if (!list.length) return null;
             return (
-              <div key={s.key} data-testid={`aging-detail-${s.key}`} className="surface overflow-hidden">
+              <div key={s.key} data-testid={`aging-detail-${s.key}`} className="surface overflow-hidden max-md:overflow-x-auto">
                 <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
                   <AlertTriangle className="h-4 w-4 text-amber-500" />
                   <div className="font-medium">{s.label}</div>
@@ -75,7 +75,7 @@ export default function Aging() {
                     {list.map((it) => (
                       <tr key={it.id} data-testid={`aging-row-${s.key}-${it.id}`}>
                         <td className="font-mono text-xs">{it[s.colId] || it.id?.slice(0, 8)}</td>
-                        <td className="truncate max-w-[440px]">{it[s.colTitle] || "—"}</td>
+                        <td className="truncate max-w-[440px] max-md:max-w-[200px]" title={it[s.colTitle] || "—"}>{it[s.colTitle] || "—"}</td>
                         <td><span className="pill pill-amber capitalize">{it.status}</span></td>
                         <td className="font-mono text-xs">
                           <span className={it.days_open > 30 ? "text-red-600 font-semibold" : "text-amber-700"}>

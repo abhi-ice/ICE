@@ -14,7 +14,7 @@ import { formatDateDisplay } from "../lib/dateUtil";
 // dashboard cards.
 const Tile = ({ label, value, icon: Icon, tone = "slate", testid, delta }) => (
   <div data-testid={testid} className="bg-card border border-border rounded-md px-3 py-2.5">
-    <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+    <div className="flex items-center gap-1.5 text-[11px] max-md:text-xs font-medium text-muted-foreground">
       <Icon className="h-3.5 w-3.5" /> {label}
     </div>
     <div className="mt-1 flex items-baseline gap-1.5">
@@ -60,7 +60,7 @@ export default function Dashboard() {
       </div>
 
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
           <Tile testid="kpi-active-projects" label="Active projects" value={summary.active_projects} icon={FolderKanban} />
           <Tile testid="kpi-open-rfis" label="Open RFIs" value={summary.open_rfis} icon={AlertTriangle} tone="amber" />
           {/* pt.32: swapped "Pending approvals" + "Field issues" out for

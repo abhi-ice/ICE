@@ -151,7 +151,7 @@ export default function MarketplaceFull() {
           <DialogContent>
             <DialogHeader><DialogTitle>New marketplace posting</DialogTitle></DialogHeader>
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="field-label">Type</label>
                   <select value={form.posting_type} onChange={(e) => setForm({ ...form, posting_type: e.target.value })} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
@@ -173,23 +173,23 @@ export default function MarketplaceFull() {
                 <label className="field-label">Description *</label>
                 <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full p-2 rounded border border-slate-200 text-sm h-24" />
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div><label className="field-label">City</label><input value={form.location_city} onChange={(e) => setForm({ ...form, location_city: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
                 <div><label className="field-label">State</label><input value={form.location_state} onChange={(e) => setForm({ ...form, location_state: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
                 <div><label className="field-label">Deadline</label><input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div><label className="field-label">Budget low ($)</label><input type="number" value={form.budget_low} onChange={(e) => setForm({ ...form, budget_low: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
                 <div><label className="field-label">Budget high ($)</label><input type="number" value={form.budget_high} onChange={(e) => setForm({ ...form, budget_high: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
               </div>
-              <Button data-testid="mp-create" onClick={create} disabled={!form.title || !form.description} className="bg-blue-600 hover:bg-blue-700">Post</Button>
+              <Button data-testid="mp-create" onClick={create} disabled={!form.title || !form.description} className="max-md:w-full max-md:min-h-[44px] bg-blue-600 hover:bg-blue-700">Post</Button>
             </div>
           </DialogContent>
         </Dialog>
       </div>
 
       {escrow && (escrow.transaction_count > 0 || escrow.in_escrow_usd > 0) && (
-        <div data-testid="escrow-summary" className="grid grid-cols-3 gap-3">
+        <div data-testid="escrow-summary" className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="surface p-3"><div className="text-xs text-slate-500 flex items-center gap-1"><DollarSign className="h-3 w-3" /> Escrow funded</div><div className="text-2xl font-semibold tabular-nums">${escrow.total_funded_usd.toLocaleString()}</div></div>
           <div className="surface p-3"><div className="text-xs text-slate-500">Released to subs</div><div className="text-2xl font-semibold tabular-nums">${escrow.total_released_usd.toLocaleString()}</div></div>
           <div className="surface p-3"><div className="text-xs text-slate-500">In escrow now</div><div className="text-2xl font-semibold tabular-nums text-blue-600">${escrow.in_escrow_usd.toLocaleString()}</div></div>
@@ -199,7 +199,7 @@ export default function MarketplaceFull() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {postings.map((p) => (
           <div key={p.id} data-testid={`mp-card-${p.id}`} className="surface p-4">
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 max-md:flex-wrap">
               <span className="pill pill-blue capitalize">{p.posting_type.replace(/_/g, " ")}</span>
               <span className="pill pill-slate text-xs">{p.visibility}</span>
               <span className="ml-auto text-xs text-slate-400">{formatDateDisplay(p.created_at)}</span>
@@ -214,10 +214,10 @@ export default function MarketplaceFull() {
               <div className="text-xs font-mono mt-1">${p.budget_low?.toLocaleString() || "—"} – ${p.budget_high?.toLocaleString() || "—"}</div>
             )}
             <div className="flex gap-2 mt-3">
-              <button data-testid={`mp-respond-${p.id}`} onClick={() => setRespondOpen(p)} className="text-xs bg-blue-600 text-white h-7 px-3 rounded inline-flex items-center gap-1">
+              <button data-testid={`mp-respond-${p.id}`} onClick={() => setRespondOpen(p)} className="text-xs bg-blue-600 text-white h-7 max-md:min-h-[44px] px-3 rounded inline-flex items-center gap-1">
                 <Send className="h-3 w-3" /> Respond
               </button>
-              <button data-testid={`mp-view-resp-${p.id}`} onClick={() => showResponses(p)} className="text-xs border border-slate-200 h-7 px-3 rounded inline-flex items-center gap-1">
+              <button data-testid={`mp-view-resp-${p.id}`} onClick={() => showResponses(p)} className="text-xs border border-slate-200 h-7 max-md:min-h-[44px] px-3 rounded inline-flex items-center gap-1">
                 <Eye className="h-3 w-3" /> Responses
               </button>
             </div>
@@ -234,7 +234,7 @@ export default function MarketplaceFull() {
           <DialogHeader><DialogTitle>Respond to: {respondOpen?.title}</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <textarea data-testid="mp-resp-msg" placeholder="Your message" value={respForm.message} onChange={(e) => setRespForm({ ...respForm, message: e.target.value })} className="w-full p-2 rounded border border-slate-200 text-sm h-24" />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div><label className="field-label">Bid ($)</label><input type="number" value={respForm.bid_amount_usd} onChange={(e) => setRespForm({ ...respForm, bid_amount_usd: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
               <div><label className="field-label">Start date</label><input type="date" value={respForm.proposed_start_date} onChange={(e) => setRespForm({ ...respForm, proposed_start_date: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" /></div>
             </div>
@@ -262,7 +262,7 @@ export default function MarketplaceFull() {
                     <button
                       data-testid={`mp-accept-${r.id}`}
                       onClick={() => { setAcceptOpen({ posting: view, response: r }); setAcceptCfg({ schedule_activity_id: "", milestone_pct: 50 }); setView(null); }}
-                      className="text-xs bg-emerald-600 text-white h-7 px-3 rounded inline-flex items-center gap-1"
+                      className="text-xs bg-emerald-600 text-white h-7 max-md:min-h-[44px] px-3 rounded inline-flex items-center gap-1"
                     >
                       <CheckCircle2 className="h-3 w-3" /> Accept & fund escrow
                     </button>
@@ -271,7 +271,7 @@ export default function MarketplaceFull() {
                     <button
                       data-testid={`mp-release-${r.id}`}
                       onClick={() => releasePayment(r.id)}
-                      className="text-xs bg-blue-600 text-white h-7 px-3 rounded inline-flex items-center gap-1"
+                      className="text-xs bg-blue-600 text-white h-7 max-md:min-h-[44px] px-3 rounded inline-flex items-center gap-1"
                     >
                       <DollarSign className="h-3 w-3" /> Release payment
                     </button>
@@ -315,7 +315,7 @@ export default function MarketplaceFull() {
                   <input data-testid="mp-accept-milestone" type="number" min={10} max={100} value={acceptCfg.milestone_pct} onChange={(e) => setAcceptCfg({ ...acceptCfg, milestone_pct: e.target.value })} className="w-full h-9 px-3 rounded border border-slate-200" />
                   <div className="text-xs text-slate-500 mt-1">When the bound activity's pct_complete reaches this value, the funded escrow is automatically released to the sub.</div>
                 </div>
-                <Button data-testid="mp-accept-confirm" onClick={acceptBid} className="bg-emerald-600 hover:bg-emerald-700 gap-1">
+                <Button data-testid="mp-accept-confirm" onClick={acceptBid} className="max-md:w-full max-md:min-h-[44px] bg-emerald-600 hover:bg-emerald-700 gap-1">
                   <CheckCircle2 className="h-4 w-4" /> Confirm — fund ${acceptOpen.response.bid_amount_usd?.toLocaleString()} via Stripe
                 </Button>
               </>

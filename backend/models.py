@@ -237,6 +237,15 @@ class ProjectCreate(StrictModel):
     # company-name matches when the super mentions a trade.
     subcontractor_ids: list[str] = Field(default_factory=list)
     supplier_ids: list[str] = Field(default_factory=list)
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- scheduling INPUTS. All
+    # defaulted so a project created without them stays on the impact-days
+    # engine and is unaffected. Only consulted when FF_ENTERPRISE_CPM is on.
+    schedule_engine: ScheduleEngineKind = "impact_days"
+    data_date: Optional[date] = None
+    imposed_finish_date: Optional[date] = None
+    out_of_sequence_mode: OutOfSequenceMode = "retained_logic"
+    crit_mode: CriticalMode = "driving"
+    crit_tf_threshold: int = 0
 
 
 class ProjectUpdate(StrictModel):
@@ -271,6 +280,16 @@ class ProjectUpdate(StrictModel):
     # 2026-02-XX (Abhi) -- editable subs / suppliers on the project.
     subcontractor_ids: Optional[list[str]] = None
     supplier_ids: Optional[list[str]] = None
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- patchable scheduling
+    # settings (None = "do not patch"). This is the per-project cutover
+    # knob: set schedule_engine="enterprise" (with FF_ENTERPRISE_CPM on) to
+    # move one project onto the enterprise engine.
+    schedule_engine: Optional[ScheduleEngineKind] = None
+    data_date: Optional[date] = None
+    imposed_finish_date: Optional[date] = None
+    out_of_sequence_mode: Optional[OutOfSequenceMode] = None
+    crit_mode: Optional[CriticalMode] = None
+    crit_tf_threshold: Optional[int] = None
 
 
 class Project(ReadModel):
@@ -322,6 +341,56 @@ class Project(ReadModel):
     supplier_ids: list[str] = Field(default_factory=list)
     dr_template_uploaded_at: Optional[datetime] = None
     dr_template_uploaded_by: Optional[str] = None
+    # CPM Mode 2 (2026-06-29) -- schedule engine for this project.
+    #   "mode1" = our internal CPM engine (the default; import a file, we
+    #             compute dates).
+    #   "mode2" = Microsoft Project's engine drives the schedule via the
+    #             Windows worker (bidirectional sync; MS Project authoritative
+    #             for computed dates).
+    # Only consulted when FF_SCHEDULE_MODE_2 is on; a missing/legacy value is
+    # treated as "mode1" (see services.feature_flags.schedule_mode_for_project).
+    schedule_mode: Literal["mode1", "mode2"] = "mode1"
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- which of OUR engines runs.
+    # DISTINCT from schedule_mode (who computes: us vs MS Project);
+    # schedule_engine chooses which of OUR engines (impact-days vs enterprise).
+    # Only consulted when FF_ENTERPRISE_CPM is on; default keeps every project
+    # on the current impact-days engine, so the default system is unchanged.
+    #   data_date           -- forward-pass floor (nothing scheduled before it);
+    #                          None -> date.today() at run time.
+    #   imposed_finish_date -- backward-pass seed = the contract deadline; None
+    #                          -> the computed project finish (total float >= 0).
+    #   out_of_sequence_mode-- retained_logic (default, conservative) vs
+    #                          progress_override (optimistic) for out-of-sequence
+    #                          in-progress work.
+    #   calendar_id         -- project default work calendar; None -> federal.
+    #   crit_mode           -- "driving" (controlling-chain critical, default)
+    #                          vs "total_float_le" (P6/legacy float<=threshold).
+    #   crit_tf_threshold   -- the threshold for total_float_le mode.
+    schedule_engine: ScheduleEngineKind = "impact_days"
+    data_date: Optional[date] = None
+    imposed_finish_date: Optional[date] = None
+    out_of_sequence_mode: OutOfSequenceMode = "retained_logic"
+    calendar_id: Optional[str] = None
+    crit_mode: CriticalMode = "driving"
+    crit_tf_threshold: int = 0
+
+
+class WorkCalendar(ReadModel):
+    """Enterprise CPM ("Diagram 2", 2026-06-29) -- a project-scoped (or
+    global) work calendar. v1 is a workweek list + an extra-holidays set,
+    optionally unioned with the built-in federal holidays. When no calendar
+    is defined for a task/project, the engine falls back to the federal
+    default (services.working_days.FEDERAL_HOLIDAYS) and is byte-identical to
+    today's single-source working-day math. The dedicated curing/submittal
+    7-day calendar is expressed as workweek=[0..6], extra_holidays=[],
+    use_federal=False."""
+    id: str
+    tenant_id: str
+    project_id: Optional[str] = None      # None = tenant-global calendar
+    name: str
+    workweek: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])  # Mon..Fri
+    extra_holidays: List[date] = Field(default_factory=list)
+    use_federal: bool = True              # union extra_holidays with FEDERAL_HOLIDAYS
 
 
 # ---------- Locations / floors ----------
@@ -670,6 +739,34 @@ def _normalize_rfi_per_task_impacts(value: Any) -> List[dict]:
     return out
 
 
+# =====================================================================
+# Enterprise CPM ("Diagram 2") -- additive scheduling types. CPM
+# Enterprise, 2026-06-29. ALL read ONLY by services/enterprise_cpm.py
+# when FF_ENTERPRISE_CPM is ON and a project is schedule_engine=
+# "enterprise". Mode-1 (the impact-days engine) never references them,
+# so the default system is byte-identical with the flag OFF.
+#
+# NB: the name `ScheduleConstraintType` (NOT `ConstraintType`) is
+# deliberate -- `ConstraintType` already exists below as the Daily-
+# Report activity constraint-reason enum; reusing it would silently
+# collide. These are the 9 P6 / MS-Project schedule constraint kinds.
+# =====================================================================
+ScheduleConstraintType = Literal[
+    "mso",       # Must Start On (HARD -- pins ES=LS, can drive float negative)
+    "mfo",       # Must Finish On (HARD -- pins EF=LF)
+    "start_on",  # Start On (HARD -- pins ES=LS like mso; judge M4)
+    "snet",      # Start No Earlier Than (soft, forward only)
+    "snlt",      # Start No Later Than (soft, backward only)
+    "fnet",      # Finish No Earlier Than (soft, forward only)
+    "fnlt",      # Finish No Later Than (soft, backward only)
+    "asap",      # As Soon As Possible (implicit default; no clamp)
+    "alap",      # As Late As Possible (post-pass ES=LS, EF=LF)
+]
+OutOfSequenceMode = Literal["retained_logic", "progress_override"]
+ScheduleEngineKind = Literal["impact_days", "enterprise"]
+CriticalMode = Literal["driving", "total_float_le"]
+
+
 class TaskCreate(StrictModel):
     """SOURCE OF TRUTH for proposed task payloads.
 
@@ -728,6 +825,13 @@ class TaskCreate(StrictModel):
     # classified and was not reviewed, may be None. METADATA ONLY --
     # never read by CPM / float / cascade / the Tasks page.
     work_category: Optional[WorkCategory] = None
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- additive scheduling
+    # INPUTS. Optional so existing importers / API callers send nothing
+    # and the StrictModel (extra="forbid") body does not 422. Read only by
+    # the enterprise engine for schedule_engine="enterprise" projects.
+    constraint_type: Optional[ScheduleConstraintType] = None
+    constraint_date: Optional[date] = None
+    calendar_id: Optional[str] = None
     # pt.76 (2026-05-29) -- progress-aware import. All optional; when the
     # source schedule omits them the task is created as a zeroed baseline
     # (historical behavior). When present, the apply step migrates the real
@@ -780,6 +884,13 @@ class TaskUpdate(StrictModel):
     required_trade: Optional[str] = None
     required_headcount: Optional[int] = None
     required_hours: Optional[float] = None
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- patchable scheduling
+    # INPUTS (None = "do not patch"). Output columns (late_*/finish_float_
+    # days/free_float_days/is_longest_path) are server-derived by the engine
+    # and intentionally NOT accepted here.
+    constraint_type: Optional[ScheduleConstraintType] = None
+    constraint_date: Optional[date] = None
+    calendar_id: Optional[str] = None
 
     # CPM Part A (2026-05-15) -- same legacy-bare-string coercion as
     # TaskCreate. None stays None (means "do not patch this field").
@@ -890,6 +1001,25 @@ class Task(ReadModel):
     crew_assignment_history: List[CrewAssignmentEntry] = Field(default_factory=list)
     last_synced_from_dr: Optional[LastSyncedFromDR] = None
     external_modified_after_sync: bool = False
+    # CPM Mode 2 (2026-06-29) -- MS Project sync keys + conflict state. All
+    # Optional/default-None so every pre-Mode-2 task doc deserializes
+    # unchanged; populated only for projects on schedule_mode="mode2".
+    #   external_task_id      -- MS Project Task.UniqueID (the stable join key;
+    #                            activity_code stays our primary key, mirrored
+    #                            into Project's Text1 custom field on push).
+    #   external_project_id   -- logical project-file id on the worker host.
+    #   external_system       -- "ms_project" | None.
+    #   external_rowversion   -- last project rowversion we ingested
+    #                            (file-mtime#hash) for change/conflict detection.
+    #   external_last_modified_at -- remote "as of" for conflict detection.
+    #   sync_conflict_at      -- set when a push hits a remote-changed task
+    #                            (both sides edited since last sync).
+    external_task_id: Optional[int] = None
+    external_project_id: Optional[str] = None
+    external_system: Optional[str] = None
+    external_rowversion: Optional[str] = None
+    external_last_modified_at: Optional[datetime] = None
+    sync_conflict_at: Optional[datetime] = None
     # Bucket C1 Phase 2 — computed/derived status fields. Persisted so
     # other endpoints can filter on them; recomputed on every event that
     # could move them (delay open/close, EOD% change, list_tasks read).
@@ -918,6 +1048,34 @@ class Task(ReadModel):
     # tagging step / reviewer override. None on pre-F1 tasks. METADATA
     # ONLY -- the CPM engine and Tasks page never read it.
     work_category: Optional[WorkCategory] = None
+    # Enterprise CPM ("Diagram 2", 2026-06-29) -- additive scheduling
+    # INPUTS, None on every pre-existing task. Read ONLY by
+    # services/enterprise_cpm.py when FF_ENTERPRISE_CPM is ON and the
+    # project is schedule_engine="enterprise". The impact-days engine
+    # (cpm.py / task_status.py / working_days.py) never references them.
+    #   constraint_type -- one of the 9 P6/MS-Project schedule constraints
+    #   constraint_date -- the anchor date (required iff a dated constraint)
+    #   calendar_id     -- per-task work calendar; None -> project -> federal
+    constraint_type: Optional[ScheduleConstraintType] = None
+    constraint_date: Optional[date] = None
+    calendar_id: Optional[str] = None
+    # Enterprise CPM OUTPUT columns -- the engine writes these and ONLY
+    # these (judge M1/M6); it never overwrites the Mode-1 arithmetic
+    # baselines (total_float_days / is_critical_path), which keep their
+    # impact-days meaning. Legacy display columns (projected_*/slip_days/
+    # remaining_float_days/is_currently_critical/is_critical_path) receive
+    # a read-only display MIRROR on the enterprise path so existing
+    # surfaces render unchanged. All None until an enterprise run writes.
+    #   late_start_date / late_finish_date -- backward-pass LS / LF
+    #   finish_float_days -- Total Float = LF - EF (FINISH float, per spec;
+    #                        distinct from Mode-1's start-float total_float_days)
+    #   free_float_days   -- per-relationship free float (>= 0)
+    #   is_longest_path   -- on the controlling / driving chain
+    late_start_date: Optional[date] = None
+    late_finish_date: Optional[date] = None
+    finish_float_days: Optional[int] = None
+    free_float_days: Optional[int] = None
+    is_longest_path: Optional[bool] = None
 
     # CPM Part A (2026-05-15) -- normalize legacy bare-string
     # predecessors during the migration window. Once migration 018
@@ -1066,6 +1224,12 @@ class DailyReportActivityUpdate(StrictModel):
     production_impact_hours: Optional[float] = Field(default=None, ge=0)
     # Addition 4 -- required when the parent DR is locked.
     edit_reason: Optional[str] = Field(default=None, max_length=500)
+    # CPM B1 (2026-06-12) -- PM/Admin override for the EOD-slider gate.
+    # Control field (popped before the row write, like edit_reason). When
+    # FF_SLIDER_GATING blocks an EOD% increase past the predecessor gate,
+    # an admin/pm may push past it by supplying a reason (>= 8 chars); the
+    # override is audited (SLIDER_GATE_OVERRIDE). Never persisted to the row.
+    slider_gate_override_reason: Optional[str] = Field(default=None, max_length=500)
     # Bucket D Addition 5 (2026-05-12) -- "add row to locked DR" flow on
     # the activity grid. Captured at create time on AddActivityRow /
     # UnplannedActivityCreate; not used by this Update model. Kept here
@@ -1122,6 +1286,13 @@ class DailyReportActivity(ReadModel):
     # per item). Read-time only; never persisted on the DR row itself.
     open_blocker_summary: list = Field(default_factory=list)
     auto_status: Optional[TaskStatus] = None
+    # CPM B1 (2026-06-12) -- read-time EOD-slider gate. Injected by
+    # _enrich_grid_rows ONLY when FF_SLIDER_GATING is on (else stays None,
+    # and the frontend slider behaves exactly as pre-B1). Shape:
+    #   {locked: bool, max_pct: float, relationship: str|None,
+    #    binding_pred_code: str|None, reason: str}
+    # VIEW ONLY -- never persisted to mongo, never read by the CPM engine.
+    slider_gate: Optional[dict] = None
     # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
     # the gating entity that's blocking this row, or free-text "other").
     # constraint_auto_filled marks rows where the system pre-populated
@@ -2522,6 +2693,12 @@ class ScheduleProposal(ReadModel):
     project_id: str
     filename: str
     kind: str  # "schedule"
+    # CPM Mode 2 (2026-06-29) -- discriminates how the proposal originated.
+    # "file_upload" (default; the existing import path) vs "ms_project_pull"
+    # (a PULL of edits made in MS Project). Additive: existing proposals
+    # deserialize with the default, and the approve flow only diverges for the
+    # ms_project_pull source (skips our compute_cpm -- Project is authoritative).
+    source: str = "file_upload"
     status: str  # "pending_review" | "approved" | "rejected"
     parsed_rows: list[dict] = Field(default_factory=list)
     diff: dict = Field(default_factory=dict)

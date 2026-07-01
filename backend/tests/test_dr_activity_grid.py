@@ -185,29 +185,54 @@ def test_enrich_grid_row_handles_missing_linked_task():
 # --- Guard: the CPM engine + Tasks page stay out of the grid view layer ----
 
 def test_cpm_engine_never_references_the_dr_grid_view_layer():
-    """Hard guardrail: the CPM engine must not read the DR Activity Grid
-    metadata. A future edit that wires work_category / auto_status /
-    sections into float / cascade / critical-path breaks this test."""
-    for name in ("cpm.py", "task_status.py", "working_days.py"):
+    """Hard guardrail: the CPM engine must not read the DR Activity Grid VIEW
+    layer -- the dr_activity_grid module and its display fields (auto_status,
+    section_for/grid sectioning). A future edit that wires the grid view into
+    float / cascade / critical-path breaks this test.
+
+    Refined 2026-06-12 -- two tiers:
+      * Pure math (cpm.py, working_days.py): forbid ALL grid tokens INCLUDING
+        work_category. These files stay 100% free of any domain/view metadata.
+      * task_status.py: forbid the DR-grid VIEW tokens (dr_activity_grid,
+        auto_status, section_for) but PERMIT work_category -- its status
+        machine reads that Task domain field for the pt.79 paperwork shortcut
+        (see test_work_category_absent_from_cpm_pure_math for the rationale).
+        The cascade itself still never reads it (B2's paperwork skip lives in
+        services/progress_cascade.py)."""
+    grid_view_tokens = ("dr_activity_grid", "auto_status", "section_for")
+    # Pure math: also forbid work_category.
+    for name in ("cpm.py", "working_days.py"):
         text = (Path(_BACKEND) / "services" / name).read_text(encoding="utf-8")
-        for token in ("work_category", "dr_activity_grid",
-                      "auto_status", "section_for"):
+        for token in ("work_category",) + grid_view_tokens:
             assert token not in text, (
-                f"services/{name} references {token!r} -- the CPM engine "
+                f"services/{name} references {token!r} -- the pure CPM math "
                 f"must never read DR Activity Grid view metadata"
             )
+    # Status + cascade file: forbid the grid VIEW layer (work_category is a
+    # permitted Task domain field, used only by the status machine).
+    text = (Path(_BACKEND) / "services" / "task_status.py").read_text(encoding="utf-8")
+    for token in grid_view_tokens:
+        assert token not in text, (
+            f"services/task_status.py references {token!r} -- the CPM engine "
+            f"must never read the DR Activity Grid view layer"
+        )
 
 
 def test_tasks_page_not_roped_into_grid_sectioning():
-    """The Tasks page must stay untouched by F2-F5 -- it must not pick
-    up the DR Activity Grid sectioning / auto-status view logic."""
+    """The Tasks page must stay untouched by the DR Activity Grid SECTIONING /
+    auto-status view logic. It must not pick up GRID_SECTIONS / gridSectionOf
+    / auto_status.
+
+    Refined 2026-06-12: work_category is PERMITTED -- the N1 feature renders a
+    small WorkCategoryBadge so a task can display its own AI-assigned category.
+    Displaying a task's category is not grid sectioning; the forbidden tokens
+    are the actual grid-section view machinery."""
     tasks_jsx = Path(_BACKEND).parent / "frontend" / "src" / "pages" / "Tasks.jsx"
     text = tasks_jsx.read_text(encoding="utf-8")
-    for token in ("GRID_SECTIONS", "gridSectionOf", "auto_status",
-                  "work_category"):
+    for token in ("GRID_SECTIONS", "gridSectionOf", "auto_status"):
         assert token not in text, (
-            f"frontend Tasks.jsx references {token!r} -- F2-F5 must not "
-            f"change the Tasks page"
+            f"frontend Tasks.jsx references {token!r} -- the DR Activity Grid "
+            f"sectioning / auto-status view logic must not leak into the Tasks page"
         )
 
 

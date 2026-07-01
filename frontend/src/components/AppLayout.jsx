@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
@@ -15,9 +15,42 @@ import { Bot } from "lucide-react";
 // rather than as a global floater.
 export default function AppLayout() {
   const [copilotOpen, setCopilotOpen] = useState(false);
+  // P1 mobile drawer (phones only). navOpen is the source of truth; an effect
+  // mirrors it to a `mobile-nav-open` body class that drives the CSS (the
+  // off-canvas transform + backdrop + body scroll-lock), and ESC closes it.
+  // Desktop never sets navOpen (the hamburger is md:hidden), so the body class
+  // is never added there and desktop is unaffected.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    document.body.classList.toggle("mobile-nav-open", navOpen);
+    return () => document.body.classList.remove("mobile-nav-open");
+  }, [navOpen]);
+  // Lock background scroll while the full-screen Copilot overlay is open on
+  // phones (the CSS rule is gated to <=480px, so this is a no-op elsewhere).
+  useEffect(() => {
+    document.body.classList.toggle("copilot-open", copilotOpen);
+    return () => document.body.classList.remove("copilot-open");
+  }, [copilotOpen]);
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setNavOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navOpen]);
   return (
     <div className="min-h-screen page-shell">
-      <Sidebar />
+      <Sidebar onNavigate={() => setNavOpen(false)} />
+      {/* P1 (2026-06-29): mobile drawer backdrop. CSS shows it ONLY on phones
+          when body.mobile-nav-open is set; tap it to close the drawer. Inert
+          (display:none) on tablet/desktop. data-skip-page-stacking keeps the
+          .page-shell relative-positioning cascade from demoting its fixed
+          position (same guard the Copilot panel uses). */}
+      <div
+        className="mobile-nav-backdrop"
+        data-skip-page-stacking
+        aria-hidden="true"
+        onClick={() => setNavOpen(false)}
+      />
       {/* main column offsets for the fixed sidebar.
           ml-14  = 56px = collapsed rail width
           peer-data-[collapsed=false]:ml-64 would be ideal but Sidebar
@@ -25,8 +58,8 @@ export default function AppLayout() {
           variable on :root for its current width, and we read that
           here via the `app-main` class (see index.css). */}
       <div className="app-main flex flex-col min-w-0">
-        <TopBar />
-        <main className="flex-1 p-6 overflow-x-hidden">
+        <TopBar navOpen={navOpen} onToggleNav={() => setNavOpen((v) => !v)} />
+        <main className="flex-1 p-6 max-md:p-3 overflow-x-hidden">
           <Outlet />
         </main>
       </div>
