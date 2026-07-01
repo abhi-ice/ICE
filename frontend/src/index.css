@@ -360,23 +360,24 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-activity-grid"] .dense-table,
     [data-testid="dr-activity-grid"] .dense-table tbody { display: block; width: 100%; }
     [data-testid="dr-activity-grid"] .dense-table thead { display: none; }
-    /* COMPACT activity card (2026-07-01): real-device feedback -- the old
-       layout stacked all 10 fields as label:value rows, ~1 screen per activity,
-       so a 4-5 activity DR felt endless. Now a flex-wrap card: Code + Activity
-       name + the EOD slider stay full-width (the slider needs room); the small
-       fields (Location/SOD/Change/Status/Blockers/Flag) flow inline as a compact
-       meta line with tiny labels. Interactive controls unchanged; desktop
-       (>=768px) byte-identical (media-gated). */
+    /* COMPACT ACTIVITY CARD v2 (2026-07-01, approved mockup): each row is a
+       clean card. Cells are re-ordered with flexbox `order` (NOT source order):
+       header line = activity name (prominent) + code (small mono) + status pill
+       (right); then the EOD slider on its own line; then a "Planned N% · Δ"
+       meta line; blockers + issues below. Location is hidden on phones. Still
+       positional (td:nth-child) -- keep in sync with GridRow's 10-<td> order
+       (code,name,loc,SOD,EODslider,delta,status,blockers,issues,actions).
+       Desktop (>=768px) byte-identical (media-gated). */
     [data-testid="dr-activity-grid"] .dense-table tr {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 4px 10px;
+        gap: 3px 8px;
         margin: 0 0 8px;
-        padding: 9px 11px;
+        padding: 11px 12px;
         position: relative;
         border: 1px solid var(--v4-border, #e2ddd3);
-        border-radius: 10px;
+        border-radius: 12px;
         background: var(--v4-bg-surface, #fff);
     }
     [data-testid="dr-activity-grid"] .dense-table td {
@@ -394,51 +395,40 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         overflow-wrap: anywhere;
         word-break: break-word;
     }
-    [data-testid="dr-activity-grid"] .dense-table td::before {
-        content: "";
-        font-weight: 500;
-        font-size: 10px;
-        color: var(--v4-fg-muted, #6b7280);
-        white-space: nowrap;
-    }
-    /* ---- editable activity rows (10 cols) -- tiny inline labels ---- */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(3)::before { content: "Loc"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "SOD"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::before { content: "\0394"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(7)::before,
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8)::before,
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9)::before { content: none; }
-    /* code cell = card header (full width, bold, no label) */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1) {
-        flex-basis: 100%;
-        font-weight: 700;
-        font-size: 13px;
-    }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1)::before { content: none; }
-    /* activity name = full width, prominent (no label) */
+    [data-testid="dr-activity-grid"] .dense-table td::before { content: none; }
+    /* ---- editable activity rows (10 cols), re-ordered into the card ---- */
+    /* activity name (2) = headline, first */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2) {
-        flex-basis: 100%;
-        font-weight: 600;
-        font-size: 13px;
-        margin-bottom: 1px;
+        order: 1; flex: 0 1 auto; font-weight: 600; font-size: 14px;
+        color: var(--v4-fg-primary, #111827);
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before { content: none; }
-    /* EOD slider = full width, label above */
+    /* code (1) = small muted mono after the name */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1) {
+        order: 2; flex: 0 0 auto; font-size: 11px; color: var(--v4-fg-muted, #6b7280);
+    }
+    /* status pill (7) = pushed to the right end of the header line */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(7) {
+        order: 3; margin-left: auto; flex: 0 0 auto;
+    }
+    /* EOD slider (5) = own full-width line */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) {
-        flex-basis: 100%;
-        display: block;
+        order: 4; flex-basis: 100%; display: flex; align-items: center; gap: 9px; margin-top: 3px;
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5)::before {
-        content: "End of day %";
-        display: block;
-        margin: 2px 0 3px;
+    /* planned (SOD, 4) + delta (6) = a compact meta line */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4) {
+        order: 5; font-size: 12px; color: var(--v4-fg-muted, #6b7280);
     }
-    /* actions (remove / edit) -> pinned to the card's top-right corner */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) {
-        position: absolute;
-        top: 7px;
-        right: 8px;
-    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "Planned "; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::after { content: "%"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6) { order: 6; font-size: 12px; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::after { content: "%"; }
+    /* blockers (8) + issues (9) below */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8) { order: 7; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) { order: 8; margin-left: auto; }
+    /* location (3) hidden on phones */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(3) { display: none; }
+    /* actions / remove (10) last */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) { order: 9; }
     /* ---- read-only paperwork rows (4 cols: Code, Activity, SOD%, Status) ---- */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(1) {
         flex-basis: 100%; font-weight: 700; font-size: 13px;
