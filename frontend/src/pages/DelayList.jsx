@@ -138,7 +138,7 @@ export default function DelayList() {
           2-line filter instead of three stacked full-width elements. Desktop
           keeps the single inline row. */}
       <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600 flex items-center gap-2 max-md:flex-wrap">
-        <label className="uppercase tracking-wide text-xs max-md:w-full">Filter by activity id</label>
+        <label className="uppercase tracking-wide text-xs max-md:w-full max-md:normal-case">Filter by activity id</label>
         <input data-testid="delays-affected-activity-filter"
           value={affectedActivityId}
           onChange={(e) => setAffectedActivityId(e.target.value)}

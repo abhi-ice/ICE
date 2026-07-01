@@ -107,7 +107,7 @@ export default function DrTemplate() {
 
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Client DR Template</h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground page-desc">
           Upload your client's daily report template. ICE will fill it with DR
           data when you export.
         </p>

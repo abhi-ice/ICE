@@ -86,7 +86,7 @@ export default function EditRequestsQueue() {
             <ListChecks className="h-5 w-5 text-slate-700" />
             <h1 className="text-xl font-semibold text-slate-800">Edit requests</h1>
           </div>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-slate-500 page-desc">
             Supers file these to ask Admin or PM for edit access to events
             on locked DRs more than 24 hours after submit. Approving opens a
             1-hour edit window for that user on that DR.

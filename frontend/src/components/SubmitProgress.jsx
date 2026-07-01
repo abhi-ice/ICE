@@ -86,7 +86,7 @@ export default function SubmitProgress({ completeCount = 0, total = 0, missingLa
                 </button>
               </PopoverTrigger>
               <PopoverContent side="top" align="start" className="w-60 p-2.5">
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5 max-md:normal-case">
                   Still needed before submit
                 </div>
                 <ul className="space-y-1">

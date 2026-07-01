@@ -297,13 +297,13 @@ function DetailContent({ row, onTagClick, onArchive, onDelete }) {
           : <div className="h-64 grid place-items-center text-slate-400">Loading…</div>}
       </div>
       <div className="grid grid-cols-2 gap-3 text-xs">
-        <div><span className="text-slate-500 uppercase text-xs">Source:</span> {SOURCE_LABELS[row.capture_source] || row.capture_source}</div>
-        <div><span className="text-slate-500 uppercase text-xs">Status:</span> {STATUS_LABELS[row.status]?.label}</div>
-        <div><span className="text-slate-500 uppercase text-xs">Uploaded:</span> {new Date(row.uploaded_at).toLocaleString()}</div>
-        {row.exif_taken_at && <div><span className="text-slate-500 uppercase text-xs">EXIF taken:</span> {new Date(row.exif_taken_at).toLocaleString()}</div>}
-        <div><span className="text-slate-500 uppercase text-xs">Size:</span> {row.width}×{row.height} · {Math.round((row.file_size_bytes || 0) / 1024)} KB</div>
-        {row.phash && <div><span className="text-slate-500 uppercase text-xs">pHash:</span> <span className="font-mono max-md:break-all">{row.phash}</span></div>}
-        {row.sha256 && <div className="col-span-2"><span className="text-slate-500 uppercase text-xs">SHA-256:</span> <span className="font-mono text-xs max-md:break-all">{row.sha256}</span></div>}
+        <div><span className="text-slate-500 uppercase text-xs max-md:normal-case">Source:</span> {SOURCE_LABELS[row.capture_source] || row.capture_source}</div>
+        <div><span className="text-slate-500 uppercase text-xs max-md:normal-case">Status:</span> {STATUS_LABELS[row.status]?.label}</div>
+        <div><span className="text-slate-500 uppercase text-xs max-md:normal-case">Uploaded:</span> {new Date(row.uploaded_at).toLocaleString()}</div>
+        {row.exif_taken_at && <div><span className="text-slate-500 uppercase text-xs max-md:normal-case">EXIF taken:</span> {new Date(row.exif_taken_at).toLocaleString()}</div>}
+        <div><span className="text-slate-500 uppercase text-xs max-md:normal-case">Size:</span> {row.width}×{row.height} · {Math.round((row.file_size_bytes || 0) / 1024)} KB</div>
+        {row.phash && <div><span className="text-slate-500 uppercase text-xs max-md:normal-case">pHash:</span> <span className="font-mono max-md:break-all">{row.phash}</span></div>}
+        {row.sha256 && <div className="col-span-2"><span className="text-slate-500 uppercase text-xs max-md:normal-case">SHA-256:</span> <span className="font-mono text-xs max-md:break-all">{row.sha256}</span></div>}
       </div>
 
       {tags.length > 0 && (

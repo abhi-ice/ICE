@@ -206,8 +206,10 @@ export default function ResourceLeveling() {
           <div className="flex items-center gap-2">
             <Users className="h-5 w-5 text-slate-700" />
             <h1 className="text-xl font-semibold text-slate-800">Resource Leveling</h1>
+            {/* Phones: match the shared PageHelp look — a defined bordered
+                chip instead of a bare slate icon. Desktop unchanged (max-md). */}
             <button data-testid="rl-help-btn" onClick={() => setHelpOpen(true)}
-              className="ml-2 text-slate-400 hover:text-slate-700"
+              className="ml-2 text-slate-400 hover:text-slate-700 max-md:inline-flex max-md:items-center max-md:justify-center max-md:h-8 max-md:w-8 max-md:rounded-full max-md:border max-md:border-border max-md:bg-muted/40 max-md:text-foreground/80 max-md:[&>svg]:h-[18px] max-md:[&>svg]:w-[18px]"
               title="How to read this dashboard">
               <Info className="h-4 w-4" />
             </button>

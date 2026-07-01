@@ -72,7 +72,7 @@ export default function ScheduleProposals() {
         <h1 className="text-2xl font-semibold flex items-center gap-2">
           <GitCompare className="h-5 w-5" /> Schedule changes
         </h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground page-desc">
           Every uploaded schedule is reviewed before its activities commit. The AI flags risk; a PM or admin approves.
           {proj && <> Active project: <strong>{proj.name}</strong>.</>}
         </p>

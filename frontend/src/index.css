@@ -2596,12 +2596,34 @@ body.has-sticky-submit .copilot-fab { bottom: 70px; }
     box-shadow: 0 0 0 4px var(--v4-status-blocker-bg);
 }
 
-/* On narrow viewports collapse the spine padding so cards stay
-   readable. The numbered nodes shrink slightly too. */
-@media (max-width: 760px) {
-    .dr-spine { padding-left: 32px; }
-    .dr-spine::before { left: 14px; }
-    .dr-spine .step-node { left: -28px; width: 22px; height: 22px; font-size: 10px; }
+/* On phones (2026-07-01): DROP the left spine rail entirely -- the vertical
+   line + numbered/check nodes pushed every section card to the right (odd
+   right-alignment, a wasted left gutter, and right-edge overflow). Section
+   status is still shown by the top progress pips, so nothing is lost. Cards
+   now go full-width and centered. Desktop (>=768px) keeps the rail. */
+@media (max-width: 767.98px) {
+    .dr-spine { padding-left: 0; }
+    .dr-spine::before { display: none; }
+    .dr-spine .step-node { display: none; }
+    /* Manpower log: the unsaved DRAFT entry row was bg-emerald-50/30 -> on a
+       phone the whole reflowed card fills green and reads as a broken/unfinished
+       state. Neutralise it to the normal surface so it matches every other card
+       (the green Save button already signals it's unsaved). Desktop keeps the
+       faint draft tint (byte-identical). */
+    [data-testid="dr-presence-panel"] [data-testid^="presence-draft-"] {
+        background: var(--v4-bg-surface) !important;
+    }
+    /* ...and the draft INPUTS carry an emerald border + inset ring +
+       green placeholder (.dr-mp-input--draft) that still render green on a
+       phone even after the row background is neutralized. Neutralize them to
+       match saved inputs so the manpower card is clean grey (the green Save
+       button is enough of an unsaved cue). Color-only; desktop keeps the
+       draft tint (this override is mobile-gated). */
+    [data-testid="dr-presence-panel"] .dr-mp-input--draft {
+        border-color: var(--v4-border) !important;
+        box-shadow: none !important;
+    }
+    [data-testid="dr-presence-panel"] .dr-mp-input--draft::placeholder { color: var(--v4-fg-faint) !important; }
 }
 
 /* =========================================================================

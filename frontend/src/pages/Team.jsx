@@ -111,7 +111,7 @@ export default function Team() {
     <div data-testid="team-page" className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold flex items-center gap-2"><Users className="h-5 w-5" /> Team</h1>
-        <p className="text-sm text-muted-foreground">Members of your organization. Admins can invite teammates and revoke pending invites.</p>
+        <p className="text-sm text-muted-foreground page-desc">Members of your organization. Admins can invite teammates and revoke pending invites.</p>
       </div>
 
       {/* Invite form (admin only) */}
