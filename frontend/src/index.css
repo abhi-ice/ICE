@@ -730,10 +730,16 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     .space-y-6 > * + * { margin-top: 16px !important; }
     .space-y-4 > * + * { margin-top: 12px !important; }
 
-    /* --- DR progress band + KPI stat boxes: compact padding/values. --- */
+    /* --- DR progress band + KPI stat boxes: compact padding/values. KPIs sit
+       4-across on phones (approved mockup), so the label steps to 10px to fit
+       "Headcount"/"Crew hours" in a ~70-95px cell. --- */
     .dr-progress-card { padding: 9px 11px; gap: 10px; }
-    [data-testid^="kpi-"] { padding: 6px 8px !important; }
+    [data-testid^="kpi-"] { padding: 6px 6px !important; }
+    [data-testid^="kpi-"] > div:first-child { font-size: 10px !important; }
     [data-testid^="kpi-"] > div:last-child { font-size: 16px !important; }
+    /* section pips read as the mockup's status chips: tight pill padding. */
+    .dr-progress-card .dr-pip { padding: 2px 9px; }
+    .dr-progress-card .dr-pips { gap: 5px; }
 
     /* --- Hide page-header description text on phones: the muted helper
        sentence under each page title is a desktop nicety that just eats

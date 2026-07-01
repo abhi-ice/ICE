@@ -884,7 +884,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           of this title card (was in the header card below), with the H1 +
           date stepper + status pill on the row beneath it. .surface is
           theme-aware (light + dark). */}
-      <div className="surface px-5 py-3">
+      <div className="surface px-5 py-3 max-md:px-3 max-md:py-2.5">
         <BackButton onClick={onBack} label="Daily Reports" />
         <div className="mt-2 flex items-baseline gap-3 flex-wrap">
           <h1 className="text-xl font-semibold tracking-tight m-0">
@@ -1412,7 +1412,10 @@ function Header({ report, project, userLabels, ppc,
           left; event-count stats (Delays / RFIs / Safety / QC) on the
           right. pt.47 (2026-05-28): dropped "Activity hrs" KPI — crew
           hours come from the Manpower Log, per-activity hours retired. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+      {/* max-md:grid-cols-4 -- approved DR mobile mockup: KPIs as a compact
+          4-across grid of small cells on phones (was 2-across large boxes).
+          Desktop (sm/md) unchanged. */}
+      <div className="grid grid-cols-2 max-md:grid-cols-4 max-md:gap-1.5 sm:grid-cols-4 md:grid-cols-7 gap-2">
         <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
         <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
         <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
@@ -1550,6 +1553,11 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   // opened: the auto-trigger fires once-per-mount and can't catch
   // that follow-up edit on its own.
   const [refreshing, setRefreshing] = useState(false);
+  // Mobile mockup: phones mount collapsed; desktop mounts expanded and has
+  // no visible toggle, so it behaves exactly as before.
+  const [expanded, setExpanded] = useState(
+    () => typeof window === "undefined" || !window.matchMedia("(max-width: 767.98px)").matches
+  );
   const patch = async (fields) => {
     try { await api.patch(`/daily-reports/${dailyReportId}`, fields); reload(); }
     catch (e) { toast.error(e.response?.data?.detail || "Update failed"); }
@@ -1578,13 +1586,39 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
           type="button"
           onClick={refresh}
           disabled={locked || refreshing}
-          className="ml-auto text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+          className={`ml-auto text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50 ${expanded ? "" : "max-md:hidden"}`}
           title="Re-fetch weather from project city/state"
         >
           {refreshing ? "Refreshing…" : "Refresh"}
         </button>
+        {/* Mobile-only collapse toggle (approved DR mobile mockup): weather is
+            auto-filled and rarely edited, so phones start collapsed to a
+            one-line summary. md:hidden -> invisible >=768px, and desktop
+            mounts with expanded=true, so desktop renders exactly as before. */}
+        <button
+          type="button"
+          data-testid="weather-collapse-toggle"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className={`md:hidden h-8 w-8 inline-flex items-center justify-center rounded text-slate-400 ${expanded ? "" : "ml-auto"}`}
+          title={expanded ? "Collapse weather" : "Expand weather"}
+        >
+          <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </button>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+      {!expanded && (
+        <button type="button" data-testid="weather-summary"
+          onClick={() => setExpanded(true)}
+          className="md:hidden w-full text-left text-xs text-slate-400">
+          {[
+            report.weather_conditions,
+            (report.weather_temp_high_f ?? null) !== null || (report.weather_temp_low_f ?? null) !== null
+              ? `${report.weather_temp_high_f ?? "—"}° / ${report.weather_temp_low_f ?? "—"}°`
+              : null,
+          ].filter(Boolean).join(" · ") || "No weather yet — tap to expand"}
+        </button>
+      )}
+      <div className={`grid grid-cols-2 md:grid-cols-5 gap-2 ${expanded ? "" : "max-md:hidden"}`}>
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
         <Field label="Low °F" type="number" value={report.weather_temp_low_f ?? ""} onChange={(v) => patch({ weather_temp_low_f: v ? Number(v) : null })} disabled={locked} testid="weather-low" />
