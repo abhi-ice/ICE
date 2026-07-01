@@ -360,82 +360,94 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-activity-grid"] .dense-table,
     [data-testid="dr-activity-grid"] .dense-table tbody { display: block; width: 100%; }
     [data-testid="dr-activity-grid"] .dense-table thead { display: none; }
+    /* COMPACT activity card (2026-07-01): real-device feedback -- the old
+       layout stacked all 10 fields as label:value rows, ~1 screen per activity,
+       so a 4-5 activity DR felt endless. Now a flex-wrap card: Code + Activity
+       name + the EOD slider stay full-width (the slider needs room); the small
+       fields (Location/SOD/Change/Status/Blockers/Flag) flow inline as a compact
+       meta line with tiny labels. Interactive controls unchanged; desktop
+       (>=768px) byte-identical (media-gated). */
     [data-testid="dr-activity-grid"] .dense-table tr {
-        display: block;
-        margin: 0 0 10px;
-        padding: 8px 11px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px 10px;
+        margin: 0 0 8px;
+        padding: 9px 11px;
+        position: relative;
         border: 1px solid var(--v4-border, #e2ddd3);
         border-radius: 10px;
         background: var(--v4-bg-surface, #fff);
     }
     [data-testid="dr-activity-grid"] .dense-table td {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 12px;
+        gap: 5px;
         width: auto;
         max-width: none !important;
-        padding: 6px 0;
-        border: 0;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-        text-align: right;
-        white-space: normal;
         min-width: 0;
+        padding: 0;
+        border: 0;
+        font-size: 12px;
+        text-align: left;
+        white-space: normal;
         overflow-wrap: anywhere;
         word-break: break-word;
     }
-    [data-testid="dr-activity-grid"] .dense-table td:last-child { border-bottom: 0; }
     [data-testid="dr-activity-grid"] .dense-table td::before {
         content: "";
-        font-weight: 600;
-        font-size: 11px;
+        font-weight: 500;
+        font-size: 10px;
         color: var(--v4-fg-muted, #6b7280);
-        text-align: left;
-        margin-right: auto;
         white-space: nowrap;
     }
-    /* ---- editable activity rows (10 cols) ---- */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before { content: "Activity"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(3)::before { content: "Location"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "Start of day %"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5)::before { content: "End of day %"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::before { content: "Change"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(7)::before { content: "Status"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8)::before { content: "Blockers"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9)::before { content: "Flag issue"; }
-    /* code cell = card header (no label, left aligned, bigger) */
+    /* ---- editable activity rows (10 cols) -- tiny inline labels ---- */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(3)::before { content: "Loc"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "SOD"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::before { content: "\0394"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(7)::before,
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8)::before,
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9)::before { content: none; }
+    /* code cell = card header (full width, bold, no label) */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1) {
-        justify-content: flex-start;
-        text-align: left;
+        flex-basis: 100%;
         font-weight: 700;
         font-size: 13px;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.09);
-        padding-bottom: 8px;
-        margin-bottom: 2px;
     }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(1)::before { content: none; }
-    /* Activity description + EOD slider = full width (label above) */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2),
+    /* activity name = full width, prominent (no label) */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2) {
+        flex-basis: 100%;
+        font-weight: 600;
+        font-size: 13px;
+        margin-bottom: 1px;
+    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before { content: none; }
+    /* EOD slider = full width, label above */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) {
+        flex-basis: 100%;
         display: block;
-        text-align: left;
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(2)::before,
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5)::before {
+        content: "End of day %";
         display: block;
-        margin: 0 0 4px;
+        margin: 2px 0 3px;
     }
-    /* actions cell (remove / edit) -> right aligned */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) { justify-content: flex-end; }
+    /* actions (remove / edit) -> pinned to the card's top-right corner */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) {
+        position: absolute;
+        top: 7px;
+        right: 8px;
+    }
     /* ---- read-only paperwork rows (4 cols: Code, Activity, SOD%, Status) ---- */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(1) {
-        justify-content: flex-start; text-align: left; font-weight: 700; font-size: 13px;
-        border-bottom: 1px solid rgba(0, 0, 0, 0.09); padding-bottom: 8px;
+        flex-basis: 100%; font-weight: 700; font-size: 13px;
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2) { display: block; text-align: left; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2)::before { content: "Activity"; display: block; margin: 0 0 4px; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(3)::before { content: "Start of day %"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(4)::before { content: "Status"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(1)::before { content: none; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2) { flex-basis: 100%; font-weight: 600; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(2)::before { content: none; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(3)::before { content: "SOD"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-readonly-row-"] td:nth-child(4)::before { content: none; }
 }
 
 /* ============================================================
@@ -488,8 +500,8 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-presence-panel"] .dense-table thead { display: none; }
     [data-testid="dr-presence-panel"] .dense-table tr {
         display: block;
-        margin: 0 0 10px;
-        padding: 10px 11px;
+        margin: 0 0 8px;
+        padding: 8px 11px;
         border: 1px solid var(--v4-border, #e2ddd3);
         border-radius: 10px;
         background: var(--v4-bg-surface, #fff);
@@ -498,7 +510,7 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         display: block;
         width: auto;
         max-width: none !important;
-        padding: 5px 0;
+        padding: 3px 0;
         border: 0;
         border-bottom: 1px solid rgba(0, 0, 0, 0.06);
         text-align: left;

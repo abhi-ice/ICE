@@ -78,6 +78,11 @@ export default function Dashboard() {
           <div className="px-4 py-3 border-b border-border font-medium text-sm">
             Active project: {projects.find((p) => p.id === activeId)?.name || "—"}
           </div>
+          {/* crud-list-table-wrap: on phones this 5-col table reflows into
+              compact cards (Description = headline, the rest inline meta) so it
+              fits the frame instead of h-scrolling off-screen. The class is
+              inert at >=768px, so the desktop table is byte-identical. */}
+          <div className="crud-list-table-wrap">
           <table className="w-full dense-table">
             <thead>
               <tr><th>Activity</th><th>Description</th><th>Status</th><th>Plan finish</th><th>%</th></tr>
@@ -85,20 +90,21 @@ export default function Dashboard() {
             <tbody>
               {recentTasks.map((t) => (
                 <tr key={t.id} data-testid={`dash-task-row-${t.activity_code}`}>
-                  <td className="font-mono text-xs">{t.activity_code}</td>
-                  <td className="truncate max-w-[280px]">{t.description}</td>
-                  <td>
+                  <td className="font-mono text-xs" data-label="Activity">{t.activity_code}</td>
+                  <td className="truncate max-w-[280px] col-primary" data-label="Description">{t.description}</td>
+                  <td data-label="Status">
                     <span className={`pill ${t.status === "complete" ? "pill-green" : t.status === "in_progress" ? "pill-blue" : "pill-slate"}`}>
                       {t.status}
                     </span>
                   </td>
-                  <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
-                  <td className="tabular-nums">{t.pct_complete}%</td>
+                  <td className="font-mono text-xs" data-label="Plan finish">{formatDateDisplay(t.planned_finish)}</td>
+                  <td className="tabular-nums" data-label="%">{t.pct_complete}%</td>
                 </tr>
               ))}
               {!recentTasks.length && <tr><td colSpan="5" className="text-center text-sm text-muted-foreground py-6">No tasks loaded.</td></tr>}
             </tbody>
           </table>
+          </div>
         </div>
 
         <div className="bg-card border border-border rounded-lg">
