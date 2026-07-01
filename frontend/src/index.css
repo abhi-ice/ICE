@@ -416,11 +416,11 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     }
     /* planned (SOD, 4) + delta (6) = a compact meta line */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4) {
-        order: 5; font-size: 12px; color: var(--v4-fg-muted, #6b7280);
+        order: 5; font-size: 12px; color: var(--v4-fg-muted, #6b7280); gap: 1px;
     }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "Planned "; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::after { content: "%"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6) { order: 6; font-size: 12px; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6) { order: 6; font-size: 12px; gap: 1px; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::after { content: "%"; }
     /* blockers (8) + issues (9) below */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8) { order: 7; }
@@ -746,6 +746,80 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        vertical space on a phone (user: "remove the description junk").
        Opt-in via .page-desc so it only affects intended subtitles. --- */
     .page-desc { display: none !important; }
+
+    /* =====================================================================
+       DR MOCKUP MATCH (2026-07-01, user: "200% exact replication"). The
+       approved mobile mockup shows CLEAN cards; on phones the desktop-tier
+       chrome around them (lifecycle dividers, reference bars, badges,
+       helper sentences, the amber unplanned box) must go. Desktop >=768px
+       keeps every one of these (media-gated).
+       ===================================================================== */
+    /* section chips: hide the "01" numbers; completed chips get a check,
+       matching the mockup's "✓ Project" pills. */
+    .dr-pip .pip-num { display: none; }
+    .dr-pip.complete .pip-name::before { content: "✓ "; font-weight: 700; }
+    /* Activity log: strip the lifecycle chrome -- BEFORE/AFTER reference
+       divider rows + empty read-only bars, the ACTION-REQUIRED divider, the
+       YOUR-JOB badge and the instruction sentence. (Populated paperwork
+       sections .phase-readonly are real data and stay.) */
+    [data-testid="dr-activity-grid"] .phase-divider { display: none; }
+    [data-testid="dr-activity-grid"] .phase-ref { display: none; }
+    [data-testid="dr-activity-grid"] .phase-now-badge { display: none; }
+    [data-testid="dr-activity-grid"] .phase-now-helper { display: none; }
+    [data-testid="dr-activity-grid"] .lifecycle { padding: 0; }
+    /* the green ACTION-REQUIRED frame flattens away so activity cards sit
+       directly in the panel like the mockup. */
+    [data-testid="dr-activity-grid"] .phase-now {
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        border-radius: 0;
+    }
+    [data-testid="dr-activity-grid"] .phase-now-head { padding: 0 0 6px; }
+    [data-testid="dr-activity-grid"] .phase-now-title { font-size: 13px; }
+    [data-testid="dr-activity-grid"] .phase-now-count { font-size: 11px; }
+    [data-testid="dr-activity-grid"] .phase-now-body { background: transparent; border-top: 0; }
+    /* activity-card innards: the EOD % readout must never wrap ("44 / %"),
+       the status pill + flag-issue + remove controls read small like the
+       mockup. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) span {
+        white-space: nowrap; width: auto; font-size: 14px;
+    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] [data-testid^="dr-status-"] {
+        font-size: 11px; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) select {
+        font-size: 12px; min-height: 34px; height: 34px; max-width: 150px;
+    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) button {
+        font-size: 12px;
+    }
+    /* unplanned-activity add: the loud amber box becomes the mockup's quiet
+       dashed "add" affordance. Theme-prefixed so it outranks the dark-theme
+       .bg-amber-50 remap (same specificity trap as the manpower emerald). */
+    html[data-theme="dark"] [data-testid="dr-activity-grid"] .bg-amber-50,
+    html[data-theme="light"] [data-testid="dr-activity-grid"] .bg-amber-50 {
+        background: transparent !important;
+        border: 1px dashed var(--v4-border-strong) !important;
+        border-radius: 12px;
+    }
+    html[data-theme="dark"] [data-testid="dr-activity-grid"] .bg-amber-50 .text-amber-800,
+    html[data-theme="light"] [data-testid="dr-activity-grid"] .bg-amber-50 .text-amber-800 { color: var(--v4-fg-secondary) !important; }
+    /* activity-panel header: date + refresh compact, never clipped. */
+    [data-testid="dr-activity-grid"] [data-testid="dr-refresh-grid"] {
+        font-size: 11px; height: 32px; padding: 0 8px; white-space: nowrap;
+    }
+    [data-testid="dr-activity-grid"] .ml-auto.flex.items-center.gap-2 { flex-wrap: wrap; justify-content: flex-end; }
+    /* Manpower: dark-theme override of the draft row's emerald tint outranked
+       the earlier neutralizer -- kill it at higher specificity for BOTH themes. */
+    html[data-theme="dark"] [data-testid="dr-presence-panel"] tr[data-testid^="presence-draft-"],
+    html[data-theme="light"] [data-testid="dr-presence-panel"] tr[data-testid^="presence-draft-"] {
+        background: var(--v4-bg-surface) !important;
+    }
+    /* Manpower entry form: tighter vertical rhythm so the stacked
+       Company/Trade/Task/Headcount/Hours fields read as one compact card. */
+    [data-testid="dr-presence-panel"] .dense-table td { padding: 2px 0; }
+    [data-testid="dr-presence-panel"] .dense-table td::before { margin: 0 0 2px; font-size: 10px; }
 
     /* --- CPM/schedule grids (Tasks, Lookahead, Resource-Leveling): the
        pinned Description column was up to 280px, so # (40px) + Description

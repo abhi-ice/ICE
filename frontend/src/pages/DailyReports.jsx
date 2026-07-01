@@ -1401,7 +1401,7 @@ function Header({ report, project, userLabels, ppc,
                 }}
                 title={`${s.label} — ${s.status}`}
               >
-                {String(i + 1).padStart(2, "0")}<span className="pip-name">{s.label}</span>
+                <span className="pip-num">{String(i + 1).padStart(2, "0")}</span><span className="pip-name">{s.label}</span>
               </button>
             ))}
           </div>
