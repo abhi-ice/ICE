@@ -93,6 +93,14 @@ async def create_project(payload: ProjectCreate, ctx: dict = Depends(require_ten
         "created_by": ctx["user"]["id"],
     })
     await db.projects.insert_one(doc.copy())
+    # UI engine dropdown (2026-07-02): same one-action contract as the PATCH
+    # path -- picking an engine at creation also enables its global AND-gate.
+    from services import runtime_settings
+    actor_email = (ctx.get("user") or {}).get("email") or ""
+    if doc.get("schedule_engine") == "enterprise":
+        await runtime_settings.ensure_flag_on("FF_ENTERPRISE_CPM", updated_by=actor_email)
+    if doc.get("schedule_mode") == "mode2":
+        await runtime_settings.ensure_flag_on("FF_SCHEDULE_MODE_2", updated_by=actor_email)
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="projects", op="INSERT",
         record_id=doc["id"], before=None, after=doc, actor_id=ctx["user"]["id"],
@@ -168,6 +176,15 @@ async def update_project(project_id: str, payload: ProjectUpdate, ctx: dict = De
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
         {"$set": updates},
     )
+    # UI engine dropdown (2026-07-02): choosing an engine is ONE action.
+    # The global feature flag is an AND-gate with the per-project field, so
+    # flipping it on here can't change any project that didn't opt in.
+    from services import runtime_settings
+    actor_email = (ctx.get("user") or {}).get("email") or ""
+    if updates.get("schedule_engine") == "enterprise":
+        await runtime_settings.ensure_flag_on("FF_ENTERPRISE_CPM", updated_by=actor_email)
+    if updates.get("schedule_mode") == "mode2":
+        await runtime_settings.ensure_flag_on("FF_SCHEDULE_MODE_2", updated_by=actor_email)
     after = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="projects", op="UPDATE",

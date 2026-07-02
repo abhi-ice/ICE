@@ -36,6 +36,9 @@ const EMPTY_FORM = {
   // selected from the tenant-wide vendor central repo.
   subcontractor_ids: [],
   supplier_ids: [],
+  // Schedule engine dropdown (2026-07-02) -- one UI choice fans out to the
+  // backend pair {schedule_engine, schedule_mode} in submit().
+  engine_choice: "impact_days",
 };
 
 // pt.44 (2026-05-27) — rebuilt vendor picker.
@@ -260,6 +263,9 @@ export default function Projects() {
       calendar_basis: p.calendar_basis || "calendar_days",
       subcontractor_ids: p.subcontractor_ids || [],
       supplier_ids: p.supplier_ids || [],
+      engine_choice: p.schedule_mode === "mode2"
+        ? "ms_project"
+        : (p.schedule_engine === "enterprise" ? "enterprise" : "impact_days"),
     });
     setOpen(true);
   };
@@ -272,6 +278,12 @@ export default function Projects() {
         contract_value_usd: form.contract_value_usd ? Number(form.contract_value_usd) : null,
         contract_days: form.contract_days ? Number(form.contract_days) : null,
       };
+      // One dropdown -> the backend field pair. Selecting Microsoft Project
+      // resets schedule_engine (the enterprise branch outranks mode2 in
+      // get_engine_for); selecting an ICE engine resets mode to mode1.
+      delete payload.engine_choice;
+      payload.schedule_engine = form.engine_choice === "enterprise" ? "enterprise" : "impact_days";
+      payload.schedule_mode = form.engine_choice === "ms_project" ? "mode2" : "mode1";
       // Preserve subcontractor_ids / supplier_ids even when empty so
       // a user un-selecting everything actually clears the linkage.
       const ARRAY_KEEP = new Set(["subcontractor_ids", "supplier_ids"]);
@@ -436,6 +448,29 @@ export default function Projects() {
                   </div>
                 </div>
               </details>
+
+              {/* Schedule engine dropdown (2026-07-02) -- the one place a
+                  project picks who computes its schedule. No env vars, no
+                  database edits: the backend enables the matching feature
+                  gate automatically when an engine is chosen. */}
+              <div className="border-t border-border pt-3">
+                <FieldLabel optional className="field-label">Schedule engine</FieldLabel>
+                <select data-testid="np-schedule-engine"
+                  value={form.engine_choice}
+                  onChange={(e) => setForm({ ...form, engine_choice: e.target.value })}
+                  className="w-full h-9 px-3 rounded border border-input bg-background">
+                  <option value="impact_days">ICE standard — impact days</option>
+                  <option value="enterprise">ICE Enterprise — advanced critical-path engine</option>
+                  <option value="ms_project">Microsoft Project — via the ICE connector</option>
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {form.engine_choice === "impact_days" && "The default engine. Delays push finish dates by their impact days."}
+                  {form.engine_choice === "enterprise" && "Full critical-path scheduling: late dates, float, constraints, longest path."}
+                  {form.engine_choice === "ms_project" && (
+                    <>Microsoft Project computes this schedule through the connector. Set it up once in <a href="/settings" className="text-emerald-600 hover:underline">Settings → Microsoft Project connector</a>.</>
+                  )}
+                </p>
+              </div>
 
               {/* pt.40: modal primary action -> sbtn-md (32px). */}
               <button data-testid="np-submit" onClick={submit} disabled={!form.name || busy} className="sbtn sbtn-md sbtn-primary">{busy ? "Saving…" : (editId ? "Save" : "Create")}</button>

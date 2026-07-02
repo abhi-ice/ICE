@@ -4,8 +4,9 @@ import {
   ShieldCheck, Bot, FileText, History, ShoppingBasket, FileBarChart,
   Settings as SettingsIcon, MapPin, Sparkles, AlertTriangle,
   RefreshCw, Loader2, ShieldAlert, Activity, Check, X,
-  Download, ChevronRight,
+  Download, ChevronRight, Copy, CalendarClock,
 } from "lucide-react";
+import { Switch } from "../components/ui/switch";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import { Button } from "../components/ui/button";
@@ -494,6 +495,10 @@ export function Settings() {
           <SettingsTab tab="ai_usage" active={tab} onClick={setTab}
             label="AI Usage" icon={Sparkles} testid="settings-tab-ai-usage" />
         )}
+        {isAdmin && (
+          <SettingsTab tab="scheduling" active={tab} onClick={setTab}
+            label="Scheduling" icon={CalendarClock} testid="settings-tab-scheduling" />
+        )}
       </div>
 
       {tab === "general" && tenant && (
@@ -515,6 +520,13 @@ export function Settings() {
           AI Usage settings are admin-only.
         </div>
       )}
+
+      {tab === "scheduling" && isAdmin && <SchedulingTab />}
+      {tab === "scheduling" && !isAdmin && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-900">
+          Scheduling settings are admin-only.
+        </div>
+      )}
     </div>
   );
 }
@@ -533,6 +545,225 @@ function SettingsTab({ tab, active, onClick, label, icon: Icon, testid }) {
     </button>
   );
 }
+
+// =====================================================================
+// Scheduling tab (2026-07-02) -- the UI home for what used to be env-var
+// switches: feature toggles + the Microsoft Project connector (worker
+// token, worker download, worker status). Admin-only.
+// =====================================================================
+function SchedulingTab() {
+  const [state, setState] = useState(null); // {flags:[...], ms_project:{...}}
+  const [busyKey, setBusyKey] = useState(null);
+  const [newToken, setNewToken] = useState(null); // shown ONCE after rotate
+  const [rotating, setRotating] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  const load = async () => {
+    try {
+      const { data } = await api.get("/admin/runtime-settings");
+      setState(data);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to load scheduling settings");
+    }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggle = async (key, value) => {
+    setBusyKey(key);
+    try {
+      const { data } = await api.patch("/admin/runtime-settings", { flags: { [key]: value } });
+      setState(data);
+      const f = (data.flags || []).find((x) => x.key === key);
+      toast.success(`${f?.label || key} turned ${value ? "on" : "off"}`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save setting");
+    } finally { setBusyKey(null); }
+  };
+
+  const rotate = async () => {
+    if (state?.ms_project?.token_set) {
+      const ok = await confirmAction({
+        title: "Generate a new worker token?",
+        message: "The current token stops working immediately. The worker machine will need the new token pasted into its worker.env file.",
+        confirmText: "Generate new token",
+      });
+      if (!ok) return;
+    }
+    setRotating(true);
+    try {
+      const { data } = await api.post("/admin/runtime-settings/msp-token/rotate");
+      setNewToken(data.token);
+      setState((s) => ({ ...(s || {}), ms_project: data.ms_project }));
+      toast.success("Worker token generated");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to generate token");
+    } finally { setRotating(false); }
+  };
+
+  const copyToken = async () => {
+    try {
+      await navigator.clipboard.writeText(newToken);
+      toast.success("Token copied");
+    } catch {
+      toast.error("Copy failed — select and copy it manually");
+    }
+  };
+
+  const downloadWorker = async () => {
+    setDownloading(true);
+    try {
+      const res = await api.get("/admin/msp-worker/download", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "ice-msproject-worker.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Download failed");
+    } finally { setDownloading(false); }
+  };
+
+  const msp = state?.ms_project || {};
+  const lastSeenMs = msp.last_seen ? Date.now() - new Date(msp.last_seen).getTime() : null;
+  const online = lastSeenMs != null && lastSeenMs < 2 * 60 * 1000;
+  const lastSeenText = lastSeenMs == null
+    ? "Never connected"
+    : online
+      ? "Online now"
+      : `Last seen ${lastSeenMs < 3600e3
+          ? `${Math.max(1, Math.round(lastSeenMs / 60000))} min ago`
+          : new Date(msp.last_seen).toLocaleString()}`;
+
+  if (!state) {
+    return <div className="text-sm text-muted-foreground p-4"><Loader2 className="h-4 w-4 animate-spin inline mr-2" />Loading…</div>;
+  }
+
+  const connectorFlag = (state.flags || []).find((f) => f.key === "FF_SCHEDULE_MODE_2");
+  const featureFlags = (state.flags || []).filter((f) => f.key !== "FF_SCHEDULE_MODE_2");
+
+  return (
+    <div data-testid="scheduling-settings" className="space-y-4 max-w-3xl">
+      {/* ------- Card 1: scheduling feature toggles ------- */}
+      <div className="bg-card border border-border rounded-lg p-4">
+        <h2 className="text-sm font-semibold mb-1">Scheduling features</h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          Turn features on or off for this whole workspace. Changes take effect right away — no deployment needed.
+        </p>
+        <div className="divide-y divide-border">
+          {featureFlags.map((f) => (
+            <div key={f.key} className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm font-medium">{f.label}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{f.help}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                {busyKey === f.key && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                <Switch data-testid={`flag-toggle-${f.key}`}
+                  checked={f.effective}
+                  disabled={busyKey === f.key}
+                  onCheckedChange={(v) => toggle(f.key, v)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ------- Card 2: Microsoft Project connector ------- */}
+      <div className="bg-card border border-border rounded-lg p-4" data-testid="msp-connector-card">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-semibold mb-1">Microsoft Project connector</h2>
+            <p className="text-xs text-muted-foreground">
+              Let Microsoft Project compute schedules for projects that choose it as their schedule engine.
+              A small helper program (the worker) runs on a Windows computer that has Microsoft Project installed.
+            </p>
+          </div>
+          {connectorFlag && (
+            <div className="flex items-center gap-2 shrink-0 pt-0.5">
+              {busyKey === connectorFlag.key && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+              <Switch data-testid="flag-toggle-FF_SCHEDULE_MODE_2"
+                checked={connectorFlag.effective}
+                disabled={busyKey === connectorFlag.key}
+                onCheckedChange={(v) => toggle(connectorFlag.key, v)} />
+            </div>
+          )}
+        </div>
+
+        {/* Worker status */}
+        <div className="mt-3 flex items-center gap-2 text-sm" data-testid="msp-worker-status">
+          <span className={`inline-block h-2 w-2 rounded-full ${online ? "bg-emerald-500" : "bg-slate-300"}`} />
+          <span className={online ? "text-emerald-700 font-medium" : "text-muted-foreground"}>
+            {lastSeenText}{msp.worker_id && lastSeenMs != null ? ` · ${msp.worker_id}` : ""}
+          </span>
+        </div>
+
+        {/* Setup steps */}
+        <ol className="mt-3 space-y-3 text-sm list-none">
+          <li className="flex gap-3">
+            <span className="shrink-0 h-5 w-5 rounded-full bg-slate-100 text-slate-600 text-xs flex items-center justify-center font-medium">1</span>
+            <div className="flex-1">
+              <div className="font-medium">Download the worker</div>
+              <div className="text-xs text-muted-foreground mb-1.5">Unzip it on the Windows computer that has Microsoft Project.</div>
+              <button data-testid="msp-worker-download" onClick={downloadWorker} disabled={downloading}
+                className="sbtn sbtn-sm sbtn-secondary inline-flex items-center gap-1.5">
+                <Download className="h-3.5 w-3.5" /> {downloading ? "Preparing…" : "Download worker (.zip)"}
+              </button>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="shrink-0 h-5 w-5 rounded-full bg-slate-100 text-slate-600 text-xs flex items-center justify-center font-medium">2</span>
+            <div className="flex-1">
+              <div className="font-medium">Generate a connection token</div>
+              <div className="text-xs text-muted-foreground mb-1.5">
+                Paste it into the worker&apos;s <code>worker.env</code> file. It&apos;s shown only once —
+                generating a new one replaces the old one.
+              </div>
+              {newToken ? (
+                <div className="rounded border border-amber-300 bg-amber-50 p-2.5" data-testid="msp-token-reveal">
+                  <div className="text-xs font-medium text-amber-900 mb-1.5">
+                    Copy this token now — it won&apos;t be shown again.
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs bg-white border border-amber-200 rounded px-2 py-1.5 break-all select-all">{newToken}</code>
+                    <button data-testid="msp-token-copy" onClick={copyToken}
+                      className="sbtn sbtn-sm sbtn-secondary inline-flex items-center gap-1.5 shrink-0">
+                      <Copy className="h-3.5 w-3.5" /> Copy
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button data-testid="msp-token-rotate" onClick={rotate} disabled={rotating}
+                  className="sbtn sbtn-sm sbtn-secondary inline-flex items-center gap-1.5">
+                  <RefreshCw className={`h-3.5 w-3.5 ${rotating ? "animate-spin" : ""}`} />
+                  {msp.token_set ? "Generate new token" : "Generate token"}
+                </button>
+              )}
+              {msp.token_set && !newToken && (
+                <div className="text-xs text-muted-foreground mt-1.5 inline-flex items-center gap-1">
+                  <Check className="h-3 w-3 text-emerald-600" /> A token is set.
+                </div>
+              )}
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="shrink-0 h-5 w-5 rounded-full bg-slate-100 text-slate-600 text-xs flex items-center justify-center font-medium">3</span>
+            <div className="flex-1">
+              <div className="font-medium">Start the worker</div>
+              <div className="text-xs text-muted-foreground">
+                Double-click <code>run-worker.bat</code> on that computer. The status dot above turns green
+                once it connects. Then pick <b>Microsoft Project</b> as the schedule engine on any project.
+              </div>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 
 // =====================================================================
 // AI Usage tab

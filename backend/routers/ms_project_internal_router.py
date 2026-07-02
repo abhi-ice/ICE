@@ -23,15 +23,18 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Response
 
 from auth import require_tenant
 from services import ms_project_sync as mps
+from services import runtime_settings
 
 router = APIRouter(tags=["ms-project-internal"])
 
 
 async def require_worker(authorization: Optional[str] = Header(default=None)) -> dict:
-    """Authenticate the MS Project worker by a shared bearer token (env
-    MS_PROJECT_WORKER_TOKEN). Distinct from user auth: the worker is a machine
+    """Authenticate the MS Project worker by a shared bearer token. The token
+    generated from Settings -> Microsoft Project connector (stored in runtime
+    settings) wins; env MS_PROJECT_WORKER_TOKEN is the fallback so pre-UI
+    deployments keep working. Distinct from user auth: the worker is a machine
     agent, not a tenant user."""
-    token = os.environ.get("MS_PROJECT_WORKER_TOKEN")
+    token = runtime_settings.worker_token() or os.environ.get("MS_PROJECT_WORKER_TOKEN")
     if not token:
         raise HTTPException(status_code=503, detail="MS Project worker integration not configured")
     if not authorization or authorization.strip() != f"Bearer {token}":
@@ -45,6 +48,7 @@ async def claim_job(payload: dict = Body(default={}), _w: dict = Depends(require
     the wait window. The worker calls this in a loop."""
     worker_id = str(payload.get("worker_id") or "worker")
     capabilities = payload.get("capabilities") or ["push", "pull", "validate"]
+    await runtime_settings.touch_worker(worker_id)
     wait_ms = max(0, min(int(payload.get("wait_ms") or 0), 25000))
     deadline = time.monotonic() + (wait_ms / 1000.0)
     while True:

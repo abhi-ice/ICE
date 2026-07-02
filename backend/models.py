@@ -241,6 +241,9 @@ class ProjectCreate(StrictModel):
     # defaulted so a project created without them stays on the impact-days
     # engine and is unaffected. Only consulted when FF_ENTERPRISE_CPM is on.
     schedule_engine: ScheduleEngineKind = "impact_days"
+    # UI engine dropdown (2026-07-02) -- selectable at creation too, so a
+    # project can start life on the Microsoft Project connector.
+    schedule_mode: Literal["mode1", "mode2"] = "mode1"
     data_date: Optional[date] = None
     imposed_finish_date: Optional[date] = None
     out_of_sequence_mode: OutOfSequenceMode = "retained_logic"
@@ -285,6 +288,10 @@ class ProjectUpdate(StrictModel):
     # knob: set schedule_engine="enterprise" (with FF_ENTERPRISE_CPM on) to
     # move one project onto the enterprise engine.
     schedule_engine: Optional[ScheduleEngineKind] = None
+    # UI engine dropdown (2026-07-02) -- schedule_mode is now patchable too,
+    # so the Projects dialog's single "Schedule engine" select can move a
+    # project onto Microsoft Project (mode2) or back, no env/db edits.
+    schedule_mode: Optional[Literal["mode1", "mode2"]] = None
     data_date: Optional[date] = None
     imposed_finish_date: Optional[date] = None
     out_of_sequence_mode: Optional[OutOfSequenceMode] = None
