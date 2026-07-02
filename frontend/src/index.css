@@ -846,8 +846,12 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     }
     [data-testid="dr-activity-grid"] > div:first-child > span::after { content: "\00a0planned"; }
     /* row remove -> a muted 34px trash icon button (was a red text link). */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] [data-testid^="dr-remove-"],
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] [data-testid^="dr-remove-"] * {
+        font-size: 0 !important; color: transparent !important;
+    }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] [data-testid^="dr-remove-"] {
-        font-size: 0; width: 34px; height: 34px; min-height: 34px; padding: 0;
+        width: 34px; height: 34px; min-height: 34px; padding: 0;
         border: 1px solid var(--v4-border); border-radius: 9px;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='%239aa3af' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/%3E%3C/svg%3E");
         background-repeat: no-repeat; background-position: center;
