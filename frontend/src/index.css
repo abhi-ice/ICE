@@ -758,6 +758,43 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        matching the mockup's "✓ Project" pills. */
     .dr-pip .pip-num { display: none; }
     .dr-pip.complete .pip-name::before { content: "✓ "; font-weight: 700; }
+    /* The mockup's core language: section panels (Manpower / Activity /
+       Events / Photos) shed their outer surface box on phones -- a bare
+       section header with the inner cards sitting directly on the page
+       background. !important beats the dark-theme .surface override and the
+       PanelShell header's inline borderBottom. Project/Weather/Audit stay
+       one-line cards (mockup .acc rows). */
+    [data-testid="dr-presence-panel"],
+    [data-testid="dr-activity-grid"],
+    [data-testid="dr-photos-panel"],
+    [data-testid="dr-events-tabs"] {
+        background: transparent !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        padding: 0 !important;
+    }
+    [data-testid="dr-presence-panel"] > div:first-child,
+    [data-testid="dr-activity-grid"] > div:first-child,
+    [data-testid="dr-photos-panel"] > div:first-child,
+    [data-testid="dr-events-tabs"] > div:first-child {
+        border-bottom: 0 !important;
+        padding-bottom: 0 !important;
+        margin-bottom: 8px !important;
+    }
+    /* the title card is bare on phones too (the mockup header sits directly
+       on the page background). */
+    .dr-title-card {
+        background: transparent !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        padding: 0 !important;
+    }
+    /* events tabs read as the mockup's quick chips: pill-shaped. */
+    .dr-events-tabs [role="tab"] { border-radius: 999px; }
     /* Activity log: strip the lifecycle chrome -- BEFORE/AFTER reference
        divider rows + empty read-only bars, the ACTION-REQUIRED divider, the
        YOUR-JOB badge and the instruction sentence. (Populated paperwork
