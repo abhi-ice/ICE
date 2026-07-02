@@ -58,7 +58,7 @@ import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
   Lock, CheckCircle2, ChevronLeft, ChevronRight, Trash2, Wand2, Pencil, Sparkles, Loader2,
-  Upload, FileSpreadsheet, Pin, Copy as CopyIcon,
+  Upload, FileSpreadsheet, Pin, Copy as CopyIcon, Building2,
 } from "lucide-react";
 // Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
 // Bucket G Phase 3 -- Jigsaw pre-fill widget on the DR narrative.
@@ -884,28 +884,63 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           of this title card (was in the header card below), with the H1 +
           date stepper + status pill on the row beneath it. .surface is
           theme-aware (light + dark). */}
-      <div className="surface px-5 py-3 max-md:px-3 max-md:py-2.5">
-        <BackButton onClick={onBack} label="Daily Reports" />
-        <div className="mt-2 flex items-baseline gap-3 flex-wrap">
-          <h1 className="text-xl font-semibold tracking-tight m-0">
-            Daily Report &middot;{" "}
-            <span className="font-mono">{formatDateDisplay(report.report_date)}</span>
-          </h1>
-          <span className="date-stepper" data-testid="dr-date-stepper">
-            <button onClick={() => dateStep(-1)} title="Previous day" aria-label="Previous day">
-              <ChevronLeft className="h-3.5 w-3.5" />
+      <div className="surface px-5 py-3 max-md:px-3 max-md:py-2.5 dr-title-card">
+        {/* Desktop title block (unchanged) — hidden on phones. */}
+        <div className="max-md:hidden">
+          <BackButton onClick={onBack} label="Daily Reports" />
+          <div className="mt-2 flex items-baseline gap-3 flex-wrap">
+            <h1 className="text-xl font-semibold tracking-tight m-0">
+              Daily Report &middot;{" "}
+              <span className="font-mono">{formatDateDisplay(report.report_date)}</span>
+            </h1>
+            <span className="date-stepper" data-testid="dr-date-stepper">
+              <button onClick={() => dateStep(-1)} title="Previous day" aria-label="Previous day">
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <button onClick={() => dateStep(+1)} title="Next day" aria-label="Next day">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </span>
+            <span className={`v4-pill v4-pill-${
+              report.status === "approved" ? "closed" :
+              report.status === "submitted" ? "submitted" : "draft"
+            }`}>
+              {report.status === "approved" ? "Approved" :
+               report.status === "submitted" ? "Submitted" : "Draft"}
+            </span>
+          </div>
+        </div>
+        {/* Mobile title block (approved mockup): tiny breadcrumb, then
+            [‹] [Daily report / date] [status pill] [›]. md:hidden. */}
+        <div className="md:hidden">
+          <button type="button" onClick={onBack} data-testid="dr-back-m"
+            className="flex items-center gap-1 text-xs mb-1.5"
+            style={{ color: "var(--v4-fg-muted)" }}>
+            <ChevronLeft className="h-3.5 w-3.5" /> Daily reports
+          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => dateStep(-1)} aria-label="Previous day" data-testid="dr-prev-m"
+              className="h-8 w-8 grid place-items-center rounded-lg border shrink-0"
+              style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)" }}>
+              <ChevronLeft className="h-4 w-4" />
             </button>
-            <button onClick={() => dateStep(+1)} title="Next day" aria-label="Next day">
-              <ChevronRight className="h-3.5 w-3.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[17px] font-semibold leading-tight">Daily report</div>
+              <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>{formatDateDisplay(report.report_date)}</div>
+            </div>
+            <span className={`v4-pill v4-pill-${
+              report.status === "approved" ? "closed" :
+              report.status === "submitted" ? "submitted" : "draft"
+            }`}>
+              {report.status === "approved" ? "Approved" :
+               report.status === "submitted" ? "Submitted" : "Draft"}
+            </span>
+            <button onClick={() => dateStep(+1)} aria-label="Next day" data-testid="dr-next-m"
+              className="h-8 w-8 grid place-items-center rounded-lg border shrink-0"
+              style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)" }}>
+              <ChevronRight className="h-4 w-4" />
             </button>
-          </span>
-          <span className={`v4-pill v4-pill-${
-            report.status === "approved" ? "closed" :
-            report.status === "submitted" ? "submitted" : "draft"
-          }`}>
-            {report.status === "approved" ? "Approved" :
-             report.status === "submitted" ? "Submitted" : "Draft"}
-          </span>
+          </div>
         </div>
       </div>
 
@@ -1281,8 +1316,10 @@ function Header({ report, project, userLabels, ppc,
       {/* v4 (2026-05-26): action buttons (Coordination / Export / Submit)
           moved ABOVE the KPI band to match the v4 mockup. pt.73: the Back
           pill moved up to the title card, so this row is just the actions. */}
-      <div className="flex flex-wrap items-center gap-3 mb-3">
-        <div className="ml-auto flex gap-2 items-center max-md:flex-wrap max-md:w-full max-md:justify-end">
+      {/* Desktop actions row — hidden on phones (the mobile block below
+          carries Submit/Approve; Export stays a desktop task). */}
+      <div className="flex flex-wrap items-center gap-3 mb-3 max-md:hidden">
+        <div className="ml-auto flex gap-2 items-center">
           {/* pt.38: removed the duplicate "N items blocking submit:
               ..." amber brick that lived here in the header. The same
               info is now in the sticky-bottom SubmitProgress circle +
@@ -1379,8 +1416,58 @@ function Header({ report, project, userLabels, ppc,
           [PPC | Headcount | Crew hours | ... | QC]
           User feedback: "2/4 sections done thing should above that ppc
           and other panels like in v4 mockup". */}
+      {/* MOBILE header (approved mockup, md:hidden): slim progress bar with
+          the Submit/Approve action inline, then the section chips row. The
+          desktop progress card below is max-md:hidden. */}
       {drSections.length > 0 && (
-        <div className="dr-progress-card mb-3" data-testid="dr-progress-card" style={{ marginBottom: 12 }}>
+        <div className="md:hidden mb-3 flex flex-col gap-2" data-testid="dr-mobile-head">
+          <div className="surface rounded-xl px-3 py-2.5 flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="dr-progress-label"><span className="count">{completeCount} / {totalSections}</span>&nbsp;sections done</span>
+                <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>{progressPct}%</span>
+              </div>
+              <div className="dr-progress-bar" style={{ minWidth: 0 }}>
+                <div className="dr-progress-bar-fill" style={{ width: `${progressPct}%` }} />
+              </div>
+            </div>
+            {report.status === "draft" && (
+              <button data-testid="dr-submit-m" onClick={onSubmit} disabled={busy}
+                className="sbtn sbtn-md sbtn-primary shrink-0">
+                Submit
+              </button>
+            )}
+            {report.status === "submitted" && (
+              <button data-testid="dr-approve-m" onClick={onApprove} disabled={busy}
+                className="sbtn sbtn-md sbtn-primary shrink-0">
+                <CheckCircle2 /> Approve
+              </button>
+            )}
+            {report.status === "approved" && onQuickLogCoordination && (
+              <button data-testid="dr-coord-m" onClick={onQuickLogCoordination}
+                title="Log a coordination event" aria-label="Log a coordination event"
+                className="sbtn sbtn-md sbtn-secondary shrink-0">
+                <MessageSquare />
+              </button>
+            )}
+          </div>
+          <div className="dr-pips" data-testid="dr-section-chips">
+            {drSections.map((s) => (
+              <button key={s.id} type="button" data-testid={`dr-chip-${s.id}`}
+                className={`dr-pip ${s.status}`}
+                onClick={() => {
+                  const el = document.getElementById(`dr-section-${s.id}`);
+                  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+                title={`${s.label} — ${s.status}`}>
+                <span className="pip-name">{s.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {drSections.length > 0 && (
+        <div className="dr-progress-card mb-3 max-md:hidden" data-testid="dr-progress-card" style={{ marginBottom: 12 }}>
           <div className="dr-progress-label">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
@@ -1412,10 +1499,8 @@ function Header({ report, project, userLabels, ppc,
           left; event-count stats (Delays / RFIs / Safety / QC) on the
           right. pt.47 (2026-05-28): dropped "Activity hrs" KPI — crew
           hours come from the Manpower Log, per-activity hours retired. */}
-      {/* max-md:grid-cols-4 -- approved DR mobile mockup: KPIs as a compact
-          4-across grid of small cells on phones (was 2-across large boxes).
-          Desktop (sm/md) unchanged. */}
-      <div className="grid grid-cols-2 max-md:grid-cols-4 max-md:gap-1.5 sm:grid-cols-4 md:grid-cols-7 gap-2">
+      {/* Desktop KPI band (unchanged) — hidden on phones. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 max-md:hidden">
         <KPI label="PPC" value={`${ppc}%`} testid="kpi-ppc" />
         <KPI label="Headcount" value={totalHeadcount} testid="kpi-headcount" />
         <KPI label="Crew hours" value={totalCrewHours.toFixed(1)} testid="kpi-crew-hours" />
@@ -1423,6 +1508,17 @@ function Header({ report, project, userLabels, ppc,
         <KPI label="RFIs" value={rfisCount} testid="kpi-rfis" />
         <KPI label="Safety" value={safetyCount} testid="kpi-safety" />
         <KPI label="QC" value={qcCount} testid="kpi-qc" />
+      </div>
+      {/* Mobile KPI grid (approved mockup): compact 4-across cells with the
+          mockup's short labels. md:hidden. */}
+      <div className="md:hidden grid grid-cols-4 gap-1.5 mt-2" data-testid="dr-kpis-m">
+        <KPI label="PPC" value={`${ppc}%`} testid="kpi-m-ppc" />
+        <KPI label="Workers" value={totalHeadcount} testid="kpi-m-workers" />
+        <KPI label="Hours" value={totalCrewHours.toFixed(1)} testid="kpi-m-hours" />
+        <KPI label="Delays" value={delaysCount} testid="kpi-m-delays" />
+        <KPI label="RFIs" value={rfisCount} testid="kpi-m-rfis" />
+        <KPI label="Safety" value={safetyCount} testid="kpi-m-safety" />
+        <KPI label="QC" value={qcCount} testid="kpi-m-qc" />
       </div>
     </div>
   );
@@ -1476,12 +1572,16 @@ function DrAutoHeader({ project, currentUserName }) {
         aria-expanded={expanded}
         className="w-full flex items-center gap-3 text-left group"
       >
+        {/* Mobile (mockup): green section icon leads; chevron moves to the
+            right end (max-md:order-3) and the summary right-aligns. Desktop
+            keeps chevron-first (order utilities inert >=768px). */}
+        <Building2 className="md:hidden h-4 w-4 text-[#34D399] shrink-0" strokeWidth={1.8} />
         <ChevronDown
-          className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+          className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""} max-md:order-3`}
         /><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0 max-md:normal-case">
           Project / Contract
         </div>
-        <div className="text-sm text-slate-300 truncate flex-1" data-testid="dr-auto-header-summary">
+        <div className="text-sm text-slate-300 truncate flex-1 max-md:text-right" data-testid="dr-auto-header-summary">
           {summaryParts.length
             ? summaryParts.join("  ·  ")
             : <span className="text-slate-500 italic">No project metadata yet — click to expand</span>}
@@ -1578,9 +1678,22 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
   const fetchedAt = report.weather_fetched_at ? new Date(report.weather_fetched_at).toLocaleTimeString() : null;
   return (
     <div data-testid="dr-weather-panel" className="surface px-4 py-3 dr-section">
-      <div className="flex items-center gap-2 mb-2 flex-wrap"><Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
+      <div className={`flex items-center gap-2 flex-wrap ${expanded ? "mb-2" : "mb-2 max-md:mb-0"}`}><Cloud className="h-4 w-4 text-[#34D399]" strokeWidth={1.8} />
         <div className="font-semibold text-sm tracking-tight text-foreground">Weather</div>
-        {fetchedAt && <span className="text-xs text-slate-400 ml-2">auto-filled {fetchedAt}</span>}
+        {fetchedAt && <span className={`text-xs text-slate-400 ml-2 ${expanded ? "" : "max-md:hidden"}`}>auto-filled {fetchedAt}</span>}
+        {!expanded && (
+          <button type="button" data-testid="weather-summary"
+            onClick={() => setExpanded(true)}
+            className="md:hidden ml-auto min-w-0 truncate text-right text-xs"
+            style={{ color: "var(--v4-fg-muted)" }}>
+            {[
+              report.weather_conditions,
+              (report.weather_temp_high_f ?? null) !== null || (report.weather_temp_low_f ?? null) !== null
+                ? `${report.weather_temp_high_f ?? "—"}° / ${report.weather_temp_low_f ?? "—"}°`
+                : null,
+            ].filter(Boolean).join(" · ") || "No weather yet"}
+          </button>
+        )}
         <button
           data-testid="weather-refresh-btn"
           type="button"
@@ -1600,24 +1713,12 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
           data-testid="weather-collapse-toggle"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className={`md:hidden h-8 w-8 inline-flex items-center justify-center rounded text-slate-400 ${expanded ? "" : "ml-auto"}`}
+          className="md:hidden h-8 w-8 inline-flex items-center justify-center rounded text-slate-400 shrink-0"
           title={expanded ? "Collapse weather" : "Expand weather"}
         >
           <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`} />
         </button>
       </div>
-      {!expanded && (
-        <button type="button" data-testid="weather-summary"
-          onClick={() => setExpanded(true)}
-          className="md:hidden w-full text-left text-xs text-slate-400">
-          {[
-            report.weather_conditions,
-            (report.weather_temp_high_f ?? null) !== null || (report.weather_temp_low_f ?? null) !== null
-              ? `${report.weather_temp_high_f ?? "—"}° / ${report.weather_temp_low_f ?? "—"}°`
-              : null,
-          ].filter(Boolean).join(" · ") || "No weather yet — tap to expand"}
-        </button>
-      )}
       <div className={`grid grid-cols-2 md:grid-cols-5 gap-2 ${expanded ? "" : "max-md:hidden"}`}>
         <Field label="Conditions" value={report.weather_conditions || ""} onChange={(v) => patch({ weather_conditions: v })} disabled={locked} testid="weather-conditions" />
         <Field label="High °F" type="number" value={report.weather_temp_high_f ?? ""} onChange={(v) => patch({ weather_temp_high_f: v ? Number(v) : null })} disabled={locked} testid="weather-high" />
