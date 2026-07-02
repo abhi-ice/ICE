@@ -210,6 +210,23 @@ class _Node:
         self.pct = float(doc.get("pct_complete") or 0.0)
         self.actual_start = _to_date(doc.get("actual_start"))
         self.actual_finish = _to_date(doc.get("actual_finish"))
+        # Percent-derived actuals (2026-07-02, live-test finding): this app
+        # records progress as pct_complete rolled up from Daily Reports and
+        # never stamps actual dates. A pass that trusts only actual_finish
+        # reschedules a 100% task's FULL duration after the data date (live:
+        # "Notice to Proceed" at 100% showed +40d phantom slip). When explicit
+        # actuals are missing, derive the anchors from pct -- explicit actuals,
+        # when present, always win:
+        #   pct >= 100 -> complete: pin to the planned footprint.
+        #   pct > 0    -> started: anchor at planned_start so only the
+        #                REMAINING duration flows from the data date (case 3)
+        #                instead of the full OD being pushed out (case 4).
+        if self.pct >= 100 and self.actual_finish is None and self.planned_finish is not None:
+            self.actual_finish = self.planned_finish
+            if self.actual_start is None:
+                self.actual_start = self.planned_start
+        elif 0 < self.pct < 100 and self.actual_start is None and self.planned_start is not None:
+            self.actual_start = self.planned_start
         self.constraint_type = doc.get("constraint_type")
         self.constraint_date = _to_date(doc.get("constraint_date"))
         self.calendar_id = doc.get("calendar_id")
