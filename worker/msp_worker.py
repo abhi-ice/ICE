@@ -17,6 +17,22 @@ Job types handled (the "op" field of a claimed job):
             changing or saving anything.
   validate  Open the project file, recalculate in memory, report a summary.
             Nothing is changed or saved.
+  create    Build a brand-new Project file from the ICE task list (activity
+            codes, durations, milestones, dependency links), upload it to
+            ICE, then read the network back so ICE can stamp Project task ids.
+
+Where the .mpp comes from:
+  Hosted mode  The job carries project_file.file_id — the file lives in ICE.
+               The worker downloads a working copy per job
+               (GET  /api/internal/ms-project/file/<job id>), verifies its
+               content hash, and, when a push saved changes (or a create made
+               a new file), uploads the new version back
+               (POST /api/internal/ms-project/file/<job id>) BEFORE posting
+               results. Rowversion in hosted mode is "rev-<rev>#<sha12>".
+  Legacy mode  No file_id on the job — the .mpp is resolved on this machine
+               as before (pinned path or MSP_PROJECT_DIR) and the rowversion
+               stays "<file mtime>#<sha12>" (behavior unchanged, including
+               the local conflict gate).
 
 Result shapes posted to /api/internal/ms-project/results:
   ok        {job_id, seq, worker_id, status:"ok", project_rowversion,
@@ -67,14 +83,16 @@ MAX_WAIT_MS = 25000
 DEFAULT_POLL_SECONDS = 20
 
 # Job types this worker can execute (sent as claim "capabilities").
-CAPABILITIES = ["push", "pull", "validate"]
+CAPABILITIES = ["push", "pull", "validate", "create"]
 
 # Microsoft Project COM constants.
 PJ_DO_NOT_SAVE = 0                                  # pjDoNotSave
 PJ_LINK_TYPE = {0: "FF", 1: "FS", 2: "SF", 3: "SS"}  # pjTaskLinkType values
+PJ_LINK_CONST = {name: num for num, name in PJ_LINK_TYPE.items()}
+PJ_SNET = 4                                         # pjSNET (start no earlier than)
 
 CONFIG_KEYS = ("ICE_BASE_URL", "MS_PROJECT_WORKER_TOKEN", "POLL_SECONDS",
-               "MSP_VISIBLE", "WORKER_ID", "MSP_PROJECT_DIR")
+               "MSP_VISIBLE", "WORKER_ID", "MSP_PROJECT_DIR", "MSP_CACHE_DIR")
 
 log = logging.getLogger("msp_worker")
 
@@ -125,6 +143,8 @@ def load_config(env_file: str = DEFAULT_ENV_FILE) -> dict:
         "worker_id": (raw.get("WORKER_ID") or socket.gethostname() or "msp-worker").strip(),
         "project_dir": (raw.get("MSP_PROJECT_DIR")
                         or os.path.join(SCRIPT_DIR, "projects")).strip(),
+        "cache_dir": (raw.get("MSP_CACHE_DIR")
+                      or os.path.join(SCRIPT_DIR, "cache")).strip(),
     }
 
 
@@ -190,6 +210,50 @@ class Api:
                   payload.get("job_id"), last_err)
         return None
 
+    def download_file(self, job_id: str):
+        """Hosted mode: GET the stored .mpp for a claimed job. Returns
+        (bytes, headers) — headers carry X-File-Sha and X-File-Rev — or None
+        when ICE has no stored file for the job's project (404)."""
+        resp = self._session.get(
+            f"{self._base}/api/internal/ms-project/file/{job_id}", timeout=300)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.content, resp.headers
+
+    def upload_file(self, job_id: str, data: bytes, sha: str):
+        """Hosted mode: POST a changed/new .mpp back as the next stored
+        version; ICE recomputes the hash from X-File-Sha and replies
+        {"rev": n}. Returns the new revision number, the string "rejected"
+        when ICE refused the upload for good (409 superseded base / 413 /
+        422 — retrying can never succeed), or None when all 3 attempts
+        failed on transient errors (the caller must then post an error
+        result — a result may never claim a file version ICE lacks)."""
+        last_err = None
+        for attempt in range(3):
+            try:
+                resp = self._session.post(
+                    f"{self._base}/api/internal/ms-project/file/{job_id}",
+                    data=data,
+                    headers={"X-File-Sha": sha,
+                             "Content-Type": "application/vnd.ms-project"},
+                    timeout=300)
+                if resp.status_code in (409, 413, 422):
+                    log.warning("ICE rejected the file for job %s (%d): %s",
+                                job_id, resp.status_code, resp.text[:200])
+                    return "rejected"
+                resp.raise_for_status()
+                return int(resp.json().get("rev"))
+            except (requests.RequestException, TypeError, ValueError) as exc:
+                last_err = exc
+                wait = min(2 ** (attempt + 1), 20)
+                log.warning("uploading file for job %s failed (attempt %d/3): "
+                            "%s — retrying in %ss", job_id, attempt + 1, exc,
+                            wait)
+                time.sleep(wait)
+        log.error("giving up uploading file for job %s: %s", job_id, last_err)
+        return None
+
 
 class LeaseRenewer(threading.Thread):
     """Heartbeats /renew-lease every RENEW_EVERY_SECONDS while a job runs, so
@@ -228,6 +292,78 @@ def file_rowversion(path: str):
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             digest.update(chunk)
     return f"{int(os.path.getmtime(path))}#{digest.hexdigest()[:12]}"
+
+
+def sha12(data: bytes) -> str:
+    """Content hash used by the hosted-file contract (sha256 hex, first 12)."""
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Hosted project files: when a job carries project_file.file_id, the .mpp
+# lives in ICE object storage. The worker downloads a working copy per job
+# into <cache dir>\<ICE project id>\rev-<n>.mpp and, after a push that saved
+# (or a create), uploads the new version back BEFORE posting results. Hosted
+# rowversion is "rev-<rev>#<sha12>" of the STORED file, so the backend's
+# file-rev guard replaces the local mtime conflict gate.
+# ---------------------------------------------------------------------------
+DOWNLOAD_CORRUPT = object()  # sentinel: bytes failed their hash check twice
+
+
+def cache_path(cfg: dict, logical_id: str, filename: str) -> str:
+    folder = os.path.join(cfg["cache_dir"], logical_id or "project")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, filename)
+
+
+def prune_cache(cfg: dict, logical_id: str, keep: int = 3):
+    """Drop all but the newest `keep` cached copies for a project — one ~.mpp
+    lands per rev, so an active project would otherwise grow the cache
+    without bound. Best-effort: a locked file is just left for next time."""
+    folder = os.path.join(cfg["cache_dir"], logical_id or "project")
+    try:
+        mpps = [os.path.join(folder, n) for n in os.listdir(folder)
+                if n.lower().endswith(".mpp")]
+    except OSError:
+        return
+    mpps.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    for stale in mpps[keep:]:
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+
+
+def fetch_hosted_file(api: Api, job: dict, cfg: dict):
+    """Download the stored .mpp for this job and verify its content hash
+    (against the X-File-Sha header, falling back to the job's file_sha).
+    Returns (local_path, rev, sha) on success; None when ICE has no stored
+    file (the caller falls back to the legacy local path); DOWNLOAD_CORRUPT
+    when the bytes failed the hash check twice in a row."""
+    pf = job.get("project_file") or {}
+    logical = str(pf.get("logical_id") or job.get("project_id") or "project").strip()
+    for attempt in (1, 2):
+        got = api.download_file(job["id"])
+        if got is None:
+            return None
+        data, headers = got
+        sha = sha12(data)
+        expected = str(headers.get("X-File-Sha") or pf.get("file_sha") or "").strip()
+        if expected and sha != expected:
+            log.warning("job %s: downloaded file hash %s does not match "
+                        "expected %s (attempt %d/2)", job["id"], sha,
+                        expected, attempt)
+            continue
+        rev = headers.get("X-File-Rev") or pf.get("file_rev") or 0
+        try:
+            rev = int(rev)
+        except (TypeError, ValueError):
+            rev = 0
+        path = cache_path(cfg, logical, f"rev-{rev}.mpp")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path, rev, sha
+    return DOWNLOAD_CORRUPT
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +462,26 @@ class MsProject:
 
     def save(self):
         self.app.FileSave()
+
+    def save_as(self, path: str):
+        self.app.FileSaveAs(path)
+
+    def new_project(self, start_date=None):
+        """Create op: open a brand-new blank project instead of a file."""
+        try:
+            self.app.FileNew()
+            self.proj = self.app.ActiveProject
+        except Exception:
+            self.proj = self.app.Projects.Add()
+        if self.proj is None:
+            raise RuntimeError("Microsoft Project could not create a new project")
+        start = parse_wire_date(start_date)
+        if start is not None:
+            try:
+                self.proj.ProjectStart = start.replace(hour=8)
+            except Exception as exc:
+                log.warning("could not set the new project's start date: %s", exc)
+        return self.proj
 
     def recalc(self):
         try:
@@ -511,6 +667,81 @@ class MsProject:
                 unmatched.append(code)
         return changed, unmatched
 
+    # -- create: build a brand-new network from the ICE task list ------------
+    def build_network(self, task_specs: list):
+        """Create op: add every task, then link the network. Each spec is
+        {activity_code, name, duration_days, planned_start, planned_finish,
+        is_milestone, predecessors:[{code, type, lag_days}]} (see
+        services/ms_project_sync.enqueue_create_job). Tasks with no
+        predecessors get a start-no-earlier-than constraint at planned_start
+        so the ICE dates survive the recalculation. Returns
+        (created_count, skipped_codes)."""
+        mpd = self.minutes_per_day()
+        by_code, skipped = {}, []
+        for spec in task_specs or []:
+            code = str(spec.get("activity_code") or "").strip()
+            if not code:
+                continue  # backend only sends coded tasks; belt and braces
+            try:
+                t = self.proj.Tasks.Add(str(spec.get("name") or code))
+            except Exception as exc:
+                log.warning("could not add task '%s': %s", code, exc)
+                skipped.append(code)
+                continue
+            try:
+                t.Manual = False  # auto-schedule, or the recalc can't move dates
+            except Exception:
+                pass  # older Project versions have no manual scheduling
+            t.Text1 = code  # the stamp every future push/pull matches on
+            try:
+                # 0 must STAY 0 — milestones are zero-duration by contract;
+                # only a missing value defaults to 1 day ("or" would eat the 0
+                # and push every milestone's successors a day late).
+                dur = spec.get("duration_days")
+                t.Duration = int(round(float(1 if dur is None else dur) * mpd))
+            except Exception as exc:
+                log.warning("could not set duration on '%s': %s", code, exc)
+            if spec.get("is_milestone"):
+                try:
+                    t.Milestone = True
+                except Exception as exc:
+                    log.warning("could not flag '%s' as a milestone: %s", code, exc)
+            if not (spec.get("predecessors") or []):
+                start = parse_wire_date(spec.get("planned_start"))
+                if start is not None:
+                    try:
+                        t.ConstraintType = PJ_SNET
+                        t.ConstraintDate = start.replace(hour=8)
+                    except Exception as exc:
+                        log.warning("could not set the start constraint on "
+                                    "'%s': %s", code, exc)
+            by_code[code] = t
+        # Second pass: links, once every endpoint task exists.
+        for spec in task_specs or []:
+            succ = by_code.get(str(spec.get("activity_code") or "").strip())
+            if succ is None:
+                continue
+            for pred_spec in spec.get("predecessors") or []:
+                pcode = str(pred_spec.get("code") or "").strip()
+                pred = by_code.get(pcode)
+                if pred is None:
+                    log.warning("task '%s': predecessor '%s' is not in this "
+                                "project — link skipped",
+                                spec.get("activity_code"), pcode)
+                    continue
+                link_type = PJ_LINK_CONST.get(
+                    str(pred_spec.get("type") or "FS").upper(), PJ_LINK_CONST["FS"])
+                try:
+                    lag = int(round(float(pred_spec.get("lag_days") or 0) * mpd))
+                except (TypeError, ValueError):
+                    lag = 0
+                try:
+                    succ.TaskDependencies.Add(pred, link_type, lag)
+                except Exception as exc:
+                    log.warning("could not link '%s' -> '%s': %s",
+                                pcode, spec.get("activity_code"), exc)
+        return len(by_code), skipped
+
 
 # ---------------------------------------------------------------------------
 # Job execution.
@@ -527,7 +758,7 @@ def resolve_project_file(job: dict, cfg: dict):
     return os.path.join(cfg["project_dir"], f"{logical}.mpp")
 
 
-def execute_job(job: dict, cfg: dict) -> dict:
+def execute_job(job: dict, cfg: dict, api: Api) -> dict:
     """Run one claimed job and return the /results payload."""
     op = job.get("op")
     base = {"job_id": job["id"], "seq": job.get("seq"),
@@ -537,6 +768,24 @@ def execute_job(job: dict, cfg: dict) -> dict:
                 "error": {"code": "unsupported_op",
                           "message": f"worker cannot handle op '{op}'"}}
 
+    if op == "create":
+        return execute_create(job, cfg, api, base)
+
+    # Hosted mode: the .mpp lives in ICE — work on a downloaded copy.
+    if (job.get("project_file") or {}).get("file_id"):
+        fetched = fetch_hosted_file(api, job, cfg)
+        if fetched is DOWNLOAD_CORRUPT:
+            return {**base, "status": "error",
+                    "error": {"code": "file_download_corrupt",
+                              "message": "the Microsoft Project file downloaded "
+                                         "from ICE did not match its expected "
+                                         "content hash (tried twice)"}}
+        if fetched is not None:
+            return execute_hosted_job(job, cfg, api, base, *fetched)
+        log.warning("job %s: ICE has no stored file for this project — "
+                    "falling back to the legacy local file", job["id"])
+
+    # Legacy mode (no stored file): the .mpp is a local file on this machine.
     path = resolve_project_file(job, cfg)
     if not path or not os.path.exists(path):
         return {**base, "status": "error",
@@ -589,11 +838,123 @@ def execute_job(job: dict, cfg: dict) -> dict:
     return result
 
 
-def execute_with_retry(job: dict, cfg: dict) -> dict:
+def execute_hosted_job(job: dict, cfg: dict, api: Api, base: dict,
+                       path: str, rev: int, file_sha: str) -> dict:
+    """push/pull/validate against the downloaded working copy. A push that
+    saved uploads the new version back to ICE BEFORE the result is posted;
+    pull/validate never write or upload. There is no local conflict gate
+    here: the stored file cannot be edited behind ICE's back, and the
+    backend's file-rev guard rejects stale ingests instead."""
+    op = job.get("op")
+    change_set = job.get("change_set") or {}
+    applied, unmatched = 0, []
+    with MsProject(visible=cfg["visible"]) as mp:
+        mp.open(path, read_only=(op != "push"))
+        if op == "push":
+            if change_set.get("dependency_ops"):
+                log.warning("job %s: dependency_ops are not part of the push "
+                            "contract (network is Project-owned); ignoring",
+                            job["id"])
+            applied, unmatched = mp.apply_task_updates(
+                change_set.get("task_updates") or [])
+            log.info("job %s: applied changes to %d task(s), %d unmatched",
+                     job["id"], applied, len(unmatched))
+        if change_set.get("recalc", True):
+            mp.recalc()
+        tasks, deps, project_finish, critical_count = mp.serialize()
+        if op == "push" and applied:
+            mp.save()
+    if op == "push" and applied:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        file_sha = sha12(data)
+        new_rev = api.upload_file(job["id"], data, file_sha)
+        if new_rev == "rejected":
+            # A newer version was uploaded in ICE while this job ran; ICE
+            # re-enqueues a fresh push against it (self-heal), so this job
+            # just reports why it stopped.
+            return {**base, "status": "error",
+                    "error": {"code": "file_upload_rejected",
+                              "message": "ICE refused the updated file — a "
+                                         "newer version exists there"}}
+        if new_rev is None:
+            return {**base, "status": "error",
+                    "error": {"code": "file_upload_failed",
+                              "message": "could not upload the updated "
+                                         "Microsoft Project file to ICE "
+                                         "(tried 3 times)"}}
+        rev = new_rev
+        pf = job.get("project_file") or {}
+        prune_cache(cfg, str(pf.get("logical_id") or job.get("project_id") or "project").strip())
+
+    result = {**base, "status": "ok",
+              "project_rowversion": f"rev-{rev}#{file_sha}",
+              "project_finish": project_finish, "critical_count": critical_count,
+              "tasks": tasks}
+    if op == "pull":
+        result["dependencies"] = deps
+    if unmatched:
+        result["unmatched_codes"] = unmatched
+    return result
+
+
+def execute_create(job: dict, cfg: dict, api: Api, base: dict) -> dict:
+    """CREATE: build a brand-new Project file from the ICE task list, upload
+    it to ICE (stored as source 'generated'), and post the read-back in the
+    same shape as a push result so the ingest stamps every task's Project
+    UniqueID as external_task_id."""
+    change_set = job.get("change_set") or {}
+    project_spec = change_set.get("project") or {}
+    task_specs = change_set.get("tasks") or []
+    logical = str((job.get("project_file") or {}).get("logical_id")
+                  or job.get("project_id") or "project").strip()
+    path = cache_path(cfg, logical, "generated.mpp")
+    try:
+        if os.path.exists(path):
+            os.remove(path)  # leftover from an earlier attempt
+    except OSError:
+        pass
+    with MsProject(visible=cfg["visible"]) as mp:
+        mp.new_project(project_spec.get("start_date"))
+        built, skipped = mp.build_network(task_specs)
+        log.info("job %s: built a new Microsoft Project file with %d task(s)"
+                 "%s", job["id"], built,
+                 f", {len(skipped)} skipped" if skipped else "")
+        mp.recalc()
+        mp.save_as(path)
+        tasks, _deps, project_finish, critical_count = mp.serialize()
+    with open(path, "rb") as fh:
+        data = fh.read()
+    file_sha = sha12(data)
+    rev = api.upload_file(job["id"], data, file_sha)
+    if rev == "rejected":
+        # Someone uploaded a real .mpp while this file was being generated;
+        # ICE keeps the uploaded one, so the generated file is discarded.
+        return {**base, "status": "error",
+                "error": {"code": "file_upload_rejected",
+                          "message": "ICE refused the generated file — a "
+                                     "real file was uploaded meanwhile"}}
+    if rev is None:
+        return {**base, "status": "error",
+                "error": {"code": "file_upload_failed",
+                          "message": "could not upload the generated "
+                                     "Microsoft Project file to ICE "
+                                     "(tried 3 times)"}}
+    prune_cache(cfg, logical)
+    result = {**base, "status": "ok",
+              "project_rowversion": f"rev-{rev}#{file_sha}",
+              "project_finish": project_finish, "critical_count": critical_count,
+              "tasks": tasks}
+    if skipped:
+        result["unmatched_codes"] = skipped  # informational, like push
+    return result
+
+
+def execute_with_retry(job: dict, cfg: dict, api: Api) -> dict:
     """COM can fail transiently (busy server, RPC hiccup): retry exactly once
     with a fresh Project instance; report the error result if that also fails."""
     try:
-        return execute_job(job, cfg)
+        return execute_job(job, cfg, api)
     except KeyboardInterrupt:
         raise
     except Exception as exc:
@@ -602,7 +963,7 @@ def execute_with_retry(job: dict, cfg: dict) -> dict:
                     job["id"], type(exc).__name__, exc)
         time.sleep(3)
         try:
-            return execute_job(job, cfg)
+            return execute_job(job, cfg, api)
         except KeyboardInterrupt:
             raise
         except Exception as exc2:
@@ -622,8 +983,9 @@ def run(cfg: dict) -> None:
     wait_ms = min(cfg["poll_seconds"] * 1000, MAX_WAIT_MS)
     backoff = 5
     log.info("worker '%s' polling %s (window %ss, capabilities: %s, "
-             "project dir: %s)", cfg["worker_id"], cfg["base_url"],
-             wait_ms // 1000, ", ".join(CAPABILITIES), cfg["project_dir"])
+             "project dir: %s, cache dir: %s)", cfg["worker_id"],
+             cfg["base_url"], wait_ms // 1000, ", ".join(CAPABILITIES),
+             cfg["project_dir"], cfg["cache_dir"])
     while True:
         try:
             job = api.claim(cfg["worker_id"], wait_ms)
@@ -658,7 +1020,7 @@ def run(cfg: dict) -> None:
         renewer = LeaseRenewer(api, job["id"])
         renewer.start()
         try:
-            result = execute_with_retry(job, cfg)
+            result = execute_with_retry(job, cfg, api)
         finally:
             renewer.stop()
         reply = api.post_result(result)
@@ -698,6 +1060,7 @@ def selftest() -> int:
             assert cfg["poll_seconds"] == 7
             assert cfg["visible"] is True
             assert cfg["worker_id"] == "rig-01"
+            assert cfg["cache_dir"] == os.path.join(SCRIPT_DIR, "cache"), cfg["cache_dir"]
             assert validate_config(cfg) == []
         print("PASS  config parsing (KEY=VALUE, comments, quotes, defaults, env override shield)")
     except Exception as exc:

@@ -59,6 +59,14 @@ const EMPTY = {
   predecessors: "", is_milestone: false,
 };
 
+// MS Project file pipeline (2026-07-02) -- plain-language labels for the
+// stored .mpp's origin, shown on the banner's file-status line.
+const FILE_SOURCE_LABELS = {
+  upload: "uploaded",
+  worker_push: "saved by sync",
+  generated: "generated from ICE tasks",
+};
+
 // Bucket H Phase 4 -- per-task gap indicator. Fetches the resource-
 // leveling dashboard for the active project + 60-day window and
 // builds a task_id -> worst-severity-cell-attribution map.
@@ -222,13 +230,41 @@ export default function Tasks() {
   // CPM Mode 2 (2026-06-29) -- MS Project schedule sync state for this project.
   const isMode2 = project?.schedule_mode === "mode2";
   const [syncState, setSyncState] = useState(null);
+  const activeIdRef = useRef(activeId);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   const refreshSyncState = useCallback(() => {
-    if (!activeId || !isMode2) return;
-    api.get(`/projects/${activeId}/ms-project/sync-state`)
-      .then(({ data }) => setSyncState(data))
+    // Reset (not just skip) on project change so a previous project's
+    // sync-state (file line, active job) never bleeds into this one.
+    if (!activeId || !isMode2) { setSyncState(null); return; }
+    const requestedFor = activeId;
+    api.get(`/projects/${requestedFor}/ms-project/sync-state`)
+      // A response that raced a project switch must not land on the new
+      // project — the closure's id is compared against the current one.
+      .then(({ data }) => setSyncState((prev) =>
+        requestedFor === activeIdRef.current ? data : prev))
       .catch(() => {});
   }, [activeId, isMode2]);
   useEffect(() => { refreshSyncState(); }, [refreshSyncState]);
+
+  // MS Project file pipeline (2026-07-02) -- while the worker holds a job
+  // (sync-state.active_job), poll every 10s; the moment it clears, reload
+  // the task list once (the recalculated dates just landed) and stop.
+  const activeJobId = syncState?.active_job?.id || null;
+  const sawActiveJobRef = useRef(false);
+  useEffect(() => { sawActiveJobRef.current = false; }, [activeId]);
+  useEffect(() => {
+    if (activeJobId) {
+      sawActiveJobRef.current = true;
+      const timer = setInterval(refreshSyncState, 10000);
+      return () => clearInterval(timer);
+    }
+    if (sawActiveJobRef.current) {
+      sawActiveJobRef.current = false;
+      load();
+    }
+    return undefined;
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [activeJobId, refreshSyncState]);
 
   // Mode 2 recompute is asynchronous: MS Project recalculates out-of-band via
   // the worker. Poll the job to completion, then refresh the table.
@@ -288,6 +324,62 @@ export default function Tasks() {
       setTimeout(refreshSyncState, 4000);
     } catch {
       toast.error("Could not start MS Project sync.");
+    }
+  };
+
+  // MS Project file pipeline (2026-07-02) -- the .mpp lives in ICE now.
+  // Upload stores a new version (rev+1) and auto-queues the first sync;
+  // Download streams the current version; Generate asks the worker to build
+  // a brand-new file from the ICE task list (only offered when none exists).
+  const mppFileInputRef = useRef(null);
+  const [mppBusy, setMppBusy] = useState(false);
+
+  const uploadMppFile = async (file) => {
+    if (!file || mppBusy) return;
+    setMppBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post(`/projects/${activeId}/ms-project/file`, fd);
+      toast.success(data?.auto_job ? "File uploaded — first sync queued." : "File uploaded.");
+      refreshSyncState();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "File upload failed.");
+    } finally {
+      setMppBusy(false);
+      // Clear so picking the same file again re-fires onChange.
+      if (mppFileInputRef.current) mppFileInputRef.current.value = "";
+    }
+  };
+
+  const downloadMppFile = async () => {
+    try {
+      const res = await api.get(`/projects/${activeId}/ms-project/file`, { responseType: "blob" });
+      // Blob -> anchor click -> revoke URL (same pattern as ExportDropdown).
+      const blobUrl = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = syncState?.file?.name || "schedule.mpp";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      toast.error("Could not download the file.");
+    }
+  };
+
+  const generateMppFile = async () => {
+    if (mppBusy) return;
+    setMppBusy(true);
+    try {
+      await api.post(`/projects/${activeId}/ms-project/generate-file`);
+      toast.success("Building a Microsoft Project file from the ICE tasks — it will appear here when ready.");
+      refreshSyncState();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Could not start the file build.");
+    } finally {
+      setMppBusy(false);
     }
   };
 
@@ -374,29 +466,95 @@ export default function Tasks() {
       {isMode2 && (
         <div
           data-testid="msproject-mode-banner"
-          className={`mb-3 flex items-center gap-3 rounded-md border px-3 py-2 text-sm max-md:flex-wrap ${
+          className={`mb-3 rounded-md border px-3 py-2 text-sm ${
             syncState?.conflict
               ? "border-rose-300 bg-rose-50 text-rose-800"
               : "border-sky-200 bg-sky-50 text-sky-800"
           }`}
         >
-          <span className="font-medium">MS Project engine</span>
-          {syncState?.conflict ? (
-            <span data-testid="msproject-conflict">
-              ⚠ MS Project was changed outside ICE — sync to reconcile.
+          <div className="flex items-center gap-3 max-md:flex-wrap">
+            <span className="font-medium">MS Project engine</span>
+            {syncState?.conflict ? (
+              <span data-testid="msproject-conflict">
+                ⚠ MS Project was changed outside ICE — sync to reconcile.
+              </span>
+            ) : (
+              <span className="text-sky-700/80">
+                Dates &amp; critical path are computed by Microsoft Project.
+              </span>
+            )}
+            {/* MS Project file pipeline (2026-07-02) -- worker-job indicator.
+                Amber while a job is pending/claimed; red suffix when the
+                worker hasn't checked in recently. */}
+            {syncState?.active_job && (
+              <span
+                data-testid="msp-active-job"
+                className="pill bg-amber-100 text-amber-900 border border-amber-300"
+              >
+                Recalculating in Microsoft Project…
+                {!syncState.worker_online && (
+                  <span className="text-rose-700 font-semibold">{" — worker offline"}</span>
+                )}
+              </span>
+            )}
+            <button
+              data-testid="msproject-sync"
+              onClick={syncFromProject}
+              className="ml-auto sbtn sbtn-sm sbtn-secondary max-md:mt-1"
+            >
+              Sync from MS Project
+            </button>
+          </div>
+          {/* MS Project file pipeline (2026-07-02) -- the .mpp is stored in
+              ICE (no shared-folder placement). File-status line + actions. */}
+          <div className={`mt-2 pt-2 border-t flex items-center gap-2 max-md:flex-wrap ${
+            syncState?.conflict ? "border-rose-200" : "border-sky-200"
+          }`}>
+            <span data-testid="msp-file-status" className="text-xs">
+              {syncState?.file
+                ? `${syncState.file.name} · v${syncState.file.rev} · updated ${formatDateDisplay(syncState.file.updated_at)} · ${FILE_SOURCE_LABELS[syncState.file.source] || syncState.file.source}`
+                : "No file yet"}
             </span>
-          ) : (
-            <span className="text-sky-700/80">
-              Dates &amp; critical path are computed by Microsoft Project.
+            <input
+              ref={mppFileInputRef}
+              type="file"
+              accept=".mpp"
+              className="hidden"
+              onChange={(e) => uploadMppFile(e.target.files?.[0] || null)}
+            />
+            <span className="ml-auto flex items-center gap-2 max-md:ml-0 max-md:flex-wrap">
+              <button
+                data-testid="msp-file-upload"
+                onClick={() => mppFileInputRef.current?.click()}
+                disabled={mppBusy}
+                className="sbtn sbtn-sm sbtn-secondary"
+              >
+                Upload file
+              </button>
+              {syncState?.file && (
+                <button
+                  data-testid="msp-file-download"
+                  onClick={downloadMppFile}
+                  className="sbtn sbtn-sm sbtn-secondary"
+                >
+                  Download
+                </button>
+              )}
+              {/* Hidden while a job is in flight: generating against a file
+                  that's about to change would race the upload it fences. */}
+              {!syncState?.file && !syncState?.active_job && tasks.length > 0 && (
+                <button
+                  data-testid="msp-file-generate"
+                  onClick={generateMppFile}
+                  disabled={mppBusy}
+                  title="Build a new Microsoft Project file from the activities already in ICE."
+                  className="sbtn sbtn-sm sbtn-secondary"
+                >
+                  Generate from ICE tasks
+                </button>
+              )}
             </span>
-          )}
-          <button
-            data-testid="msproject-sync"
-            onClick={syncFromProject}
-            className="ml-auto sbtn sbtn-sm sbtn-secondary max-md:mt-1"
-          >
-            Sync from MS Project
-          </button>
+          </div>
         </div>
       )}
       <div className="flex items-center justify-between max-md:flex-col max-md:items-start max-md:gap-2">

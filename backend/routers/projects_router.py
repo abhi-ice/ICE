@@ -1,6 +1,6 @@
 """Projects + floors + locations CRUD."""
 from datetime import date, datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, UploadFile, File
 from typing import Optional
 from database import get_db, tenant_filter
 from models import (
@@ -85,6 +85,11 @@ async def _initialize_project_calendar(
 async def create_project(payload: ProjectCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = payload.model_dump(mode="json")
+    # Engine pair rule (file pipeline, 2026-07-02): the Microsoft Project
+    # connector always rides on the impact-days engine -- mode2 + enterprise
+    # must be impossible, so mode2 forces the engine in the same write.
+    if doc.get("schedule_mode") == "mode2":
+        doc["schedule_engine"] = "impact_days"
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -164,7 +169,8 @@ async def get_project(project_id: str, ctx: dict = Depends(require_tenant)):
 
 
 @router.patch("/projects/{project_id}", response_model=Project)
-async def update_project(project_id: str, payload: ProjectUpdate, ctx: dict = Depends(require_tenant)):
+async def update_project(project_id: str, payload: ProjectUpdate, bg: BackgroundTasks = None,
+                          ctx: dict = Depends(require_tenant)):
     db = get_db()
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:
@@ -172,6 +178,26 @@ async def update_project(project_id: str, payload: ProjectUpdate, ctx: dict = De
     before = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Project not found")
+    # Engine lock (file pipeline, 2026-07-02): once a project adopts an engine
+    # (mode2 or enterprise) the choice is permanent -- swapping engines would
+    # orphan the hosted .mpp / the enterprise columns mid-project. The dialog
+    # always sends both fields on every save, so a same-value write must pass.
+    if before.get("schedule_engine") == "enterprise" or before.get("schedule_mode") == "mode2":
+        cur_engine = before.get("schedule_engine") or "impact_days"
+        cur_mode = before.get("schedule_mode") or "mode1"
+        if (("schedule_engine" in updates and updates["schedule_engine"] != cur_engine)
+                or ("schedule_mode" in updates and updates["schedule_mode"] != cur_mode)):
+            raise HTTPException(
+                409,
+                "Schedule engine is locked once selected. It cannot be changed "
+                "after a project adopts an engine.")
+    # Engine pair rule: mode2 always rides on the impact-days engine (mode2 +
+    # enterprise must be impossible) -- forced in the same $set.
+    if updates.get("schedule_mode") == "mode2":
+        updates["schedule_engine"] = "impact_days"
+    first_enterprise = (
+        updates.get("schedule_engine") == "enterprise"
+        and (before.get("schedule_engine") or "impact_days") != "enterprise")
     await db.projects.update_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
         {"$set": updates},
@@ -185,6 +211,13 @@ async def update_project(project_id: str, payload: ProjectUpdate, ctx: dict = De
         await runtime_settings.ensure_flag_on("FF_ENTERPRISE_CPM", updated_by=actor_email)
     if updates.get("schedule_mode") == "mode2":
         await runtime_settings.ensure_flag_on("FF_SCHEDULE_MODE_2", updated_by=actor_email)
+    # First enterprise adoption: run the engine once right away so the
+    # project's numbers appear without waiting for a schedule event. mode2
+    # adoption intentionally gets NO recompute here -- its numbers arrive via
+    # the file-upload auto-sync.
+    if first_enterprise and bg is not None:
+        from services.cpm import auto_recompute_after_event
+        bg.add_task(auto_recompute_after_event, ctx["tenant_id"], project_id)
     after = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="projects", op="UPDATE",

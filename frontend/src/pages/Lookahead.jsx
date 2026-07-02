@@ -19,7 +19,7 @@ const DAY_PX = 32; // pixels per day in Gantt
 const ROW_H = 32;
 
 export default function Lookahead() {
-  const { activeId } = useProjects();
+  const { activeId, projects } = useProjects();
   const [days, setDays] = useState(14);
   const [rows, setRows] = useState([]);
   const [view, setView] = useState("list");
@@ -51,6 +51,29 @@ export default function Lookahead() {
     }
     return filtered;
   }, [rows, sortBySlipDesc, showOnlyImpacted]);
+
+  // MS Project file pipeline (2026-07-02) -- Mode-2 projects recalculate
+  // out-of-band in Microsoft Project. While the worker holds a job, show a
+  // thin heads-up above the table so PMs know these dates may still move.
+  // One sync-state fetch on load; a 15s poll runs only while a job is active.
+  const isMode2 = projects.find((p) => p.id === activeId)?.schedule_mode === "mode2";
+  const [mspRecalculating, setMspRecalculating] = useState(false);
+  useEffect(() => {
+    if (!activeId || !isMode2) { setMspRecalculating(false); return undefined; }
+    let cancelled = false;
+    let timer = null;
+    const check = async () => {
+      try {
+        const { data } = await api.get(`/projects/${activeId}/ms-project/sync-state`);
+        if (cancelled) return;
+        const active = !!data?.active_job;
+        setMspRecalculating(active);
+        if (active) timer = setTimeout(check, 15000);
+      } catch { /* transient — leave the current line as-is */ }
+    };
+    check();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [activeId, isMode2]);
 
   return (
     <div data-testid="lookahead-page" className="space-y-4">
@@ -87,6 +110,12 @@ export default function Lookahead() {
           />
         </div>
       </div>
+
+      {mspRecalculating && (
+        <p data-testid="lookahead-msp-recalculating" className="text-xs text-slate-500">
+          Microsoft Project is recalculating — dates may update shortly.
+        </p>
+      )}
 
       {view === "list" && (
         <>

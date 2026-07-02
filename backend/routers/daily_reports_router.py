@@ -906,21 +906,30 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         )
 
         # CPM B2 (2026-06-12) -- progress-driven cascade trigger.
-        # FF_PROGRESS_CASCADE. The EOD% write above just moved the linked
-        # task's pct_complete; re-flow the schedule so a task now behind its
-        # planned percent slips its finish and cascades downstream
-        # (compute_cpm -> projected dates -> remaining float), the same
-        # engine a logged delay drives. auto_recompute_after_event wraps
-        # each step in try/except, so a CPM hiccup never blocks the grid
-        # edit. No new call when the flag is off (pre-B2 behaviour).
-        from services.feature_flags import progress_cascade_enabled
-        if "pct_complete_end_of_day" in updates and progress_cascade_enabled():
-            from services.cpm import auto_recompute_after_event
-            await auto_recompute_after_event(
-                ctx["tenant_id"],
-                dr.get("project_id") or task_before.get("project_id"),
-                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
-            )
+        # The EOD% write above just moved the linked task's pct_complete;
+        # re-flow the schedule so a task now behind its planned percent slips
+        # its finish and cascades downstream (compute_cpm -> projected dates
+        # -> remaining float), the same engine a logged delay drives.
+        # auto_recompute_after_event wraps each step in try/except, so a CPM
+        # hiccup never blocks the grid edit.
+        # Engine-aware (2026-07-02): the mode2 (MS Project) and enterprise
+        # engines are progress-aware natively, so a project on either
+        # recomputes regardless of FF_PROGRESS_CASCADE -- the B2 flag only
+        # gates the impact-days linear cascade. Project read (cheap
+        # projection) only happens when the EOD% actually changed; with all
+        # three flags off nothing runs (pre-B2 behaviour).
+        if "pct_complete_end_of_day" in updates:
+            from services.feature_flags import progress_recompute_enabled_for
+            _dr_project_id = dr.get("project_id") or task_before.get("project_id")
+            _proj = await db.projects.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": _dr_project_id}),
+                {"_id": 0, "schedule_mode": 1, "schedule_engine": 1}) or {}
+            if progress_recompute_enabled_for(_proj):
+                from services.cpm import auto_recompute_after_event
+                await auto_recompute_after_event(
+                    ctx["tenant_id"], _dr_project_id,
+                    actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                )
 
         # Bucket C3b Phase 3 — auto-create a daily_presence row tying
         # the picked crew to the activity at first shift. Idempotent on

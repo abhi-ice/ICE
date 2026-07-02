@@ -17,6 +17,17 @@ updates or reads the schedule back, and sends the results to ICE.
    `msp_worker.py`, each file named after its ICE project id (for example
    `a1b2c3.mpp`). An ICE admin can instead set an exact file path per project.
 
+## Hosted files
+
+With the new version, ICE keeps the Microsoft Project file itself: upload the
+.mpp on the project inside ICE and every sync works from that stored copy.
+The worker downloads the file for each job, applies the sync, and sends the
+updated file back to ICE automatically — nothing needs to be placed on this
+computer, so step 4 above is no longer needed for these projects. The
+`projects` folder is only a legacy fallback for projects that have no file
+stored in ICE. Working copies are kept in a `cache` folder next to
+`msp_worker.py` (change it with `MSP_CACHE_DIR` in `worker.env`).
+
 ## Run
 
 Double-click `run-worker.bat`. Leave the window open; it waits for work from

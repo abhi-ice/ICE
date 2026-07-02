@@ -91,3 +91,16 @@ def schedule_engine_for_project(project: dict) -> str:
     'impact_days' so a missing/legacy field is safe. Only consulted when
     enterprise_cpm_enabled() is True."""
     return "enterprise" if (project or {}).get("schedule_engine") == "enterprise" else "impact_days"
+
+
+def progress_recompute_enabled_for(project: dict) -> bool:
+    """Should a Daily Report end-of-day % change re-flow this project's
+    schedule? The mode2 (MS Project) and enterprise engines are progress-aware
+    natively, so a project on either recomputes unconditionally; the B2 flag
+    only gates the impact-days linear cascade (its original meaning). With all
+    three flags off this is False -- pre-B2 behavior, unchanged."""
+    return (
+        progress_cascade_enabled()
+        or (schedule_mode_2_enabled() and schedule_mode_for_project(project) == "mode2")
+        or (enterprise_cpm_enabled() and schedule_engine_for_project(project) == "enterprise")
+    )
