@@ -1946,6 +1946,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         daily_report_id: dailyReportId,
       });
       reload();
+      // mobile: a successful save collapses the entry table back to the
+      // "Add crew" ghost (the saved crew shows as a card above).
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches) setMEntryOpen(false);
       return true;
     } catch (e) {
       toast.error(e.response?.data?.detail || "Add failed");
@@ -1974,6 +1977,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       setDrafts([]);
       draftIdsRef.current = [];
       setDraftsCount(0);
+      // mobile: collapse the entry table back to the "Add crew" ghost —
+      // the saved crew renders as a display card above.
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches) setMEntryOpen(false);
     } else {
       toast.error("Type a trade first, or click the trash icon to discard the empty row.");
     }
@@ -2753,6 +2759,8 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
       setUnplanned({ description: "", trade_code: "", duration_days: 1 });
       if (locked) { setAddReason(""); toast.success("Unplanned activity created (post-submit). Audit chain captured."); }
       else toast.success("Unplanned activity created — flagged for PM review.");
+      // mobile: collapse back to the ghost after a successful create.
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches) setMUnplannedOpen(false);
       reload();
     } catch (e) {
       if (!handleLockedAddError(e, "activity")) {
@@ -3140,6 +3148,21 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
   const eventsTotal = (delays || []).length + (safetyEvents || []).length
     + (qcIssues || []).length + (rfis || []).length + (deliveries || []).length;
 
+  // MOBILE (user request): after a successful log of ANY kind the open
+  // panel/form closes and the page returns to chips + feed. Detected as an
+  // events-count increase while a tab is open — one hook covers all five
+  // kind panels without touching their internals. Desktop unaffected.
+  const prevEventsTotalRef = useRef(eventsTotal);
+  useEffect(() => {
+    const prev = prevEventsTotalRef.current;
+    prevEventsTotalRef.current = eventsTotal;
+    if (eventsTotal > prev && activeTab
+        && typeof window !== "undefined"
+        && window.matchMedia("(max-width: 767.98px)").matches) {
+      setActiveTab("");
+    }
+  }, [eventsTotal, activeTab]);
+
   // Mobile unified feed (approved mockup) -- every event kind merged into
   // one newest-first card list. Desktop never renders it (md:hidden), and
   // the arrays are small (<=200 rows each), so plain recompute is fine.
@@ -3282,7 +3305,17 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
 
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [showForm, setShowForm] = useState(false);
+  // MOBILE (user: chip tap should open the form directly, no extra click):
+  // the panel mounts when its chip activates the tab, so an open-on-mobile
+  // initializer IS the one-tap flow. Locked DRs keep the button (the
+  // post-submit reason flow stays deliberate). Desktop starts closed as
+  // before. After the log-and-auto-close, the next chip tap remounts the
+  // panel and the form opens fresh.
+  const [showForm, setShowForm] = useState(() => (
+    typeof window !== "undefined"
+    && window.matchMedia("(max-width: 767.98px)").matches
+    && !locked
+  ));
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
   // 2026-05-26 -- Activity Grid Issues dropdown integration.

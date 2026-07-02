@@ -827,10 +827,46 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        header's right ("Auto ▾" label on phones via JSX). */
     [data-testid="dr-audit-panel"] { padding: 10px 12px !important; position: relative; }
     [data-testid="dr-audit-panel"] > div:first-child { margin-bottom: 0 !important; padding-bottom: 0 !important; border-bottom: 0 !important; }
+    /* the collapsed expand-control covers the WHOLE row (user: tapping the
+       row did nothing — the old absolute button was only the tiny "Auto ▾"
+       text). Full-bleed overlay, label kept at the right. */
     [data-testid="dr-audit-panel"] [data-testid="dr-audit-expand"] {
-        position: absolute; top: 50%; right: 12px; transform: translateY(-50%);
-        width: auto; border: 0; background: transparent; padding: 0;
+        position: absolute; inset: 0; transform: none;
+        width: 100%; height: 100%;
+        display: flex; align-items: center; justify-content: flex-end;
+        padding: 0 12px; border: 0; background: transparent;
         font-size: 12px; color: var(--v4-fg-muted);
+        z-index: 1;
+    }
+    /* reminder banner + cards (user: desktop layout looked messy on the
+       phone): compact banner, wrapping meta row, full-wrap description,
+       tappable resolve link. */
+    [data-testid="dr-reminder-banner"] { padding: 12px; margin-bottom: 12px; }
+    [data-testid="dr-reminder-banner"] [data-testid^="reminder-card-"] {
+        border-radius: 12px; padding: 10px 12px;
+    }
+    [data-testid="dr-reminder-banner"] [data-testid^="reminder-card-"] > div:first-child {
+        flex-wrap: wrap; row-gap: 4px;
+    }
+    [data-testid="dr-reminder-banner"] [data-testid^="reminder-card-"] .truncate {
+        white-space: normal; overflow: visible; text-overflow: clip;
+    }
+    [data-testid="dr-reminder-banner"] [data-testid^="reminder-card-"] button { min-height: 32px; }
+    /* event kind-panels on phones show ONLY the add flow (user: logged
+       events must not repeat inside the panel — the unified feed is the
+       display). Hides the per-kind row lists + empty-state (the middle
+       children between the PanelShell header and the add-form block). */
+    [data-testid="dr-delays-panel"] > *:not(:first-child):not(:last-child),
+    [data-testid="dr-safety-panel"] > *:not(:first-child):not(:last-child),
+    [data-testid="dr-qc-panel"] > *:not(:first-child):not(:last-child),
+    [data-testid="dr-rfis-panel"] > *:not(:first-child):not(:last-child),
+    [data-testid="dr-deliveries-panel"] > *:not(:first-child):not(:last-child) { display: none; }
+    [data-testid="dr-delays-panel"] > *:last-child,
+    [data-testid="dr-safety-panel"] > *:last-child,
+    [data-testid="dr-qc-panel"] > *:last-child,
+    [data-testid="dr-rfis-panel"] > *:last-child,
+    [data-testid="dr-deliveries-panel"] > *:last-child {
+        margin-top: 0 !important; padding-top: 0 !important; border-top: 0 !important;
     }
     /* photo thumbs: mockup 10px radius. */
     [data-testid="dr-photos-panel"] .grid > div { border-radius: 10px; overflow: hidden; }
@@ -860,25 +896,17 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     /* the PanelShell "Activity log · N" header IS the section header; the
        inner "Today's Planned Activity / N of N reported" sub-header goes. */
     [data-testid="dr-activity-grid"] .phase-now-head { display: none; }
-    /* no dates in the section header; Refresh collapses to an icon-only
-       36px button (font-size:0 hides the label text, the svg keeps size). */
-    [data-testid="dr-activity-grid"] .ml-auto > span.text-xs { display: none; }
-    [data-testid="dr-activity-grid"] [data-testid="dr-refresh-grid"] {
-        font-size: 0; gap: 0; width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
-    }
+    /* user (device pass 2): NO date and NO "Refresh from schedule" in the
+       activity header on phones -- hide the whole badge cluster so the
+       "N planned" count pill sits at the far right like the mockup. */
+    [data-testid="dr-activity-grid"] > div:first-child > .ml-auto { display: none; }
     /* the EOD slider spans the card (mockup): the slider wrap fills the row. */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) [data-testid^="dr-pct-wrap-"] {
         width: 100%; min-width: 0; flex: 1 1 auto;
     }
-    /* "Flag issue" select -> a small square "+" control (mockup's icon
-       affordance): the native select still opens the full option list. */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) select {
-        width: 34px; max-width: 34px; min-height: 34px; height: 34px; border-radius: 9px;
-        color: transparent; text-indent: -999px;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa3af' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E");
-        background-repeat: no-repeat; background-position: center;
-        appearance: none; -webkit-appearance: none;
-    }
+    /* user (device pass 2): the Flag-issue control is gone on phones —
+       events are logged from the Events section chips instead. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) { display: none; }
     /* blockers cell (the stray "—") off phones; the status pill carries it. */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8) { display: none; }
     /* no stray underlines/hairlines inside the card. */
