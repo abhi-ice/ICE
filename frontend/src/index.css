@@ -904,9 +904,17 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) [data-testid^="dr-pct-wrap-"] {
         width: 100%; min-width: 0; flex: 1 1 auto;
     }
-    /* user (device pass 2): the Flag-issue control is gone on phones —
-       events are logged from the Events section chips instead. */
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) { display: none; }
+    /* Flag-issue as the small square "+" control (restored per user — only
+       the "Flag issue…" placeholder row is removed from the opened list,
+       via disabled+hidden on the option). Native select still opens the
+       kind picker. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) select {
+        width: 34px; max-width: 34px; min-height: 34px; height: 34px; border-radius: 9px;
+        color: transparent; text-indent: -999px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa3af' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: center;
+        appearance: none; -webkit-appearance: none;
+    }
     /* blockers cell (the stray "—") off phones; the status pill carries it. */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8) { display: none; }
     /* no stray underlines/hairlines inside the card. */

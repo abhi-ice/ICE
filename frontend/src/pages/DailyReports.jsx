@@ -2604,7 +2604,10 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
             }}
             className="text-xs px-1.5 py-0.5 border border-slate-200 rounded bg-white"
           >
-            <option value="">Flag issue…</option>
+            {/* disabled+hidden: stays as the collapsed label but never
+                appears as a pickable row in the opened list (it isn't a
+                real event kind — user feedback). */}
+            <option value="" disabled hidden>Flag issue…</option>
             <option value="delay">Log delay</option>
             <option value="safety">Log safety event</option>
             <option value="qc">Log QC issue</option>
