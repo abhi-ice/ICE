@@ -948,6 +948,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               rfisCount={(rfis || []).length}
               safetyCount={(safety_events || []).length}
               qcCount={(qc_issues || []).length}
+              activitiesCount={(grid || []).length}
               locked={locked}
               onSubmit={submit} onApprove={approve} onDownload={downloadPdf}
               busy={busy} validate={validate}
@@ -1301,6 +1302,7 @@ function StatusPill({ status }) {
 function Header({ report, project, userLabels, ppc,
                   totalHeadcount, totalCrewHours,
                   delaysCount = 0, rfisCount = 0, safetyCount = 0, qcCount = 0,
+                  activitiesCount = 0,
                   locked, onSubmit,
                   onApprove, onDownload, busy, validate, onQuickLogCoordination,
                   templateMeta, exportingClient, onDownloadClientTemplate,
@@ -1576,6 +1578,7 @@ function Header({ report, project, userLabels, ppc,
         <KPI label="RFIs" value={rfisCount} testid="kpi-m-rfis" />
         <KPI label="Safety" value={safetyCount} testid="kpi-m-safety" />
         <KPI label="QC" value={qcCount} testid="kpi-m-qc" />
+        <KPI label="Activities" value={activitiesCount} testid="kpi-m-activities" />
       </div>
     </div>
   );

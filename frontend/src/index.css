@@ -797,6 +797,19 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        mockup's "+" prefix on each kind. */
     .dr-events-tabs [role="tab"] { border-radius: 999px; }
     .dr-events-tabs [role="tab"] .truncate::before { content: "+ "; opacity: 0.7; }
+    /* mobile KPI cells, mockup-exact: VALUE on top (16px), label under it
+       (11px muted), left-aligned, 11px radius (the desktop band centers
+       label-first; it's max-md:hidden so untouched). */
+    [data-testid^="kpi-m-"] {
+        display: flex; flex-direction: column-reverse; align-items: flex-start;
+        text-align: left; border-radius: 11px;
+    }
+    /* manpower header totals read as the mockup's pill. */
+    [data-testid="dr-presence-panel"] .ml-2 > span.text-xs {
+        background: var(--v4-bg-surface-2);
+        padding: 2px 9px; border-radius: 999px; font-size: 11px;
+        white-space: nowrap;
+    }
     /* the per-kind event panel + audit panel: compact card padding. */
     [data-testid^="dr-events-tab-content-"] .surface { padding: 12px !important; }
     [data-testid="dr-audit-panel"] { padding: 12px !important; }
