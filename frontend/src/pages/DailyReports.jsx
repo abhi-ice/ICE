@@ -922,7 +922,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
             </button>
             <div className="flex-1 min-w-0">
               <div className="text-[17px] font-semibold leading-tight">Daily report</div>
-              <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>{formatDateDisplay(report.report_date)}</div>
+              {/* mockup subtitle style: long-form date ("May 27, 2026"). */}
+              <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>
+                {(() => { try { return new Date(`${report.report_date}T00:00:00`).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }); } catch (e) { return formatDateDisplay(report.report_date); } })()}
+              </div>
             </div>
             <span className={`v4-pill v4-pill-${
               report.status === "approved" ? "closed" :
@@ -3237,7 +3240,12 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
                   <span className="text-xs ml-auto" style={{ color: "var(--v4-fg-muted)" }}>{it.timeLabel}</span>
                 </div>
                 <div className="text-sm">{it.title}</div>
-                {it.meta && <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>{it.meta}</div>}
+                {it.meta && (
+                  <div className="text-xs flex items-center gap-2" style={{ color: "var(--v4-fg-muted)" }}>
+                    <span className="min-w-0 truncate">{it.meta}</span>
+                    <Pencil className="h-3.5 w-3.5 ml-auto shrink-0 opacity-60" aria-hidden="true" />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -4404,10 +4412,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
               <span className="h-2 w-2 rounded-full" style={{ background: pinnedIds.length ? "#10b981" : "var(--v4-fg-faint)" }} />
               {pinnedIds.length} pinned
             </span>
-            <button type="button" className="text-[11px] px-2 py-1 rounded border"
+            <button type="button" className="text-[11px] px-2 py-1 rounded border max-md:hidden"
               style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
               onClick={() => setPinned(new Set(rows.map((p) => p.id)))}>Pin all</button>
-            <button type="button" className="text-[11px] px-2 py-1 rounded border"
+            <button type="button" className="text-[11px] px-2 py-1 rounded border max-md:hidden"
               style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
               onClick={() => setPinned(new Set())}>Clear</button>
             <span className="flex-1" />
@@ -4721,7 +4729,7 @@ function AuditPanel({ rows, userLabels }) {
           </span>
           {/* mockup's one-line acc row on phones: just "Auto ▾" at right. */}
           <span className="md:hidden text-xs" style={{ color: "var(--v4-fg-muted)" }}>Auto ▾</span>
-          {count > 0 && <ChevronDown className="h-4 w-4 text-slate-400 -rotate-90 transition-transform" />}
+          {count > 0 && <ChevronDown className="h-4 w-4 text-slate-400 -rotate-90 transition-transform max-md:hidden" />}
         </button>
       ) : (
         <>
