@@ -1443,13 +1443,6 @@ function Header({ report, project, userLabels, ppc,
                 <CheckCircle2 /> Approve
               </button>
             )}
-            {report.status === "approved" && onQuickLogCoordination && (
-              <button data-testid="dr-coord-m" onClick={onQuickLogCoordination}
-                title="Log a coordination event" aria-label="Log a coordination event"
-                className="sbtn sbtn-md sbtn-secondary shrink-0">
-                <MessageSquare />
-              </button>
-            )}
           </div>
           <div className="dr-pips" data-testid="dr-section-chips">
             {drSections.map((s) => (
@@ -1463,6 +1456,73 @@ function Header({ report, project, userLabels, ppc,
                 <span className="pip-name">{s.label}</span>
               </button>
             ))}
+          </div>
+          {/* Mobile-first secondary actions: Coordination + Export as small
+              pill chips (user: don't carry the desktop buttons to mobile,
+              and don't drop the features either). */}
+          <div className="flex items-center gap-2" data-testid="dr-actions-m">
+            {onQuickLogCoordination && (
+              <button data-testid="dr-coord-m" onClick={onQuickLogCoordination}
+                title={locked ? "Log a coordination event (post-submit)" : "Log a coordination event"}
+                className="sbtn sbtn-sm sbtn-secondary" style={{ borderRadius: 999 }}>
+                <MessageSquare /> Coordination
+              </button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button data-testid="dr-export-menu-m" disabled={busy}
+                  className="sbtn sbtn-sm sbtn-secondary" style={{ borderRadius: 999 }}>
+                  <Download /> Export
+                  <ChevronDown className="h-3 w-3 -mr-1 opacity-60" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-64">
+                <DropdownMenuLabel>Export format</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem data-testid="dr-export-internal-m"
+                  disabled={busy}
+                  onClick={() => onDownload("internal")}
+                  className="flex items-start gap-2 cursor-pointer">
+                  <Download className="h-4 w-4 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="font-medium">For Internal</div>
+                    <div className="text-xs text-slate-500">Full audit trail, all fields</div>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem data-testid="dr-export-external-m"
+                  disabled={busy}
+                  onClick={() => onDownload("external")}
+                  className="flex items-start gap-2 cursor-pointer">
+                  <Download className="h-4 w-4 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="font-medium">For External</div>
+                    <div className="text-xs text-slate-500">Client-safe, redacted internals</div>
+                  </div>
+                </DropdownMenuItem>
+                {templateMeta?.present && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem data-testid="dr-export-client-template-m"
+                      disabled={exportingClient || busy}
+                      onClick={onDownloadClientTemplate}
+                      title={`Export using the project's client template (${templateMeta.file_name || "xlsx"})`}
+                      className="flex items-start gap-2 cursor-pointer">
+                      {exportingClient ? (
+                        <Loader2 className="h-4 w-4 mt-0.5 shrink-0 animate-spin" />
+                      ) : (
+                        <FileSpreadsheet className="h-4 w-4 mt-0.5 shrink-0" />
+                      )}
+                      <div>
+                        <div className="font-medium">{exportingClient ? "Exporting…" : "Client format (xlsx)"}</div>
+                        <div className="text-xs text-slate-500 truncate max-w-[180px]">
+                          {templateMeta.file_name || "Uses uploaded template"}
+                        </div>
+                      </div>
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       )}
@@ -1951,6 +2011,12 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Notes, actions = 8
   const COL_COUNT = 8;
 
+  // MOBILE (approved mockup): saved crews render as display CARDS and the
+  // editable table stays hidden until the super taps "Add crew" (or a card's
+  // pencil). Desktop always shows the table (the toggle only gates a
+  // max-md:hidden class). Unconditional hook -- rules of hooks safe.
+  const [mEntryOpen, setMEntryOpen] = useState(false);
+
   return (
     <PanelShell icon={Users} title="Manpower log" testid="dr-presence-panel" count={rows.length} step={3}
       badge={
@@ -2004,7 +2070,56 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
           </table>
         </div>
       )}
-      <div className="overflow-x-auto">
+      {/* MOBILE crew cards (approved mockup): company + trade pill, big
+          hours with the workers × hours breakdown, task line + pencil.
+          "Add crew" reveals the entry table below; pencil does the same
+          for edits. md:hidden -> desktop unchanged. */}
+      <div className="md:hidden flex flex-col gap-2 mb-2" data-testid="presence-cards-m">
+        {rows.map((r) => {
+          const hrs = (Number(r.headcount) || 0) * (Number(r.hours_per_person) || 0);
+          const task = taskOptions.find((t) => t.id === r.schedule_activity_id);
+          return (
+            <div key={`m-${r.id}`} data-testid={`presence-card-${r.id}`}
+              className="rounded-xl border p-3 flex flex-col gap-1.5"
+              style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold truncate">{r.company_name || "—"}</span>
+                <span className="pill pill-slate ml-auto shrink-0">{r.trade}</span>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-lg font-semibold tabular-nums">{hrs.toFixed(1)}</span>
+                <span className="text-xs" style={{ color: "var(--v4-fg-secondary)" }}>hrs</span>
+                <span className="text-xs ml-1.5" style={{ color: "var(--v4-fg-muted)" }}>
+                  {Number(r.headcount) || 0} workers × {(Number(r.hours_per_person) || 0).toFixed(1)} h
+                </span>
+              </div>
+              <div className="flex items-center min-h-[20px]">
+                <span className="text-xs truncate" style={{ color: "var(--v4-fg-muted)" }}>
+                  {task ? `Task: [${task.code}] ${(task.desc || "").slice(0, 34)}` : (r.notes || "")}
+                </span>
+                {!locked && (
+                  <button type="button" data-testid={`presence-card-edit-${r.id}`}
+                    onClick={() => setMEntryOpen(true)}
+                    aria-label="Edit crews"
+                    className="ml-auto h-8 w-8 grid place-items-center rounded shrink-0"
+                    style={{ color: "var(--v4-fg-muted)" }}>
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {!locked && (
+          <button type="button" data-testid="presence-add-crew-m"
+            onClick={() => { if (!mEntryOpen && drafts.length === 0) addAnotherRow(); setMEntryOpen((v) => !v); }}
+            className="w-full rounded-xl border border-dashed py-2.5 text-sm inline-flex items-center justify-center gap-1.5"
+            style={{ borderColor: "var(--v4-border-strong)", color: "var(--v4-fg-secondary)", background: "transparent" }}>
+            <Plus className="h-4 w-4" /> {mEntryOpen ? "Done" : "Add crew"}
+          </button>
+        )}
+      </div>
+      <div className={`overflow-x-auto ${mEntryOpen ? "" : "max-md:hidden"}`}>
         <table className="dense-table">
           <thead>
             <tr>
