@@ -667,3 +667,33 @@ def test_b2_overlay_runs_for_impact_days_project():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# =============================================================================
+# Percent-derived actuals (2026-07-02, live-test finding): the app rolls
+# progress up as pct_complete and never stamps actual dates, so the engine
+# derives the anchors -- 100% pins to the planned footprint (no phantom
+# slip), started-but-unstamped flows only its REMAINING duration from the
+# data date.
+# =============================================================================
+def test_g25_pct_complete_without_actuals_pins_to_plan():
+    a = T("A", MON, wd(4), pct_complete=100)              # done, no actual dates
+    b = T("B", wd(5), wd(9), [PR("A")], pct_complete=0)   # untouched successor
+    nodes, _ = pure([a, b], data_date=wd(10))             # data date far past A
+    assert nodes["A"].ES == MON                           # pinned to planned start
+    assert nodes["A"].EF == wd(4)                         # pinned to planned finish (no +40 phantom)
+    assert nodes["B"].ES >= wd(10)                        # successor flows from the data date
+
+
+def test_g26_pct_started_without_actual_start_remaining_from_data_date():
+    a = T("A", MON, wd(9), pct_complete=50)               # 10-wd task, half done, no actual_start
+    nodes, _ = pure([a], data_date=wd(6))
+    assert nodes["A"].ES == MON                           # display start = planned start
+    assert nodes["A"].EF == W(wd(6), 4)                   # remaining 5 wd from the data date
+
+
+def test_g27_explicit_actuals_still_win_over_pct():
+    a = T("A", MON, wd(4), pct_complete=100,
+          actual_start=MON.isoformat(), actual_finish=wd(6).isoformat())
+    nodes, _ = pure([a], data_date=wd(10))
+    assert nodes["A"].EF == wd(6)                         # recorded actual beats planned
