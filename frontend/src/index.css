@@ -793,8 +793,45 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         -webkit-backdrop-filter: none !important;
         padding: 0 !important;
     }
-    /* events tabs read as the mockup's quick chips: pill-shaped. */
+    /* events tabs read as the mockup's quick chips: pill-shaped, with the
+       mockup's "+" prefix on each kind. */
     .dr-events-tabs [role="tab"] { border-radius: 999px; }
+    .dr-events-tabs [role="tab"] .truncate::before { content: "+ "; opacity: 0.7; }
+    /* the per-kind event panel + audit panel: compact card padding. */
+    [data-testid^="dr-events-tab-content-"] .surface { padding: 12px !important; }
+    [data-testid="dr-audit-panel"] { padding: 12px !important; }
+    [data-testid="dr-audit-panel"] > div:first-child { margin-bottom: 6px !important; padding-bottom: 4px !important; }
+    /* ---- activity card, mockup-exact pass (user pt.3) ---- */
+    /* the PanelShell "Activity log · N" header IS the section header; the
+       inner "Today's Planned Activity / N of N reported" sub-header goes. */
+    [data-testid="dr-activity-grid"] .phase-now-head { display: none; }
+    /* no dates in the section header; Refresh collapses to an icon-only
+       36px button (font-size:0 hides the label text, the svg keeps size). */
+    [data-testid="dr-activity-grid"] .ml-auto > span.text-xs { display: none; }
+    [data-testid="dr-activity-grid"] [data-testid="dr-refresh-grid"] {
+        font-size: 0; gap: 0; width: 36px; height: 36px; min-height: 36px; padding: 0; justify-content: center;
+    }
+    /* the EOD slider spans the card (mockup): the slider wrap fills the row. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(5) [data-testid^="dr-pct-wrap-"] {
+        width: 100%; min-width: 0; flex: 1 1 auto;
+    }
+    /* "Flag issue" select -> a small square "+" control (mockup's icon
+       affordance): the native select still opens the full option list. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) select {
+        width: 40px; max-width: 40px; min-height: 34px; height: 34px;
+        color: transparent; text-indent: -999px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa3af' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: center;
+        appearance: none; -webkit-appearance: none;
+    }
+    /* blockers cell (the stray "—") off phones; the status pill carries it. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8) { display: none; }
+    /* no stray underlines/hairlines inside the card. */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td,
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td * {
+        text-decoration: none !important;
+        border-bottom: 0 !important;
+    }
     /* Activity log: strip the lifecycle chrome -- BEFORE/AFTER reference
        divider rows + empty read-only bars, the ACTION-REQUIRED divider, the
        YOUR-JOB badge and the instruction sentence. (Populated paperwork

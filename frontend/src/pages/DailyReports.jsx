@@ -913,13 +913,9 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         {/* Mobile title block (approved mockup): tiny breadcrumb, then
             [‹] [Daily report / date] [status pill] [›]. md:hidden. */}
         <div className="md:hidden">
-          <button type="button" onClick={onBack} data-testid="dr-back-m"
-            className="flex items-center gap-1 text-xs mb-1.5"
-            style={{ color: "var(--v4-fg-muted)" }}>
-            <ChevronLeft className="h-3.5 w-3.5" /> Daily reports
-          </button>
+          {/* user: one title only — the row's left arrow IS the back button. */}
           <div className="flex items-center gap-2">
-            <button onClick={() => dateStep(-1)} aria-label="Previous day" data-testid="dr-prev-m"
+            <button onClick={onBack} aria-label="Back to daily reports" data-testid="dr-back-m"
               className="h-8 w-8 grid place-items-center rounded-lg border shrink-0"
               style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)" }}>
               <ChevronLeft className="h-4 w-4" />
@@ -1458,9 +1454,10 @@ function Header({ report, project, userLabels, ppc,
             ))}
           </div>
           {/* Mobile-first secondary actions: Coordination + Export as small
-              pill chips (user: don't carry the desktop buttons to mobile,
-              and don't drop the features either). */}
-          <div className="flex items-center gap-2" data-testid="dr-actions-m">
+              pill chips, pinned TOP-RIGHT above the progress card (user:
+              same placement as desktop). -order-1 lifts this row to the top
+              of the flex column. */}
+          <div className="flex items-center justify-end gap-2 -order-1" data-testid="dr-actions-m">
             {onQuickLogCoordination && (
               <button data-testid="dr-coord-m" onClick={onQuickLogCoordination}
                 title={locked ? "Log a coordination event (post-submit)" : "Log a coordination event"}
@@ -2257,8 +2254,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         </table>
       </div>
       {!locked && drafts.length === 0 && (
-        <div className="mt-3 flex justify-start">
-          {/* pt.40: inline section button -> sbtn-sm (28px). */}
+        <div className="mt-3 flex justify-start max-md:hidden">
+          {/* pt.40: inline section button -> sbtn-sm (28px). Hidden on
+              phones — the mobile "Add crew" ghost is the entry point. */}
           <button data-testid="presence-add-row" onClick={addAnotherRow}
             className="sbtn sbtn-sm sbtn-primary"
             aria-label="Add a new trade row">
@@ -2522,11 +2520,12 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
   return (
     <tr data-testid={`dr-row-${r.activity_code}`} className={rowClass}>
       <td className="font-mono text-xs">
-        {r.activity_code}
+        {/* user: no activity codes on phones — the name is the identity. */}
+        <span className="max-md:hidden">{r.activity_code}</span>
         {isUnplanned && <span className="ml-1 px-1 rounded bg-amber-100 text-amber-700 text-xs">field</span>}
         {isProvisional && !isStale && (
           <span title="Provisional sync — confirmed on submit"
-            className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle" />
+            className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-blue-400 align-middle max-md:hidden" />
         )}
         {isStale && (
           <button data-testid={`dr-row-refresh-${r.activity_code}`}
@@ -2639,6 +2638,9 @@ function ReadOnlyGridRow({ r }) {
 
 function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, presence = [], submitRowErrors = {} }) {
   const [unplanned, setUnplanned] = useState({ description: "", trade_code: "", duration_days: 1 });
+  // MOBILE (mockup): the unplanned-activity form hides behind a ghost
+  // "+ Add unplanned activity" button; desktop always shows the form.
+  const [mUnplannedOpen, setMUnplannedOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // 2026-02-XX (Abhi) -- empty sections collapse by default; the
   // user can click any section header to flip the override.
@@ -2951,8 +2953,17 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             the schedule. Unplanned activities still need a manual
             entry path because the schedule by definition didn't
             anticipate them. */}
-        <div className="bg-amber-50 border border-amber-200 rounded p-3 space-y-2">
-          <div className="text-xs font-medium text-amber-800 flex items-center gap-1"><Wand2 className="h-3 w-3" /> Create unplanned activity (flagged for PM review)</div>
+        {/* MOBILE: ghost affordance (mockup); tapping reveals the form. */}
+        {!locked && (
+          <button type="button" data-testid="unplanned-ghost-m"
+            onClick={() => setMUnplannedOpen((v) => !v)}
+            className="md:hidden w-full rounded-xl border border-dashed py-2.5 text-sm inline-flex items-center justify-center gap-1.5"
+            style={{ borderColor: "var(--v4-border-strong)", color: "var(--v4-fg-secondary)", background: "transparent" }}>
+            <Plus className="h-4 w-4" /> {mUnplannedOpen ? "Done" : "Add unplanned activity"}
+          </button>
+        )}
+        <div className={`bg-amber-50 border border-amber-200 rounded p-3 space-y-2 ${mUnplannedOpen ? "" : "max-md:hidden"}`}>
+          <div className="text-xs font-medium text-amber-800 flex items-center gap-1 max-md:hidden"><Wand2 className="h-3 w-3" /> Create unplanned activity (flagged for PM review)</div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
