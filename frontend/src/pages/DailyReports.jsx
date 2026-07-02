@@ -3305,7 +3305,17 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
 
 // ---------- Inline event panels (delays / safety / qc / rfis / deliveries) ----------
 function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reload }) {
-  const [showForm, setShowForm] = useState(false);
+  // MOBILE (user: chip tap should open the form directly, no extra click):
+  // the panel mounts when its chip activates the tab, so an open-on-mobile
+  // initializer IS the one-tap flow. Locked DRs keep the button (the
+  // post-submit reason flow stays deliberate). Desktop starts closed as
+  // before. After the log-and-auto-close, the next chip tap remounts the
+  // panel and the form opens fresh.
+  const [showForm, setShowForm] = useState(() => (
+    typeof window !== "undefined"
+    && window.matchMedia("(max-width: 767.98px)").matches
+    && !locked
+  ));
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
   // 2026-05-26 -- Activity Grid Issues dropdown integration.
