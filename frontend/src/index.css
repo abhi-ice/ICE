@@ -418,10 +418,18 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4) {
         order: 5; font-size: 12px; color: var(--v4-fg-muted, #6b7280); gap: 1px;
     }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "Planned "; }
+    /* \00a0 (nbsp): a plain trailing space in content gets collapsed by the
+       production CSS pipeline -> "Planned0" (judge-loop finding). */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::before { content: "Planned\00a0"; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(4)::after { content: "%"; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6) { order: 6; font-size: 12px; gap: 1px; }
-    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::after { content: "%"; }
+    /* delta reads as the mockup's tinted pill: "+44% today". */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6) {
+        order: 6; font-size: 12px; gap: 1px;
+        padding: 1px 7px; border-radius: 999px; background: var(--v4-bg-surface-2);
+    }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6)::after { content: "%\00a0today"; }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6).text-emerald-600 { background: rgba(16, 185, 129, 0.15); }
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(6).text-red-600 { background: rgba(240, 115, 106, 0.16); }
     /* blockers (8) + issues (9) below */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(8) { order: 7; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) { order: 8; margin-left: auto; }
@@ -697,8 +705,8 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        would lose the equal-specificity cascade; min-* is a different property
        and always floors the size up regardless of source order. */
     .date-stepper button { min-width: 40px; min-height: 40px; }
-    /* DR section pips double as jump-to-section nav -> compact but tappable. */
-    .dr-pip { min-height: 30px; }
+    /* DR section pips double as jump-to-section nav -> mockup chip density. */
+    .dr-pip { min-height: 24px; }
     /* Every form control reaches a 44px touch height on phones so a field
        super can tap them with a thumb. Range sliders / checkboxes / radios
        keep their own sizing. The dense DR grids already set 44px, so this is
@@ -810,10 +818,40 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         padding: 2px 9px; border-radius: 999px; font-size: 11px;
         white-space: nowrap;
     }
-    /* the per-kind event panel + audit panel: compact card padding. */
+    /* the per-kind event panel: compact card padding. */
     [data-testid^="dr-events-tab-content-"] .surface { padding: 12px !important; }
-    [data-testid="dr-audit-panel"] { padding: 12px !important; }
-    [data-testid="dr-audit-panel"] > div:first-child { margin-bottom: 6px !important; padding-bottom: 4px !important; }
+    /* quick-add chips carry no counts (mockup); the section-header badge does. */
+    .dr-events-tab-count { display: none; }
+    /* audit trail -> the mockup's single ~44px acc row: header keeps the
+       icon+title; the collapsed expand-button is absolutely placed at the
+       header's right ("Auto ▾" label on phones via JSX). */
+    [data-testid="dr-audit-panel"] { padding: 10px 12px !important; position: relative; }
+    [data-testid="dr-audit-panel"] > div:first-child { margin-bottom: 0 !important; padding-bottom: 0 !important; border-bottom: 0 !important; }
+    [data-testid="dr-audit-panel"] [data-testid="dr-audit-expand"] {
+        position: absolute; top: 50%; right: 12px; transform: translateY(-50%);
+        width: auto; border: 0; background: transparent; padding: 0;
+        font-size: 12px; color: var(--v4-fg-muted);
+    }
+    /* photo thumbs: mockup 10px radius. */
+    [data-testid="dr-photos-panel"] .grid > div { border-radius: 10px; overflow: hidden; }
+    [data-testid="dr-photos-panel"] .grid > div img { border-radius: 10px; }
+    /* activity status pill: sentence case ("In progress"). */
+    [data-testid="dr-activity-grid"] [data-testid^="dr-status-"]::first-letter { text-transform: uppercase; }
+    /* activity header count -> right-aligned "N planned" pill (mockup). */
+    [data-testid="dr-activity-grid"] > div:first-child > span {
+        margin-left: auto;
+        background: var(--v4-bg-surface-2) !important;
+        color: var(--v4-fg-secondary) !important;
+        border-radius: 999px; padding: 2px 9px; font-size: 11px;
+    }
+    [data-testid="dr-activity-grid"] > div:first-child > span::after { content: "\00a0planned"; }
+    /* row remove -> a muted 34px trash icon button (was a red text link). */
+    [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] [data-testid^="dr-remove-"] {
+        font-size: 0; width: 34px; height: 34px; min-height: 34px; padding: 0;
+        border: 1px solid var(--v4-border); border-radius: 9px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='%239aa3af' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: center;
+    }
     /* ---- activity card, mockup-exact pass (user pt.3) ---- */
     /* the PanelShell "Activity log · N" header IS the section header; the
        inner "Today's Planned Activity / N of N reported" sub-header goes. */
@@ -831,7 +869,7 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     /* "Flag issue" select -> a small square "+" control (mockup's icon
        affordance): the native select still opens the full option list. */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) select {
-        width: 40px; max-width: 40px; min-height: 34px; height: 34px;
+        width: 34px; max-width: 34px; min-height: 34px; height: 34px; border-radius: 9px;
         color: transparent; text-indent: -999px;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa3af' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E");
         background-repeat: no-repeat; background-position: center;
@@ -878,6 +916,7 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(9) select {
         font-size: 12px; min-height: 34px; height: 34px; max-width: 150px;
     }
+    /* (the icon-collapsed variant below overrides width to the 34px icb spec) */
     [data-testid="dr-activity-grid"] tr[data-testid^="dr-row-"] td:nth-child(10) button {
         font-size: 12px;
     }
@@ -907,12 +946,9 @@ html[data-theme="dark"] .page-shell::before { display: none; }
         min-width: 0;
     }
     .dr-events-tabs [role="tab"] .dr-events-tab-count { font-size: 10px; padding: 0 4px; }
-    /* On very narrow phones the 3-across event-tab grid squeezes each cell to
-       ~65px and the truncate label collapses to "De…" -- drop to 2-across so
-       every kind label renders in full. 380px+ keeps 3-across. */
-    @media (max-width: 379.98px) {
-        .dr-events-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
+    /* (the 2-across narrow-phone event-tab rule lives in its own TOP-LEVEL
+       media block near the end of this file -- the nested @media version was
+       dropped by the production build.) */
     /* Manpower: dark-theme override of the draft row's emerald tint outranked
        the earlier neutralizer -- kill it at higher specificity for BOTH themes. */
     html[data-theme="dark"] [data-testid="dr-presence-panel"] tr[data-testid^="presence-draft-"],
@@ -4502,4 +4538,16 @@ html[data-theme="dark"] .copilot-artifact-preview {
 .copilot-artifact-download:hover {
     transform: translateY(-1px);
     box-shadow: 0 6px 18px -3px rgba(16, 185, 129, 0.55);
+}
+
+/* ============================================================
+   DR EVENT TABS -- narrow phones (<=379.98px). TOP-LEVEL block: the same
+   rule nested inside the 767.98px media query was dropped by the production
+   build (judge-loop finding: computed 3 columns at 318px on the deployed
+   bundle), so it lives at top level with !important to beat the
+   max-md:grid-cols-3 utility. 380px+ keeps 3-across; desktop unaffected
+   (the tabs are only a grid below 768px).
+   ============================================================ */
+@media (max-width: 379.98px) {
+    .dr-events-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 }

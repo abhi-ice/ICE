@@ -916,7 +916,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           {/* user: one title only — the row's left arrow IS the back button. */}
           <div className="flex items-center gap-2">
             <button onClick={onBack} aria-label="Back to daily reports" data-testid="dr-back-m"
-              className="h-8 w-8 grid place-items-center rounded-lg border shrink-0"
+              className="h-[30px] w-[30px] grid place-items-center rounded-[9px] border shrink-0"
               style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)" }}>
               <ChevronLeft className="h-4 w-4" />
             </button>
@@ -932,7 +932,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
                report.status === "submitted" ? "Submitted" : "Draft"}
             </span>
             <button onClick={() => dateStep(+1)} aria-label="Next day" data-testid="dr-next-m"
-              className="h-8 w-8 grid place-items-center rounded-lg border shrink-0"
+              className="h-[30px] w-[30px] grid place-items-center rounded-[9px] border shrink-0"
               style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-secondary)" }}>
               <ChevronRight className="h-4 w-4" />
             </button>
@@ -1421,9 +1421,9 @@ function Header({ report, project, userLabels, ppc,
         <div className="md:hidden mb-3 flex flex-col gap-2" data-testid="dr-mobile-head">
           <div className="surface rounded-xl px-3 py-2.5 flex items-center gap-3">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="dr-progress-label"><span className="count">{completeCount} / {totalSections}</span>&nbsp;sections done</span>
-                <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>{progressPct}%</span>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="dr-progress-label min-w-0 overflow-hidden text-ellipsis"><span className="count">{completeCount} / {totalSections}</span>&nbsp;sections done</span>
+                <span className="text-xs shrink-0" style={{ color: "var(--v4-fg-muted)" }}>{progressPct}%</span>
               </div>
               <div className="dr-progress-bar" style={{ minWidth: 0 }}>
                 <div className="dr-progress-bar-fill" style={{ width: `${progressPct}%` }} />
@@ -1639,7 +1639,7 @@ function DrAutoHeader({ project, currentUserName }) {
         <ChevronDown
           className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${expanded ? "rotate-180" : ""} max-md:order-3`}
         /><div className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold shrink-0 max-md:normal-case">
-          Project / Contract
+          Project / contract
         </div>
         <div className="text-sm text-slate-300 truncate flex-1 max-md:text-right" data-testid="dr-auto-header-summary">
           {summaryParts.length
@@ -1747,11 +1747,13 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
             className="md:hidden ml-auto min-w-0 truncate text-right text-xs"
             style={{ color: "var(--v4-fg-muted)" }}>
             {[
-              report.weather_conditions,
-              (report.weather_temp_high_f ?? null) !== null || (report.weather_temp_low_f ?? null) !== null
-                ? `${report.weather_temp_high_f ?? "—"}° / ${report.weather_temp_low_f ?? "—"}°`
+              report.weather_conditions
+                ? report.weather_conditions.charAt(0).toUpperCase() + report.weather_conditions.slice(1)
                 : null,
-            ].filter(Boolean).join(" · ") || "No weather yet"}
+              (report.weather_temp_high_f ?? null) !== null || (report.weather_temp_low_f ?? null) !== null
+                ? `${report.weather_temp_high_f != null ? Math.round(report.weather_temp_high_f) : "—"}°/${report.weather_temp_low_f != null ? Math.round(report.weather_temp_low_f) : "—"}°`
+                : null,
+            ].filter(Boolean).join(" ") || "No weather yet"}
           </button>
         )}
         <button
@@ -2021,7 +2023,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     <PanelShell icon={Users} title="Manpower log" testid="dr-presence-panel" count={rows.length} step={3}
       badge={
         <div className="ml-2 flex items-center gap-3">
-          <span className="text-xs text-slate-500">total: {total} workers · {totalHours.toFixed(1)} hours</span>
+          <span className="text-xs text-slate-500 max-md:hidden">total: {total} workers · {totalHours.toFixed(1)} hours</span>
+          {/* mockup wording on phones: "N crews · N · N.N h" */}
+          <span className="text-xs text-slate-500 md:hidden">{rows.length} crews · {total} · {totalHours.toFixed(1)} h</span>
         </div>
       }>
       {/* Bucket H Phase 4 -- demand-vs-actual comparison. */}
@@ -3078,7 +3082,14 @@ function ActivityRowLockedEditButton({ row, dailyReportId, reload }) {
 // ------------------------------------------------------------
 function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
                           dailyReportId, projectId, reportDate, locked, reload, grid, report }) {
-  const [activeTab, setActiveTab] = useState("delays");
+  // Mobile unified-feed redesign (approved mockup): phones start with NO
+  // tab selected -- the feed below the chips is the default view, and
+  // tapping a chip opens that kind's add/list panel. Desktop keeps the
+  // original "delays" initial tab.
+  const [activeTab, setActiveTab] = useState(() => (
+    (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches)
+      ? "" : "delays"
+  ));
   const [pendingDetail, setPendingDetail] = useState(null);
 
   useEffect(() => {
@@ -3125,6 +3136,71 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
 
   const eventsTotal = (delays || []).length + (safetyEvents || []).length
     + (qcIssues || []).length + (rfis || []).length + (deliveries || []).length;
+
+  // Mobile unified feed (approved mockup) -- every event kind merged into
+  // one newest-first card list. Desktop never renders it (md:hidden), and
+  // the arrays are small (<=200 rows each), so plain recompute is fine.
+  const feedTime = (raw) => {
+    if (!raw) return { ts: null, timeLabel: "" };
+    const ms = Date.parse(raw);
+    if (!Number.isFinite(ms)) return { ts: null, timeLabel: String(raw) };
+    // Date-only strings ("2026-06-30") render as-is; datetimes as h:mm.
+    const hasClock = /[T ]\d{2}:/.test(String(raw));
+    return {
+      ts: ms,
+      timeLabel: hasClock
+        ? new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : String(raw),
+    };
+  };
+  const feedItems = [
+    ...(delays || []).map((r) => ({
+      key: `delay-${r.id}`, kindLabel: "Delay", kindPill: "pill-amber",
+      raw: r.created_at || r.reported_at,
+      title: r.description,
+      meta: [r.severity, (r.status || "open").replace(/_/g, " "), r.reason_category]
+        .filter(Boolean).join(" · "),
+    })),
+    ...(safetyEvents || []).map((r) => ({
+      key: `safety-${r.id}`, kindLabel: "Safety", kindPill: "pill-red",
+      raw: r.created_at || r.reported_at,
+      title: r.description,
+      meta: [(r.event_type || "").replace(/_/g, " "), r.severity].filter(Boolean).join(" · "),
+    })),
+    ...(qcIssues || []).map((r) => ({
+      key: `qc-${r.id}`, kindLabel: "QC", kindPill: "pill-blue",
+      raw: r.created_at || r.reported_at,
+      title: r.description,
+      meta: [(r.severity || "").replace(/_/g, " "), (r.status || "open").replace(/_/g, " ")]
+        .filter(Boolean).join(" · "),
+    })),
+    ...(rfis || []).map((r) => ({
+      key: `rfi-${r.id}`, kindLabel: "RFI", kindPill: "pill-blue",
+      raw: r.created_at || r.date_initiated,
+      title: r.subject,
+      meta: [r.rfi_number, r.priority, r.status].filter(Boolean).join(" · "),
+    })),
+    ...(deliveries || []).map((r) => ({
+      key: `delivery-${r.id}`, kindLabel: "Delivery", kindPill: "pill-slate",
+      raw: r.created_at || r.delivery_date,
+      title: r.description || r.vendor,
+      meta: [r.vendor, r.status].filter(Boolean).join(" · "),
+    })),
+    ...((report?.notes || "").trim()
+      ? [{ key: "notes", kindLabel: "Note", kindPill: "pill-slate", raw: null,
+           title: report.notes, meta: "" }]
+      : []),
+  ]
+    .map((it, i) => ({ ...it, ...feedTime(it.raw), order: i }))
+    .sort((a, b) => {
+      // Newest first; items without a parseable timestamp keep their
+      // original order at the end.
+      if (a.ts == null && b.ts == null) return a.order - b.order;
+      if (a.ts == null) return 1;
+      if (b.ts == null) return -1;
+      return b.ts - a.ts;
+    });
+
   return (
     <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -3149,6 +3225,23 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
               );
             })}
         </TabsList>
+        {/* Mobile-only unified feed (w-full drops it below the chip grid
+            inside this flex-wrap row; hidden entirely on md+). */}
+        {feedItems.length > 0 && (
+          <div className="md:hidden w-full flex flex-col gap-2 mt-2" data-testid="dr-events-feed-m">
+            {feedItems.map((it) => (
+              <div key={it.key} className="rounded-xl border p-3 flex flex-col gap-1.5"
+                style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface)" }}>
+                <div className="flex items-center gap-2">
+                  <span className={`pill ${it.kindPill}`}>{it.kindLabel}</span>
+                  <span className="text-xs ml-auto" style={{ color: "var(--v4-fg-muted)" }}>{it.timeLabel}</span>
+                </div>
+                <div className="text-sm">{it.title}</div>
+                {it.meta && <div className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>{it.meta}</div>}
+              </div>
+            ))}
+          </div>
+        )}
         </div>
         <TabsContent value="delays" className="mt-3" data-testid="dr-events-tab-content-delays">
           <DelaysPanel rows={delays} dailyReportId={dailyReportId} projectId={projectId}
@@ -3197,7 +3290,7 @@ function DelaysPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <DelayRowInline key={r.id} delay={r} reload={reload}
           locked={locked} dailyReportId={dailyReportId} />
       ))}
-      {!rows.length && <div data-testid="delays-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
+      {!rows.length && <div data-testid="delays-empty" className="text-xs text-slate-400 py-2"><span className="max-md:hidden">Nothing logged today — say so by clicking + at right.</span><span className="md:hidden">Nothing logged today — add one with the + chips above.</span></div>}
       <div className="mt-3 pt-3 border-t border-slate-100">
         {!showForm ? (
           <button data-testid="delay-add-open" onClick={() => setShowForm(true)}
@@ -3466,7 +3559,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
         <SafetyRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div data-testid="safety-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
+      {!rows.length && <div data-testid="safety-empty" className="text-xs text-slate-400 py-2"><span className="max-md:hidden">Nothing logged today — say so by clicking + at right.</span><span className="md:hidden">Nothing logged today — add one with the + chips above.</span></div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="safety-form">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a safety event" testid="safety-add-reason" />}
@@ -3642,7 +3735,7 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         <QcRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div data-testid="qc-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
+      {!rows.length && <div data-testid="qc-empty" className="text-xs text-slate-400 py-2"><span className="max-md:hidden">Nothing logged today — say so by clicking + at right.</span><span className="md:hidden">Nothing logged today — add one with the + chips above.</span></div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2" data-testid="qc-form">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a QC issue" testid="qc-add-reason" />}
@@ -3861,7 +3954,7 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         <RfiRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div data-testid="rfis-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
+      {!rows.length && <div data-testid="rfis-empty" className="text-xs text-slate-400 py-2"><span className="max-md:hidden">Nothing logged today — say so by clicking + at right.</span><span className="md:hidden">Nothing logged today — add one with the + chips above.</span></div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="an RFI" testid="rfi-add-reason" />}
@@ -4019,7 +4112,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
         <DeliveryRowInline key={r.id} row={r} locked={locked}
           dailyReportId={dailyReportId} reload={reload} />
       ))}
-      {!rows.length && <div data-testid="deliveries-empty" className="text-xs text-slate-400 py-2">Nothing logged today — say so by clicking + at right.</div>}
+      {!rows.length && <div data-testid="deliveries-empty" className="text-xs text-slate-400 py-2"><span className="max-md:hidden">Nothing logged today — say so by clicking + at right.</span><span className="md:hidden">Nothing logged today — add one with the + chips above.</span></div>}
       <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
         {locked && <LockedAddReasonBlock value={addReason} onChange={setAddReason}
           eventLabel="a delivery" testid="delivery-add-reason" />}
@@ -4254,7 +4347,7 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
   return (
     <PanelShell icon={ImageIcon} title="Photos" testid="dr-photos-panel" count={rows.length} step={6}
       badge={
-        <label data-testid="photo-upload-label" className="ml-auto inline-block">
+        <label data-testid="photo-upload-label" className="ml-auto inline-block max-md:hidden">
           {/* pt.63 (2026-05-28): batch multi-select upload, no tagging step. */}
           <span className="sbtn sbtn-sm sbtn-primary cursor-pointer">
             <Upload className="h-3.5 w-3.5" /> {busy ? "Uploading…" : (locked ? "Upload photos (post-submit)" : "Upload photos")}
@@ -4269,6 +4362,20 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
         </div>
       )}
       <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 gap-2">
+        {/* MOBILE (mockup): dashed camera "Add" tile as the LAST grid cell
+            (order 9999); the header upload button is max-md:hidden. Same
+            onUpload handler, respects the locked flow. */}
+        {!busy && (
+          <label className="md:hidden aspect-square rounded-[10px] border border-dashed grid place-items-center cursor-pointer"
+            style={{ borderColor: "var(--v4-border-strong)", color: "var(--v4-fg-secondary)", order: 9999 }}
+            data-testid="photo-add-tile-m">
+            <span className="flex flex-col items-center gap-1">
+              <Upload className="h-5 w-5" />
+              <span className="text-[11px]">Add</span>
+            </span>
+            <input type="file" accept="image/*" multiple onChange={onUpload} className="hidden" />
+          </label>
+        )}
         {rows.map((p) => {
           const isPinned = pinned.has(p.id);
           return (
@@ -4607,11 +4714,13 @@ function AuditPanel({ rows, userLabels }) {
           onClick={() => setExpanded(true)}
           className="w-full flex items-center justify-between gap-3 text-left px-3 py-2 rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] transition"
         >
-          <span className="text-sm text-slate-300">
+          <span className="text-sm text-slate-300 max-md:hidden">
             {count === 0
               ? "No audit entries yet."
               : <><strong className="tabular-nums">{count}</strong> audit {count === 1 ? "entry" : "entries"} — click to expand</>}
           </span>
+          {/* mockup's one-line acc row on phones: just "Auto ▾" at right. */}
+          <span className="md:hidden text-xs" style={{ color: "var(--v4-fg-muted)" }}>Auto ▾</span>
           {count > 0 && <ChevronDown className="h-4 w-4 text-slate-400 -rotate-90 transition-transform" />}
         </button>
       ) : (
