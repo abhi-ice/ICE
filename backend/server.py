@@ -413,6 +413,7 @@ async def lifespan(app: FastAPI):
     # deployment ever runs more than one process. Best-effort: a cold DB at
     # boot must not block startup (flags just fall back to env until it loads).
     try:
+        import asyncio as _asyncio  # the shared alias is imported further down; this block runs first
         from services import runtime_settings as _rt
         await _rt.refresh_cache()
         logger.info("Runtime settings cache loaded")
