@@ -24,15 +24,26 @@ Truthy values (case-insensitive): "1", "true", "yes", "on". Anything else
 (including unset / empty) is OFF. Read live from os.environ on every call
 so a test can monkeypatch os.environ without re-importing, and so a deploy
 can flip the flag without a code change.
+
+UI settings (2026-07-02): admins now flip these from Settings -> Scheduling
+features, persisted in Mongo (services.runtime_settings). A flag an admin has
+touched wins over the env var -- true OR false -- so the UI is authoritative.
+A flag never touched in the UI falls back to the env var, which keeps every
+existing deployment and every env-monkeypatching test working unchanged.
 """
 from __future__ import annotations
 
 import os
 
+from services import runtime_settings
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _enabled(var_name: str) -> bool:
+    override = runtime_settings.flag_override(var_name)
+    if override is not None:
+        return override
     return (os.environ.get(var_name) or "").strip().lower() in _TRUTHY
 
 
@@ -80,3 +91,16 @@ def schedule_engine_for_project(project: dict) -> str:
     'impact_days' so a missing/legacy field is safe. Only consulted when
     enterprise_cpm_enabled() is True."""
     return "enterprise" if (project or {}).get("schedule_engine") == "enterprise" else "impact_days"
+
+
+def progress_recompute_enabled_for(project: dict) -> bool:
+    """Should a Daily Report end-of-day % change re-flow this project's
+    schedule? The mode2 (MS Project) and enterprise engines are progress-aware
+    natively, so a project on either recomputes unconditionally; the B2 flag
+    only gates the impact-days linear cascade (its original meaning). With all
+    three flags off this is False -- pre-B2 behavior, unchanged."""
+    return (
+        progress_cascade_enabled()
+        or (schedule_mode_2_enabled() and schedule_mode_for_project(project) == "mode2")
+        or (enterprise_cpm_enabled() and schedule_engine_for_project(project) == "enterprise")
+    )

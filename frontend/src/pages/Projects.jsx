@@ -36,6 +36,17 @@ const EMPTY_FORM = {
   // selected from the tenant-wide vendor central repo.
   subcontractor_ids: [],
   supplier_ids: [],
+  // Schedule engine dropdown (2026-07-02) -- one UI choice fans out to the
+  // backend pair {schedule_engine, schedule_mode} in submit().
+  engine_choice: "impact_days",
+};
+
+// MS Project file pipeline (2026-07-02) -- display labels for the locked
+// (read-only) engine row. Must mirror the <select> options in the dialog.
+const ENGINE_LABELS = {
+  impact_days: "ICE standard — impact days",
+  enterprise: "ICE Enterprise — advanced critical-path engine",
+  ms_project: "Microsoft Project — via the ICE connector",
 };
 
 // pt.44 (2026-05-27) — rebuilt vendor picker.
@@ -186,6 +197,15 @@ export default function Projects() {
   const [form, setForm] = useState(EMPTY_FORM);
   // Bucket D Fix E -- double-click guard.
   const [busy, setBusy] = useState(false);
+  // MS Project file pipeline (2026-07-02) -- the backend locks the engine
+  // pair once a project adopts enterprise or Microsoft Project (409 on any
+  // change). Recorded at openEdit so the dialog renders the engine read-only
+  // and submit() omits schedule_engine/schedule_mode entirely — otherwise
+  // every unrelated edit of a locked project would trip that 409.
+  const [engineLocked, setEngineLocked] = useState(false);
+  // Optional .mpp picked inline when choosing the Microsoft Project engine;
+  // uploaded right after the project itself saves.
+  const [mppFile, setMppFile] = useState(null);
   // 2026-02-XX (Abhi) -- subs + suppliers from central repo, loaded
   // once and reused across new + edit dialogs.
   const [subs, setSubs] = useState([]);
@@ -235,6 +255,8 @@ export default function Projects() {
   const openCreate = () => {
     setEditId(null);
     setForm(EMPTY_FORM);
+    setEngineLocked(false);
+    setMppFile(null);
     setOpen(true);
   };
 
@@ -260,7 +282,12 @@ export default function Projects() {
       calendar_basis: p.calendar_basis || "calendar_days",
       subcontractor_ids: p.subcontractor_ids || [],
       supplier_ids: p.supplier_ids || [],
+      engine_choice: p.schedule_mode === "mode2"
+        ? "ms_project"
+        : (p.schedule_engine === "enterprise" ? "enterprise" : "impact_days"),
     });
+    setEngineLocked(p.schedule_mode === "mode2" || p.schedule_engine === "enterprise");
+    setMppFile(null);
     setOpen(true);
   };
 
@@ -272,6 +299,17 @@ export default function Projects() {
         contract_value_usd: form.contract_value_usd ? Number(form.contract_value_usd) : null,
         contract_days: form.contract_days ? Number(form.contract_days) : null,
       };
+      // One dropdown -> the backend field pair. Selecting Microsoft Project
+      // resets schedule_engine (the enterprise branch outranks mode2 in
+      // get_engine_for); selecting an ICE engine resets mode to mode1.
+      // Locked projects (2026-07-02) omit the pair entirely — the backend
+      // 409s any engine change once adopted, and unrelated edits (name,
+      // address, vendors) must keep saving.
+      delete payload.engine_choice;
+      if (!engineLocked) {
+        payload.schedule_engine = form.engine_choice === "enterprise" ? "enterprise" : "impact_days";
+        payload.schedule_mode = form.engine_choice === "ms_project" ? "mode2" : "mode1";
+      }
       // Preserve subcontractor_ids / supplier_ids even when empty so
       // a user un-selecting everything actually clears the linkage.
       const ARRAY_KEEP = new Set(["subcontractor_ids", "supplier_ids"]);
@@ -279,16 +317,38 @@ export default function Projects() {
         if (ARRAY_KEEP.has(k)) return;
         if (payload[k] === "" || payload[k] === null) delete payload[k];
       });
+      let projectId = editId;
       if (editId) {
         await api.patch(`/projects/${editId}`, payload);
         toast.success("Project updated");
       } else {
-        await api.post("/projects", payload);
+        const { data: created } = await api.post("/projects", payload);
+        projectId = created?.id;
         toast.success("Project created");
+      }
+      // MS Project file pipeline (2026-07-02) -- the project saved; now hand
+      // off the chosen .mpp (if any). An upload failure must NOT roll back
+      // the save, so it only toasts.
+      if (!engineLocked && form.engine_choice === "ms_project" && projectId) {
+        if (mppFile) {
+          try {
+            const fd = new FormData();
+            fd.append("file", mppFile);
+            const { data: up } = await api.post(`/projects/${projectId}/ms-project/file`, fd);
+            toast.success(up?.auto_job ? "File uploaded — first sync queued." : "File uploaded.");
+          } catch (err) {
+            toast.error(err.response?.data?.detail
+              || "File upload failed — the project was saved. Upload again from the Tasks page.");
+          }
+        } else {
+          toast.info("Next step: upload your Microsoft Project file from the Tasks page to start syncing.");
+        }
       }
       setOpen(false);
       setEditId(null);
       setForm(EMPTY_FORM);
+      setEngineLocked(false);
+      setMppFile(null);
       load();
     } catch (e) {
       toast.error(e.response?.data?.detail?.[0]?.msg || e.response?.data?.detail || "Failed to save");
@@ -302,7 +362,7 @@ export default function Projects() {
           <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
           <p className="text-sm text-muted-foreground page-desc">All federal contracts in this tenant.</p>
         </div>
-        <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditId(null); setForm(EMPTY_FORM); } }}>
+        <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setEditId(null); setForm(EMPTY_FORM); setEngineLocked(false); setMppFile(null); } }}>
           <DialogTrigger asChild>
             {/* pt.40: page-header tier = sbtn-md (32px), no Plus icon. */}
             <button data-testid="new-project-button" onClick={openCreate} className="sbtn sbtn-md sbtn-primary">
@@ -436,6 +496,58 @@ export default function Projects() {
                   </div>
                 </div>
               </details>
+
+              {/* Schedule engine dropdown (2026-07-02) -- the one place a
+                  project picks who computes its schedule. No env vars, no
+                  database edits: the backend enables the matching feature
+                  gate automatically when an engine is chosen. */}
+              <div className="border-t border-border pt-3">
+                <FieldLabel optional className="field-label">Schedule engine</FieldLabel>
+                {engineLocked ? (
+                  /* Engine lock (2026-07-02) -- read-only once adopted; the
+                     backend rejects any change with a 409. */
+                  <div data-testid="np-schedule-engine-locked"
+                    className="w-full px-3 py-2 rounded border border-border bg-muted text-sm">
+                    <div>{ENGINE_LABELS[form.engine_choice] || form.engine_choice}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Locked — engine can&apos;t change once selected.
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <select data-testid="np-schedule-engine"
+                      value={form.engine_choice}
+                      onChange={(e) => setForm({ ...form, engine_choice: e.target.value })}
+                      className="w-full h-9 px-3 rounded border border-input bg-background">
+                      <option value="impact_days">ICE standard — impact days</option>
+                      <option value="enterprise">ICE Enterprise — advanced critical-path engine</option>
+                      <option value="ms_project">Microsoft Project — via the ICE connector</option>
+                    </select>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {form.engine_choice === "impact_days" && "The default engine. Delays push finish dates by their impact days."}
+                      {form.engine_choice === "enterprise" && "Full critical-path scheduling: late dates, float, constraints, longest path."}
+                      {form.engine_choice === "ms_project" && (
+                        <>Microsoft Project computes this schedule through the connector. Set it up once in <a href="/settings" className="text-emerald-600 hover:underline">Settings → Microsoft Project connector</a>.</>
+                      )}
+                    </p>
+                    {/* MS Project file pipeline (2026-07-02) -- optional inline
+                        .mpp so a new Mode-2 project starts syncing right away.
+                        Uploaded after the project saves; see submit(). */}
+                    {form.engine_choice === "ms_project" && (
+                      <div className="mt-2">
+                        <FieldLabel optional className="field-label">Microsoft Project file (.mpp)</FieldLabel>
+                        <input data-testid="np-mpp-file" type="file" accept=".mpp"
+                          onChange={(e) => setMppFile(e.target.files?.[0] || null)}
+                          className="block text-sm" />
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          ICE stores the file and starts the first sync automatically after
+                          upload. You can also upload it later from the Tasks page.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
 
               {/* pt.40: modal primary action -> sbtn-md (32px). */}
               <button data-testid="np-submit" onClick={submit} disabled={!form.name || busy} className="sbtn sbtn-md sbtn-primary">{busy ? "Saving…" : (editId ? "Save" : "Create")}</button>

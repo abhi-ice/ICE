@@ -30,7 +30,8 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import get_db, tenant_filter
-from models import gen_id
+from models import gen_id, pred_code, pred_relationship
+from services.feature_flags import schedule_mode_2_enabled
 from services.working_days import working_days_between
 
 # Job lifecycle.
@@ -102,11 +103,21 @@ async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
 async def _project_file_descriptor(db, tenant_id: str, project_id: str) -> dict:
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}),
-        {"_id": 0, "id": 1, "ms_project_file": 1},
+        {"_id": 0, "id": 1, "ms_project_file": 1, "ms_project_file_id": 1,
+         "ms_project_file_rev": 1, "ms_project_file_sha": 1},
     ) or {}
-    # ms_project_file (optional) lets an admin pin the expected .mpp FullName the
-    # worker must have open; absent -> worker uses its configured project file.
-    return {"logical_id": project_id, "expected_fullname": proj.get("ms_project_file")}
+    # ms_project_file (optional, legacy) lets an admin pin the expected .mpp
+    # FullName the worker must have open; absent -> worker uses its configured
+    # project file. File pipeline (2026-07-02): file_id/file_rev/file_sha
+    # describe the CURRENT hosted version -- when file_id is set the worker
+    # downloads it per job (verifying sha) instead of using a local file.
+    return {
+        "logical_id": project_id,
+        "expected_fullname": proj.get("ms_project_file"),
+        "file_id": proj.get("ms_project_file_id"),
+        "file_rev": proj.get("ms_project_file_rev"),
+        "file_sha": proj.get("ms_project_file_sha"),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -176,6 +187,75 @@ async def enqueue_pull_job(tenant_id, project_id, *, actor_id=None, request_id=N
     job = {
         "id": gen_id(), "tenant_id": tenant_id, "project_id": project_id, "seq": seq,
         "op": "pull", "status": PENDING, "change_set": None,
+        "project_file": await _project_file_descriptor(db, tenant_id, project_id),
+        "actor_id": actor_id, "request_id": request_id or gen_id(), "attempt": 0,
+        "issued_at": _now().isoformat(), "worker_id": None, "claimed_at": None,
+        "lease_expires_at": None, "result_status": None, "error": None,
+    }
+    await db.schedule_jobs.insert_one(job.copy())
+    return {"job_id": job["id"], "seq": seq}
+
+
+async def enqueue_create_job(tenant_id, project_id, *, actor_id=None, request_id=None) -> dict:
+    """Enqueue a CREATE: the worker builds a brand-new .mpp from ICE's tasks
+    (codes, dates, durations, links, milestones), uploads it as the project's
+    hosted file, then posts a push-style read-back so ingest stamps external
+    ids. Used when a mode2 project has tasks but no stored file yet."""
+    db = get_db()
+    seq = await _next_seq(db, tenant_id, project_id)
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "name": 1, "start_date": 1}) or {}
+    tasks = await db.tasks.find(
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        {"_id": 0, "activity_code": 1, "description": 1, "duration_days": 1,
+         "planned_start": 1, "planned_finish": 1, "is_milestone": 1, "predecessors": 1},
+    ).to_list(5000)
+    rows = []
+    for t in tasks:
+        code = t.get("activity_code")
+        if not code:
+            # A task without an activity_code can't be matched back on ingest
+            # (no Text1 key) -- leave it out of the generated file.
+            continue
+        preds = []
+        for p in (t.get("predecessors") or []):
+            # Same predecessor representation the rest of the codebase uses:
+            # pred_code/pred_relationship normalize legacy bare strings and
+            # partial dicts to (code, FS/SS/FF/SF, lag_days).
+            pcode = pred_code(p)
+            if not pcode:
+                continue
+            rel, lag = pred_relationship(p)
+            preds.append({"code": pcode, "type": rel, "lag_days": lag})
+        dur = t.get("duration_days")
+        try:
+            # int days for Project's Duration field; 0 stays 0 (milestones).
+            dur = int(round(float(dur))) if dur is not None else 1
+        except (TypeError, ValueError):
+            dur = 1
+        rows.append({
+            "activity_code": code,
+            "name": t.get("description") or code,
+            "duration_days": dur,
+            "planned_start": t.get("planned_start"),
+            "planned_finish": t.get("planned_finish"),
+            "is_milestone": bool(t.get("is_milestone")),
+            "predecessors": preds,
+        })
+    rows.sort(key=lambda r: (r["planned_start"] is None, str(r["planned_start"] or "")))
+    start = proj.get("start_date")
+    if not start:
+        starts = [r["planned_start"] for r in rows if r["planned_start"]]
+        start = min(starts) if starts else None
+    job = {
+        "id": gen_id(), "tenant_id": tenant_id, "project_id": project_id, "seq": seq,
+        "op": "create", "status": PENDING,
+        "change_set": {
+            "project": {"name": proj.get("name"),
+                        "start_date": (str(start)[:10] if start else None)},
+            "tasks": rows,
+        },
         "project_file": await _project_file_descriptor(db, tenant_id, project_id),
         "actor_id": actor_id, "request_id": request_id or gen_id(), "attempt": 0,
         "issued_at": _now().isoformat(), "worker_id": None, "claimed_at": None,
@@ -262,6 +342,23 @@ async def record_result(payload: dict) -> dict:
     status = payload.get("status")
     tenant_id, project_id, seq = job["tenant_id"], job["project_id"], int(job.get("seq", 0))
 
+    # ENGINE FENCE (file pipeline, 2026-07-02): if the project is no longer on
+    # mode2 by the time the result lands (project deleted counts too), OR an
+    # admin turned the Microsoft Project connector OFF in Settings (the global
+    # FF_SCHEDULE_MODE_2 kill-switch), the result belongs to an engine that no
+    # longer drives this project. Finalize quietly -- no ingest, no sync-state
+    # writes -- so a late worker postback can't touch it.
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "schedule_mode": 1, "ms_project_file_id": 1, "ms_project_file_rev": 1},
+    ) or {}
+    if not (schedule_mode_2_enabled() and proj.get("schedule_mode") == "mode2"):
+        await db.schedule_jobs.update_one(
+            {"id": job_id},
+            {"$set": {"status": DONE, "result_status": "skipped_engine_changed",
+                      "finished_at": _now().isoformat()}})
+        return {"ok": True, "skipped": "engine_changed"}
+
     if status == "conflict":
         # Project was edited outside ICE since our last sync (rowversion moved).
         # Do NOT overwrite Project. Flag a project-level conflict; the PM runs a
@@ -280,7 +377,63 @@ async def record_result(payload: dict) -> dict:
             {"id": job_id},
             {"$set": {"status": ERROR, "result_status": status,
                       "error": payload.get("error"), "finished_at": _now().isoformat()}})
+        # SELF-HEAL (file pipeline, 2026-07-02): 'file_upload_rejected' means
+        # the worker's file POST hit a superseded-base fence (a user uploaded
+        # a newer version mid-job). For a PUSH that just means our actuals
+        # never landed in the NEW file -- re-enqueue a fresh push against the
+        # current version (fresh descriptor). Create/pull results are moot
+        # against the new file: no re-enqueue.
+        err = payload.get("error") or {}
+        if (job.get("op") == "push" and isinstance(err, dict)
+                and err.get("code") == "file_upload_rejected"):
+            requeued = await enqueue_push_job(tenant_id, project_id, actor_id=job.get("actor_id"))
+            return {"ok": True, "reason": "worker_error_recorded",
+                    "requeued_job_id": requeued["job_id"]}
         return {"ok": True, "reason": "worker_error_recorded"}
+
+    # REV GUARD (file pipeline, 2026-07-02; hosted mode only): the result was
+    # computed against the file version the job carried. If the stored file
+    # moved on since (a user re-uploaded mid-job), those numbers describe a
+    # stale file -- skip the ingest and immediately re-enqueue a push so the
+    # sync self-heals against the NEW version. Allowance: the worker's own
+    # file upload during THIS job bumps the rev too (files row stamped with
+    # this job_id) -- that one is exactly what we want to ingest.
+    pf = job.get("project_file") or {}
+    if job.get("op") == "create":
+        # CREATE REV GUARD (file pipeline, 2026-07-02): a create job's ok
+        # result may only be ingested when the CURRENT files row was uploaded
+        # by THIS job. Anything else means a real file landed some other way
+        # (user upload won the race, or the worker never uploaded) -- the
+        # generated numbers describe a file that isn't the project's file.
+        # Finalize DONE without re-enqueue: a real file exists, generation is
+        # moot (the upload path already queued its own first sync).
+        cur_row = None
+        if proj.get("ms_project_file_id"):
+            cur_row = await db.files.find_one(
+                tenant_filter(tenant_id, {"id": proj["ms_project_file_id"]}),
+                {"_id": 0, "job_id": 1})
+        if (cur_row or {}).get("job_id") != job_id:
+            await db.schedule_jobs.update_one(
+                {"id": job_id},
+                {"$set": {"status": DONE, "result_status": "stale_file_rev",
+                          "finished_at": _now().isoformat()}})
+            return {"ok": True, "reason": "stale_file_rev"}
+    elif pf.get("file_id"):
+        cur_row = None
+        if proj.get("ms_project_file_id"):
+            cur_row = await db.files.find_one(
+                tenant_filter(tenant_id, {"id": proj["ms_project_file_id"]}),
+                {"_id": 0, "job_id": 1})
+        allowed = (proj.get("ms_project_file_rev") == pf.get("file_rev")
+                   or (cur_row or {}).get("job_id") == job_id)
+        if not allowed:
+            await db.schedule_jobs.update_one(
+                {"id": job_id},
+                {"$set": {"status": DONE, "result_status": "stale_file_rev",
+                          "finished_at": _now().isoformat()}})
+            requeued = await enqueue_push_job(tenant_id, project_id, actor_id=job.get("actor_id"))
+            return {"ok": True, "reason": "stale_file_rev",
+                    "requeued_job_id": requeued["job_id"]}
 
     # Watermark: reject a stale/out-of-order result (a newer push already landed).
     wm = await db.schedule_job_watermark.find_one(
@@ -295,9 +448,11 @@ async def record_result(payload: dict) -> dict:
     ingested = 0
     proposal_id = None
     tasks_payload = payload.get("tasks") or []
-    if job.get("op") in ("push", "pull"):
-        # Both push read-back and pull carry Project's COMPUTED dates; ingest
-        # them into our existing tasks (ICE-owned actuals are never touched).
+    if job.get("op") in ("push", "pull", "create"):
+        # Push read-back, pull, and create read-back all carry Project's
+        # COMPUTED dates; ingest them into our existing tasks (ICE-owned
+        # actuals are never touched). A create's file upload already happened
+        # via the worker file endpoint before this postback.
         ingested = await _ingest_push_tasks(
             db, tenant_id, project_id, tasks_payload,
             project_rowversion=payload.get("project_rowversion"),

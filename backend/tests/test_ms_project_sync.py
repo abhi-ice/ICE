@@ -9,6 +9,8 @@ import os
 import sys
 import types
 
+import pytest
+
 _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
@@ -110,12 +112,32 @@ _audit.write_audit = _noop
 sys.modules["audit"] = _audit
 
 from services import ms_project_sync as mps  # noqa: E402
+from services import runtime_settings as rs  # noqa: E402
+
+# A sibling test module may have imported ms_project_sync first, binding its
+# get_db to a DIFFERENT stub -- rebind so this module's _STUB always wins here.
+mps.get_db = _dbmod.get_db
 
 T, P = "t1", "p1"
 
 
+@pytest.fixture(autouse=True)
+def _mode2_connector_on(monkeypatch):
+    """record_result's engine fence requires the GLOBAL FF_SCHEDULE_MODE_2
+    switch on top of the project's schedule_mode='mode2' -- turn it on for
+    every test in THIS module. monkeypatch restores the env after each test,
+    so nothing leaks into other test files. The runtime-settings cache is
+    emptied too (and restored) so a UI override can never shadow the env
+    fallback these tests rely on."""
+    monkeypatch.setattr(rs, "_cache", {})
+    monkeypatch.setenv("FF_SCHEDULE_MODE_2", "1")
+
+
 def _seed_project():
-    _STUB.projects.rows.append({"id": P, "tenant_id": T, "ms_project_file": None})
+    # schedule_mode="mode2" matches reality (jobs only exist for mode2
+    # projects) and keeps record_result's engine fence open.
+    _STUB.projects.rows.append({"id": P, "tenant_id": T, "name": "Proj P1",
+                                "ms_project_file": None, "schedule_mode": "mode2"})
 
 
 def _seed_task(code, ps, pf):
@@ -371,3 +393,254 @@ def test_last_known_summary():
     }))
     s = asyncio.run(mps.last_known_summary(T, P))
     assert s and s["project_finish"] == "2026-02-01" and s["critical_count"] == 4
+
+
+# --------------------------------------------------------------------------
+# File pipeline (2026-07-02) -- create-job snapshot + ingest guards.
+# --------------------------------------------------------------------------
+def _project_row():
+    return next(r for r in _STUB.projects.rows if r["id"] == P)
+
+
+def test_enqueue_create_job_snapshot_shape():
+    _reset()
+    # Rich rows: dict + legacy bare-string predecessors, a milestone, and a
+    # no-code task that must be skipped. Deliberately seeded out of date order.
+    _STUB.tasks.rows.append({
+        "id": "task-B", "tenant_id": T, "project_id": P, "activity_code": "B",
+        "status": "in_progress", "description": "Cure", "duration_days": 3.0,
+        "planned_start": "2026-01-12", "planned_finish": "2026-01-14",
+        "is_milestone": False,
+        "predecessors": [{"code": "A", "type": "SS", "lag_days": 2}]})
+    _STUB.tasks.rows.append({
+        "id": "task-A", "tenant_id": T, "project_id": P, "activity_code": "A",
+        "status": "in_progress", "description": "Pour", "duration_days": None,
+        "planned_start": "2026-01-05", "planned_finish": "2026-01-09",
+        "is_milestone": False, "predecessors": ["0"]})  # legacy bare string
+    _STUB.tasks.rows.append({
+        "id": "task-M", "tenant_id": T, "project_id": P, "activity_code": "M",
+        "status": "not_started", "description": None, "duration_days": 0,
+        "planned_start": "2026-01-20", "planned_finish": "2026-01-20",
+        "is_milestone": True, "predecessors": []})
+    _STUB.tasks.rows.append({
+        "id": "task-nocode", "tenant_id": T, "project_id": P, "activity_code": None,
+        "status": "in_progress", "description": "orphan",
+        "planned_start": "2026-01-02", "planned_finish": "2026-01-03"})
+    out = asyncio.run(mps.enqueue_create_job(T, P, actor_id="u"))
+    assert out["seq"] == 1
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    assert job["op"] == "create" and job["status"] == "pending"
+    cs = job["change_set"]
+    # project header: name + start_date (no project start_date seeded -> min
+    # planned_start of the included tasks)
+    assert cs["project"] == {"name": "Proj P1", "start_date": "2026-01-05"}
+    # no-code task skipped; rest ordered by planned_start
+    assert [r["activity_code"] for r in cs["tasks"]] == ["A", "B", "M"]
+    a, b, m = cs["tasks"]
+    assert a["name"] == "Pour" and a["duration_days"] == 1  # None -> default 1
+    assert a["predecessors"] == [{"code": "0", "type": "FS", "lag_days": 0}]
+    assert b["duration_days"] == 3
+    assert b["predecessors"] == [{"code": "A", "type": "SS", "lag_days": 2}]
+    assert m["name"] == "M"  # description fallback
+    assert m["is_milestone"] is True and m["duration_days"] == 0  # 0 stays 0
+
+
+def test_create_result_ingests_like_push_readback():
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    asyncio.run(mps.enqueue_create_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["create"]))
+    assert claimed["op"] == "create"
+    # The worker uploaded the generated file BEFORE posting results, so the
+    # CURRENT files row carries this job's id -- exactly what the create rev
+    # guard requires for the ingest to be allowed.
+    _seed_hosted_file("f-gen", 1, job_id=claimed["id"])
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "project_rowversion": "rev-1#abc",
+        "tasks": [{"text1": "A", "unique_id": 7, "start": "2026-01-05",
+                   "finish": "2026-01-09", "critical": False, "total_slack_days": 2}]}))
+    assert out["ok"] and out["ingested"] == 1
+    a = next(t for t in _STUB.tasks.rows if t["activity_code"] == "A")
+    assert a["external_task_id"] == 7 and a["external_system"] == "ms_project"
+
+
+def test_engine_fence_skips_result_when_project_left_mode2():
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    asyncio.run(mps.enqueue_push_job(T, P))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["push"]))
+    _project_row()["schedule_mode"] = "mode1"  # engine changed mid-flight
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "project_rowversion": "rvX",
+        "tasks": [{"text1": "A", "unique_id": 1, "start": "2026-01-07",
+                   "finish": "2026-01-20", "critical": True, "total_slack_days": 0}]}))
+    assert out == {"ok": True, "skipped": "engine_changed"}
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == claimed["id"])
+    assert job["status"] == "done" and job["result_status"] == "skipped_engine_changed"
+    a = next(t for t in _STUB.tasks.rows if t["activity_code"] == "A")
+    assert a.get("projected_finish_date") is None  # not ingested
+    assert _STUB.ms_project_sync_state.rows == []  # sync state untouched
+
+
+def _seed_hosted_file(file_id, rev, *, job_id=None):
+    proj = _project_row()
+    proj["ms_project_file_id"] = file_id
+    proj["ms_project_file_rev"] = rev
+    proj["ms_project_file_sha"] = "a" * 12
+    _STUB.files.rows.append({"id": file_id, "tenant_id": T, "project_id": P,
+                             "rev": rev, "job_id": job_id})
+
+
+def test_stale_file_rev_skips_ingest_and_reenqueues_push():
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_hosted_file("f1", 1)
+    asyncio.run(mps.enqueue_push_job(T, P))  # descriptor carries file_rev 1
+    claimed = asyncio.run(mps.claim_next_job("w1", ["push"]))
+    assert claimed["project_file"]["file_id"] == "f1"
+    assert claimed["project_file"]["file_rev"] == 1
+    # A user re-uploads mid-job: rev bumps to 2 with NO job_id on the row.
+    _seed_hosted_file("f2", 2)
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "tasks": [{"text1": "A", "unique_id": 1, "start": "2026-01-07",
+                   "finish": "2026-01-20", "critical": True, "total_slack_days": 0}]}))
+    assert out["reason"] == "stale_file_rev" and out["requeued_job_id"]
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == claimed["id"])
+    assert job["status"] == "done" and job["result_status"] == "stale_file_rev"
+    a = next(t for t in _STUB.tasks.rows if t["activity_code"] == "A")
+    assert a.get("projected_finish_date") is None  # not ingested
+    # self-heal: a fresh push job is pending against the NEW file version
+    fresh = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["requeued_job_id"])
+    assert fresh["status"] == "pending" and fresh["op"] == "push"
+    assert fresh["project_file"]["file_rev"] == 2
+
+
+def test_self_uploaded_rev_bump_still_ingests():
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_hosted_file("f1", 1)
+    asyncio.run(mps.enqueue_push_job(T, P))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["push"]))
+    # The WORKER's own file upload during this job bumped the rev: the new
+    # files row carries this job's id, so the rev guard must let it through.
+    _seed_hosted_file("f2", 2, job_id=claimed["id"])
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "project_rowversion": "rev-2#bbbbbbbbbbbb",
+        "tasks": [{"text1": "A", "unique_id": 1, "start": "2026-01-07",
+                   "finish": "2026-01-14", "critical": True, "total_slack_days": 0}]}))
+    assert out["ok"] and out["ingested"] == 1
+    a = next(t for t in _STUB.tasks.rows if t["activity_code"] == "A")
+    assert a["projected_finish_date"] == "2026-01-14"
+
+
+def test_flag_off_skips_ingest_even_for_mode2_project(monkeypatch):
+    # An admin turning the connector OFF in Settings (global kill-switch) must
+    # stop ingest for ALL projects, even ones still marked schedule_mode=mode2.
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    asyncio.run(mps.enqueue_push_job(T, P))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["push"]))
+    monkeypatch.delenv("FF_SCHEDULE_MODE_2", raising=False)  # connector OFF
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "project_rowversion": "rvX",
+        "tasks": [{"text1": "A", "unique_id": 1, "start": "2026-01-07",
+                   "finish": "2026-01-20", "critical": True, "total_slack_days": 0}]}))
+    assert out == {"ok": True, "skipped": "engine_changed"}
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == claimed["id"])
+    assert job["status"] == "done" and job["result_status"] == "skipped_engine_changed"
+    a = next(t for t in _STUB.tasks.rows if t["activity_code"] == "A")
+    assert a.get("projected_finish_date") is None  # not ingested
+    assert _STUB.ms_project_sync_state.rows == []  # sync state untouched
+
+
+def test_create_result_stale_when_upload_won_and_not_reenqueued():
+    # CREATE REV GUARD: a user upload became the current file mid-generation
+    # (files row has NO job_id). The generated numbers describe a file the
+    # project doesn't use -- skip the ingest, finalize done, and do NOT
+    # re-enqueue (a real file exists; the upload queued its own first sync).
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    asyncio.run(mps.enqueue_create_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["create"]))
+    _seed_hosted_file("f-user", 1)  # user upload, no job_id on the row
+    n_jobs = len(_STUB.schedule_jobs.rows)
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "tasks": [{"text1": "A", "unique_id": 1, "start": "2026-01-07",
+                   "finish": "2026-01-20", "critical": True, "total_slack_days": 0}]}))
+    assert out == {"ok": True, "reason": "stale_file_rev"}
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == claimed["id"])
+    assert job["status"] == "done" and job["result_status"] == "stale_file_rev"
+    a = next(t for t in _STUB.tasks.rows if t["activity_code"] == "A")
+    assert a.get("projected_finish_date") is None  # not ingested
+    assert len(_STUB.schedule_jobs.rows) == n_jobs  # NO re-enqueue
+
+
+def test_create_result_stale_when_no_file_stored_at_all():
+    # Worker posted an ok create result but never uploaded the file (its file
+    # POST failed permanently): nothing to ingest against -- stale, no requeue.
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    asyncio.run(mps.enqueue_create_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["create"]))
+    n_jobs = len(_STUB.schedule_jobs.rows)
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "tasks": [{"text1": "A", "unique_id": 1, "start": "2026-01-07",
+                   "finish": "2026-01-20", "critical": True, "total_slack_days": 0}]}))
+    assert out == {"ok": True, "reason": "stale_file_rev"}
+    assert len(_STUB.schedule_jobs.rows) == n_jobs
+
+
+def test_file_upload_rejected_push_error_reenqueues_fresh_push():
+    # SELF-HEAL: the worker's file POST was fenced off (a user uploaded a
+    # newer version mid-push) and it posted error code 'file_upload_rejected'.
+    # After recording the error, a FRESH push job (descriptor = the CURRENT
+    # file) is auto-enqueued so ICE's actuals land in the new file.
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_hosted_file("f1", 1)
+    asyncio.run(mps.enqueue_push_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["push"]))
+    _seed_hosted_file("f2", 2)  # the mid-job user upload
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "error",
+        "error": {"code": "file_upload_rejected",
+                  "message": "A newer file version was uploaded while this sync ran."}}))
+    assert out["reason"] == "worker_error_recorded" and out["requeued_job_id"]
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == claimed["id"])
+    assert job["status"] == "error"
+    assert job["error"]["code"] == "file_upload_rejected"
+    fresh = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["requeued_job_id"])
+    assert fresh["status"] == "pending" and fresh["op"] == "push"
+    assert fresh["project_file"]["file_id"] == "f2"  # fresh descriptor
+    assert fresh["project_file"]["file_rev"] == 2
+    assert fresh["actor_id"] == "u"
+
+
+def test_file_upload_rejected_create_and_pull_not_reenqueued():
+    # Create/pull with 'file_upload_rejected': the uploaded file made the job
+    # moot -- record the error, nothing re-enqueued.
+    _reset(); _seed_task("A", "2026-01-05", "2026-01-09")
+    asyncio.run(mps.enqueue_create_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["create"]))
+    n_jobs = len(_STUB.schedule_jobs.rows)
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "error",
+        "error": {"code": "file_upload_rejected", "message": "upload won"}}))
+    assert out == {"ok": True, "reason": "worker_error_recorded"}
+    assert len(_STUB.schedule_jobs.rows) == n_jobs
+    asyncio.run(mps.enqueue_pull_job(T, P, actor_id="u"))
+    claimed2 = asyncio.run(mps.claim_next_job("w1", ["pull"]))
+    n_jobs = len(_STUB.schedule_jobs.rows)
+    out2 = asyncio.run(mps.record_result({
+        "job_id": claimed2["id"], "seq": claimed2["seq"], "status": "error",
+        "error": {"code": "file_upload_rejected", "message": "upload won"}}))
+    assert "requeued_job_id" not in out2
+    assert len(_STUB.schedule_jobs.rows) == n_jobs
+    # other worker error codes on a push don't self-heal either
+    asyncio.run(mps.enqueue_push_job(T, P, actor_id="u"))
+    claimed3 = asyncio.run(mps.claim_next_job("w1", ["push"]))
+    n_jobs = len(_STUB.schedule_jobs.rows)
+    out3 = asyncio.run(mps.record_result({
+        "job_id": claimed3["id"], "seq": claimed3["seq"], "status": "error",
+        "error": {"code": "ProjectError", "message": "modal dialog"}}))
+    assert "requeued_job_id" not in out3
+    assert len(_STUB.schedule_jobs.rows) == n_jobs

@@ -84,6 +84,7 @@ from routers.recovery_reports_router import router as recovery_reports_router  #
 from routers.vendors_router import router as vendors_router  # noqa: E402
 from routers.exhibit_exports_router import router as exhibit_exports_router  # noqa: E402
 from routers.ms_project_internal_router import router as ms_project_internal_router  # noqa: E402
+from routers.admin_settings_router import router as admin_settings_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -407,6 +408,26 @@ async def _ensure_indexes():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await _ensure_indexes()
+    # UI runtime settings (2026-07-02): load the admin-set flags + worker token
+    # into the in-process cache, and keep it converging every 30s in case this
+    # deployment ever runs more than one process. Best-effort: a cold DB at
+    # boot must not block startup (flags just fall back to env until it loads).
+    try:
+        from services import runtime_settings as _rt
+        await _rt.refresh_cache()
+        logger.info("Runtime settings cache loaded")
+
+        async def _rt_refresh_loop():
+            while True:
+                await _asyncio.sleep(30)
+                try:
+                    await _rt.refresh_cache()
+                except Exception:
+                    pass
+
+        app.state.runtime_settings_refresh_task = _asyncio.create_task(_rt_refresh_loop())
+    except Exception as e:
+        logger.warning("Runtime settings cache load failed (env fallback active): %s", e)
     # Followup-fix (2026-05-08): bcrypt runtime self-test. Hashes + verifies
     # a known string at boot. If this fails, EVERY user is about to be
     # locked out -- the deploy log will scream about it instead of the
@@ -697,6 +718,7 @@ async def lifespan(app: FastAPI):
         "field_suggestions_expire_task",
         "submittal_sla_breach_task",
         "friday_recovery_task",
+        "runtime_settings_refresh_task",
     ):
         task = getattr(app.state, attr, None)
         if task and not task.done():
@@ -791,6 +813,7 @@ api_router.include_router(recovery_reports_router)
 api_router.include_router(vendors_router)
 api_router.include_router(exhibit_exports_router)
 api_router.include_router(ms_project_internal_router)
+api_router.include_router(admin_settings_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

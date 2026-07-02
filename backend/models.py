@@ -241,6 +241,9 @@ class ProjectCreate(StrictModel):
     # defaulted so a project created without them stays on the impact-days
     # engine and is unaffected. Only consulted when FF_ENTERPRISE_CPM is on.
     schedule_engine: ScheduleEngineKind = "impact_days"
+    # UI engine dropdown (2026-07-02) -- selectable at creation too, so a
+    # project can start life on the Microsoft Project connector.
+    schedule_mode: Literal["mode1", "mode2"] = "mode1"
     data_date: Optional[date] = None
     imposed_finish_date: Optional[date] = None
     out_of_sequence_mode: OutOfSequenceMode = "retained_logic"
@@ -285,6 +288,10 @@ class ProjectUpdate(StrictModel):
     # knob: set schedule_engine="enterprise" (with FF_ENTERPRISE_CPM on) to
     # move one project onto the enterprise engine.
     schedule_engine: Optional[ScheduleEngineKind] = None
+    # UI engine dropdown (2026-07-02) -- schedule_mode is now patchable too,
+    # so the Projects dialog's single "Schedule engine" select can move a
+    # project onto Microsoft Project (mode2) or back, no env/db edits.
+    schedule_mode: Optional[Literal["mode1", "mode2"]] = None
     data_date: Optional[date] = None
     imposed_finish_date: Optional[date] = None
     out_of_sequence_mode: Optional[OutOfSequenceMode] = None
@@ -350,6 +357,17 @@ class Project(ReadModel):
     # Only consulted when FF_SCHEDULE_MODE_2 is on; a missing/legacy value is
     # treated as "mode1" (see services.feature_flags.schedule_mode_for_project).
     schedule_mode: Literal["mode1", "mode2"] = "mode1"
+    # MS Project file pipeline (2026-07-02) -- the project's .mpp lives IN ICE
+    # (object storage; db.files rows with kind='msp', one NEW row per version).
+    # These pointer fields track the CURRENT version. Server-managed only: the
+    # upload/generate/worker-file endpoints write them; ProjectCreate/
+    # ProjectUpdate intentionally do NOT accept them. The legacy ms_project_file
+    # local-path pin (a raw doc field) stays supported as a worker fallback.
+    ms_project_file_id: Optional[str] = None        # db.files id of the CURRENT version
+    ms_project_file_name: Optional[str] = None      # original filename shown in UI
+    ms_project_file_rev: Optional[int] = None       # starts at 1, +1 per new version
+    ms_project_file_updated_at: Optional[str] = None
+    ms_project_file_source: Optional[str] = None    # 'upload' | 'worker_push' | 'generated'
     # Enterprise CPM ("Diagram 2", 2026-06-29) -- which of OUR engines runs.
     # DISTINCT from schedule_mode (who computes: us vs MS Project);
     # schedule_engine chooses which of OUR engines (impact-days vs enterprise).
