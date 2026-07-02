@@ -399,6 +399,35 @@ def parse_wire_date(value):
         return None
 
 
+def set_com_morning(obj, prop, d, label):
+    """Set a Project date property to 8:00 AM LOCAL on date `d` — the start of
+    the standard working day. Neither obvious approach survives every machine:
+    a naive datetime goes through pywin32's timezone conversion and lands
+    hours off (observed: 8:00 stored as noon, so the task started after
+    lunch and every finish DATE rounded a day late), and Project only parses
+    STRINGS that match the machine's regional date format (ISO was rejected
+    outright on a US-locale box). So: try locale-style then ISO strings, and
+    accept a candidate only when the value READ BACK is on the intended date
+    (a mis-parsed month/day swap fails that check); fall back to the naive
+    datetime as a last resort. Returns True when something stuck."""
+    target = d.strftime("%Y-%m-%d")
+    candidates = (
+        d.strftime("%m/%d/%Y") + " 8:00 AM",   # US regional format
+        d.strftime("%d/%m/%Y") + " 08:00",     # day-first regional format
+        target + " 08:00",                      # ISO
+        datetime(d.year, d.month, d.day, 8, 0), # tz-shift-prone last resort
+    )
+    for cand in candidates:
+        try:
+            setattr(obj, prop, cand)
+        except Exception:
+            continue
+        if com_date_str(getattr(obj, prop, None)) == target:
+            return True
+    log.warning("could not set %s to %s in any supported format", label, target)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Microsoft Project COM session.
 # ---------------------------------------------------------------------------
@@ -477,10 +506,8 @@ class MsProject:
             raise RuntimeError("Microsoft Project could not create a new project")
         start = parse_wire_date(start_date)
         if start is not None:
-            try:
-                self.proj.ProjectStart = start.replace(hour=8)
-            except Exception as exc:
-                log.warning("could not set the new project's start date: %s", exc)
+            set_com_morning(self.proj, "ProjectStart", start,
+                            "the new project's start date")
         return self.proj
 
     def recalc(self):
@@ -711,10 +738,12 @@ class MsProject:
                 if start is not None:
                     try:
                         t.ConstraintType = PJ_SNET
-                        t.ConstraintDate = start.replace(hour=8)
                     except Exception as exc:
                         log.warning("could not set the start constraint on "
                                     "'%s': %s", code, exc)
+                    else:
+                        set_com_morning(t, "ConstraintDate", start,
+                                        f"start constraint on '{code}'")
             by_code[code] = t
         # Second pass: links, once every endpoint task exists.
         for spec in task_specs or []:
