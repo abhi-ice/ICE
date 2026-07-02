@@ -1946,6 +1946,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         daily_report_id: dailyReportId,
       });
       reload();
+      // mobile: a successful save collapses the entry table back to the
+      // "Add crew" ghost (the saved crew shows as a card above).
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches) setMEntryOpen(false);
       return true;
     } catch (e) {
       toast.error(e.response?.data?.detail || "Add failed");
@@ -1974,6 +1977,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       setDrafts([]);
       draftIdsRef.current = [];
       setDraftsCount(0);
+      // mobile: collapse the entry table back to the "Add crew" ghost —
+      // the saved crew renders as a display card above.
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches) setMEntryOpen(false);
     } else {
       toast.error("Type a trade first, or click the trash icon to discard the empty row.");
     }
@@ -2753,6 +2759,8 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
       setUnplanned({ description: "", trade_code: "", duration_days: 1 });
       if (locked) { setAddReason(""); toast.success("Unplanned activity created (post-submit). Audit chain captured."); }
       else toast.success("Unplanned activity created — flagged for PM review.");
+      // mobile: collapse back to the ghost after a successful create.
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 767.98px)").matches) setMUnplannedOpen(false);
       reload();
     } catch (e) {
       if (!handleLockedAddError(e, "activity")) {
@@ -3139,6 +3147,21 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
 
   const eventsTotal = (delays || []).length + (safetyEvents || []).length
     + (qcIssues || []).length + (rfis || []).length + (deliveries || []).length;
+
+  // MOBILE (user request): after a successful log of ANY kind the open
+  // panel/form closes and the page returns to chips + feed. Detected as an
+  // events-count increase while a tab is open — one hook covers all five
+  // kind panels without touching their internals. Desktop unaffected.
+  const prevEventsTotalRef = useRef(eventsTotal);
+  useEffect(() => {
+    const prev = prevEventsTotalRef.current;
+    prevEventsTotalRef.current = eventsTotal;
+    if (eventsTotal > prev && activeTab
+        && typeof window !== "undefined"
+        && window.matchMedia("(max-width: 767.98px)").matches) {
+      setActiveTab("");
+    }
+  }, [eventsTotal, activeTab]);
 
   // Mobile unified feed (approved mockup) -- every event kind merged into
   // one newest-first card list. Desktop never renders it (md:hidden), and
