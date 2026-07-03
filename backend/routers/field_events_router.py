@@ -612,8 +612,20 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     # always supplies resolved_date from a date picker prefilled with the
     # user's LOCAL today, so the field arrives correct. Resolved_by we
     # still stamp here because it isn't user-input.
-    if updates.get("status") == "resolved":
-        if "resolved_by_user_id" not in updates:
+    # Part L-3 extension (2026-07-03): the stamp block below ALSO fires on
+    # a resolved_date CORRECTION against an already-resolved delay -- the
+    # frontend doesn't re-send status on a date-only edit, so the old
+    # `status == "resolved"` guard alone left a stale actual_impact_days
+    # behind. The recompute later in this handler then carries the moved
+    # actual into the schedule engine (a Mode-2 project pushes the new
+    # number on its next sync).
+    _resolving_now = updates.get("status") == "resolved"
+    _resolved_date_edit = (
+        "resolved_date" in updates
+        and updates.get("status", before.get("status")) == "resolved"
+    )
+    if _resolving_now or _resolved_date_edit:
+        if _resolving_now and "resolved_by_user_id" not in updates:
             updates["resolved_by_user_id"] = ctx["user"]["id"]
         # CPM Part L-3 (2026-05-16) -- capture actual_impact_days at
         # resolution time. Computed as working_days_between(
@@ -633,11 +645,13 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
         #   * resolved < logged: negative, but working_days_between
         #     handles that via -recursion. Clamp to 0 since "negative
         #     actual impact" is nonsense.
-        #   * D7 -- once stamped, actual_impact_days is FINAL. A
-        #     subsequent edit of resolved_date triggers re-computation
-        #     here (this branch fires whenever status=resolved is in
-        #     the PATCH); a transition OUT of resolved leaves the
-        #     stamp alone (audit trail).
+        #   * D7 -- once stamped, actual_impact_days follows the
+        #     resolved_date: a subsequent edit of resolved_date triggers
+        #     re-computation here (this branch fires whenever
+        #     status=resolved is in the PATCH, and since 2026-07-03 also
+        #     when resolved_date is patched while the delay stays
+        #     resolved); a transition OUT of resolved leaves the stamp
+        #     alone (audit trail).
         try:
             from services.working_days import working_days_between
             from datetime import date as _date

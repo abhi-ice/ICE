@@ -506,6 +506,10 @@ def test_worker_get_streams_bytes_with_sha_and_rev_headers():
     assert resp.body == body
     assert resp.headers["x-file-sha"] == _sha12(body)
     assert resp.headers["x-file-rev"] == "1"
+    # 2026-07-03: the worker learns how this version got here (fallback for
+    # jobs whose descriptor predates file_source) -- an 'upload' base makes
+    # a push reset its in-file impact ledger first.
+    assert resp.headers["x-file-source"] == "upload"
 
 
 def test_worker_post_409_unclaimed_and_422_on_sha_mismatch():
@@ -551,6 +555,40 @@ def test_worker_post_create_job_records_source_generated():
     proj = _project_row()
     assert proj["ms_project_file_source"] == "generated"
     assert proj["ms_project_file_name"] == "Alpha.mpp"  # derived from project name
+
+
+def test_generated_rev1_store_never_stamps_adoption():
+    # ADOPTION GATE (2026-07-03): a GENERATED file is built from ICE's
+    # planned dates -- it contains zero impact history, so even as rev 1 it
+    # must NOT stamp ms_project_file_adopted_at. Pre-generation delays keep
+    # contributing in full on the next push (gate stays off).
+    _seed_project()
+    _seed_claimed_job("j1", op="create")
+    run(mir.worker_upload_file("j1", _Req(b"generated"),
+                               x_file_sha=_sha12(b"generated"),
+                               _w={"worker": True}))
+    assert _project_row().get("ms_project_file_adopted_at") is None
+
+
+def test_upload_stamps_adoption_at_any_rev_worker_push_never():
+    # ADOPTION GATE (2026-07-03): EVERY user upload re-baselines what the
+    # file's plan already reflects, so the stamp moves on each upload (not
+    # just rev 1); a worker_push version (ICE's own ledgered change) never
+    # touches it.
+    _seed_project()
+    run(mir.upload_ms_project_file(P, _upload("plan.mpp", b"v1"), CTX))
+    first = _project_row().get("ms_project_file_adopted_at")
+    assert first  # rev 1 upload stamped
+    # worker_push (rev 2) does not move the gate
+    _seed_claimed_job("j1", op="push")
+    run(mir.worker_upload_file("j1", _Req(b"v2"), x_file_sha=_sha12(b"v2"),
+                               _w={"worker": True}))
+    assert _project_row()["ms_project_file_adopted_at"] == first
+    # a SECOND user upload (rev 3) re-baselines: the stamp moves forward
+    out = run(mir.upload_ms_project_file(P, _upload("plan.mpp", b"v3"), CTX))
+    assert out["file"]["rev"] == 3
+    moved = _project_row()["ms_project_file_adopted_at"]
+    assert moved != first and moved > first
 
 
 def test_worker_post_409_create_fence_when_a_file_now_exists():

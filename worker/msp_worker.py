@@ -23,7 +23,12 @@ Job types handled (the "op" field of a claimed job):
             task is the applied-days ledger: only the DIFFERENCE between the
             requested total and the ledger is applied, so re-syncs never
             double-apply and closing a delay in ICE reverts exactly what was
-            added.
+            added. When the hosted file version being pushed against came
+            from a USER UPLOAD (project_file.file_source == "upload", or the
+            X-File-Source download header for older jobs), the ledger is
+            RESET to 0 on every task first — an uploaded file's dates ARE
+            the new baseline, so whatever ledger it carried no longer
+            describes impacts that still need applying.
   pull      Read Project's full network (tasks + dependency links) without
             changing or saving anything.
   validate  Open the project file, recalculate in memory, report a summary.
@@ -349,9 +354,12 @@ def prune_cache(cfg: dict, logical_id: str, keep: int = 3):
 def fetch_hosted_file(api: Api, job: dict, cfg: dict):
     """Download the stored .mpp for this job and verify its content hash
     (against the X-File-Sha header, falling back to the job's file_sha).
-    Returns (local_path, rev, sha) on success; None when ICE has no stored
-    file (the caller falls back to the legacy local path); DOWNLOAD_CORRUPT
-    when the bytes failed the hash check twice in a row."""
+    Returns (local_path, rev, sha, file_source) on success — file_source is
+    how the stored version got there ('upload' / 'worker_push' /
+    'generated', from the X-File-Source header with the job descriptor's
+    file_source as fallback; None when neither is known). Returns None when
+    ICE has no stored file (the caller falls back to the legacy local path);
+    DOWNLOAD_CORRUPT when the bytes failed the hash check twice in a row."""
     pf = job.get("project_file") or {}
     logical = str(pf.get("logical_id") or job.get("project_id") or "project").strip()
     for attempt in (1, 2):
@@ -371,10 +379,12 @@ def fetch_hosted_file(api: Api, job: dict, cfg: dict):
             rev = int(rev)
         except (TypeError, ValueError):
             rev = 0
+        source = str(headers.get("X-File-Source")
+                     or pf.get("file_source") or "").strip().lower() or None
         path = cache_path(cfg, logical, f"rev-{rev}.mpp")
         with open(path, "wb") as fh:
             fh.write(data)
-        return path, rev, sha
+        return path, rev, sha, source
     return DOWNLOAD_CORRUPT
 
 
@@ -654,6 +664,35 @@ class MsProject:
         critical_count = sum(1 for x in tasks if x["critical"])
         return tasks, deps, project_finish, critical_count
 
+    # -- push: re-baseline the impact ledger on a user-uploaded file ---------
+    def reset_impact_ledger(self) -> int:
+        """LEDGER REBASELINE (2026-07-03): zero the Number1 applied-days
+        ledger on every task, IN MEMORY. Called only when the file version a
+        push works on came from a USER UPLOAD — the uploaded file's dates
+        ARE the new baseline, so whatever ledger the file carried (an empty
+        fresh export, or a preserved one because the user edited a
+        previously downloaded ICE file) no longer describes impacts that
+        still need applying. ICE's targets are re-baselined to match by the
+        backend's adoption-gate subtraction.
+
+        The reset alone never persists: apply_task_updates decides the save
+        (a push that applies no real delta closes without saving), so the
+        stored file's ledger only changes when a change actually lands —
+        and that version is stored as source 'worker_push', which never
+        triggers this reset again. Returns the number of tasks whose ledger
+        was cleared in memory."""
+        cleared = 0
+        for t in self.real_tasks():
+            try:
+                if int(float(t.Number1 or 0)) != 0:
+                    t.Number1 = 0
+                    cleared += 1
+            except Exception as exc:
+                log.warning("could not clear the impact ledger (Number1) on "
+                            "a task while re-baselining an uploaded file: %s",
+                            exc)
+        return cleared
+
     # -- push: apply ICE-owned actuals --------------------------------------
     def apply_task_updates(self, updates: list):
         """Apply a push change-set's task_updates. Matching order per task:
@@ -671,7 +710,10 @@ class MsProject:
         Number1 on the Project task is the applied-days ledger: only the
         difference between the requested total and the ledger is applied, so
         re-syncs never double-apply and closing a delay in ICE reverts
-        exactly what was added. See _apply_impact_days.
+        exactly what was added. See _apply_impact_days. When the file
+        version being pushed against came from a user upload, the caller
+        zeroes the ledger first (reset_impact_ledger) — the uploaded dates
+        are the new baseline.
 
         Returns (changed_count, unmatched_codes)."""
         by_uid, by_text1, by_name = {}, {}, {}
@@ -1062,12 +1104,26 @@ def execute_job(job: dict, cfg: dict, api: Api) -> dict:
 
 
 def execute_hosted_job(job: dict, cfg: dict, api: Api, base: dict,
-                       path: str, rev: int, file_sha: str) -> dict:
+                       path: str, rev: int, file_sha: str,
+                       file_source=None) -> dict:
     """push/pull/validate against the downloaded working copy. A push that
     saved uploads the new version back to ICE BEFORE the result is posted;
     pull/validate never write or upload. There is no local conflict gate
     here: the stored file cannot be edited behind ICE's back, and the
-    backend's file-rev guard rejects stale ingests instead."""
+    backend's file-rev guard rejects stale ingests instead.
+
+    LEDGER REBASELINE (2026-07-03): when the version this push works on came
+    from a USER UPLOAD (the job descriptor's project_file.file_source, with
+    the X-File-Source header captured at download as the fallback for jobs
+    enqueued before the descriptor carried it), the Number1 applied-days
+    ledger is reset to 0 on every task BEFORE task_updates are applied. An
+    uploaded file's dates ARE the new baseline — whatever ledger it carried
+    (an empty fresh export, or a preserved one from an edited ICE download)
+    no longer describes un-baked impacts, so keeping it would re-apply or
+    wrong-subtract on the very next delta. The reset+apply is naturally
+    idempotent: a push that applies nothing doesn't save, so the STORED
+    ledger only changes when a real delta lands — and that new version is
+    stored as source 'worker_push', which never triggers the reset again."""
     op = job.get("op")
     change_set = job.get("change_set") or {}
     applied, unmatched = 0, []
@@ -1078,6 +1134,15 @@ def execute_hosted_job(job: dict, cfg: dict, api: Api, base: dict,
                 log.warning("job %s: dependency_ops are not part of the push "
                             "contract (network is Project-owned); ignoring",
                             job["id"])
+            source = ((job.get("project_file") or {}).get("file_source")
+                      or file_source)
+            if source == "upload":
+                cleared = mp.reset_impact_ledger()
+                if cleared:
+                    log.info("job %s: pushing against a user-uploaded file "
+                             "version — cleared the impact ledger (Number1) "
+                             "on %d task(s) before applying updates",
+                             job["id"], cleared)
             applied, unmatched = mp.apply_task_updates(
                 change_set.get("task_updates") or [])
             log.info("job %s: applied changes to %d task(s), %d unmatched",

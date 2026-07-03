@@ -377,6 +377,17 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
             task_ids=updates["linked_task_ids"],
             required=True,
         )
+    # Time-aware MS Project sync (2026-07-03) -- record WHEN the RFI left the
+    # open set. date_responded is user-entered (and may be backdated, like a
+    # delay's resolved_date); answered_date is the server-stamped fallback so
+    # the Mode-2 impact target can always compute the actual working days the
+    # RFI consumed. Stamped only on the transition INTO answered/closed/
+    # voided (a patch on an already-terminal RFI keeps the original stamp; a
+    # reopen followed by a new close re-stamps with the new close moment).
+    RFI_TERMINAL_STATUSES = ("answered", "closed", "voided")
+    if (updates.get("status") in RFI_TERMINAL_STATUSES
+            and before.get("status") not in RFI_TERMINAL_STATUSES):
+        updates["answered_date"] = utc_now().date().isoformat()
     await db.rfis.update_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"$set": updates})
     after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
 
@@ -403,8 +414,23 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
         or before.get("schedule_activity_id") != after.get("schedule_activity_id")
     )
     impacts_changed = "per_task_impacts" in updates
+    # Time-aware MS Project sync (2026-07-03) -- two more triggers. An RFI
+    # that carries per-task impacts can move its Mode-2 contribution WITHOUT
+    # crossing the open/closed boundary, so condition 1 alone misses:
+    #   4. the status changed AT ALL on an RFI with non-empty
+    #      per_task_impacts (answered -> voided zeroes the contribution;
+    #      any terminal-to-terminal move can change the pushed actual);
+    #   5. date_responded changed while the RFI sits in answered/closed
+    #      (the snapped actual moves with the backdated response date).
+    status_changed_at_all = before.get("status") != after.get("status")
+    responded_moved = (
+        "date_responded" in updates
+        and after.get("status") in ("answered", "closed")
+    )
     needs_recompute_resolve = (
         status_blocking_changed or linkage_changed or impacts_changed
+        or (status_changed_at_all and bool(after.get("per_task_impacts")))
+        or responded_moved
     )
 
     if needs_recompute_resolve:

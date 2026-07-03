@@ -126,6 +126,18 @@ async def _store_msp_version(db, tenant_id: str, project: dict, data: bytes, *,
          }},
         return_document=RETURN_AFTER)
     rev = int((doc or {}).get("ms_project_file_rev") or 1)
+    if source == "upload":
+        # ADOPTION STAMP (time-aware impact targeting, 2026-07-03): EVERY
+        # user upload re-baselines what the file's plan already reflects, so
+        # the stamp moves forward on each one (not just rev 1). The push
+        # change-set builder then SUBTRACTS the pre-upload share of each
+        # delay/RFI's contribution — that portion is presumed baked into the
+        # uploaded plan. NEVER stamped for "generated" (a generated file is
+        # built from planned dates containing zero impact history) or
+        # "worker_push" (ICE's own ledgered change — not a re-baseline).
+        await db.projects.update_one(
+            tenant_filter(tenant_id, {"id": project["id"]}),
+            {"$set": {"ms_project_file_adopted_at": updated_at}})
     extra = {"sha12": sha, "project_id": project["id"], "rev": rev, "source": source}
     if job_id:
         # Lets record_result's rev guard recognize the worker's own upload.
@@ -439,14 +451,18 @@ async def _claimed_job_or_409(db, job_id: str) -> dict:
 async def worker_download_file(job_id: str, _w: dict = Depends(require_worker)):
     """Stream the CURRENT stored .mpp for a claimed job. X-File-Sha/X-File-Rev
     let the worker verify download integrity against the job's descriptor.
-    404 when the project has no stored file (worker falls back to the legacy
-    local path or errors 'project_file_not_found')."""
+    X-File-Source (2026-07-03) tells the worker how this version got here
+    ('upload' / 'worker_push' / 'generated') — the fallback for jobs enqueued
+    before the descriptor carried file_source; on an 'upload' base a push
+    resets the in-file impact ledger first. 404 when the project has no
+    stored file (worker falls back to the legacy local path or errors
+    'project_file_not_found')."""
     db = get_db()
     job = await _claimed_job_or_409(db, job_id)
     proj = await db.projects.find_one(
         tenant_filter(job["tenant_id"], {"id": job["project_id"]}),
         {"_id": 0, "ms_project_file_id": 1, "ms_project_file_rev": 1,
-         "ms_project_file_sha": 1})
+         "ms_project_file_sha": 1, "ms_project_file_source": 1})
     if not proj or not proj.get("ms_project_file_id"):
         raise HTTPException(status_code=404, detail="project has no stored file")
     row = await db.files.find_one(
@@ -461,6 +477,7 @@ async def worker_download_file(job_id: str, _w: dict = Depends(require_worker)):
     return Response(content=data, media_type=MSP_CONTENT_TYPE, headers={
         "X-File-Sha": proj.get("ms_project_file_sha") or _sha12(data),
         "X-File-Rev": str(proj.get("ms_project_file_rev") or 0),
+        "X-File-Source": str(proj.get("ms_project_file_source") or ""),
     })
 
 

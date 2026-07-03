@@ -145,6 +145,23 @@ async def crud_patch(entity: str, id: str, payload: dict,
             # Sync is best-effort here — don't fail the underlying patch
             # if the gating service is in an odd state.
             pass
+    # Time-aware MS Project sync (2026-07-03) -- a generic PATCH that
+    # touches an RFI's status / date_responded / per_task_impacts can move
+    # its per-task impact contribution (services.ms_project_sync), so fire
+    # the same auto-recompute the dedicated /rfis PATCH fires; on a Mode-2
+    # project that enqueues a fresh push reconciling the new target.
+    # Fail-safe: a CPM problem must never block the CRUD write above.
+    if (entity == "rfis" and (doc or {}).get("per_task_impacts")
+            and any(k in payload for k in
+                    ("status", "date_responded", "per_task_impacts"))):
+        try:
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(
+                ctx["tenant_id"], doc.get("project_id"),
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+        except Exception:
+            pass
     return doc
 
 
@@ -256,6 +273,21 @@ async def crud_delete(entity: str, id: str, bg: BackgroundTasks,
             )
         except Exception:
             pass
+        # Time-aware MS Project sync (2026-07-03) -- soft-deleting an RFI
+        # sets status='deleted', which drops its per-task impact target to
+        # 0 (services.ms_project_sync only counts draft/sent/in_review/
+        # answered/closed). Recompute so a Mode-2 project enqueues a push
+        # that reverts the days this RFI had applied in Microsoft Project.
+        # Fail-safe: a CPM problem must never block the delete.
+        if entity == "rfis" and (before.get("per_task_impacts") or []):
+            try:
+                from services.cpm import auto_recompute_after_event
+                await auto_recompute_after_event(
+                    ctx["tenant_id"], before.get("project_id"),
+                    actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                )
+            except Exception:
+                pass
         return {"ok": True, "soft_deleted": True}
     else:
         await coll.delete_one(tenant_filter(ctx["tenant_id"], {"id": id}))
