@@ -32,6 +32,11 @@ const EMPTY_FORM = {
   current_substantial_completion: "",
   contract_days: "",
   calendar_basis: "calendar_days",
+  // Site timezone (2026-07-03) -- impact date math (delay/RFI elapsed-day
+  // growth, server date stamps) follows the SITE's clock, not each
+  // viewer's device. IANA name; a select always has a value so the
+  // empty-string strip in submit() never drops it.
+  timezone: "America/New_York",
   // 2026-02-XX (Abhi) -- subs / suppliers linked to this project,
   // selected from the tenant-wide vendor central repo.
   subcontractor_ids: [],
@@ -280,6 +285,8 @@ export default function Projects() {
       current_substantial_completion: p.current_substantial_completion || "",
       contract_days: p.contract_days != null ? String(p.contract_days) : "",
       calendar_basis: p.calendar_basis || "calendar_days",
+      // Site timezone (2026-07-03) -- legacy projects read as Eastern.
+      timezone: p.timezone || "America/New_York",
       subcontractor_ids: p.subcontractor_ids || [],
       supplier_ids: p.supplier_ids || [],
       engine_choice: p.schedule_mode === "mode2"
@@ -496,6 +503,29 @@ export default function Projects() {
                   </div>
                 </div>
               </details>
+
+              {/* Site timezone (2026-07-03) -- impact date math (delay/RFI
+                  elapsed-day growth, server date stamps) follows the SITE's
+                  clock, not each viewer's device. */}
+              <div className="border-t border-border pt-3">
+                <FieldLabel optional className="field-label">Site timezone</FieldLabel>
+                <select data-testid="np-timezone"
+                  value={form.timezone}
+                  onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+                  className="w-full h-9 px-3 rounded border border-input bg-background">
+                  <option value="America/New_York">Eastern — America/New_York</option>
+                  <option value="America/Chicago">Central — America/Chicago</option>
+                  <option value="America/Denver">Mountain — America/Denver</option>
+                  <option value="America/Phoenix">Arizona — America/Phoenix</option>
+                  <option value="America/Los_Angeles">Pacific — America/Los_Angeles</option>
+                  <option value="America/Anchorage">Alaska — America/Anchorage</option>
+                  <option value="Pacific/Honolulu">Hawaii — Pacific/Honolulu</option>
+                  <option value="UTC">UTC</option>
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Delay and RFI date math follows the site&apos;s clock, not each viewer&apos;s device.
+                </p>
+              </div>
 
               {/* Schedule engine dropdown (2026-07-02) -- the one place a
                   project picks who computes its schedule. No env vars, no

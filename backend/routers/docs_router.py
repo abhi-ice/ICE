@@ -22,6 +22,22 @@ async def _next_number(db, tenant_id: str, project_id: str, collection: str, pre
     return f"{prefix}-{count + 1:04d}"
 
 
+async def _project_today_iso(db, tenant_id: str, project_id: str) -> str:
+    """Today's DATE on the SITE's clock (2026-07-03). Server-side
+    DATE-granular stamps in the schedule-impact path (date_initiated,
+    answered_date) follow the project's timezone -- not the server's UTC
+    clock, which at 8 PM Eastern has already rolled to tomorrow and would
+    shift the impact anchor / closing actual by a working day. UTC
+    datetime stamps (created_at, updated_at, ...) are unchanged. Cheap
+    projection read; a missing timezone defaults to Eastern and a bad
+    IANA name falls back to the UTC date inside _project_today."""
+    from services.ms_project_sync import _project_today
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "timezone": 1}) or {}
+    return _project_today(proj.get("timezone")).isoformat()
+
+
 # =====================================================================
 # CPM Part J (2026-05-15) -- RFI per_task_impacts verdict resolver.
 #
@@ -209,11 +225,14 @@ async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     # (frontend "answer" field) instead of wiping it. Status is always
     # forced to draft on create -- the state machine is unchanged
     # pending Bucket B.
+    # Site timezone (2026-07-03): date_initiated is a DATE-granular stamp
+    # in the impact path (the legacy anchor for RFI elapsed-day growth),
+    # so it follows the SITE's clock, not the server's UTC date.
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "rfi_number": rfi_number,
-        "date_initiated": utc_now().date().isoformat(),
+        "date_initiated": await _project_today_iso(db, ctx["tenant_id"], doc["project_id"]),
         "date_responded": None,
         "status": "draft",
         "cost_impact_estimated_usd": None,
@@ -384,10 +403,13 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
     # RFI consumed. Stamped only on the transition INTO answered/closed/
     # voided (a patch on an already-terminal RFI keeps the original stamp; a
     # reopen followed by a new close re-stamps with the new close moment).
+    # Site timezone (2026-07-03): the stamp is DATE-granular and in the
+    # impact path, so it follows the SITE's clock, not the UTC date.
     RFI_TERMINAL_STATUSES = ("answered", "closed", "voided")
     if (updates.get("status") in RFI_TERMINAL_STATUSES
             and before.get("status") not in RFI_TERMINAL_STATUSES):
-        updates["answered_date"] = utc_now().date().isoformat()
+        updates["answered_date"] = await _project_today_iso(
+            db, ctx["tenant_id"], before["project_id"])
     await db.rfis.update_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"$set": updates})
     after = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
 
@@ -421,16 +443,24 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
     #      per_task_impacts (answered -> voided zeroes the contribution;
     #      any terminal-to-terminal move can change the pushed actual);
     #   5. date_responded changed while the RFI sits in answered/closed
-    #      (the snapped actual moves with the backdated response date).
+    #      (the snapped actual moves with the backdated response date);
+    #   6. impact_start_date changed on an RFI carrying impacts (2026-07-03
+    #      — the elapsed-growth / closing-actual anchor moved, so the
+    #      Mode-2 push target must refresh).
     status_changed_at_all = before.get("status") != after.get("status")
     responded_moved = (
         "date_responded" in updates
         and after.get("status") in ("answered", "closed")
     )
+    impact_start_moved = (
+        "impact_start_date" in updates
+        and bool(after.get("per_task_impacts"))
+    )
     needs_recompute_resolve = (
         status_blocking_changed or linkage_changed or impacts_changed
         or (status_changed_at_all and bool(after.get("per_task_impacts")))
         or responded_moved
+        or impact_start_moved
     )
 
     if needs_recompute_resolve:

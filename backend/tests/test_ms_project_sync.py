@@ -8,7 +8,7 @@ import asyncio
 import os
 import sys
 import types
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -670,6 +670,11 @@ TODAY = "2026-03-12"
 
 def _freeze_today(monkeypatch):
     monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
+    # Site timezone (2026-07-03): the impact walk reads _project_today(tz)
+    # now, not _now().date() -- freeze it to the same frozen day so every
+    # working-day count in this module holds regardless of the wall clock.
+    monkeypatch.setattr(mps, "_project_today",
+                        lambda tz_name=None: FROZEN_NOW.date())
 
 
 def _seed_delay(task_id, days, *, date=None, status="open", **extra):
@@ -925,3 +930,86 @@ def test_change_set_sums_time_aware_sources_per_task(monkeypatch):
     job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
     upd = job["change_set"]["task_updates"][0]
     assert upd["impact_days_total"] == 4 + 0 + 2 + 5
+
+
+# --------------------------------------------------------------------------
+# Explicit impact_start_date anchors (2026-07-03) -- when the user says the
+# impact BEGINS (today = already affecting today's work; tomorrow = starts
+# then), all elapsed-growth and closing-actual math anchors there instead of
+# the log date. Absent field -> log-date fallback (covered by every test
+# above, which seeds no impact_start_date).
+# --------------------------------------------------------------------------
+def test_future_impact_start_keeps_contribution_at_estimate(monkeypatch):
+    # Impact declared to start TOMORROW (Fri Mar 13): elapsed working days
+    # from a future anchor clamp at 0, so the open delay contributes exactly
+    # its 2-day estimate -- no growth until the window starts elapsing.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date=TODAY, impact_start_date="2026-03-13")
+    assert _impact("task-A") == 2
+
+
+def test_impact_start_date_overrides_log_date_for_growth(monkeypatch):
+    # Logged 10 working days ago (Thu Feb 26) but the user said the impact
+    # only starts 4 working days ago (Fri Mar 6) -> elapsed anchors on
+    # impact_start_date (4), not the log date (10).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-02-26", impact_start_date="2026-03-06")
+    assert _impact("task-A") == 4
+
+
+def test_resolved_actual_recompute_anchors_on_impact_start_date(monkeypatch):
+    # Rule B fallback recompute (no actual_impact_days stamp): the actual is
+    # working days from impact_start_date -> resolved_date (Fri Mar 6 -> Tue
+    # Mar 10 = 2), not from the earlier log date (Mon Mar 2 -> Mar 10 = 6).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-10", impact_start_date="2026-03-06")
+    assert _impact("task-A") == 2
+
+
+def test_rfi_impact_start_date_overrides_date_initiated(monkeypatch):
+    # RFIs anchor the same way: impact_start_date beats date_initiated.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 1, status="sent", date_initiated="2026-02-26",
+              impact_start_date="2026-03-06")
+    assert _impact("task-A") == 4
+
+
+# --------------------------------------------------------------------------
+# Site timezone (2026-07-03) -- "today" for the growth math follows the
+# project's clock (projects.timezone), not the server's UTC clock.
+# --------------------------------------------------------------------------
+def test_growth_uses_project_timezone_day(monkeypatch):
+    # Late evening on site: UTC has rolled over to Thu Mar 12 but the site
+    # (Central) is still on Wed Mar 11 -- one fewer elapsed working day.
+    # Freeze the tz-today helper (the same pattern as _now) so the assertion
+    # is deterministic; the helper receives the timezone the change-set
+    # builder read off the project doc.
+    _reset()
+    monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
+    seen = {}
+
+    def fake_today(tz_name=None):
+        seen["tz"] = tz_name
+        return (date(2026, 3, 11) if tz_name == "America/Chicago"
+                else date(2026, 3, 12))
+
+    monkeypatch.setattr(mps, "_project_today", fake_today)
+    _project_row()["timezone"] = "America/Chicago"
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 1, date="2026-03-06")   # 4 wd to Mar 12, 3 to Mar 11
+    out = asyncio.run(mps.enqueue_push_job(T, P))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    assert seen["tz"] == "America/Chicago"   # tz plumbed from the project doc
+    assert job["change_set"]["task_updates"][0]["impact_days_total"] == 3
+
+
+def test_project_today_falls_back_to_utc_on_bad_zone(monkeypatch):
+    # A bad IANA name stored on a project must never blow up the push path:
+    # _project_today falls back to the UTC date (via _now).
+    monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
+    assert mps._project_today("Not/A_Zone") == FROZEN_NOW.date()

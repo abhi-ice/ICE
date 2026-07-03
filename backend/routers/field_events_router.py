@@ -418,6 +418,9 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
         task_ids=linked_ids,
         required=True,
     )
+    # Explicit impact start (2026-07-03): impact_start_date rides through
+    # from DelayCreate's model dump above and is persisted as-is. Absent ->
+    # None, and every anchor consumer falls back to the log date.
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
         "status": doc.get("status") or "open",
@@ -616,42 +619,47 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     # a resolved_date CORRECTION against an already-resolved delay -- the
     # frontend doesn't re-send status on a date-only edit, so the old
     # `status == "resolved"` guard alone left a stale actual_impact_days
-    # behind. The recompute later in this handler then carries the moved
-    # actual into the schedule engine (a Mode-2 project pushes the new
-    # number on its next sync).
+    # behind. Same for an impact_start_date edit on a resolved delay (the
+    # actual's ANCHOR moved, so the stamp must follow). The recompute later
+    # in this handler then carries the moved actual into the schedule
+    # engine (a Mode-2 project pushes the new number on its next sync).
     _resolving_now = updates.get("status") == "resolved"
-    _resolved_date_edit = (
-        "resolved_date" in updates
+    _resolved_anchor_edit = (
+        ("resolved_date" in updates or "impact_start_date" in updates)
         and updates.get("status", before.get("status")) == "resolved"
     )
-    if _resolving_now or _resolved_date_edit:
+    if _resolving_now or _resolved_anchor_edit:
         if _resolving_now and "resolved_by_user_id" not in updates:
             updates["resolved_by_user_id"] = ctx["user"]["id"]
         # CPM Part L-3 (2026-05-16) -- capture actual_impact_days at
         # resolution time. Computed as working_days_between(
-        # logged_date, resolved_date). Federal TIA defensibility: the
+        # anchor, resolved_date), where the ANCHOR (2026-07-03) is the
+        # explicit impact_start_date when present -- the user-declared
+        # "when the impact begins" -- falling back to logged_date/date
+        # for legacy rows. Federal TIA defensibility: the
         # variance between projected_impact_days (super's day-one
         # estimate, captured immutably on per_task_impacts) and
         # actual_impact_days (this field) is the schedule analyst's
         # accuracy metric.
         #
         # Edge cases:
-        #   * logged_date missing (legacy delay without `date`): fall
-        #     back to delay.date or delay.reported_at.date(). If none
-        #     parseable, skip the computation -- leave field None.
+        #   * anchor missing (legacy delay without impact_start_date or
+        #     `date`): fall back down the chain. If none parseable, skip
+        #     the computation -- leave field None.
         #   * resolved_date missing: shouldn't reach here (frontend
         #     supplies via date picker), but defensive: use the
         #     before-row's resolved_date if present.
-        #   * resolved < logged: negative, but working_days_between
+        #   * resolved < anchor: negative, but working_days_between
         #     handles that via -recursion. Clamp to 0 since "negative
-        #     actual impact" is nonsense.
-        #   * D7 -- once stamped, actual_impact_days follows the
-        #     resolved_date: a subsequent edit of resolved_date triggers
+        #     actual impact" is nonsense (covers a future-dated
+        #     impact_start_date closed before its window opened).
+        #   * D7 -- once stamped, actual_impact_days follows its anchor
+        #     AND the resolved_date: a subsequent edit of either triggers
         #     re-computation here (this branch fires whenever
         #     status=resolved is in the PATCH, and since 2026-07-03 also
-        #     when resolved_date is patched while the delay stays
-        #     resolved); a transition OUT of resolved leaves the stamp
-        #     alone (audit trail).
+        #     when resolved_date OR impact_start_date is patched while
+        #     the delay stays resolved); a transition OUT of resolved
+        #     leaves the stamp alone (audit trail).
         try:
             from services.working_days import working_days_between
             from datetime import date as _date
@@ -659,8 +667,13 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
                 updates.get("resolved_date")
                 or before.get("resolved_date")
             )
+            # Anchor chain (2026-07-03): the patch's impact_start_date
+            # wins (it's the edit being applied), then the stored one,
+            # then the legacy logged_date/date fallbacks.
             logged_raw = (
-                before.get("logged_date")
+                updates.get("impact_start_date")
+                or before.get("impact_start_date")
+                or before.get("logged_date")
                 or before.get("date")
             )
             def _parse_d(v):

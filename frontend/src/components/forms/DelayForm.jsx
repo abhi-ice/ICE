@@ -120,6 +120,14 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     // pt.49: single merged Cause. Read from cause_class (canonical) with a
     // fallback to a legacy reason_category value so older delays still show.
     cause: initial?.cause_class || initial?.reason_category || "",
+    // Explicit impact start (2026-07-03) -- when the estimated impact
+    // begins. Create mode defaults like the `date` field on submit
+    // (reportDate || localTodayISO); edit mode prefills the stored value,
+    // falling back to the delay's own log date (the effective anchor for
+    // legacy rows).
+    impact_start_date: initial?.id
+      ? (initial?.impact_start_date || initial?.date || "")
+      : (reportDate || localTodayISO()),
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
   const [busy, setBusy] = useState(false);
@@ -189,6 +197,11 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     if ((form.severity || "") !== (initial.severity || "")) return true;
     if ((form.owner_attribution || "") !== (initial.owner_attribution || "")) return true;
     if ((form.cause || "") !== (initial.cause_class || initial.reason_category || "")) return true;
+    // Explicit impact start (2026-07-03) -- a changed impact start moves
+    // the schedule-impact anchor, so it counts as a field edit. Untouched
+    // (still the stored value, or the legacy log-date prefill) doesn't.
+    if (form.impact_start_date
+        && form.impact_start_date !== (initial.impact_start_date || initial.date || "")) return true;
     const initImpacts = initial.per_task_impacts || [];
     if (form.impacts.length !== initImpacts.length) return true;
     const initBy = Object.fromEntries(
@@ -303,6 +316,17 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
       if (form.status === "resolved") {
         payload.resolved_date = form.resolved_date || localTodayISO();
         payload.resolved_note = form.resolved_note || null;
+      }
+      // Explicit impact start (2026-07-03). Create: always sent (defaults
+      // to the same value the `date` field gets below). Edit: sent ONLY
+      // when the user actually changed it, so a status-only resolve on a
+      // legacy row stays a status-only patch (Bug #49 exemption on locked
+      // daily reports).
+      if (!initial?.id) {
+        payload.impact_start_date = form.impact_start_date || reportDate || localTodayISO();
+      } else if (form.impact_start_date
+                 && form.impact_start_date !== (initial.impact_start_date || initial.date || "")) {
+        payload.impact_start_date = form.impact_start_date;
       }
       let res;
       if (initial?.id) {
@@ -519,6 +543,23 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           impact + pushes-CP indicator) was always the canonical
           master-schedule linkage; the dr-activity picker was a wrong-
           build duplicate that confused the form. */}
+
+      {/* Explicit impact start (2026-07-03) -- when the estimated impact
+          begins. Elapsed-day growth and the closing actual anchor here;
+          left untouched it matches the delay's own log date. */}
+      <div>
+        <FieldLabel optional title="When the estimated impact begins — elapsed-day growth and the closing actual anchor on this date">
+          Impact starts on
+        </FieldLabel>
+        <input data-testid="delay-form-impact-start" type="date"
+          value={form.impact_start_date || ""}
+          onChange={(e) => setForm({ ...form, impact_start_date: e.target.value })}
+          className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm" />
+        <p className="mt-1 text-xs text-slate-500">
+          Pick today if the delay already affected today&apos;s work; pick
+          tomorrow if the impact begins then.
+        </p>
+      </div>
 
       <div>
         <FieldLabel required>Status</FieldLabel>

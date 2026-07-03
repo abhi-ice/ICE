@@ -3291,7 +3291,7 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
         </TabsContent>
         <TabsContent value="rfis" className="mt-3" data-testid="dr-events-tab-content-rfis">
           <RfisPanel rows={rfis} dailyReportId={dailyReportId} projectId={projectId}
-                     locked={locked} reload={reload} grid={grid} />
+                     reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
         </TabsContent>
         <TabsContent value="deliveries" className="mt-3" data-testid="dr-events-tab-content-deliveries">
           <DeliveriesPanel rows={deliveries} dailyReportId={dailyReportId} projectId={projectId}
@@ -3929,7 +3929,7 @@ function QcRowInline({ row, locked, dailyReportId, reload }) {
 }
 
 
-function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
+function RfisPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, grid }) {
   // Bucket D Corrective (2026-05-08) -- linked_task_ids (master schedule
   // scope) picker. RFIs are REQUIRED to link >=1 task (gates a CPM
   // node via the gating_entities back-pointer).
@@ -3938,10 +3938,13 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
   // empty array means "no impact captured yet" (backend treats the
   // RFI as a binary blocker via count_open_blockers, doesn't push
   // Slip on the linked tasks).
+  // Explicit impact start (2026-07-03) -- when the estimated impact
+  // begins; defaults like DelayForm's date (reportDate || local today).
   const [draft, setDraft] = useState({
     subject: "", description: "", priority: "normal",
     linked_task_ids: [],
     per_task_impacts: [],
+    impact_start_date: reportDate || localTodayISO(),
   });
   // Bucket D Addition 5 (2026-05-12) -- add-to-locked-DR reason capture.
   const [addReason, setAddReason] = useState("");
@@ -3976,11 +3979,15 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
         priority: draft.priority,
         linked_task_ids: draft.linked_task_ids,
         per_task_impacts: draft.per_task_impacts || [],
+        // Explicit impact start (2026-07-03) -- when the estimated
+        // impact begins; the elapsed-growth anchor on the backend.
+        impact_start_date: draft.impact_start_date || reportDate || localTodayISO(),
         ...(locked ? { add_reason: addReason.trim() } : {}),
       });
       setDraft({
         subject: "", description: "", priority: "normal",
         linked_task_ids: [], per_task_impacts: [],
+        impact_start_date: reportDate || localTodayISO(),
       });
       setAddReason("");
       reload();
@@ -4032,6 +4039,19 @@ function RfisPanel({ rows, dailyReportId, projectId, locked, reload, grid }) {
           projectId={projectId}
           testidPrefix="rfi-impacts"
         />
+        {/* Explicit impact start (2026-07-03) -- when the estimated
+            impact begins; anchors elapsed-day growth on the backend. */}
+        <label className="block text-xs text-slate-500">
+          Impact starts on
+          <input data-testid="rfi-new-impact-start" type="date"
+            value={draft.impact_start_date}
+            onChange={(e) => setDraft({ ...draft, impact_start_date: e.target.value })}
+            className="mt-1 block w-full h-8 px-2 rounded border border-slate-200 text-sm text-slate-700" />
+          <span className="block mt-0.5 text-xs text-slate-400">
+            Pick today if the RFI already affects today&apos;s work; pick
+            tomorrow if the impact begins then.
+          </span>
+        </label>
         <div className="flex items-center gap-2">
           <select data-testid="rfi-new-priority" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
             {["low", "normal", "high", "urgent"].map((s) => <option key={s} value={s}>{s}</option>)}
