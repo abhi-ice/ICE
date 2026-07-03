@@ -28,6 +28,17 @@ computer, so step 4 above is no longer needed for these projects. The
 stored in ICE. Working copies are kept in a `cache` folder next to
 `msp_worker.py` (change it with `MSP_CACHE_DIR` in `worker.env`).
 
+## Delays and impacts
+
+Delays logged in ICE flow into the Project file automatically: each affected
+activity gets extra working days added to its duration (a milestone's date is
+moved instead), and Microsoft Project then reschedules everything that depends
+on it, just as if a planner had typed the change. The worker keeps a running
+note on each task (the Number1 field) of how many days ICE has applied, so
+syncing twice never adds a delay twice, and closing a delay in ICE removes
+exactly the days it added. The planner's own edits in the file are never
+touched.
+
 ## Run
 
 Double-click `run-worker.bat`. Leave the window open; it waits for work from

@@ -16,6 +16,15 @@ used:
 Design contract (from the Mode-2 spec):
   * per-project monotonic `seq`; ingest rejects a result whose seq <= watermark
     (out-of-order / replayed results can't regress the schedule).
+  * PUSH carries ICE-logged schedule impacts (2026-07-03): every task_update
+    includes `impact_days_total` — the working-day sum of the task's OPEN
+    blockers (open/in_progress delays + draft/sent/in_review RFIs + over-SLA
+    submittals, the exact total the internal impact-days engine computes via
+    task_status._open_blocker_impact_for_task), and it is 0 when nothing is
+    pushing. The worker applies the DELTA versus its in-file ledger, Microsoft
+    Project cascades natively, and the read-back brings the recomputed
+    dates/floats home — closing a delay flows a lower total on the next push
+    and the schedule reverts.
   * claim is atomic (find_one_and_update pending->claimed) with a lease; a reaper
     returns expired-lease jobs to pending (worker crash recovery).
   * ingest writes MS Project's computed dates into our EXISTING fields
@@ -74,9 +83,19 @@ async def _next_seq(db, tenant_id: str, project_id: str) -> int:
 async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
     """Snapshot the progress/actuals ICE owns into a worker change-set. We push
     activity_code (stamped into Text1 so the worker can match), pct_complete,
-    and actual_start/finish. Dependency edits are NOT pushed here — those only
-    flow through an approved schedule proposal (the network is Project-owned).
-    Idempotent: pushing the same values is a no-op for Project."""
+    actual_start/finish, and impact_days_total (2026-07-03) — the working-day
+    sum of the task's OPEN schedule blockers, straight from task_status.
+    _open_blocker_impact_for_task so the pushed number is exactly what the
+    internal impact-days engine would apply. The key is present on EVERY
+    update (explicit 0 when nothing is pushing) because the worker reconciles
+    against its in-file ledger: the 0 is what lets it REVERT a previously
+    applied impact once the delay/RFI closes. Dependency edits are NOT pushed
+    here — those only flow through an approved schedule proposal (the network
+    is Project-owned). Idempotent: pushing the same values is a no-op for
+    Project."""
+    # Lazy import (this module's convention for cross-service deps): keeps the
+    # ms_project_sync <-> task_status pairing free of a module-load cycle.
+    from services.task_status import _open_blocker_impact_for_task
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0, "id": 1, "activity_code": 1, "external_task_id": 1,
@@ -87,12 +106,14 @@ async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
         code = t.get("activity_code")
         if not code:
             continue
+        impact = await _open_blocker_impact_for_task(db, tenant_id, t["id"])
         upd = {
             "external_task_id": t.get("external_task_id"),
             "activity_code": code,
             "percent_complete": t.get("pct_complete"),
             "actual_start": (t.get("actual_start") or None),
             "actual_finish": (t.get("actual_finish") or None),
+            "impact_days_total": int(round(impact)),
             "set_text_field": {"Text1": code},
         }
         updates.append(upd)

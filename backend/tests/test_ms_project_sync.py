@@ -28,6 +28,12 @@ def _match(row, q):
                 return False
             if "$in" in v and rv not in v["$in"]:
                 return False
+        elif isinstance(rv, list):
+            # Mongo array-containment: {"linked_task_ids": "task-A"} matches a
+            # doc whose linked_task_ids ARRAY contains "task-A" (used by
+            # task_status._open_blocker_impact_for_task's delay/RFI walks).
+            if v not in rv:
+                return False
         elif rv != v:
             return False
     return True
@@ -644,3 +650,50 @@ def test_file_upload_rejected_create_and_pull_not_reenqueued():
         "error": {"code": "ProjectError", "message": "modal dialog"}}))
     assert "requeued_job_id" not in out3
     assert len(_STUB.schedule_jobs.rows) == n_jobs
+
+
+# --------------------------------------------------------------------------
+# Impact days ride the push (2026-07-03) -- ICE-logged delays/RFIs/breached
+# submittals flow INTO Project via impact_days_total on every task_update.
+# --------------------------------------------------------------------------
+def _seed_open_delay(task_id, days):
+    _STUB.delays.rows.append({
+        "id": f"delay-{task_id}", "tenant_id": T, "project_id": P,
+        "linked_task_ids": [task_id], "status": "open",
+        "per_task_impacts": [{"task_id": task_id, "projected_impact_days": days}]})
+
+
+def test_push_change_set_carries_open_impact_days():
+    _reset()
+    _seed_task("A", "2026-01-05", "2026-01-09")   # impacted
+    _seed_task("B", "2026-01-12", "2026-01-16")   # clean
+    _seed_open_delay("task-A", 3.0)
+    # An ANSWERED RFI is a closed blocker -- its impact must NOT count
+    # (status filter: only draft/sent/in_review RFIs push).
+    _STUB.rfis.rows.append({
+        "id": "rfi-1", "tenant_id": T, "project_id": P,
+        "linked_task_ids": ["task-A"], "status": "answered",
+        "per_task_impacts": [{"task_id": "task-A", "projected_impact_days": 5.0}]})
+    out = asyncio.run(mps.enqueue_push_job(T, P, actor_id="u"))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    by = {u["activity_code"]: u for u in job["change_set"]["task_updates"]}
+    # open delay counts, answered RFI doesn't
+    assert by["A"]["impact_days_total"] == 3
+    # the clean task carries an EXPLICIT 0 -- the worker's ledger
+    # reconciliation needs it to revert previously applied impacts
+    assert by["B"]["impact_days_total"] == 0
+
+
+def test_resolved_delay_drops_impact_to_zero_on_fresh_push():
+    _reset()
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_open_delay("task-A", 4.0)
+    out1 = asyncio.run(mps.enqueue_push_job(T, P))
+    job1 = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out1["job_id"])
+    assert job1["change_set"]["task_updates"][0]["impact_days_total"] == 4
+    # PM resolves the delay -> a FRESH enqueue snapshots the lower total (0);
+    # the worker's ledger delta then reverts the days it applied in Project.
+    _STUB.delays.rows[0]["status"] = "resolved"
+    out2 = asyncio.run(mps.enqueue_push_job(T, P))
+    job2 = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out2["job_id"])
+    assert job2["change_set"]["task_updates"][0]["impact_days_total"] == 0

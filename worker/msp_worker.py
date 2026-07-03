@@ -10,9 +10,20 @@ Contract (must stay in lockstep with the backend):
   backend/services/ms_project_ingest.py           pull task/dependency shapes
 
 Job types handled (the "op" field of a claimed job):
-  push      Apply ICE-owned actuals (percent complete, actual start/finish) to
-            the matching Project tasks, stamp each task's Text1 with the ICE
-            activity code, recalculate, save, then read the full network back.
+  push      Apply ICE-owned actuals (percent complete, actual start/finish)
+            and ICE schedule impact days to the matching Project tasks, stamp
+            each task's Text1 with the ICE activity code, recalculate, save,
+            then read the full network back. Each task_update carries
+            "impact_days_total" — the CURRENT total of open impact days ICE
+            wants reflected on that task (0 = none, or every delay closed).
+            Impact days land as extra duration — Microsoft Project then
+            pushes the finish through every successor and recomputes slack
+            natively — or, for milestones (zero duration), as a shifted
+            start-no-earlier-than constraint date. Number1 on each Project
+            task is the applied-days ledger: only the DIFFERENCE between the
+            requested total and the ledger is applied, so re-syncs never
+            double-apply and closing a delay in ICE reverts exactly what was
+            added.
   pull      Read Project's full network (tasks + dependency links) without
             changing or saving anything.
   validate  Open the project file, recalculate in memory, report a summary.
@@ -38,7 +49,8 @@ Result shapes posted to /api/internal/ms-project/results:
   ok        {job_id, seq, worker_id, status:"ok", project_rowversion,
              project_finish, critical_count, tasks:[...], dependencies:[...]}
             Each task: {unique_id, text1, name, start, finish, critical,
-            total_slack_days, duration_days, milestone, wbs} — dates are
+            total_slack_days, duration_days, milestone, wbs,
+            ice_impact_days_applied} — dates are
             "YYYY-MM-DD". Each dependency (pull only): {successor_code,
             predecessor_code, type: FS|SS|FF|SF, lag_days}.
   conflict  {job_id, seq, worker_id, status:"conflict", project_rowversion}
@@ -65,7 +77,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -399,6 +411,21 @@ def parse_wire_date(value):
         return None
 
 
+def add_working_days(d: date, n: int) -> date:
+    """Move date `d` by `n` working days (Monday-Friday only; no holiday
+    calendar). `n` may be negative. Walks one calendar day at a time and
+    counts only weekdays, so Friday +1 lands on Monday and Monday -2 lands
+    on the previous Thursday. n == 0 returns `d` unchanged."""
+    step = 1 if n >= 0 else -1
+    remaining = abs(int(n))
+    out = date(d.year, d.month, d.day)
+    while remaining > 0:
+        out += timedelta(days=step)
+        if out.weekday() < 5:  # 0..4 = Monday..Friday
+            remaining -= 1
+    return out
+
+
 def set_com_morning(obj, prop, d, label):
     """Set a Project date property to 8:00 AM LOCAL on date `d` — the start of
     the standard working day. Neither obvious approach survives every machine:
@@ -580,6 +607,12 @@ class MsProject:
                     wbs = str(t.WBS or "")
                 except Exception:
                     wbs = ""
+                # Informational for ICE: the impact-days ledger (see
+                # apply_task_updates). Backend ignores unknown keys today.
+                try:
+                    impact_applied = int(float(t.Number1 or 0))
+                except Exception:
+                    impact_applied = 0
                 tasks.append({
                     "unique_id": uid,
                     "text1": text1,
@@ -591,6 +624,7 @@ class MsProject:
                     "duration_days": round(float(t.Duration) / mpd, 4),
                     "milestone": bool(t.Milestone),
                     "wbs": wbs,
+                    "ice_impact_days_applied": impact_applied,
                 })
             except Exception as exc:
                 log.warning("skipping unreadable task row: %s", exc)
@@ -628,6 +662,17 @@ class MsProject:
         3) Name  == activity_code (first-time link fallback; Text1 then stamped)
         Only values that actually differ are written, so replaying the same
         push is a no-op and the file is not dirtied (idempotent by contract).
+
+        ICE schedule impacts: each update also carries "impact_days_total" —
+        the current total of open impact days ICE wants reflected on the
+        task. They land as extra duration (Microsoft Project then cascades
+        the finish through every successor and recomputes slack natively),
+        or as a shifted start-no-earlier-than constraint date for milestones.
+        Number1 on the Project task is the applied-days ledger: only the
+        difference between the requested total and the ledger is applied, so
+        re-syncs never double-apply and closing a delay in ICE reverts
+        exactly what was added. See _apply_impact_days.
+
         Returns (changed_count, unmatched_codes)."""
         by_uid, by_text1, by_name = {}, {}, {}
         for t in self.real_tasks():
@@ -687,12 +732,161 @@ class MsProject:
                         and com_date_str(task.ActualFinish) != a_fin.strftime("%Y-%m-%d")):
                     task.ActualFinish = a_fin.replace(hour=17)
                     dirty = True
+                # ICE schedule impacts: reconcile the requested open-impact
+                # total against the in-file ledger (Number1).
+                raw_target = upd.get("impact_days_total")
+                try:
+                    target = int(float(raw_target or 0))
+                except (TypeError, ValueError):
+                    log.warning("task '%s': unreadable impact_days_total %r — "
+                                "impact days left untouched", code, raw_target)
+                    target = None
+                if target is not None and self._apply_impact_days(task, target, code):
+                    dirty = True
                 if dirty:
                     changed += 1
             except Exception as exc:
                 log.warning("could not update task '%s': %s", code, exc)
                 unmatched.append(code)
         return changed, unmatched
+
+    # -- push: reconcile ICE impact days against the in-file ledger ----------
+    def _apply_impact_days(self, task, target: int, code: str) -> bool:
+        """Bring the task's applied impact days to `target`, using Number1 as
+        the ledger of what previous syncs already applied.
+
+        delta = target - ledger. Zero delta means the file already reflects
+        ICE's open impacts — nothing is written and the file is not dirtied.
+        A nonzero delta extends (or shrinks) the task's duration by that many
+        working days; milestones get their constraint date shifted instead
+        (see _shift_milestone_impact). The ledger is written ONLY after the
+        schedule change succeeded; if the ledger write fails, the schedule
+        change is undone, because an applied delta without a ledger would
+        double-apply on the next sync.
+
+        Returns True when the file was changed (the caller counts it toward
+        `changed`, which makes the push save and upload the file)."""
+        try:
+            ledger = int(float(task.Number1 or 0))
+        except Exception as exc:
+            log.warning("task '%s': cannot read the impact ledger (Number1) — "
+                        "impact days left untouched: %s", code, exc)
+            return False
+        delta = target - ledger
+        if delta == 0:
+            return False  # already reconciled; do not dirty the file
+
+        # Milestones have no duration to extend; their constraint date moves.
+        try:
+            is_milestone = bool(task.Milestone) or float(task.Duration or 0) == 0
+        except Exception:
+            is_milestone = False
+        if is_milestone:
+            return self._shift_milestone_impact(task, target, delta, code)
+
+        # Normal task: change the duration. Microsoft Project then pushes the
+        # finish through every successor and recomputes slack natively.
+        mpd = self.minutes_per_day()
+        try:
+            cur = float(task.Duration or 0)  # minutes
+        except Exception as exc:
+            log.warning("task '%s': cannot read Duration — impact days left "
+                        "untouched: %s", code, exc)
+            return False
+        new_dur = cur + delta * mpd
+        effective_total = target
+        if new_dur < 0:
+            # The planner shortened this task below what the ledger says was
+            # applied — there are fewer days left to remove than ICE closed.
+            # Remove what is actually there and keep the ledger truthful
+            # about how many applied days remain in the file.
+            new_dur = 0.0
+            effective_total = int(round(ledger - cur / mpd))
+            log.warning("task '%s': impact reversal clamped — wanted %+d "
+                        "day(s) but only %.2f day(s) of duration remain; "
+                        "ledger set to %d", code, delta, cur / mpd,
+                        effective_total)
+        if (int(round(new_dur)) == int(round(cur))
+                and effective_total == ledger):
+            return False  # fully clamped away — nothing really changes
+        try:
+            task.Duration = int(round(new_dur))
+        except Exception as exc:
+            log.warning("task '%s': could not change Duration for impact "
+                        "days: %s", code, exc)
+            return False
+        try:
+            task.Number1 = effective_total
+        except Exception as exc:
+            log.warning("task '%s': duration changed but the ledger write "
+                        "(Number1) failed — undoing the duration change so "
+                        "the next sync can retry cleanly: %s", code, exc)
+            try:
+                task.Duration = int(round(cur))
+            except Exception as exc2:
+                log.error("task '%s': UNDO FAILED — the file may now hold "
+                          "%+d unledgered impact day(s); fix Duration or "
+                          "Number1 by hand: %s", code, delta, exc2)
+            return False
+        return True
+
+    def _shift_milestone_impact(self, task, target: int, delta: int,
+                                code: str) -> bool:
+        """Milestones are zero-duration, so impact days move the milestone's
+        start-no-earlier-than constraint date by `delta` working days
+        (Monday-Friday) instead. Duration stays 0. The base date is the
+        current ConstraintDate, or Start when no constraint is set. The
+        ledger (Number1) is written only after the date change succeeded;
+        on a failed ledger write the constraint is restored."""
+        base_str = com_date_str(getattr(task, "ConstraintDate", None))
+        if base_str is None:
+            base_str = com_date_str(getattr(task, "Start", None))
+        if base_str is None:
+            log.warning("task '%s': milestone has no readable constraint or "
+                        "start date — impact days left untouched", code)
+            return False
+        base = date.fromisoformat(base_str)
+        new_date = add_working_days(base, delta)
+        try:
+            orig_type = int(task.ConstraintType)
+        except Exception:
+            orig_type = None
+        try:
+            task.ConstraintType = PJ_SNET
+        except Exception as exc:
+            log.warning("task '%s': could not set the start-no-earlier-than "
+                        "constraint type — impact days left untouched: %s",
+                        code, exc)
+            return False
+        if not set_com_morning(task, "ConstraintDate", new_date,
+                               f"impact constraint date on '{code}'"):
+            log.warning("task '%s': could not move the constraint date — "
+                        "impact days left untouched", code)
+            if orig_type is not None:
+                try:
+                    task.ConstraintType = orig_type
+                except Exception:
+                    pass
+            return False
+        try:
+            task.Number1 = target
+        except Exception as exc:
+            log.warning("task '%s': constraint moved but the ledger write "
+                        "(Number1) failed — undoing the constraint change so "
+                        "the next sync can retry cleanly: %s", code, exc)
+            undone = set_com_morning(task, "ConstraintDate", base,
+                                     f"restored constraint date on '{code}'")
+            if orig_type is not None:
+                try:
+                    task.ConstraintType = orig_type
+                except Exception:
+                    undone = False
+            if not undone:
+                log.error("task '%s': UNDO FAILED — the file may now hold "
+                          "%+d unledgered impact day(s) on this milestone; "
+                          "fix ConstraintDate or Number1 by hand", code, delta)
+            return False
+        return True
 
     # -- create: build a brand-new network from the ICE task list ------------
     def build_network(self, task_specs: list):
