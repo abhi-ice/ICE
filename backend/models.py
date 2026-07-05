@@ -215,6 +215,11 @@ class ProjectCreate(StrictModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: CalendarBasis = "calendar_days"
+    # Site timezone (2026-07-03) -- IANA name. Construction impact math
+    # follows the SITE's clock, not each viewer's device (or the server's
+    # UTC clock): "today" for delay/RFI elapsed-day growth and the
+    # date-granular server stamps in the impact path are computed here.
+    timezone: str = "America/New_York"
     # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
     # is_cui=true blocks photo AI analysis for compliance; ai_enabled
     # is a per-project off switch independent of the tenant-level
@@ -274,6 +279,9 @@ class ProjectUpdate(StrictModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: Optional[CalendarBasis] = None
+    # Site timezone (2026-07-03) -- editable IANA name; construction
+    # impact math follows the SITE's clock, not each viewer's device.
+    timezone: Optional[str] = None
     # Bucket F Phase 1 -- editable AI gate.
     is_cui: Optional[bool] = None
     ai_enabled: Optional[bool] = None
@@ -329,6 +337,10 @@ class Project(ReadModel):
     current_substantial_completion: Optional[date] = None
     contract_days: Optional[int] = None
     calendar_basis: Optional[str] = "calendar_days"
+    # Site timezone (2026-07-03) -- IANA name; construction impact math
+    # follows the SITE's clock, not each viewer's device. Legacy projects
+    # without a stored value read as Eastern.
+    timezone: Optional[str] = "America/New_York"
     # Bucket F Phase 1 (2026-05-08) -- CUI flag + per-project AI gate.
     is_cui: bool = False
     ai_enabled: bool = True
@@ -1756,6 +1768,11 @@ class RfiCreate(StrictModel):
     spec_section_refs: List[str] = Field(default_factory=list)
     drawing_refs: List[dict] = Field(default_factory=list)
     date_required: Optional[date] = None
+    # Explicit impact start (2026-07-03) -- when the estimated schedule
+    # impact BEGINS. Today = the RFI is already affecting today's work;
+    # tomorrow = the impact starts then. Elapsed-growth and closing-actual
+    # math anchor here, falling back to date_initiated for legacy rows.
+    impact_start_date: Optional[date] = None
     priority: Priority = "normal"
     # Bucket D Corrective (2026-05-08) -- master-schedule task linkage.
     # References tasks.id (the master schedule), not daily_report_
@@ -1809,6 +1826,9 @@ class RfiUpdate(StrictModel):
     response_text: Optional[str] = Field(default=None, alias="answer")
     status: Optional[RfiStatus] = None
     date_responded: Optional[date] = None
+    # Explicit impact start (2026-07-03) -- editable post-create; when
+    # the estimated impact begins (see RfiCreate.impact_start_date).
+    impact_start_date: Optional[date] = None
     cost_impact_estimated_usd: Optional[float] = None
     time_impact_estimated_days: Optional[int] = None
     # Bucket D Corrective -- re-pickable post-create. Re-validated
@@ -1862,6 +1882,10 @@ class Rfi(ReadModel):
     date_initiated: date
     date_required: Optional[date] = None
     date_responded: Optional[date] = None
+    # Explicit impact start (2026-07-03) -- when the estimated impact
+    # begins; elapsed-growth and closing-actual math anchor here, falling
+    # back to date_initiated. None on legacy rows (behavior unchanged).
+    impact_start_date: Optional[date] = None
     response_text: Optional[str] = None
     status: RfiStatus = "draft"
     priority: Priority = "normal"
@@ -1973,6 +1997,12 @@ class DelayCreate(StrictModel):
     location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
+    # Explicit impact start (2026-07-03) -- when the estimated impact
+    # BEGINS. Today = the delay is already affecting today's work;
+    # tomorrow = the impact starts then. All elapsed-growth math and the
+    # closing-actual math anchor here, defaulting to the delay's own log
+    # date when absent (legacy rows behave exactly as before).
+    impact_start_date: Optional[date] = None
     description: str
     severity: Severity = "minor"
     photo_urls: List[str] = Field(default_factory=list)
@@ -2004,6 +2034,9 @@ class DelayCreate(StrictModel):
 class DelayUpdate(StrictModel):
     description: Optional[str] = None
     severity: Optional[Severity] = None
+    # Explicit impact start (2026-07-03) -- editable post-create; when
+    # the estimated impact begins (see DelayCreate.impact_start_date).
+    impact_start_date: Optional[date] = None
     reason_category: Optional[str] = None
     photo_urls: Optional[List[str]] = None
     linked_task_ids: Optional[List[str]] = None
@@ -2031,6 +2064,10 @@ class Delay(ReadModel):
     location_id: Optional[str] = None
     daily_report_id: Optional[str] = None
     date: date
+    # Explicit impact start (2026-07-03) -- when the estimated impact
+    # begins; elapsed-growth and closing-actual math anchor here, falling
+    # back to the log date. None on legacy rows (behavior unchanged).
+    impact_start_date: Optional[date] = None
     description: str
     severity: Severity
     photo_urls: List[str] = Field(default_factory=list)

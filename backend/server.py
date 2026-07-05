@@ -48,7 +48,7 @@ if os.environ.get("ANTHROPIC_API_KEY"):
         )
 # ====================================================================
 
-from database import get_db, close_db  # noqa: E402
+from database import get_db, close_db, tenant_filter  # noqa: E402
 from auth import require_tenant  # noqa: E402
 from routers.auth_router import router as auth_router, team_router  # noqa: E402
 from routers.projects_router import router as projects_router  # noqa: E402
@@ -705,6 +705,108 @@ async def lifespan(app: FastAPI):
     app.state.friday_recovery_task = _asyncio.create_task(
         _periodic_friday_recovery(),
     )
+
+    # Time-aware impact refresh (2026-07-03) -- Mode-2 impact targets GROW
+    # with elapsed time (an open 2-day-estimate delay still open on working
+    # day 3 pushes 3 days), so the number sitting in Microsoft Project goes
+    # stale even when nobody touches the project in ICE. Every 6 hours (plus
+    # one boot pass about 60 seconds after startup) each Microsoft Project
+    # (mode2) project that has at least one open delay or open RFI carrying
+    # per-task impacts gets a fresh push job enqueued, so the worker
+    # re-reconciles the grown targets against its in-file ledger. Safe to
+    # over-fire: a zero-delta push never dirties the file, and projects with
+    # a job already pending/claimed are skipped. Inert unless the Microsoft
+    # Project connector (FF_SCHEDULE_MODE_2) is on.
+    async def _periodic_msp_impact_refresh():
+        from services import ms_project_sync as _mps
+        from services.feature_flags import schedule_mode_2_enabled as _mode2_on
+        SLEEP_S = 6 * 3600
+        first_pass = True
+        while True:
+            try:
+                # Short first sleep: catch up on growth accumulated while the
+                # server was down without slowing the startup path itself.
+                await _asyncio.sleep(60 if first_pass else SLEEP_S)
+                first_pass = False
+                if not _mode2_on():
+                    continue
+                db = get_db()
+                # Inactive projects get no refresh pushes: a complete or
+                # cancelled job's schedule is frozen (models.ProjectStatus —
+                # planning/mobilization/active/closeout stay eligible).
+                projects = await db.projects.find(
+                    {"schedule_mode": "mode2",
+                     "status": {"$nin": ["complete", "cancelled"]}},
+                    {"_id": 0, "id": 1, "tenant_id": 1},
+                ).to_list(length=None)
+                enqueued = 0
+                for p in projects:
+                    tid, pid = p.get("tenant_id"), p.get("id")
+                    if not tid or not pid:
+                        continue
+                    try:
+                        # Only projects where something can actually be
+                        # growing: an OPEN delay or OPEN RFI with per-task
+                        # impacts. Closed actuals are static, and the pushes
+                        # that closed them already carried the final number.
+                        growing = await db.delays.find_one(
+                            tenant_filter(tid, {
+                                "project_id": pid,
+                                "status": {"$in": ["open", "in_progress"]},
+                                "per_task_impacts": {"$exists": True, "$ne": []},
+                            }),
+                            {"_id": 0, "id": 1},
+                        ) or await db.rfis.find_one(
+                            tenant_filter(tid, {
+                                "project_id": pid,
+                                "status": {"$in": ["draft", "sent", "in_review"]},
+                                "per_task_impacts": {"$exists": True, "$ne": []},
+                            }),
+                            {"_id": 0, "id": 1},
+                        )
+                        if not growing:
+                            continue
+                        # One in-flight sync at a time. A pending job's
+                        # change set was FROZEN at enqueue (it does NOT pick
+                        # up growth since then) -- the skip exists purely to
+                        # avoid queue pile-up behind a slow/offline worker,
+                        # and the NEXT tick catches up with a fresh snapshot
+                        # once the queue is clear.
+                        active = await db.schedule_jobs.find_one(
+                            {"tenant_id": tid, "project_id": pid,
+                             "status": {"$in": ["pending", "claimed"]}},
+                            {"_id": 0, "id": 1},
+                        )
+                        if active:
+                            continue
+                        # System actor semantics: actor_id=None + a fixed
+                        # request_id, matching the submittal-SLA loop.
+                        await _mps.enqueue_push_job(
+                            tid, pid, actor_id=None,
+                            request_id="msp_impact_refresh_periodic",
+                        )
+                        enqueued += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "msp impact refresh failed for project %s: %s",
+                            pid, exc,
+                        )
+                if enqueued:
+                    logger.info(
+                        "msp impact refresh tick: mode2_projects=%s "
+                        "pushes_enqueued=%s", len(projects), enqueued,
+                    )
+            except _asyncio.CancelledError:
+                logger.info("msp impact refresh task cancelled")
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "msp impact refresh tick failed (non-fatal): %s", exc,
+                )
+
+    app.state.msp_impact_refresh_task = _asyncio.create_task(
+        _periodic_msp_impact_refresh(),
+    )
     yield
     # Cancel the recurring tasks before closing the DB so the next
     # tick doesn't hit a closed connection.
@@ -719,6 +821,7 @@ async def lifespan(app: FastAPI):
         "field_suggestions_expire_task",
         "submittal_sla_breach_task",
         "friday_recovery_task",
+        "msp_impact_refresh_task",
         "runtime_settings_refresh_task",
     ):
         task = getattr(app.state, attr, None)

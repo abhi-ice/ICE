@@ -16,6 +16,43 @@ used:
 Design contract (from the Mode-2 spec):
   * per-project monotonic `seq`; ingest rejects a result whose seq <= watermark
     (out-of-order / replayed results can't regress the schedule).
+  * PUSH carries ICE-logged schedule impacts, TIME-AWARE (2026-07-03): every
+    task_update includes `impact_days_total` — the per-task target computed
+    by _msp_target_impact_for_task in this module. The rules:
+      A. While a delay or RFI is OPEN, its per-task contribution is
+         max(estimated per-task impact days, working days elapsed since its
+         ANCHOR). The anchor is the explicit impact_start_date when set
+         (2026-07-03: "when the impact begins" — today = already affecting
+         today's work, tomorrow = starts then), else the log date
+         (delays: date/logged_date; RFIs: date_initiated/created_at).
+         A 2-day estimate still open on working day 3 pushes 3, on day 4
+         pushes 4, and so on — open impacts grow with time. A FUTURE
+         anchor clamps elapsed at 0, so the estimate alone rides until
+         the window actually starts elapsing. "Today"/"elapsed" are
+         measured on the SITE's clock (the project's IANA timezone,
+         2026-07-03) — not the server's UTC clock or a viewer's device.
+      B. Once CLOSED, the contribution snaps to the ACTUAL working days
+         consumed. Delays: actual_impact_days as stamped at resolution,
+         which honours a user-entered (possibly BACKDATED) resolved_date —
+         closing on day 5 with resolved_date on day 2 yields 2. RFIs:
+         working days from the anchor to date_responded / answered_date.
+         Voided RFIs (mistakes) count 0.
+      C. Closed actuals PERSIST — time really consumed stays in the
+         schedule. Only over-estimates and open-impact auto-growth get
+         pulled back, via the lower target on the next push.
+      D. Over-SLA submittals pass through their per_task_impacts unchanged
+         (the submittal SLA service owns their growth). QC rework rides
+         automatically through its synthetic delay row.
+    Delays and RFIs whose ANCHOR falls BEFORE the project's latest UPLOADED
+    file version (ms_project_file_adopted_at — re-stamped on EVERY user
+    upload, never for generated or worker-pushed versions) have the
+    pre-upload share of their contribution SUBTRACTED: the uploaded file's plan is
+    presumed to already reflect the working days up to the upload, while
+    growth and actuals beyond it still flow. Fully pre-upload history
+    therefore nets 0. The key is present on EVERY update (explicit 0
+    when nothing is pushing) because the worker applies the DELTA versus its
+    in-file ledger; Microsoft Project cascades natively and the read-back
+    brings the recomputed dates/floats home.
   * claim is atomic (find_one_and_update pending->claimed) with a lease; a reaper
     returns expired-lease jobs to pending (worker crash recovery).
   * ingest writes MS Project's computed dates into our EXISTING fields
@@ -28,6 +65,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from database import get_db, tenant_filter
 from models import gen_id, pred_code, pred_relationship
@@ -42,6 +80,20 @@ MAX_ATTEMPTS = 3             # after this many reclaim cycles -> parked + alert
 
 def _now() -> datetime:
     return datetime.utcnow()
+
+
+def _project_today(tz_name: Optional[str] = None) -> date:
+    """'Today' on the SITE's clock (2026-07-03). Construction impact math
+    follows the project's timezone, not each viewer's device or the
+    server's UTC clock -- at 8 PM Eastern the UTC date is already
+    tomorrow, which would grow every open impact a working day early.
+    tz_name is the project's IANA timezone (projects.timezone); missing
+    -> America/New_York, unparseable -> fall back to the UTC date.
+    Module-level (like _now) so tests can freeze it."""
+    try:
+        return datetime.now(ZoneInfo(tz_name or "America/New_York")).date()
+    except Exception:
+        return _now().date()
 
 
 def _parse(v) -> Optional[date]:
@@ -69,14 +121,226 @@ async def _next_seq(db, tenant_id: str, project_id: str) -> int:
 
 
 # --------------------------------------------------------------------------
+# Time-aware per-task impact target (2026-07-03).
+# --------------------------------------------------------------------------
+async def _msp_target_impact_for_task(
+    db, tenant_id: str, task_id: str, adopted_after: Optional[str] = None,
+    tz_name: Optional[str] = None,
+) -> int:
+    """The number of working days the Microsoft Project worker should hold
+    this task pushed by, RIGHT NOW. Mirrors the query shapes of task_status.
+    _open_blocker_impact_for_task (linked_task_ids array containment,
+    per_task_impacts entry matching, the same status vocabularies,
+    tenant_filter everywhere) but replaces the static estimate sum with
+    time-aware contributions.
+
+    "Today" is computed on the SITE's clock (2026-07-03): tz_name is the
+    project's IANA timezone (the caller reads it off the project doc), fed
+    to _project_today. Elapsed-day growth therefore rolls over when the
+    SITE's day does, not when UTC's does.
+
+    ANCHOR (2026-07-03): every delay/RFI anchors its elapsed-day window on
+    the explicit impact_start_date when set ("when the impact begins" —
+    today = already affecting today's work, tomorrow = starts then), with
+    the pre-existing fallback chain preserved for legacy rows. A FUTURE
+    anchor clamps elapsed at 0 — the contribution is just the estimate
+    until the window actually starts elapsing.
+
+    Delays linked to this task (anchor: impact_start_date -> date ->
+    logged_date):
+      * open / in_progress -> max(estimated per-task days, working days
+        elapsed since the anchor). A 2-day estimate still open on working
+        day 3 contributes 3, day 4 contributes 4, and so on.
+      * resolved -> the ACTUAL: actual_impact_days as stamped at resolution
+        time (routers.field_events_router, Part L-3 — itself anchored on
+        impact_start_date when present), which honours a user-entered —
+        possibly BACKDATED — resolved_date, so closing on day 5 with
+        resolved_date two working days after the anchor yields 2.
+        Missing stamp -> recomputed here from anchor/resolved_date; neither
+        usable -> 0. The actual PERSISTS (time really consumed stays in the
+        schedule); only over-estimates and auto-growth get pulled back, and
+        the worker's in-file ledger applies that delta automatically.
+      * any other status (deleted, legacy) -> 0.
+
+    RFIs linked to this task (anchor: impact_start_date -> date_initiated
+    -> created_at's date part):
+      * draft / sent / in_review -> same max(estimate, elapsed) growth.
+      * answered / closed -> the ACTUAL: working days from the anchor to the
+        user-entered date_responded (preferred — it can be backdated, like a
+        delay's resolved_date) or the answered_date docs_router stamps when
+        the status flips out of the open set. Neither usable -> 0.
+      * voided -> 0. A voided RFI was a mistake, not consumed schedule time.
+
+    Submittals gating this task (schedule_activity_id, singular):
+      * over-SLA only (status submitted/in_review AND sla_status breached),
+        per_task_impacts passed through UNCHANGED — the submittal SLA
+        service owns their growth. Byte-identical to the pass-through in
+        _open_blocker_impact_for_task.
+
+    ADOPTION GATE — a SUBTRACTION, not an exclusion (2026-07-03): every
+    user UPLOAD of the hosted file re-baselines the plan (`adopted_after`
+    is the date part of ms_project_file_adopted_at, re-stamped on every
+    upload; generated and worker-pushed versions never stamp it). For a
+    delay/RFI whose ANCHOR (same anchor as the growth math above) is
+    BEFORE that gate date, the working days from the anchor up to the
+    gate are presumed already baked into the uploaded plan, so its
+    contribution is
+        max(0, contribution - working_days(anchor -> gate)).
+    That makes fully pre-upload resolved history net 0, an open source
+    spanning the upload push only its post-upload growth, and a source
+    resolved after the upload push only its post-upload share. An anchor
+    on/after the gate — or adopted_after=None (no upload yet; projects
+    from before the stamp existed) — leaves the contribution untouched.
+
+    QC issues ride automatically: severity=rework_required spawns a synthetic
+    delay in db.delays (Bug #53), which the delay walk above picks up like
+    any other delay.
+    """
+    today = _project_today(tz_name)
+    adopt_d = _parse(adopted_after)
+
+    def _est(imp) -> float:
+        try:
+            return float(imp.get("projected_impact_days") or 0)
+        except Exception:
+            return 0.0
+
+    def _gate(anchor: Optional[date], contribution: float) -> float:
+        """ADOPTION GATE as a SUBTRACTION (2026-07-03): the working days
+        from a pre-gate anchor up to the gate are presumed already baked
+        into the uploaded file's plan — only the portion beyond the gate
+        still pushes. Anchor on/after the gate, or no gate: unchanged."""
+        if adopt_d and anchor and anchor < adopt_d:
+            baked = float(working_days_between(anchor, adopt_d))
+            return max(0.0, contribution - baked)
+        return contribution
+
+    total = 0.0
+
+    # ---- Delays: open grow with elapsed time; resolved snap to actual -----
+    # to_list caps at 200 (2026-07-03): the query keeps CLOSED sources too
+    # (resolved delays / answered RFIs), so the per-task set accumulates
+    # over a project's life instead of staying a handful of open rows.
+    delay_docs = await db.delays.find(
+        tenant_filter(tenant_id, {
+            "linked_task_ids": task_id,
+            "status": {"$in": ["open", "in_progress", "resolved"]},
+        }),
+        {"_id": 0, "status": 1, "date": 1, "logged_date": 1,
+         "impact_start_date": 1, "resolved_date": 1,
+         "actual_impact_days": 1, "per_task_impacts": 1},
+    ).to_list(200)
+    for d in delay_docs:
+        # Anchor (2026-07-03): explicit impact_start_date first; legacy
+        # fallback chain (date -> logged_date) preserved unchanged.
+        anchor = _parse(d.get("impact_start_date")
+                        or d.get("date") or d.get("logged_date"))
+        for imp in (d.get("per_task_impacts") or []):
+            if imp.get("task_id") != task_id:
+                continue
+            if d.get("status") in ("open", "in_progress"):
+                # max(0, elapsed): a FUTURE anchor (impact starts tomorrow)
+                # yields negative working days -- clamp so the estimate
+                # alone rides until the window starts elapsing.
+                elapsed = working_days_between(anchor, today) if anchor else 0
+                contribution = max(_est(imp), float(max(0, elapsed)))
+            else:  # resolved -> the actual, never re-grown
+                actual = d.get("actual_impact_days")
+                try:
+                    actual = float(actual) if actual is not None else None
+                except (TypeError, ValueError):
+                    actual = None
+                if actual is None:
+                    resolved = _parse(d.get("resolved_date"))
+                    actual = (float(working_days_between(anchor, resolved))
+                              if (anchor and resolved) else 0.0)
+                contribution = max(0.0, actual)
+            total += _gate(anchor, contribution)
+
+    # ---- RFIs: same growth/actual split. voided is EXCLUDED from the query
+    # (contributes 0 by omission — a voided RFI never consumed schedule time).
+    rfi_docs = await db.rfis.find(
+        tenant_filter(tenant_id, {
+            "linked_task_ids": task_id,
+            "status": {"$in": ["draft", "sent", "in_review", "answered", "closed"]},
+        }),
+        {"_id": 0, "status": 1, "date_initiated": 1, "created_at": 1,
+         "impact_start_date": 1, "date_responded": 1, "answered_date": 1,
+         "per_task_impacts": 1},
+    ).to_list(200)
+    for r in rfi_docs:
+        # Anchor (2026-07-03): explicit impact_start_date first; legacy
+        # fallback chain (date_initiated -> created_at) preserved.
+        anchor = _parse(r.get("impact_start_date")
+                        or r.get("date_initiated") or r.get("created_at"))
+        for imp in (r.get("per_task_impacts") or []):
+            if imp.get("task_id") != task_id:
+                continue
+            if r.get("status") in ("draft", "sent", "in_review"):
+                # Same future-anchor clamp as the delay walk above.
+                elapsed = working_days_between(anchor, today) if anchor else 0
+                contribution = max(_est(imp), float(max(0, elapsed)))
+            else:  # answered / closed -> actual elapsed, backdate-friendly
+                closed_at = _parse(r.get("date_responded") or r.get("answered_date"))
+                contribution = (float(max(0, working_days_between(anchor, closed_at)))
+                                if (anchor and closed_at) else 0.0)
+            total += _gate(anchor, contribution)
+
+    # ---- Submittals: pass-through, identical to _open_blocker_impact_for_task.
+    submittal_docs = await db.submittals.find(
+        tenant_filter(tenant_id, {
+            "schedule_activity_id": task_id,
+            "status": {"$in": ["submitted", "in_review"]},
+            "sla_status": "breached",
+        }),
+        {"_id": 0, "per_task_impacts": 1},
+    ).to_list(50)
+    for s in submittal_docs:
+        for imp in (s.get("per_task_impacts") or []):
+            if imp.get("task_id") == task_id:
+                total += _est(imp)
+
+    return int(round(total))
+
+
+# --------------------------------------------------------------------------
 # PUSH change-set: the field actuals our app owns, for this project's tasks.
 # --------------------------------------------------------------------------
 async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
     """Snapshot the progress/actuals ICE owns into a worker change-set. We push
     activity_code (stamped into Text1 so the worker can match), pct_complete,
-    and actual_start/finish. Dependency edits are NOT pushed here — those only
-    flow through an approved schedule proposal (the network is Project-owned).
-    Idempotent: pushing the same values is a no-op for Project."""
+    actual_start/finish, and impact_days_total — TIME-AWARE (2026-07-03): the
+    per-task target from _msp_target_impact_for_task. Open delays and RFIs
+    grow with elapsed working days (never below their estimate) from their
+    anchor — the explicit impact_start_date when set, else the log date —
+    with "today" measured on the SITE's clock (the project's timezone, read
+    off the project doc here and passed down). Closed ones
+    snap to the working days they actually consumed (a backdated close pulls
+    the number down; the consumed days persist), breached submittals pass
+    their estimates through unchanged, and sources anchored before the latest
+    UPLOADED file version contribute only their post-upload share (the
+    adoption-gate subtraction). The key is present on
+    EVERY update (explicit 0 when nothing is pushing) because the worker
+    reconciles against its in-file ledger: the lower target is what lets it
+    pull back previously applied days once a delay/RFI closes under its
+    estimate — while a closed actual keeps exactly the days it consumed.
+    Dependency edits are NOT pushed here — those only flow through an
+    approved schedule proposal (the network is Project-owned). Idempotent:
+    pushing the same values is a no-op for Project."""
+    # Adoption stamp: re-stamped by the internal router on EVERY user
+    # upload of the hosted file (never for generated or worker-pushed
+    # versions). Date part only — the gate subtracts the working days
+    # between a delay/RFI's log DATE and this date. Absent (no upload yet,
+    # or legacy projects) -> gate off.
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}),
+        {"_id": 0, "ms_project_file_adopted_at": 1, "timezone": 1}) or {}
+    adopted_raw = proj.get("ms_project_file_adopted_at")
+    adopted_after = str(adopted_raw)[:10] if adopted_raw else None
+    # Site timezone (2026-07-03): "today" for the elapsed-day growth below
+    # follows the SITE's clock. Missing/legacy -> _project_today's Eastern
+    # default (with a UTC fallback for a bad IANA name).
+    tz_name = proj.get("timezone")
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0, "id": 1, "activity_code": 1, "external_task_id": 1,
@@ -87,12 +351,15 @@ async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
         code = t.get("activity_code")
         if not code:
             continue
+        impact = await _msp_target_impact_for_task(
+            db, tenant_id, t["id"], adopted_after, tz_name)
         upd = {
             "external_task_id": t.get("external_task_id"),
             "activity_code": code,
             "percent_complete": t.get("pct_complete"),
             "actual_start": (t.get("actual_start") or None),
             "actual_finish": (t.get("actual_finish") or None),
+            "impact_days_total": int(round(impact)),
             "set_text_field": {"Text1": code},
         }
         updates.append(upd)
@@ -104,19 +371,26 @@ async def _project_file_descriptor(db, tenant_id: str, project_id: str) -> dict:
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}),
         {"_id": 0, "id": 1, "ms_project_file": 1, "ms_project_file_id": 1,
-         "ms_project_file_rev": 1, "ms_project_file_sha": 1},
+         "ms_project_file_rev": 1, "ms_project_file_sha": 1,
+         "ms_project_file_source": 1},
     ) or {}
     # ms_project_file (optional, legacy) lets an admin pin the expected .mpp
     # FullName the worker must have open; absent -> worker uses its configured
     # project file. File pipeline (2026-07-02): file_id/file_rev/file_sha
     # describe the CURRENT hosted version -- when file_id is set the worker
     # downloads it per job (verifying sha) instead of using a local file.
+    # file_source (2026-07-03): how the current version got here ('upload' /
+    # 'worker_push' / 'generated'). On a push against an 'upload' version the
+    # worker RESETS its in-file impact ledger before applying updates — an
+    # uploaded file's dates are the new baseline, so whatever ledger the file
+    # carried no longer describes un-baked impacts.
     return {
         "logical_id": project_id,
         "expected_fullname": proj.get("ms_project_file"),
         "file_id": proj.get("ms_project_file_id"),
         "file_rev": proj.get("ms_project_file_rev"),
         "file_sha": proj.get("ms_project_file_sha"),
+        "file_source": proj.get("ms_project_file_source"),
     }
 
 

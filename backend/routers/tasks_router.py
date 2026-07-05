@@ -188,13 +188,21 @@ class ClearPaperworkBlockerPayload(StrictModel):
     status: str = "in_progress"   # status to set after clearing
 
 
-async def _resolve_open_paperwork_blockers(db, tenant_id: str, task_id: str, actor_id: str, note: str):
+async def _resolve_open_paperwork_blockers(db, tenant_id: str, task_id: str, actor_id: str, note: str,
+                                           project_id: str = None):
+    # Site-timezone stamps (2026-07-03): these synthetic delays sit in the
+    # schedule-impact path, so DATE-granular stamps follow the project's
+    # clock like docs_router/field_events_router (server UTC has already
+    # rolled to tomorrow during Eastern evenings).
+    from routers.docs_router import _project_today_iso
+    today = (await _project_today_iso(db, tenant_id, project_id)
+             if project_id else utc_now().date().isoformat())
     await db.delays.update_many(
         tenant_filter(tenant_id, {
             "source": PAPERWORK_BLOCKER_SOURCE, "linked_task_ids": task_id,
             "status": {"$in": ["open", "in_progress"]},
         }),
-        {"$set": {"status": "resolved", "resolved_date": utc_now().date().isoformat(),
+        {"$set": {"status": "resolved", "resolved_date": today,
                   "resolved_note": note, "resolved_by_user_id": actor_id,
                   "updated_at": utc_now().isoformat()}},
     )
@@ -213,9 +221,11 @@ async def set_paperwork_blocker(task_id: str, payload: PaperworkBlockerPayload, 
     impact = max(0.0, float(payload.impact_days or 0))
     actor = ctx["user"]["id"]
     now = utc_now().isoformat()
-    today = utc_now().date().isoformat()
+    from routers.docs_router import _project_today_iso
+    today = await _project_today_iso(db, ctx["tenant_id"], project_id)
     # supersede any existing open paperwork blocker for this task (idempotent)
-    await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor, "superseded by new paperwork blocker")
+    await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor,
+                                           "superseded by new paperwork blocker", project_id=project_id)
     doc = {
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "project_id": project_id,
         "source": PAPERWORK_BLOCKER_SOURCE,
@@ -258,7 +268,8 @@ async def clear_paperwork_blocker(task_id: str, payload: ClearPaperworkBlockerPa
         raise HTTPException(404, "Task not found")
     project_id = task["project_id"]
     actor = ctx["user"]["id"]
-    await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor, "cleared from Paperwork progress")
+    await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor,
+                                           "cleared from Paperwork progress", project_id=project_id)
     new_status = payload.status if payload.status in ("in_progress", "not_started") else "in_progress"
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}),
                               {"$set": {"status": new_status, "updated_at": utc_now().isoformat()}})

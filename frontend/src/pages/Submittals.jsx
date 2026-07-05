@@ -843,7 +843,7 @@ function EditSubmittalDialog({ submittal, onClose, onSaved, userRole, isAdminOrP
                 onChange={(e) => setEventType(e.target.value)}
                 data-testid="event-type"
                 className="w-full h-9 px-2 rounded border border-slate-200 bg-white text-sm">
-                <option value="">— select —</option>
+                <option value="">Select…</option>
                 {REVIEW_EVENT_TYPES.map((t) =>
                   <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
               </select>

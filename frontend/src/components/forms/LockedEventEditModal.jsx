@@ -441,7 +441,7 @@ function FieldEditor({ f, value, onChange, entityType, entityId }) {
           <select data-testid={id} value={value ?? ""}
             onChange={(e) => onChange(e.target.value)}
             className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-            <option value="">— select —</option>
+            <option value="">Select…</option>
             {(f.options || []).map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}

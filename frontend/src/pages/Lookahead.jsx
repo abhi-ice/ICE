@@ -427,7 +427,6 @@ function GanttView({ rows, days, onRefresh }) {
             return (
               <div key={t.id} className="flex relative border-b border-slate-100 hover:bg-slate-50" style={{ height: ROW_H }} data-testid={`gantt-row-${t.activity_code}`}>
                 <div style={{ width: LABEL_W, minWidth: LABEL_W }} className="px-3 flex items-center gap-2 border-r border-slate-200 text-xs">
-                  <span className="font-mono text-slate-500">{t.activity_code}</span>
                   <span className="truncate">{t.description}</span>
                 </div>
                 <div
@@ -440,7 +439,7 @@ function GanttView({ rows, days, onRefresh }) {
                     : cs === "behind" ? "Behind planned %"
                     : isCP ? "Critical path" : ""}
                 >
-                  <span className="truncate">{t.activity_code} · {t.pct_complete}%</span>
+                  <span className="truncate">{t.description} · {t.pct_complete}%</span>
                 </div>
                 {projWidth > 0 && (
                   <div

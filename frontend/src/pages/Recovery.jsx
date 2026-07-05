@@ -62,9 +62,9 @@ export default function Recovery() {
         <div className="flex-1 min-w-[200px] sm:min-w-[280px]">
           <FieldLabel required className="field-label">Target activity</FieldLabel>
           <select data-testid="recovery-target" value={target} onChange={(e) => setTarget(e.target.value)} className="w-full h-9 px-2 rounded border border-input bg-background text-sm">
-            <option value="">— select activity —</option>
+            <option value="">Select activity…</option>
             {tasks.map((t) => (
-              <option key={t.id} value={t.id}>[{t.activity_code}] {t.description}</option>
+              <option key={t.id} value={t.id}>{t.description}</option>
             ))}
           </select>
         </div>

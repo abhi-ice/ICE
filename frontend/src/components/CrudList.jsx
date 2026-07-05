@@ -386,7 +386,7 @@ function FormField({ f, value, onChange, testidPrefix }) {
       <div>
         <label className="field-label">{f.label}{f.required && " *"}</label>
         <select data-testid={id} value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm max-md:min-h-[44px]">
-          <option value="">— select —</option>
+          <option value="">Select…</option>
           {(f.options || []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>

@@ -869,7 +869,7 @@ function ReallocationForm({ onClose, onCommitted }) {
         <select data-testid="rl-realloc-crew" value={form.crew_id}
           onChange={(e) => setForm({ ...form, crew_id: e.target.value })}
           className="w-full h-9 px-2 rounded border border-slate-300 bg-white text-sm">
-          <option value="">— select crew —</option>
+          <option value="">Select crew…</option>
           {crews.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.trade})</option>)}
         </select>
       </div>
@@ -888,7 +888,7 @@ function ReallocationForm({ onClose, onCommitted }) {
           <select data-testid="rl-realloc-to" value={form.to_project_id}
             onChange={(e) => setForm({ ...form, to_project_id: e.target.value })}
             className="w-full h-9 px-2 rounded border border-slate-300 bg-white text-sm">
-            <option value="">— select target project —</option>
+            <option value="">Select target project…</option>
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>

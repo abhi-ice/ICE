@@ -8,6 +8,7 @@ import asyncio
 import os
 import sys
 import types
+from datetime import date, datetime
 
 import pytest
 
@@ -27,6 +28,12 @@ def _match(row, q):
             if "$lt" in v and not (rv is not None and rv < v["$lt"]):
                 return False
             if "$in" in v and rv not in v["$in"]:
+                return False
+        elif isinstance(rv, list):
+            # Mongo array-containment: {"linked_task_ids": "task-A"} matches a
+            # doc whose linked_task_ids ARRAY contains "task-A" (used by
+            # task_status._open_blocker_impact_for_task's delay/RFI walks).
+            if v not in rv:
                 return False
         elif rv != v:
             return False
@@ -644,3 +651,365 @@ def test_file_upload_rejected_create_and_pull_not_reenqueued():
         "error": {"code": "ProjectError", "message": "modal dialog"}}))
     assert "requeued_job_id" not in out3
     assert len(_STUB.schedule_jobs.rows) == n_jobs
+
+
+# --------------------------------------------------------------------------
+# Impact days ride the push, TIME-AWARE (2026-07-03) -- ICE-logged delays/
+# RFIs/breached submittals flow INTO Project via impact_days_total on every
+# task_update. Open sources grow with elapsed working days (never below the
+# estimate); closed sources snap to the working days they actually consumed.
+# 'Today' is frozen by monkeypatching the module's _now helper.
+# --------------------------------------------------------------------------
+# Thursday 2026-03-12. No federal holidays fall in the windows used below,
+# so the working-day counts are plain weekday counts:
+#   Mar 2 Mon . Mar 3 Tue . Mar 4 Wed . Mar 5 Thu . Mar 6 Fri
+#   Mar 9 Mon . Mar 10 Tue . Mar 11 Wed . Mar 12 Thu (frozen today)
+FROZEN_NOW = datetime(2026, 3, 12, 12, 0, 0)
+TODAY = "2026-03-12"
+
+
+def _freeze_today(monkeypatch):
+    monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
+    # Site timezone (2026-07-03): the impact walk reads _project_today(tz)
+    # now, not _now().date() -- freeze it to the same frozen day so every
+    # working-day count in this module holds regardless of the wall clock.
+    monkeypatch.setattr(mps, "_project_today",
+                        lambda tz_name=None: FROZEN_NOW.date())
+
+
+def _seed_delay(task_id, days, *, date=None, status="open", **extra):
+    _STUB.delays.rows.append({
+        "id": f"delay-{task_id}-{len(_STUB.delays.rows)}", "tenant_id": T,
+        "project_id": P, "linked_task_ids": [task_id], "status": status,
+        "date": date,
+        "per_task_impacts": [{"task_id": task_id, "projected_impact_days": days}],
+        **extra})
+
+
+def _seed_rfi(task_id, days, *, status="sent", date_initiated=None, **extra):
+    _STUB.rfis.rows.append({
+        "id": f"rfi-{task_id}-{len(_STUB.rfis.rows)}", "tenant_id": T,
+        "project_id": P, "linked_task_ids": [task_id], "status": status,
+        "date_initiated": date_initiated,
+        "per_task_impacts": [{"task_id": task_id, "projected_impact_days": days}],
+        **extra})
+
+
+def _impact(task_id, adopted_after=None):
+    return asyncio.run(
+        mps._msp_target_impact_for_task(_STUB, T, task_id, adopted_after))
+
+
+def test_push_change_set_carries_open_impact_days(monkeypatch):
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")   # impacted
+    _seed_task("B", "2026-01-12", "2026-01-16")   # clean
+    # Freshly logged today: 0 working days elapsed, so the estimate is the
+    # floor -- the pushed number must still be the full 3.
+    _seed_delay("task-A", 3.0, date=TODAY)
+    # An ANSWERED RFI snaps to its ACTUAL consumed working days (initiated
+    # and answered the same day -> 0); its 5-day estimate must NOT ride.
+    _seed_rfi("task-A", 5.0, status="answered",
+              date_initiated=TODAY, date_responded=TODAY)
+    out = asyncio.run(mps.enqueue_push_job(T, P, actor_id="u"))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    by = {u["activity_code"]: u for u in job["change_set"]["task_updates"]}
+    # open delay counts at its estimate, same-day-answered RFI adds 0
+    assert by["A"]["impact_days_total"] == 3
+    # the clean task carries an EXPLICIT 0 -- the worker's ledger
+    # reconciliation needs it to revert previously applied impacts
+    assert by["B"]["impact_days_total"] == 0
+
+
+def test_resolved_delay_drops_impact_to_zero_on_fresh_push(monkeypatch):
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 4.0, date=TODAY)
+    out1 = asyncio.run(mps.enqueue_push_job(T, P))
+    job1 = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out1["job_id"])
+    assert job1["change_set"]["task_updates"][0]["impact_days_total"] == 4
+    # PM resolves the delay same-day (actual consumed: 0 working days) -> a
+    # FRESH enqueue snapshots the lower total; the worker's ledger delta then
+    # reverts the days it applied in Project.
+    _STUB.delays.rows[0]["status"] = "resolved"
+    _STUB.delays.rows[0]["resolved_date"] = TODAY
+    out2 = asyncio.run(mps.enqueue_push_job(T, P))
+    job2 = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out2["job_id"])
+    assert job2["change_set"]["task_updates"][0]["impact_days_total"] == 0
+
+
+# --------------------------------------------------------------------------
+# _msp_target_impact_for_task unit battery (time-aware rules A-D).
+# --------------------------------------------------------------------------
+def test_open_delay_grows_past_estimate(monkeypatch):
+    # Rule A growth: estimate 2, logged 4 working days ago, still open ->
+    # elapsed time wins the max and the task is pushed 4 days.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-06")   # Fri, 4 wd before today
+    assert _impact("task-A") == 4
+
+
+def test_open_delay_estimate_is_the_floor(monkeypatch):
+    # Rule A max(): only 1 working day elapsed, estimate 2 -> still 2.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-11")   # Wed, 1 wd before today
+    assert _impact("task-A") == 2
+
+
+def test_resolved_delay_snaps_to_actual_early_close_pulls_back(monkeypatch):
+    # Rule B: closed with actual_impact_days=1 under a 2-day estimate ->
+    # contributes 1; the over-estimate is pulled back.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-06", status="resolved",
+                resolved_date="2026-03-09", actual_impact_days=1)
+    assert _impact("task-A") == 1
+
+
+def test_resolved_delay_backdated_close_yields_backdated_actual(monkeypatch):
+    # Rule B backdating: logged Mar 2, still marked resolved only 'today'
+    # (Mar 12, 8 working days later) but the user backdated resolved_date to
+    # Mar 4 -- Part L-3 stamped actual_impact_days=2, and 2 is what pushes.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-04", actual_impact_days=2)
+    assert _impact("task-A") == 2
+
+
+def test_resolved_delay_missing_actual_computed_from_dates(monkeypatch):
+    # Rule B fallback: no actual_impact_days stamp, but date/resolved_date
+    # are usable -> recomputed here (Mar 2 -> Mar 5 = 3 working days).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-05")
+    assert _impact("task-A") == 3
+
+
+def test_resolved_delay_without_usable_dates_contributes_zero(monkeypatch):
+    # Rule B last resort: resolved with neither actual_impact_days nor a
+    # parseable date pair -> 0 (never fall back to the estimate).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date=None, status="resolved")
+    assert _impact("task-A") == 0
+
+
+def test_open_rfi_grows_like_a_delay(monkeypatch):
+    # Rule A applies to RFIs too, anchored on date_initiated.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 1, status="sent", date_initiated="2026-03-06")
+    assert _impact("task-A") == 4
+
+
+def test_answered_rfi_uses_actual_elapsed_via_answered_date(monkeypatch):
+    # Rule B for RFIs: initiated Mar 2, answered_date Mar 9 (the docs_router
+    # stamp) -> 5 working days actually consumed, regardless of the estimate.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 1, status="answered",
+              date_initiated="2026-03-02", answered_date="2026-03-09")
+    assert _impact("task-A") == 5
+
+
+def test_answered_rfi_prefers_backdated_date_responded(monkeypatch):
+    # The user-entered date_responded (backdatable) beats the server's
+    # answered_date stamp: Mar 2 -> Mar 4 = 2, not Mar 2 -> Mar 12 = 8.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 4, status="answered", date_initiated="2026-03-02",
+              date_responded="2026-03-04", answered_date=TODAY)
+    assert _impact("task-A") == 2
+
+
+def test_voided_rfi_contributes_zero(monkeypatch):
+    # A voided RFI was a mistake -- no contribution, not even its actual.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 5, status="voided",
+              date_initiated="2026-03-02", answered_date="2026-03-09")
+    assert _impact("task-A") == 0
+
+
+def test_adoption_gate_subtracts_pre_upload_share_of_open_growth(monkeypatch):
+    # The gate is a SUBTRACTION, not an exclusion. Open delay anchored
+    # Mar 2 (8 working days elapsed by frozen today, estimate 2), gate
+    # Mar 9 (5 working days after the anchor): the 5 pre-upload days are
+    # presumed baked into the uploaded plan, only the post-upload growth
+    # pushes -> 8 - 5 = 3.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02")
+    assert _impact("task-A", adopted_after="2026-03-09") == 3
+    # No gate (no upload yet / legacy project): full growth flows.
+    assert _impact("task-A") == 8
+    # A source anchored ON/AFTER the gate is untouched by it.
+    _seed_delay("task-A", 3, date="2026-03-11")
+    assert _impact("task-A", adopted_after="2026-03-09") == 3 + 3
+
+
+def test_adoption_gate_zeroes_fully_pre_upload_resolved_history(monkeypatch):
+    # Resolved BEFORE the upload with actual 4, gate 5 working days after
+    # the anchor: the whole actual is baked into the uploaded plan -> 0.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-06", actual_impact_days=4)
+    assert _impact("task-A", adopted_after="2026-03-09") == 0
+
+
+def test_adoption_gate_keeps_post_upload_share_of_late_close(monkeypatch):
+    # Delay resolved 2 working days AFTER a gate that sits 3 working days
+    # after the anchor, actual 5: the 3 pre-gate days are baked into the
+    # plan, the 2 post-gate days still push -> 5 - 3 = 2.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-09", actual_impact_days=5)
+    assert _impact("task-A", adopted_after="2026-03-05") == 2
+    # Same subtraction applies to the RFI walk (answered Mar 2 -> Mar 9 is
+    # an actual of 5; gate 3 wd after the anchor leaves 2).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 1, status="answered",
+              date_initiated="2026-03-02", answered_date="2026-03-09")
+    assert _impact("task-A", adopted_after="2026-03-05") == 2
+
+
+def test_generated_file_never_gates_pre_generation_sources(monkeypatch):
+    # A GENERATED file never stamps ms_project_file_adopted_at (the internal
+    # router stamps uploads only -- a generated file is built from planned
+    # dates with zero impact history), so a delay logged before generation
+    # keeps contributing max(estimate, elapsed) in full on the next push.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _project_row()["ms_project_file_source"] = "generated"  # no adopted_at
+    _seed_delay("task-A", 2, date="2026-03-06")   # 4 wd elapsed, estimate 2
+    out = asyncio.run(mps.enqueue_push_job(T, P))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    assert job["change_set"]["task_updates"][0]["impact_days_total"] == 4
+
+
+def test_project_file_descriptor_carries_file_source():
+    # The worker decides whether to reset its in-file impact ledger from
+    # the descriptor's file_source (an uploaded base re-baselines).
+    _reset()
+    proj = _project_row()
+    proj.update({"ms_project_file_id": "f1", "ms_project_file_rev": 3,
+                 "ms_project_file_sha": "a" * 12,
+                 "ms_project_file_source": "upload"})
+    d = asyncio.run(mps._project_file_descriptor(_STUB, T, P))
+    assert d["file_source"] == "upload"
+    proj["ms_project_file_source"] = "worker_push"
+    out = asyncio.run(mps.enqueue_push_job(T, P))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    assert job["project_file"]["file_source"] == "worker_push"
+
+
+def test_change_set_sums_time_aware_sources_per_task(monkeypatch):
+    # Integration: _build_push_change_set reads the project's adoption stamp
+    # and sums every source's time-aware contribution per task (with the
+    # gate applied as a subtraction on pre-upload anchors).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _project_row()["ms_project_file_adopted_at"] = "2026-03-01T08:00:00"
+    _seed_delay("task-A", 2, date="2026-03-06")                        # grown open -> 4
+    # Fully pre-upload history: resolved Feb 25 with actual 3, all of it
+    # before the Mar 1 gate (Feb 20 -> Mar 1 is 6 working days) -> 0.
+    _seed_delay("task-A", 9, date="2026-02-20", status="resolved",
+                resolved_date="2026-02-25", actual_impact_days=3)      # pre-upload -> 0
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-04", actual_impact_days=2)      # closed actual -> 2
+    _seed_rfi("task-A", 1, status="answered",
+              date_initiated="2026-03-02", answered_date="2026-03-09")  # closed actual -> 5
+    out = asyncio.run(mps.enqueue_push_job(T, P))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    upd = job["change_set"]["task_updates"][0]
+    assert upd["impact_days_total"] == 4 + 0 + 2 + 5
+
+
+# --------------------------------------------------------------------------
+# Explicit impact_start_date anchors (2026-07-03) -- when the user says the
+# impact BEGINS (today = already affecting today's work; tomorrow = starts
+# then), all elapsed-growth and closing-actual math anchors there instead of
+# the log date. Absent field -> log-date fallback (covered by every test
+# above, which seeds no impact_start_date).
+# --------------------------------------------------------------------------
+def test_future_impact_start_keeps_contribution_at_estimate(monkeypatch):
+    # Impact declared to start TOMORROW (Fri Mar 13): elapsed working days
+    # from a future anchor clamp at 0, so the open delay contributes exactly
+    # its 2-day estimate -- no growth until the window starts elapsing.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date=TODAY, impact_start_date="2026-03-13")
+    assert _impact("task-A") == 2
+
+
+def test_impact_start_date_overrides_log_date_for_growth(monkeypatch):
+    # Logged 10 working days ago (Thu Feb 26) but the user said the impact
+    # only starts 4 working days ago (Fri Mar 6) -> elapsed anchors on
+    # impact_start_date (4), not the log date (10).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-02-26", impact_start_date="2026-03-06")
+    assert _impact("task-A") == 4
+
+
+def test_resolved_actual_recompute_anchors_on_impact_start_date(monkeypatch):
+    # Rule B fallback recompute (no actual_impact_days stamp): the actual is
+    # working days from impact_start_date -> resolved_date (Fri Mar 6 -> Tue
+    # Mar 10 = 2), not from the earlier log date (Mon Mar 2 -> Mar 10 = 6).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-02", status="resolved",
+                resolved_date="2026-03-10", impact_start_date="2026-03-06")
+    assert _impact("task-A") == 2
+
+
+def test_rfi_impact_start_date_overrides_date_initiated(monkeypatch):
+    # RFIs anchor the same way: impact_start_date beats date_initiated.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_rfi("task-A", 1, status="sent", date_initiated="2026-02-26",
+              impact_start_date="2026-03-06")
+    assert _impact("task-A") == 4
+
+
+# --------------------------------------------------------------------------
+# Site timezone (2026-07-03) -- "today" for the growth math follows the
+# project's clock (projects.timezone), not the server's UTC clock.
+# --------------------------------------------------------------------------
+def test_growth_uses_project_timezone_day(monkeypatch):
+    # Late evening on site: UTC has rolled over to Thu Mar 12 but the site
+    # (Central) is still on Wed Mar 11 -- one fewer elapsed working day.
+    # Freeze the tz-today helper (the same pattern as _now) so the assertion
+    # is deterministic; the helper receives the timezone the change-set
+    # builder read off the project doc.
+    _reset()
+    monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
+    seen = {}
+
+    def fake_today(tz_name=None):
+        seen["tz"] = tz_name
+        return (date(2026, 3, 11) if tz_name == "America/Chicago"
+                else date(2026, 3, 12))
+
+    monkeypatch.setattr(mps, "_project_today", fake_today)
+    _project_row()["timezone"] = "America/Chicago"
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 1, date="2026-03-06")   # 4 wd to Mar 12, 3 to Mar 11
+    out = asyncio.run(mps.enqueue_push_job(T, P))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    assert seen["tz"] == "America/Chicago"   # tz plumbed from the project doc
+    assert job["change_set"]["task_updates"][0]["impact_days_total"] == 3
+
+
+def test_project_today_falls_back_to_utc_on_bad_zone(monkeypatch):
+    # A bad IANA name stored on a project must never blow up the push path:
+    # _project_today falls back to the UTC date (via _now).
+    monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
+    assert mps._project_today("Not/A_Zone") == FROZEN_NOW.date()

@@ -178,7 +178,6 @@ export default function SupplementWizard({
                     <label key={a.id} className="flex items-center gap-2 px-2 py-1.5 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-xs">
                       <input data-testid={`supplement-activity-${a.activity_code}`} type="checkbox"
                         checked={pickedIds.includes(a.id)} onChange={() => togglePicked(a.id)} />
-                      <span className="font-mono text-blue-700">{a.activity_code}</span>
                       <span className="text-slate-700 truncate">{a.activity_description}</span>
                     </label>
                   ))}

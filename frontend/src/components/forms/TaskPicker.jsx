@@ -87,9 +87,6 @@ export default function TaskPicker({
                 aria-label="remove linked task">
                 <X className="h-3 w-3" />
               </button>
-              <span className="font-mono text-xs text-blue-700">
-                {t?.activity_code || tid.slice(0, 6)}
-              </span>
               <span className="text-slate-700 truncate flex-1">
                 {t?.description || "(task not in current project list)"}
               </span>
@@ -123,12 +120,12 @@ export default function TaskPicker({
             disabled={!tasksLoaded}>
             <option value="">
               {tasksLoaded
-                ? `— select a task (${availableTasks.length} available) —`
+                ? `Select a task (${availableTasks.length} available)…`
                 : "Loading project tasks…"}
             </option>
             {availableTasks.map((t) => (
               <option key={t.id} value={t.id}>
-                [{t.activity_code}] {t.description}{t.is_critical_path ? " · CP" : ""}
+                {t.description}{t.is_critical_path ? " · CP" : ""}
               </option>
             ))}
           </select>

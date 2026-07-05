@@ -380,8 +380,8 @@ export default function PerTaskImpactsInput({
             <div className="space-y-1.5">
                 {(linkedTaskIds || []).map((tid) => {
                     const t = tasksById[tid] || {};
-                    const label = t.activity_code
-                        ? `${t.activity_code}${t.description ? ` ${t.description}` : ""}`
+                    const label = t.description
+                        ? t.description
                         : (tid ? tid.slice(0, 12) : "?");
                     const current = valueByTaskId[tid];
                     const currentDays = current

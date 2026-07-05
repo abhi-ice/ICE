@@ -120,6 +120,14 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     // pt.49: single merged Cause. Read from cause_class (canonical) with a
     // fallback to a legacy reason_category value so older delays still show.
     cause: initial?.cause_class || initial?.reason_category || "",
+    // Explicit impact start (2026-07-03) -- when the estimated impact
+    // begins. Create mode defaults like the `date` field on submit
+    // (reportDate || localTodayISO); edit mode prefills the stored value,
+    // falling back to the delay's own log date (the effective anchor for
+    // legacy rows).
+    impact_start_date: initial?.id
+      ? (initial?.impact_start_date || initial?.date || "")
+      : (reportDate || localTodayISO()),
     impacts: (initial?.per_task_impacts || []).map((i) => ({ ...i })),
   }));
   const [busy, setBusy] = useState(false);
@@ -189,6 +197,11 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
     if ((form.severity || "") !== (initial.severity || "")) return true;
     if ((form.owner_attribution || "") !== (initial.owner_attribution || "")) return true;
     if ((form.cause || "") !== (initial.cause_class || initial.reason_category || "")) return true;
+    // Explicit impact start (2026-07-03) -- a changed impact start moves
+    // the schedule-impact anchor, so it counts as a field edit. Untouched
+    // (still the stored value, or the legacy log-date prefill) doesn't.
+    if (form.impact_start_date
+        && form.impact_start_date !== (initial.impact_start_date || initial.date || "")) return true;
     const initImpacts = initial.per_task_impacts || [];
     if (form.impacts.length !== initImpacts.length) return true;
     const initBy = Object.fromEntries(
@@ -304,6 +317,17 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
         payload.resolved_date = form.resolved_date || localTodayISO();
         payload.resolved_note = form.resolved_note || null;
       }
+      // Explicit impact start (2026-07-03). Create: always sent (defaults
+      // to the same value the `date` field gets below). Edit: sent ONLY
+      // when the user actually changed it, so a status-only resolve on a
+      // legacy row stays a status-only patch (Bug #49 exemption on locked
+      // daily reports).
+      if (!initial?.id) {
+        payload.impact_start_date = form.impact_start_date || reportDate || localTodayISO();
+      } else if (form.impact_start_date
+                 && form.impact_start_date !== (initial.impact_start_date || initial.date || "")) {
+        payload.impact_start_date = form.impact_start_date;
+      }
       let res;
       if (initial?.id) {
         // Bug #54 -- attach edit_reason when the user supplied one.
@@ -385,7 +409,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-severity" value={form.severity}
               onChange={(e) => setForm({ ...form, severity: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-              <option value="">— select —</option>
+              <option value="">Select…</option>
               {SEVERITY_OPTS.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </JigsawField>
@@ -401,7 +425,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-cause" value={form.cause}
               onChange={(e) => setForm({ ...form, cause: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-              <option value="">— select —</option>
+              <option value="">Select…</option>
               {CAUSE_OPTS.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
             </select>
           </JigsawField>
@@ -427,7 +451,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-owner-attribution" value={form.owner_attribution}
               onChange={(e) => setForm({ ...form, owner_attribution: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
-              <option value="">— select —</option>
+              <option value="">Select…</option>
               {OWNER_ATTRIBUTION_OPTS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
@@ -456,8 +480,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
                   <X className="h-3.5 w-3.5" />
                 </button>
                 <div className="flex-1 min-w-[180px] text-sm">
-                  <span className="font-mono text-xs text-blue-700">{t?.activity_code || imp.task_id.slice(0, 6)}</span>
-                  <span className="ml-2 text-slate-700">{t?.description || "(task not in current project list)"}</span>
+                  <span className="text-slate-700">{t?.description || "(task not in current project list)"}</span>
                 </div>
                 <label className="flex items-center gap-1 text-xs">
                   <span className="text-slate-500">Impact (days)</span>
@@ -494,10 +517,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
               onChange={(e) => setPicker(e.target.value)}
               className="flex-1 min-w-0 h-8 px-2 rounded border border-slate-200 text-sm"
               disabled={!tasksLoaded}>
-              <option value="">{tasksLoaded ? `— select a task (${availableTasks.length} available) —` : "Loading project tasks…"}</option>
+              <option value="">{tasksLoaded ? `Select a task (${availableTasks.length} available)…` : "Loading project tasks…"}</option>
               {availableTasks.map((t) => (
                 <option key={t.id} value={t.id}>
-                  [{t.activity_code}] {t.description}{t.is_critical_path ? " · CP" : ""}
+                  {t.description}{t.is_critical_path ? " · CP" : ""}
                 </option>
               ))}
             </select>
@@ -520,12 +543,29 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
           master-schedule linkage; the dr-activity picker was a wrong-
           build duplicate that confused the form. */}
 
+      {/* Explicit impact start (2026-07-03) -- when the estimated impact
+          begins. Elapsed-day growth and the closing actual anchor here;
+          left untouched it matches the delay's own log date. */}
+      <div>
+        <FieldLabel optional title="When the estimated impact begins — elapsed-day growth and the closing actual anchor on this date">
+          Impact starts on
+        </FieldLabel>
+        <input data-testid="delay-form-impact-start" type="date"
+          value={form.impact_start_date || ""}
+          onChange={(e) => setForm({ ...form, impact_start_date: e.target.value })}
+          className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm" />
+        <p className="mt-1 text-xs text-slate-500">
+          Pick today if the delay already affected today&apos;s work; pick
+          tomorrow if the impact begins then.
+        </p>
+      </div>
+
       <div>
         <FieldLabel required>Status</FieldLabel>
         <select data-testid="delay-form-status" value={form.status}
           onChange={(e) => setForm({ ...form, status: e.target.value })}
           className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-          <option value="">— select —</option>
+          <option value="">Select…</option>
           {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
         </select>
       </div>

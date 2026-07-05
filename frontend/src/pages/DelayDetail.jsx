@@ -131,8 +131,7 @@ export default function DelayDetail() {
             return (
               <div key={t.id} className="border border-slate-200 rounded p-2 text-xs grid grid-cols-1 md:grid-cols-5 gap-2">
                 <div className="md:col-span-2">
-                  <span className="font-mono text-blue-700">{t.activity_code}</span>
-                  <span className="ml-2">{t.description}</span>
+                  <span>{t.description}</span>
                 </div>
                 <div>
                   <div className="text-slate-400 text-xs">Now</div>

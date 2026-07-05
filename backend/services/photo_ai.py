@@ -434,9 +434,14 @@ async def check_cui_safety(*, tenant_id: str, project_id: str) -> dict:
       3. Project is_cui (federal compliance)
     """
     db = get_db()
+    # NOTE: `id` is projected explicitly so a matched-but-field-sparse tenant
+    # (e.g. a demo/seed tenant that predates migration 010 and therefore has
+    # none of the AI/display fields) still returns a truthy doc. Without it an
+    # inclusion projection returns {} for such a doc, which is falsy in Python
+    # and produced a spurious "tenant_not_found" on the analyze path.
     tenant = await db.tenants.find_one(
         {"id": tenant_id},
-        {"_id": 0, "ai_enabled": 1, "display_name": 1},
+        {"_id": 0, "id": 1, "ai_enabled": 1, "display_name": 1},
     )
     if not tenant:
         return {"safe_to_analyze": False, "reason": "tenant_not_found"}
@@ -479,9 +484,16 @@ async def check_budget(*, tenant_id: str) -> dict:
     """
     db = get_db()
     now = datetime.now(timezone.utc)
+    # `id` is projected explicitly so a tenant that exists but carries none of
+    # the AI budget fields (never backfilled by migration 010 -- e.g. a demo /
+    # seed / freshly-signed-up tenant) still resolves to a truthy doc. An
+    # inclusion projection over only the AI fields returns {} for such a doc,
+    # which is falsy and caused a false "tenant_not_found" -> "Tenant not found"
+    # in the UI when clicking AI analysis. Missing fields fall back to the
+    # defaults below (ai_enabled=True, budget=100, spend=0).
     tenant = await db.tenants.find_one(
         {"id": tenant_id},
-        {"_id": 0, "ai_enabled": 1, "ai_monthly_budget_usd": 1,
+        {"_id": 0, "id": 1, "ai_enabled": 1, "ai_monthly_budget_usd": 1,
          "ai_current_month_spend_usd": 1,
          "ai_current_month_resets_at": 1},
     )

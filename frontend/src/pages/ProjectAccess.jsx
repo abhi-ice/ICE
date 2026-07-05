@@ -281,7 +281,7 @@ function AddMemberForm({ eligible, onAdd, onCancel }) {
           <select data-testid="pa-add-user" value={userId}
             onChange={(e) => setUserId(e.target.value)}
             className="w-full h-9 px-2 rounded border border-slate-300 bg-white text-sm">
-            <option value="">— select user —</option>
+            <option value="">Select user…</option>
             {eligible.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.full_name || u.email} ({u.role})

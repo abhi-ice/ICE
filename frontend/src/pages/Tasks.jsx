@@ -646,14 +646,14 @@ export default function Tasks() {
                 <div>
                   <label className="field-label">Crew</label>
                   <select value={form.crew_id || ""} onChange={(e) => setForm({ ...form, crew_id: e.target.value })} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-                    <option value="">—</option>
+                    <option value="">None</option>
                     {crews.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.trade})</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="field-label">Location</label>
                   <select value={form.location_id || ""} onChange={(e) => setForm({ ...form, location_id: e.target.value })} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-                    <option value="">—</option>
+                    <option value="">None</option>
                     {locs.map((l) => <option key={l.id} value={l.id}>{l.code} {l.name}</option>)}
                   </select>
                 </div>

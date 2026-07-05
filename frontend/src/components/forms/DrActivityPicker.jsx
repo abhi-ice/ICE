@@ -72,7 +72,7 @@ export default function DrActivityPicker({
             return (
               <span key={id} data-testid={`${testidPrefix}-chip-${id}`}
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-800 text-xs">
-                <span className="font-mono">{r?.activity_code || id.slice(0, 6)}</span>
+                <span className="truncate max-w-[160px]">{r?.activity_description || id.slice(0, 6)}</span>
                 <button type="button" onClick={() => remove(id)}
                   className="text-blue-500 hover:text-blue-700"
                   aria-label="remove">
@@ -106,7 +106,6 @@ export default function DrActivityPicker({
             className="flex items-center gap-2 px-2 py-1 border-b border-slate-100 cursor-pointer hover:bg-slate-50 text-xs">
             <input type="checkbox" data-testid={`${testidPrefix}-opt-${a.activity_code || a.id}`}
               checked={valArr.includes(a.id)} onChange={() => toggle(a.id)} />
-            <span className="font-mono text-blue-700">{a.activity_code}</span>
             <span className="text-slate-700 truncate">{a.activity_description}</span>
           </label>
         ))}

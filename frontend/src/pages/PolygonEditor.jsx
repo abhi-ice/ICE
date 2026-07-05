@@ -120,14 +120,14 @@ export default function PolygonEditor() {
         <div>
           <label className="field-label">Floor</label>
           <select data-testid="pe-floor" value={floorId} onChange={(e) => { setFloorId(e.target.value); setSelectedLoc(""); }} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-            <option value="">— pick floor —</option>
+            <option value="">Select floor…</option>
             {floors.map((f) => <option key={f.id} value={f.id}>Floor {f.floor_number} — {f.floor_name}</option>)}
           </select>
         </div>
         <div>
           <label className="field-label">Plan revision</label>
           <select data-testid="pe-revision" value={revisionId} onChange={(e) => setRevisionId(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-            <option value="">— pick a drawing revision —</option>
+            <option value="">Select a drawing revision…</option>
             {revisions.map((r) => {
               const dr = drawings.find((d) => d.id === r.drawing_id);
               return <option key={r.id} value={r.id}>{dr?.sheet_number} {dr?.title?.slice(0, 30)} ({r.revision_label})</option>;
@@ -137,7 +137,7 @@ export default function PolygonEditor() {
         <div>
           <label className="field-label">Location to edit</label>
           <select data-testid="pe-location" value={selectedLoc} onChange={(e) => setSelectedLoc(e.target.value)} disabled={!floorId} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-            <option value="">— pick a room —</option>
+            <option value="">Select a room…</option>
             {locations.map((l) => <option key={l.id} value={l.id}>{l.code} {l.name}{l.polygon_geojson ? " ✓" : ""}</option>)}
           </select>
         </div>
