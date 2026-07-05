@@ -341,7 +341,7 @@ export function AuditLog() {
           <select data-testid="audit-filter-op" value={opFilter}
             onChange={(e) => setOpFilter(e.target.value)}
             className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
-            <option value="">— all ops —</option>
+            <option value="">All ops</option>
             {AUDIT_OP_GROUPS.map((g) => (
               <optgroup key={g.label} label={g.label}>
                 {g.ops.map((op) => <option key={op} value={op}>{op}</option>)}

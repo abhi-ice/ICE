@@ -317,7 +317,25 @@ html[data-theme="dark"] .page-shell::before { display: none; }
 .mobile-nav-backdrop { display: none; }
 @media (max-width: 767.98px) {
     .app-main { margin-left: 0 !important; }
-    .sticky-submit { left: 0 !important; }
+    /* Sid-approved: the Submit bar is PINNED to the bottom of the viewport and
+       must never scroll away — the audit trail (and everything else) scrolls
+       UNDER it. It's already position:fixed; on phones we drop the sidebar
+       offset, force an opaque surface (so content scrolling beneath never
+       shows through), and lift it above the DR content stack. The bar sat at
+       z-index:15 which the expanded audit card could visually crowd; bump it
+       and reserve scroll room via body padding so the last audit lines clear
+       the bar instead of hiding permanently behind it. */
+    .sticky-submit {
+        left: 0 !important;
+        /* !important: the unconditional base rules (.sticky-submit z-index:15
+           at ~2753 and body.has-sticky-submit padding-bottom:60px at ~2797)
+           are LATER in source order with equal specificity, so without
+           !important they win the cascade on mobile and defeat both the
+           lift and the audit scroll-clearance. */
+        z-index: 30 !important;
+        background: var(--v4-bg-surface) !important;
+    }
+    body.has-sticky-submit { padding-bottom: 76px !important; }
     /* Lock the page behind the open drawer so touch-scroll doesn't bleed
        through to the content underneath (judge P1 finding #1). */
     body.mobile-nav-open { overflow: hidden; }
@@ -766,6 +784,21 @@ html[data-theme="dark"] .page-shell::before { display: none; }
        matching the mockup's "✓ Project" pills. */
     .dr-pip .pip-num { display: none; }
     .dr-pip.complete .pip-name::before { content: "✓ "; font-weight: 700; }
+    /* Sid-approved checklist: OPTIONAL chips (Issues / Photos) carry a muted
+       "· optional" suffix and read visually distinct from the required chips.
+       They still flip to the green ✓ .complete state once they have data. */
+    .dr-pip .pip-opt {
+        margin-left: 4px;
+        font-size: 10px;
+        color: var(--v4-fg-muted);
+        font-weight: 500;
+    }
+    .dr-pip .pip-opt::before { content: "· "; }
+    .dr-pip.optional { border-style: dashed; }
+    /* once an optional chip is complete the green ✓ state owns the whole chip;
+       drop the muted "optional" tail so it reads as done, not still-optional. */
+    .dr-pip.optional.complete .pip-opt { display: none; }
+    .dr-pip.optional.complete { border-style: solid; }
     /* The mockup's core language: section panels (Manpower / Activity /
        Events / Photos) shed their outer surface box on phones -- a bare
        section header with the inner cards sitting directly on the page
@@ -2881,6 +2914,127 @@ body.has-sticky-submit .copilot-fab { bottom: 70px; }
         box-shadow: none !important;
     }
     [data-testid="dr-presence-panel"] .dr-mp-input--draft::placeholder { color: var(--v4-fg-faint) !important; }
+}
+
+/* =========================================================================
+   MOBILE ADD-FORM BOTTOM SHEETS (Sid-approved DR redesign, 2026-07-05).
+   Phones only (<=767.98px) — desktop (>=768px) emits ZERO css, so the inline
+   desktop forms are byte-identical. These rules turn the EXISTING inline
+   add-forms (crew / unplanned activity / issue quick-adds) and the submit
+   "no-work" dialog into slide-up bottom sheets matching the approved mockup's
+   .ov/.sheet. No React save logic is duplicated: the same fields + handlers
+   render inside the sheet; only the container presentation changes.
+   TOP-LEVEL media block (production CSS drops nested @media).
+   ========================================================================= */
+@media (max-width: 767.98px) {
+    /* --- shared sheet primitives (MobileSheet component + crew/unplanned) --- */
+    .dr-msheet-ov {
+        position: fixed; inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        z-index: 60;
+        display: flex; align-items: flex-end;
+    }
+    .dr-msheet {
+        background: var(--v4-bg-surface);
+        border-top: 1px solid var(--v4-border);
+        border-top-left-radius: 18px; border-top-right-radius: 18px;
+        width: 100%; max-height: 88vh; overflow-y: auto;
+        padding: 12px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+        box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
+        animation: dr-msheet-up 0.18s ease-out;
+    }
+    @keyframes dr-msheet-up { from { transform: translateY(24px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+    .dr-msheet-grip { width: 38px; height: 4px; border-radius: 999px; background: var(--v4-border-strong); margin: 0 auto 10px; }
+    .dr-msheet-head { display: flex; align-items: center; gap: 8px; }
+    .dr-msheet-title { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; color: var(--v4-fg-primary); }
+    .dr-msheet-x {
+        margin-left: auto; width: 32px; height: 32px; min-height: 32px;
+        display: grid; place-items: center; border-radius: 8px;
+        border: 1px solid var(--v4-border); background: var(--v4-bg-surface-2);
+        color: var(--v4-fg-secondary);
+    }
+    .dr-msheet-sub { color: var(--v4-fg-muted); font-size: 12px; margin: 6px 0 12px; }
+    .dr-msheet-body { display: block; }
+    .dr-msheet-foot { display: flex; gap: 9px; margin-top: 10px; }
+    .dr-msheet-btn-sl {
+        flex: 1; justify-content: center; padding: 11px;
+        background: var(--v4-bg-surface-2); border: 1px solid var(--v4-border);
+        color: var(--v4-fg-secondary); border-radius: 9px; font-size: 13px;
+        display: inline-flex; align-items: center; gap: 5px; min-height: 44px;
+    }
+
+    /* --- crew + unplanned entry forms lifted into a bottom sheet. The inline
+       container gets .dr-crew-entry; when open it becomes a fixed sheet. The
+       .dr-crew-entry-head (grip/title/close) only shows on phones. --- */
+    .dr-crew-entry-head { margin-bottom: 4px; }
+    .dr-crew-entry--open {
+        position: fixed; left: 0; right: 0; bottom: 0;
+        z-index: 61;
+        background: var(--v4-bg-surface);
+        border-top: 1px solid var(--v4-border);
+        border-top-left-radius: 18px; border-top-right-radius: 18px;
+        max-height: 88vh; overflow-y: auto;
+        padding: 12px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+        box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
+        animation: dr-msheet-up 0.18s ease-out;
+    }
+    /* the manpower entry table already reflows to stacked rows on phones; in the
+       sheet it just needs to fill the width. */
+    .dr-crew-entry--open .dense-table { width: 100%; }
+    /* the unplanned form carries .bg-amber-50, which the activity-grid mobile
+       neutralizer flattens to transparent (+dashed) for the INLINE affordance.
+       As an open bottom sheet it must be OPAQUE — re-assert the surface bg with
+       matching specificity + !important so content beneath never shows through. */
+    html[data-theme="dark"] [data-testid="dr-activity-grid"] .bg-amber-50.dr-crew-entry--open,
+    html[data-theme="light"] [data-testid="dr-activity-grid"] .bg-amber-50.dr-crew-entry--open {
+        background: var(--v4-bg-surface) !important;
+        border: 0 !important;
+        border-top: 1px solid var(--v4-border) !important;
+        border-radius: 18px 18px 0 0 !important;
+    }
+
+    /* --- issue quick-add: the active events TabsContent becomes a bottom
+       sheet when a chip is tapped (data-issue-sheet="open"). Radix mounts only
+       the active panel, so exactly one form is in the DOM. --- */
+    [data-issue-sheet="open"] [role="tabpanel"][data-state="active"] {
+        position: fixed; left: 0; right: 0; bottom: 0;
+        z-index: 61;
+        background: var(--v4-bg-surface);
+        border-top: 1px solid var(--v4-border);
+        border-top-left-radius: 18px; border-top-right-radius: 18px;
+        max-height: 82vh; overflow-y: auto;
+        margin: 0;
+        padding: 30px 14px calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+        box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.4);
+        animation: dr-msheet-up 0.18s ease-out;
+    }
+    /* floating close for the issue sheet — pinned to the top-right of a
+       full-height (82vh) sheet; the tap-anywhere backdrop is the primary
+       dismiss, this is the explicit affordance. */
+    .dr-issue-sheet-close {
+        position: fixed; right: 14px;
+        top: calc(18vh + 8px);
+        z-index: 62;
+        width: 32px; height: 32px; min-height: 32px;
+        display: grid; place-items: center; border-radius: 8px;
+        border: 1px solid var(--v4-border); background: var(--v4-bg-surface-2);
+        color: var(--v4-fg-secondary);
+    }
+
+    /* --- Radix Dialog (no-work submit dialog) as a full-width bottom sheet.
+       dialog.jsx already gives it max-md width; .dr-dialog-sheet pins it to the
+       bottom edge and squares the top so nothing leaks a desktop-centered box
+       and all copy is fully visible. --- */
+    .dr-dialog-sheet {
+        left: 0 !important; right: 0 !important; bottom: 0 !important;
+        top: auto !important;
+        transform: none !important;
+        width: 100% !important; max-width: 100% !important;
+        max-height: 88vh !important;
+        border-top-left-radius: 18px !important; border-top-right-radius: 18px !important;
+        border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important;
+        padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px)) !important;
+    }
 }
 
 /* =========================================================================

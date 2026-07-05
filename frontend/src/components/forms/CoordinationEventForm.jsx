@@ -356,7 +356,7 @@ export default function CoordinationEventForm({ projectId, initial, linkedDailyR
             <select data-testid="coord-trade" value={form.trade_code}
               onChange={(e) => set("trade_code", e.target.value)}
               className="mt-1 w-full h-9 px-2 border border-slate-200 rounded text-sm">
-              <option value="">—</option>
+              <option value="">None</option>
               {TRADES.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
             </select>
           </JigsawField>

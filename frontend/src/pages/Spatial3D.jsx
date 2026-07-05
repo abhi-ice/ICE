@@ -182,7 +182,7 @@ export default function Spatial3D() {
         const task = top.object.userData.task;
         setHover({
           name: `${loc.code} ${loc.name}`,
-          task: task ? `[${task.activity_code}] ${task.description.slice(0, 50)} (${task.pct_complete}%)` : "no activity",
+          task: task ? `${task.description.slice(0, 50)} (${task.pct_complete}%)` : "no activity",
         });
       } else if (hover) setHover(null);
       renderer.render(scene, camera);
@@ -523,7 +523,7 @@ function BindElevationDialog({ drawings, meta, onClose }) {
                       onChange={(e) => setFace(r, e.target.value)}
                       className="h-7 px-2 rounded border border-slate-200 text-xs bg-white"
                     >
-                      <option value="">— pick —</option>
+                      <option value="">Select…</option>
                       <option value="plan">Plan</option>
                       <option value="elevation_north">Elevation North</option>
                       <option value="elevation_south">Elevation South</option>

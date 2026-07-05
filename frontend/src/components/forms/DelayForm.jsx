@@ -409,7 +409,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-severity" value={form.severity}
               onChange={(e) => setForm({ ...form, severity: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-              <option value="">— select —</option>
+              <option value="">Select…</option>
               {SEVERITY_OPTS.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </JigsawField>
@@ -425,7 +425,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-cause" value={form.cause}
               onChange={(e) => setForm({ ...form, cause: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-              <option value="">— select —</option>
+              <option value="">Select…</option>
               {CAUSE_OPTS.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
             </select>
           </JigsawField>
@@ -451,7 +451,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
             <select data-testid="delay-form-owner-attribution" value={form.owner_attribution}
               onChange={(e) => setForm({ ...form, owner_attribution: e.target.value })}
               className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm bg-white">
-              <option value="">— select —</option>
+              <option value="">Select…</option>
               {OWNER_ATTRIBUTION_OPTS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
@@ -480,8 +480,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
                   <X className="h-3.5 w-3.5" />
                 </button>
                 <div className="flex-1 min-w-[180px] text-sm">
-                  <span className="font-mono text-xs text-blue-700">{t?.activity_code || imp.task_id.slice(0, 6)}</span>
-                  <span className="ml-2 text-slate-700">{t?.description || "(task not in current project list)"}</span>
+                  <span className="text-slate-700">{t?.description || "(task not in current project list)"}</span>
                 </div>
                 <label className="flex items-center gap-1 text-xs">
                   <span className="text-slate-500">Impact (days)</span>
@@ -518,10 +517,10 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
               onChange={(e) => setPicker(e.target.value)}
               className="flex-1 min-w-0 h-8 px-2 rounded border border-slate-200 text-sm"
               disabled={!tasksLoaded}>
-              <option value="">{tasksLoaded ? `— select a task (${availableTasks.length} available) —` : "Loading project tasks…"}</option>
+              <option value="">{tasksLoaded ? `Select a task (${availableTasks.length} available)…` : "Loading project tasks…"}</option>
               {availableTasks.map((t) => (
                 <option key={t.id} value={t.id}>
-                  [{t.activity_code}] {t.description}{t.is_critical_path ? " · CP" : ""}
+                  {t.description}{t.is_critical_path ? " · CP" : ""}
                 </option>
               ))}
             </select>
@@ -566,7 +565,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
         <select data-testid="delay-form-status" value={form.status}
           onChange={(e) => setForm({ ...form, status: e.target.value })}
           className="mt-1 w-full h-9 px-2 rounded border border-slate-200 text-sm">
-          <option value="">— select —</option>
+          <option value="">Select…</option>
           {STATUS_OPTS.map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
         </select>
       </div>

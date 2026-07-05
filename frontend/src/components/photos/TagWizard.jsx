@@ -228,7 +228,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
     return (o) => {
       if (!t) return o.id;
       switch (t.coll) {
-        case "activities": return `[${o.activity_code || ""}] ${(o.activity_description || "").slice(0, 60)}`;
+        case "activities": return `${(o.activity_description || "").slice(0, 60)}`;
         case "delays":     return `${(o.severity || "").toUpperCase()} · ${(o.description || "").slice(0, 60)}`;
         case "rfis":       return `${o.rfi_number || ""} ${(o.subject || "").slice(0, 60)}`;
         case "qc_issues":  return `${(o.severity || "").toUpperCase()} · ${(o.description || "").slice(0, 60)}`;
@@ -317,7 +317,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
               {drsLoading ? <div className="text-slate-400">Loading DRs…</div> : (
                 <select data-testid="tag-wizard-dr" value={drId} onChange={(e) => setDrId(e.target.value)}
                   className="w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
-                  <option value="">— pick a DR —</option>
+                  <option value="">Select a daily report…</option>
                   {drs.map((d) => <option key={d.id} value={d.id}>{drLabel(d)}</option>)}
                 </select>
               )}
@@ -426,7 +426,7 @@ export default function TagWizard({ open, onOpenChange, tray, projectId, onTagge
               ) : (
                 <select data-testid="tag-wizard-event" value={eventId} onChange={(e) => setEventId(e.target.value)}
                   className="w-full h-9 px-2 rounded border border-slate-300 text-sm bg-white">
-                  <option value="">— pick —</option>
+                  <option value="">Select…</option>
                   {filteredEventOptions.map((o) => <option key={o.id} value={o.id}>{optionLabel(o)}</option>)}
                 </select>
               )}

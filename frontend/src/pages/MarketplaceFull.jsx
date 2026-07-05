@@ -304,9 +304,9 @@ export default function MarketplaceFull() {
                 <div>
                   <label className="field-label">Bind to schedule activity (optional)</label>
                   <select data-testid="mp-accept-activity" value={acceptCfg.schedule_activity_id} onChange={(e) => setAcceptCfg({ ...acceptCfg, schedule_activity_id: e.target.value })} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-                    <option value="">— manual release only —</option>
+                    <option value="">Manual release only</option>
                     {tasks.filter((t) => t.status !== "complete" && t.status !== "deleted").map((t) => (
-                      <option key={t.id} value={t.id}>[{t.activity_code}] {t.description.slice(0, 60)}</option>
+                      <option key={t.id} value={t.id}>{t.description.slice(0, 60)}</option>
                     ))}
                   </select>
                 </div>

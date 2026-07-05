@@ -228,14 +228,14 @@ export default function EntityFromVoiceDialog({ open, onClose, voiceAnnotation }
           <div>
             <FieldLabel optional className="field-label">Activity (linkage)</FieldLabel>
             <select data-testid="vef-activity" value={activityId} onChange={(e) => setActivityId(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-              <option value="">— optional —</option>
-              {tasks.map((t) => <option key={t.id} value={t.id}>[{t.activity_code}] {t.description.slice(0, 50)}</option>)}
+              <option value="">None</option>
+              {tasks.map((t) => <option key={t.id} value={t.id}>{t.description.slice(0, 50)}</option>)}
             </select>
           </div>
           <div>
             <FieldLabel optional className="field-label">Location (linkage)</FieldLabel>
             <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-              <option value="">— optional —</option>
+              <option value="">None</option>
               {locations.map((l) => <option key={l.id} value={l.id}>{l.code} {l.name}</option>)}
             </select>
           </div>

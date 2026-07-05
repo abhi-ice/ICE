@@ -112,7 +112,6 @@ export default function GatingEntityDetail() {
               : t.computed_status === "complete" ? "pill-green" : "pill-slate";
             return (
               <div key={t.id} className="flex items-center gap-2 text-xs border-b border-slate-100 py-1.5">
-                <span className="font-mono text-blue-700">{t.wbs || t.activity_code}</span>
                 <span className="flex-1 truncate">{t.description}</span>
                 <span className="text-slate-500 tabular-nums">{t.pct_complete ?? 0}%</span>
                 {t.computed_status && <span className={`pill ${csClass} capitalize`}>{(t.computed_status || "").replace(/_/g, " ")}</span>}
@@ -156,8 +155,7 @@ export default function GatingEntityDetail() {
                   <tr key={r.id}>
                     <td className="font-mono text-xs">{formatDateDisplay(r.report_date)}</td>
                     <td className="text-xs">
-                      <span className="font-mono text-blue-700">{r.activity_code}</span>
-                      <span className="ml-2 text-slate-600">{r.activity_description}</span>
+                      <span className="text-slate-600">{r.activity_description}</span>
                     </td>
                     <td className="text-xs">
                       {(r.constraint_type || "—").replace(/_/g, " ")}

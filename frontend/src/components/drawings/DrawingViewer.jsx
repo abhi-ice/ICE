@@ -430,7 +430,7 @@ function PinDialog({ tasks, rfis, workItems, onCancel, onSave }) {
   const [linkType, setLinkType] = useState("");
   const [linkId, setLinkId] = useState("");
 
-  const options = linkType === "task" ? tasks.map((t) => ({ id: t.id, label: `[${t.activity_code}] ${t.description.slice(0, 60)}` }))
+  const options = linkType === "task" ? tasks.map((t) => ({ id: t.id, label: t.description.slice(0, 60) }))
     : linkType === "rfi" ? rfis.map((r) => ({ id: r.id, label: `${r.rfi_number} - ${r.subject.slice(0, 60)}` }))
     : linkType === "work_item" ? workItems.map((w) => ({ id: w.id, label: w.title.slice(0, 80) }))
     : [];
@@ -457,7 +457,7 @@ function PinDialog({ tasks, rfis, workItems, onCancel, onSave }) {
             <div>
               <label className="field-label">Pick</label>
               <select data-testid="pin-link-id" value={linkId} onChange={(e) => setLinkId(e.target.value)} disabled={!linkType} className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-                <option value="">—</option>
+                <option value="">None</option>
                 {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
             </div>

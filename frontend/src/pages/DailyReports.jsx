@@ -58,7 +58,7 @@ import {
   Download, FilePlus2, RefreshCw, Cloud, Users, ClipboardList, Image as ImageIcon,
   Mic, AlertTriangle, ShieldAlert, ClipboardCheck, MessageSquare, Truck, Plus,
   Lock, CheckCircle2, ChevronLeft, ChevronRight, Trash2, Wand2, Pencil, Sparkles, Loader2,
-  Upload, FileSpreadsheet, Pin, Copy as CopyIcon, Building2,
+  Upload, FileSpreadsheet, Pin, Copy as CopyIcon, Building2, X,
 } from "lucide-react";
 // Bucket F Phase 4 -- DR upload now opens the 3-step tag wizard after
 // Bucket G Phase 3 -- Jigsaw pre-fill widget on the DR narrative.
@@ -144,6 +144,17 @@ function LockedAddReasonBlock({ value, onChange, eventLabel = "this event", test
     </div>
   );
 }
+
+// MOBILE add-form sheets (Sid-approved add-forms-as-dialogs, 2026-07-05).
+// The crew / unplanned-activity add-forms and the issue quick-adds open as
+// slide-up bottom sheets on phones. Rather than duplicate the existing form
+// markup + handlers, the EXISTING inline containers are LIFTED into a fixed
+// bottom sheet on mobile via CSS (.dr-crew-entry--open / the active events
+// TabsContent under [data-issue-sheet="open"]) — see index.css. The sheet
+// chrome (grip / title / close / Cancel-Add footer) uses the .dr-msheet-*
+// classes and is gated .md:hidden so desktop keeps its inline forms
+// byte-identical. No save logic is duplicated; the same state + endpoints
+// drive both surfaces.
 
 // Helper for create() handlers: inspects an API error response and, if
 // the backend returned 403 with edit_request_required, points the user
@@ -846,27 +857,52 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   // drives color: complete (emerald), in-progress (emerald hollow),
   // blocked (red), empty (gray). Clicking a pip scrolls the page
   // to the matching section anchor.
+  // Sequence (Sid-approved): Activity BEFORE Manpower on BOTH desktop and
+  // mobile. This array order drives the spine step order, the desktop pips
+  // (numbered 01..07), and the mobile section chips, so putting activity at
+  // index 2 / manpower at index 3 reorders every one of them consistently.
+  const activityStatus = (() => {
+    const rows = grid || [];
+    if (rows.length === 0) return "empty";
+    const fieldRows = rows.filter((r) => gridSectionOf(r.work_category) === 2);
+    if (fieldRows.length === 0) return "empty";
+    const withProgress = fieldRows.filter((r) => (r.pct_complete_end_of_day || 0) > 0 || (r.auto_status || r.status_at_end_of_day) === "blocked").length;
+    if (withProgress === 0) return "blocked";
+    if (withProgress < fieldRows.length) return "in-progress";
+    return "complete";
+  })();
+  const manpowerStatus = (presence || []).length > 0 ? "complete" : "empty";
+  const issuesCount = (delays || []).length + (safety_events || []).length + (qc_issues || []).length + (rfis || []).length;
   const drSections = [
     { id: "project",  label: "Project",  status: project ? "complete" : "empty" },
     { id: "weather",  label: "Weather",  status: report?.weather_conditions ? "complete" : "empty" },
-    { id: "manpower", label: "Manpower", status: (presence || []).length > 0 ? "complete" : "empty" },
-    { id: "activity", label: "Activity", status: (() => {
-        const rows = grid || [];
-        if (rows.length === 0) return "empty";
-        const fieldRows = rows.filter((r) => gridSectionOf(r.work_category) === 2);
-        if (fieldRows.length === 0) return "empty";
-        const withProgress = fieldRows.filter((r) => (r.pct_complete_end_of_day || 0) > 0 || (r.auto_status || r.status_at_end_of_day) === "blocked").length;
-        if (withProgress === 0) return "blocked";
-        if (withProgress < fieldRows.length) return "in-progress";
-        return "complete";
-      })() },
-    { id: "events",   label: "Events",   status: ((delays || []).length + (safety_events || []).length + (qc_issues || []).length + (rfis || []).length) > 0 ? "in-progress" : "empty" },
+    { id: "activity", label: "Activity", status: activityStatus },
+    { id: "manpower", label: "Manpower", status: manpowerStatus },
+    { id: "events",   label: "Events",   status: issuesCount > 0 ? "in-progress" : "empty" },
     { id: "photos",   label: "Photos",   status: (report?.photo_count ?? 0) > 0 ? "complete" : "empty" },
     { id: "audit",    label: "Audit",    status: "empty" },
   ];
   const completeCount = drSections.filter((s) => s.status === "complete").length;
   const totalSections = drSections.length;
   const progressPct = Math.round((completeCount / totalSections) * 100);
+
+  // MOBILE checklist model (Sid-approved): Project / Weather / Activities /
+  // Manpower are REQUIRED; Issues + Photos are OPTIONAL and do NOT count
+  // toward the required-completion total. Audit is dropped from the mobile
+  // checklist entirely (not part of the super's job). Issues flips to
+  // "complete" as soon as >=1 issue is logged so it stops reading as pending.
+  const mobileChecklist = [
+    { id: "project",  label: "Project",    status: project ? "complete" : "empty",              required: true },
+    { id: "weather",  label: "Weather",    status: report?.weather_conditions ? "complete" : "empty", required: true },
+    { id: "activity", label: "Activities", status: activityStatus,                              required: true },
+    { id: "manpower", label: "Manpower",   status: manpowerStatus,                              required: true },
+    { id: "events",   label: "Issues",     status: issuesCount > 0 ? "complete" : "empty",       required: false },
+    { id: "photos",   label: "Photos",     status: (report?.photo_count ?? 0) > 0 ? "complete" : "empty", required: false },
+  ];
+  const requiredSections = mobileChecklist.filter((s) => s.required);
+  const requiredDone = requiredSections.filter((s) => s.status === "complete").length;
+  const requiredTotal = requiredSections.length;
+  const mobileProgressPct = requiredTotal > 0 ? Math.round((requiredDone / requiredTotal) * 100) : 0;
 
   // V4: tiny date-stepper navigation — flip yesterday/tomorrow without
   // returning to the list view. Stops at boundaries the API will allow.
@@ -962,7 +998,11 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               drSections={drSections}
               completeCount={completeCount}
               totalSections={totalSections}
-              progressPct={progressPct} />
+              progressPct={progressPct}
+              mobileChecklist={mobileChecklist}
+              requiredDone={requiredDone}
+              requiredTotal={requiredTotal}
+              mobileProgressPct={mobileProgressPct} />
 
       {/* 5-Route DR Entry — offline banner. Shows when offline OR when
           there are queued requests waiting to drain. Auto-hides when
@@ -1102,15 +1142,16 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
           confirms, modal calls submitNoWorkDay() which re-submits with
           is_no_work_day=true. */}
       <Dialog open={!!noWorkModal} onOpenChange={(o) => !o && setNoWorkModal(null)}>
-        <DialogContent className="max-w-md" data-testid="no-work-day-modal">
+        {/* Sid change #6: on phones this renders as a full-width bottom sheet
+            (dr-dialog-sheet) — the old max-w-md centered box leaked a desktop
+            width on mobile. Copy trimmed to a one-line helper hint. */}
+        <DialogContent className="max-w-md dr-dialog-sheet" data-testid="no-work-day-modal">
           <DialogHeader>
-            <DialogTitle>This Daily Report has no activities or events</DialogTitle>
+            <DialogTitle>No activities or events</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
-            <p className="text-slate-600">
-              Submitting a blank DR without explanation looks sloppy in
-              claim defense. File this as a no-work day so the record
-              shows you knew it was blank and why.
+            <p className="text-slate-600 text-xs">
+              File as a no-work day so the record shows why it's blank.
             </p>
             <label className="flex items-start gap-2 text-sm">
               <input type="checkbox" checked readOnly disabled
@@ -1123,7 +1164,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
                 value={noWorkModal?.reason ?? ""}
                 onChange={(e) => setNoWorkModal({ ...noWorkModal, reason: e.target.value })}
                 className="w-full h-9 px-2 rounded border border-slate-200 text-sm">
-                <option value="">— pick a reason —</option>
+                <option value="">Select…</option>
                 <option value="weather">Weather (storm, extreme cold, snow, etc.)</option>
                 <option value="holiday">Holiday</option>
                 <option value="scheduled_non_work">Scheduled non-work day</option>
@@ -1168,21 +1209,25 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         <WeatherPanel report={report} dailyReportId={id} locked={locked} reload={reload} />
       </div>
 
-      {/* CREW SUMMARY (presence) — section pip jump anchor + spine step 3 */}
-      <div id="dr-section-manpower" style={{ scrollMarginTop: 70 }}
+      {/* ACTIVITY GRID — section pip jump anchor + spine step 3.
+          Sid-approved sequence change: Activities render BEFORE Manpower
+          (parent → child) on desktop AND mobile. drSections[2] is now the
+          activity entry (see the reordered array above). */}
+      <div id="dr-section-activity" style={{ scrollMarginTop: 70 }}
            className={`step ${drSections[2].status === "complete" ? "complete" : drSections[2].status === "in-progress" ? "in-progress" : drSections[2].status === "blocked" ? "blocked" : ""}`}>
         <div className="step-node"><span className="num">3</span></div>
-        <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
-          projectId={project.id} grid={grid} reportDate={report.report_date} />
-      </div>
-
-      {/* ACTIVITY GRID — section pip jump anchor + spine step 4 */}
-      <div id="dr-section-activity" style={{ scrollMarginTop: 70 }}
-           className={`step ${drSections[3].status === "complete" ? "complete" : drSections[3].status === "in-progress" ? "in-progress" : drSections[3].status === "blocked" ? "blocked" : ""}`}>
-        <div className="step-node"><span className="num">4</span></div>
         <ActivityGridPanel grid={grid} reload={reload}
           dailyReportId={id} locked={locked} reportDate={report.report_date}
           presence={presence} submitRowErrors={submitRowErrors} />
+      </div>
+
+      {/* CREW SUMMARY (presence) — section pip jump anchor + spine step 4.
+          Manpower now follows Activities. drSections[3] is the manpower entry. */}
+      <div id="dr-section-manpower" style={{ scrollMarginTop: 70 }}
+           className={`step ${drSections[3].status === "complete" ? "complete" : drSections[3].status === "in-progress" ? "in-progress" : drSections[3].status === "blocked" ? "blocked" : ""}`}>
+        <div className="step-node"><span className="num">4</span></div>
+        <PresencePanel rows={presence} dailyReportId={id} locked={locked} reload={reload}
+          projectId={project.id} grid={grid} reportDate={report.report_date} />
       </div>
 
       {/* RENOVATION (only for renovation/tenant_improvement) */}
@@ -1310,7 +1355,9 @@ function Header({ report, project, userLabels, ppc,
                   onApprove, onDownload, busy, validate, onQuickLogCoordination,
                   templateMeta, exportingClient, onDownloadClientTemplate,
                   /* v4 pt.19 — render progress card INSIDE header, ABOVE KPI band */
-                  drSections = [], completeCount = 0, totalSections = 7, progressPct = 0 }) {
+                  drSections = [], completeCount = 0, totalSections = 7, progressPct = 0,
+                  /* mobile checklist (Sid redesign) — computed in DailyReportDetail, passed in */
+                  mobileChecklist = [], requiredDone = 0, requiredTotal = 4, mobileProgressPct = 0 }) {
   const v = validate();
   return (
     <div className="surface p-4" data-testid="dr-header">
@@ -1425,11 +1472,14 @@ function Header({ report, project, userLabels, ppc,
           <div className="surface rounded-xl px-3 py-2.5 flex items-center gap-3">
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2 mb-1.5">
-                <span className="dr-progress-label min-w-0 overflow-hidden text-ellipsis"><span className="count">{completeCount} / {totalSections}</span>&nbsp;sections done</span>
-                <span className="text-xs shrink-0" style={{ color: "var(--v4-fg-muted)" }}>{progressPct}%</span>
+                {/* Sid-approved: progress counts REQUIRED sections only
+                    (Project / Weather / Activities / Manpower). Issues +
+                    Photos are optional and excluded from the total. */}
+                <span className="dr-progress-label min-w-0 overflow-hidden text-ellipsis"><span className="count">{requiredDone} of {requiredTotal}</span>&nbsp;required done</span>
+                <span className="text-xs shrink-0" style={{ color: "var(--v4-fg-muted)" }}>{mobileProgressPct}%</span>
               </div>
               <div className="dr-progress-bar" style={{ minWidth: 0 }}>
-                <div className="dr-progress-bar-fill" style={{ width: `${progressPct}%` }} />
+                <div className="dr-progress-bar-fill" style={{ width: `${mobileProgressPct}%` }} />
               </div>
             </div>
             {report.status === "draft" && (
@@ -1445,16 +1495,22 @@ function Header({ report, project, userLabels, ppc,
               </button>
             )}
           </div>
+          {/* Sid-approved "show me" checklist: Audit chip removed; Events
+              renamed to Issues; Issues + Photos flagged .optional (they don't
+              gate submit). A chip flips to the green ✓ state (via .complete)
+              the moment its section has data — for Issues that means >=1
+              logged issue, the bug Sid hit where it stayed pending. */}
           <div className="dr-pips" data-testid="dr-section-chips">
-            {drSections.map((s) => (
+            {mobileChecklist.map((s) => (
               <button key={s.id} type="button" data-testid={`dr-chip-${s.id}`}
-                className={`dr-pip ${s.status}`}
+                className={`dr-pip ${s.status}${s.required ? "" : " optional"}`}
                 onClick={() => {
                   const el = document.getElementById(`dr-section-${s.id}`);
                   if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
                 }}
-                title={`${s.label} — ${s.status}`}>
+                title={`${s.label} — ${s.status}${s.required ? "" : " (optional)"}`}>
                 <span className="pip-name">{s.label}</span>
+                {!s.required && <span className="pip-opt">optional</span>}
               </button>
             ))}
           </div>
@@ -2014,8 +2070,11 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     return opts;
   };
   const taskSelectOptions = [
-    { value: MP_NONE, label: "— none —" },
-    ...taskOptions.map((t) => ({ value: t.id, label: `[${t.code}] ${(t.desc || "").slice(0, 30)}` })),
+    // Sid: task DESCRIPTION only in this file's dropdowns — no [activity_code]
+    // prefix (the standalone code column on the desktop grid keeps the code).
+    // Placeholder cleaned "— none —" -> "None".
+    { value: MP_NONE, label: "None" },
+    ...taskOptions.map((t) => ({ value: t.id, label: (t.desc || "").slice(0, 40) || t.code })),
   ];
 
   // Total column count for empty-state rowspan calc -- header below has:
@@ -2107,8 +2166,9 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                 </span>
               </div>
               <div className="flex items-center min-h-[20px]">
+                {/* mobile: task NAME only — no activity_code beside it (Sid). */}
                 <span className="text-xs truncate" style={{ color: "var(--v4-fg-muted)" }}>
-                  {task ? `Task: [${task.code}] ${(task.desc || "").slice(0, 34)}` : (r.notes || "")}
+                  {task ? `Task: ${(task.desc || "").slice(0, 40)}` : (r.notes || "")}
                 </span>
                 {!locked && (
                   <button type="button" data-testid={`presence-card-edit-${r.id}`}
@@ -2125,14 +2185,35 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         })}
         {!locked && (
           <button type="button" data-testid="presence-add-crew-m"
-            onClick={() => { if (!mEntryOpen && drafts.length === 0) addAnotherRow(); setMEntryOpen((v) => !v); }}
+            onClick={() => { if (drafts.length === 0) addAnotherRow(); setMEntryOpen(true); }}
             className="w-full rounded-xl border border-dashed py-2.5 text-sm inline-flex items-center justify-center gap-1.5"
             style={{ borderColor: "var(--v4-border-strong)", color: "var(--v4-fg-secondary)", background: "transparent" }}>
-            <Plus className="h-4 w-4" /> {mEntryOpen ? "Done" : "Add crew"}
+            <Plus className="h-4 w-4" /> Add crew
           </button>
         )}
       </div>
-      <div className={`overflow-x-auto ${mEntryOpen ? "" : "max-md:hidden"}`}>
+      {/* MOBILE backdrop for the crew entry sheet (Sid #5). md:hidden so
+          desktop never renders it; only visible when the sheet is open. */}
+      {mEntryOpen && (
+        <div className="dr-msheet-ov md:hidden" data-testid="presence-crew-sheet-ov"
+          onClick={() => setMEntryOpen(false)} />
+      )}
+      {/* The crew entry TABLE is the single source of truth for both surfaces:
+          inline on desktop, and on phones it is lifted into a bottom sheet via
+          .dr-crew-entry--open (CSS, mobile-only). Same draft rows + same
+          addAnotherRow/setDraftField/patch handlers drive both — no dup logic.
+          On phones the table is hidden until "Add crew" opens the sheet. */}
+      <div className={`overflow-x-auto dr-crew-entry ${mEntryOpen ? "dr-crew-entry--open" : "max-md:hidden"}`}>
+        {/* mobile sheet chrome (grip + title + close). md:hidden -> desktop unchanged. */}
+        <div className="dr-crew-entry-head md:hidden">
+          <div className="dr-msheet-grip" />
+          <div className="dr-msheet-head">
+            <div className="dr-msheet-title"><Users className="h-4 w-4 text-[#34D399] shrink-0" strokeWidth={1.8} /><span>Add crew</span></div>
+            <button type="button" onClick={() => setMEntryOpen(false)} aria-label="Close"
+              data-testid="presence-crew-sheet-close" className="dr-msheet-x"><X className="h-4 w-4" /></button>
+          </div>
+          <p className="dr-msheet-sub">Log a crew's hours and link them to an activity.</p>
+        </div>
         <table className="dense-table">
           <thead>
             <tr>
@@ -2268,6 +2349,19 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
             )}
           </tbody>
         </table>
+        {/* MOBILE sheet footer (Sid #5): Cancel closes the sheet; "Add crew"
+            appends another draft row via the SAME addAnotherRow handler the
+            desktop "Add trade" button uses. md:hidden -> desktop untouched. */}
+        {!locked && (
+          <div className="dr-msheet-foot md:hidden">
+            <button type="button" data-testid="presence-crew-sheet-cancel"
+              onClick={() => setMEntryOpen(false)} className="dr-msheet-btn-sl">Cancel</button>
+            <button type="button" data-testid="presence-crew-sheet-add"
+              onClick={addAnotherRow} className="sbtn sbtn-md sbtn-primary flex-1 justify-center">
+              <Plus className="h-4 w-4" /> Add crew
+            </button>
+          </div>
+        )}
       </div>
       {!locked && drafts.length === 0 && (
         <div className="mt-3 flex justify-start max-md:hidden">
@@ -2974,30 +3068,58 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
             the schedule. Unplanned activities still need a manual
             entry path because the schedule by definition didn't
             anticipate them. */}
-        {/* MOBILE: ghost affordance (mockup); tapping reveals the form. */}
+        {/* MOBILE: ghost affordance (mockup); tapping opens the bottom sheet. */}
         {!locked && (
           <button type="button" data-testid="unplanned-ghost-m"
-            onClick={() => setMUnplannedOpen((v) => !v)}
+            onClick={() => setMUnplannedOpen(true)}
             className="md:hidden w-full rounded-xl border border-dashed py-2.5 text-sm inline-flex items-center justify-center gap-1.5"
             style={{ borderColor: "var(--v4-border-strong)", color: "var(--v4-fg-secondary)", background: "transparent" }}>
-            <Plus className="h-4 w-4" /> {mUnplannedOpen ? "Done" : "Add unplanned activity"}
+            <Plus className="h-4 w-4" /> Add unplanned activity
           </button>
         )}
-        <div className={`bg-amber-50 border border-amber-200 rounded p-3 space-y-2 ${mUnplannedOpen ? "" : "max-md:hidden"}`}>
+        {/* MOBILE backdrop for the unplanned-activity sheet (Sid #5). */}
+        {mUnplannedOpen && (
+          <div className="dr-msheet-ov md:hidden" data-testid="unplanned-sheet-ov"
+            onClick={() => setMUnplannedOpen(false)} />
+        )}
+        {/* Same amber form fields + same createUnplanned handler drive desktop
+            inline AND the mobile bottom sheet (dr-crew-entry--open lifts it on
+            phones; desktop keeps the inline box). No duplicated save logic. */}
+        <div className={`bg-amber-50 border border-amber-200 rounded p-3 space-y-2 dr-crew-entry ${mUnplannedOpen ? "dr-crew-entry--open" : "max-md:hidden"}`}>
+          {/* mobile sheet chrome */}
+          <div className="dr-crew-entry-head md:hidden">
+            <div className="dr-msheet-grip" />
+            <div className="dr-msheet-head">
+              <div className="dr-msheet-title"><Wand2 className="h-4 w-4 text-[#34D399] shrink-0" strokeWidth={1.8} /><span>Add unplanned activity</span></div>
+              <button type="button" onClick={() => setMUnplannedOpen(false)} aria-label="Close"
+                data-testid="unplanned-sheet-close" className="dr-msheet-x"><X className="h-4 w-4" /></button>
+            </div>
+            <p className="dr-msheet-sub">Work done today that wasn't on the plan.</p>
+          </div>
           <div className="text-xs font-medium text-amber-800 flex items-center gap-1 max-md:hidden"><Wand2 className="h-3 w-3" /> Create unplanned activity (flagged for PM review)</div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <input data-testid="unplanned-desc" placeholder="What was done?" value={unplanned.description} onChange={(e) => setUnplanned({ ...unplanned, description: e.target.value })} className="col-span-2 h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
             <input data-testid="unplanned-trade" placeholder="Trade" value={unplanned.trade_code} onChange={(e) => setUnplanned({ ...unplanned, trade_code: e.target.value })} className="h-8 px-2 rounded border border-amber-200 text-sm bg-white" />
           </div>
-          {/* pt.40: inline section button -> sbtn-sm (28px). */}
+          {/* desktop inline add button (mobile uses the sheet footer below). */}
           <button data-testid="unplanned-add" onClick={createUnplanned}
             disabled={creatingUnplanned || (locked && !isAddReasonValid(addReason))}
             title={locked && !isAddReasonValid(addReason)
               ? `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`
               : undefined}
-            className="sbtn sbtn-sm sbtn-primary">
+            className="sbtn sbtn-sm sbtn-primary max-md:hidden">
             {creatingUnplanned ? "Creating…" : (locked ? "Create unplanned (post-submit)" : "Create unplanned activity")}
           </button>
+          {/* MOBILE sheet footer: Cancel + primary Add (same createUnplanned). */}
+          <div className="dr-msheet-foot md:hidden">
+            <button type="button" data-testid="unplanned-sheet-cancel"
+              onClick={() => setMUnplannedOpen(false)} className="dr-msheet-btn-sl">Cancel</button>
+            <button type="button" data-testid="unplanned-sheet-add" onClick={createUnplanned}
+              disabled={creatingUnplanned}
+              className="sbtn sbtn-md sbtn-primary flex-1 justify-center">
+              {creatingUnplanned ? "Adding…" : (<><Plus className="h-4 w-4" /> Add</>)}
+            </button>
+          </div>
         </div>
       </div>
     </PanelShell>
@@ -3231,8 +3353,28 @@ function EventsTabsCard({ delays, safetyEvents, qcIssues, rfis, deliveries,
     });
 
   return (
-    <PanelShell icon={AlertTriangle} title="Events" count={eventsTotal} testid="dr-events-tabs">
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+    <PanelShell icon={AlertTriangle}
+      title={<><span className="max-md:hidden">Events</span><span className="md:hidden">Issues</span></>}
+      count={eventsTotal} testid="dr-events-tabs">
+      {/* MOBILE (Sid #5): tapping an issue chip opens that kind's add-form as a
+          bottom-sheet dialog. The panel already auto-opens its form on mount
+          and auto-closes (activeTab→"") after a successful log, so this only
+          adds the sheet CHROME — a dim backdrop + a close control — while
+          reusing every existing panel handler. Desktop (md:hidden) unchanged.
+          The active TabsContent is lifted into the sheet via CSS when the
+          card carries data-issue-sheet="open". */}
+      {activeTab && (
+        <div className="dr-msheet-ov md:hidden" data-testid="dr-issue-sheet-ov"
+          onClick={() => setActiveTab("")} />
+      )}
+      {activeTab && (
+        <button type="button" onClick={() => setActiveTab("")} aria-label="Close"
+          data-testid="dr-issue-sheet-close" className="dr-issue-sheet-close md:hidden">
+          <X className="h-4 w-4" />
+        </button>
+      )}
+      <Tabs value={activeTab} onValueChange={setActiveTab}
+        data-issue-sheet={activeTab ? "open" : "closed"}>
         <div className="surface p-2 flex items-center gap-2 flex-wrap">
         <TabsList className="dr-events-tabs flex flex-wrap h-auto p-1 gap-1 max-md:grid max-md:grid-cols-3 max-md:gap-2">
             {TABS.map((t) => {
@@ -3617,11 +3759,11 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
           testidPrefix="safety-activity" />
         <div className="grid grid-cols-2 gap-2">
           <select data-testid="safety-new-type" value={draft.event_type} onChange={(e) => setDraft({ ...draft, event_type: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            <option value="">— select event type —</option>
+            <option value="">Select…</option>
             {["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
           </select>
           <select data-testid="safety-new-severity" value={draft.severity} onChange={(e) => setDraft({ ...draft, severity: e.target.value })} className="h-8 px-2 rounded border border-slate-200 text-sm">
-            <option value="">— select severity —</option>
+            <option value="">Select…</option>
             {["minor", "moderate", "major", "critical"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
