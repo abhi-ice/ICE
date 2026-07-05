@@ -1,0 +1,36 @@
+# Windows-only worker package — must NOT be included in the Linux container
+# image. Its requirements.txt lists pywin32 which fails pip install on Linux
+# and blocks k8s deployment readiness (Jul 5 2026 outage).
+worker/
+worker/**
+
+# Design mockup HTML files — not part of the shipping app
+design-mockup/
+
+# Memory / handoff / test artifacts
+memory/
+test_reports/
+
+# VCS + editor
+.git/
+.gitignore
+.emergent/
+
+# Node build outputs (kept per-package)
+node_modules/
+**/node_modules/
+frontend/build/
+
+# Python build artifacts
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env overlays that shouldn't reach prod
+*.env.local
+.venv/
+venv/
