@@ -17,7 +17,7 @@ import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copil
 import { localTodayISO, localISODate, formatDateDisplay } from "../lib/dateUtil";
 // Offline round 2 (2026-07-06): provisional DR create + queued-save detection.
 import { createDrOffline } from "../lib/drOfflineCreate";
-import { resolveOfflineId } from "../lib/drOfflineSync";
+import { resolveOfflineId, getQueue } from "../lib/drOfflineSync";
 import { warmOfflineCache } from "../lib/drPrefetch";
 import { primeOfflineGet, readCachedGet } from "../lib/api";
 // Client-side photo compression — a 10MB phone photo becomes ~0.5MB before
@@ -307,6 +307,23 @@ export default function DailyReports() {
     });
   }, [activeId]);
   useEffect(() => { load(); }, [load]);
+
+  // Round 4 (2026-07-06): refresh the listing when the offline queues move —
+  // an offline-created report appears here the moment its queued create
+  // drains (previously it was invisible until a manual refresh AFTER the
+  // drain happened to run). Debounced; online only (offline reads cache).
+  useEffect(() => {
+    let t = null;
+    const onQueueChanged = () => {
+      clearTimeout(t);
+      t = setTimeout(() => { if (navigator.onLine) load(); }, 800);
+    };
+    window.addEventListener("ice-offline-queue-changed", onQueueChanged);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("ice-offline-queue-changed", onQueueChanged);
+    };
+  }, [load]);
 
   const handleUploadTemplate = () => {
     if (!activeId) return toast.error("Pick a project first");
@@ -880,7 +897,20 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       (r.pct_complete_end_of_day ?? 0) > (r.pct_complete_start_of_day ?? 0)
       || (r.status_at_end_of_day && r.status_at_end_of_day !== "not_started")
     );
-    if (presence.length === 0 && hasProgress) {
+    // Round 4 (2026-07-06): crew added OFFLINE sits in the request queue —
+    // it isn't in `presence` (the cached bundle) until the sync lands, but
+    // it EXISTS. Count queued presence creates for this report so the
+    // "progress but no manpower" contradiction can't misfire offline.
+    let queuedCrew = 0;
+    try {
+      queuedCrew = getQueue().filter((r) => {
+        if ((r.method || "").toUpperCase() !== "POST") return false;
+        return (r.url || "").includes(`/daily-reports/${id}/presence`)
+          || ((r.url || "").includes("/daily-presence")
+              && JSON.stringify(r.data || {}).includes(id));
+      }).length;
+    } catch { /* queue unreadable — validate on server data only */ }
+    if (presence.length + queuedCrew === 0 && hasProgress) {
       errors.push(
         "Crew presence is empty but activities show recorded progress. "
         + "Either add a trade row to the presence panel, or unmark the activity "
@@ -5475,8 +5505,30 @@ function GuidedDrFlow({
     let total = 0;
     try {
       // eslint-disable-next-line global-require
-      const { getQueueSize } = require("../lib/drOfflineSync");
-      total += getQueueSize() || 0;
+      const { getQueue } = require("../lib/drOfflineSync");
+      // Round 4 (2026-07-06): count only THIS report's queued requests —
+      // the global queue size leaked onto every report's chip ("24 items
+      // will sync" on a report never touched offline). Match on the report
+      // id OR any of its child ids: the flow's most common offline writes
+      // (EOD% PATCH /daily-report-activities/{rowId}, DELETE
+      // /daily-presence/{rid}, event edits) don't mention the report id.
+      const childIds = new Set([
+        ...(grid || []).map((r) => r.id),
+        ...(presence || []).map((p) => p.id),
+        ...(delays || []).map((d) => d.id),
+        ...(safetyEvents || []).map((s) => s.id),
+        ...(qcIssues || []).map((qi) => qi.id),
+        ...(rfis || []).map((rf) => rf.id),
+        ...(deliveries || []).map((dv) => dv.id),
+      ].filter(Boolean));
+      total += (getQueue() || []).filter((r) => {
+        const hay = `${r.url || ""}|${r.data ? JSON.stringify(r.data) : ""}`;
+        if (!!id && hay.includes(id)) return true;
+        for (const cid of childIds) {
+          if (hay.includes(cid)) return true;
+        }
+        return false;
+      }).length;
     } catch { /* ignore */ }
     try {
       // eslint-disable-next-line global-require
@@ -5499,16 +5551,22 @@ function GuidedDrFlow({
       }
     } catch { /* ignore */ }
     setQueueCount(total);
-  }, [id]);
+    // Child-id sets come from the live bundle props — refresh when they change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, grid, presence, delays, safetyEvents, qcIssues, rfis, deliveries]);
   useEffect(() => {
     refreshQueueCount();
     const on = () => refreshQueueCount();
     window.addEventListener("online", on);
     window.addEventListener("offline", on);
+    // Live-update as queues change (writes + drains dispatch this event) —
+    // the 6s poll is just the safety net.
+    window.addEventListener("ice-offline-queue-changed", on);
     const t = setInterval(refreshQueueCount, 6000);
     return () => {
       window.removeEventListener("online", on);
       window.removeEventListener("offline", on);
+      window.removeEventListener("ice-offline-queue-changed", on);
       clearInterval(t);
     };
   }, [refreshQueueCount]);
@@ -5853,14 +5911,20 @@ function GuidedDrFlow({
           </div>
           {report.weather_conditions && <CheckCircle2 className="h-4 w-4" style={{ color: "#34d399" }} />}
         </div>
-        <button className="dr-flow-bigcard" data-testid="dr-flow-unplanned-card" onClick={() => setSheet({ kind: "unplanned" })}>
-          <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
-          <div className="dr-flow-big-body">
-            <div className="dr-flow-big-t">Unplanned work</div>
-            <div className="dr-flow-big-s">Log anything done off the schedule</div>
-          </div>
-          <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />
-        </button>
+        {/* Round 4 (2026-07-06): on a NO-activity day the empty-state's big
+            green "Add unplanned activity" button already covers this — two
+            unplanned entry points on one screen read as a mistake. The
+            site-wide card shows only when activities exist. */}
+        {N > 0 && (
+          <button className="dr-flow-bigcard" data-testid="dr-flow-unplanned-card" onClick={() => setSheet({ kind: "unplanned" })}>
+            <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
+            <div className="dr-flow-big-body">
+              <div className="dr-flow-big-t">Unplanned work</div>
+              <div className="dr-flow-big-s">Log anything done off the schedule</div>
+            </div>
+            <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />
+          </button>
+        )}
 
         {/* spec D — voice notes list (playable) on the landing whenever the
             report has notes; recording lives on the Review step. */}

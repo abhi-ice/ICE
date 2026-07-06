@@ -225,7 +225,19 @@ export function clearQueue() {
  *
  * Returns { synced, failed, remaining }.
  */
-export async function drainOfflineQueue(api) {
+// MUTEX (round 4 review blocker): the drain now has FOUR triggers — the
+// 'online' listener, the post-load sweep, the 60s heartbeat, and the manual
+// "Sync now" button. Without a shared in-flight promise, two overlapping
+// drains read the SAME queue snapshot and replay every non-idempotent POST
+// twice (duplicate delays/crew rows server-side). Mirrors drPhotoQueue.
+let _drainInFlight = null;
+export function drainOfflineQueue(api) {
+  if (_drainInFlight) return _drainInFlight;
+  _drainInFlight = _drainQueueOnce(api).finally(() => { _drainInFlight = null; });
+  return _drainInFlight;
+}
+
+async function _drainQueueOnce(api) {
   if (!navigator.onLine) {
     return { synced: 0, failed: 0, remaining: -1 };
   }
@@ -351,18 +363,25 @@ export async function drainOfflineQueue(api) {
       failed += 1;
       const status = e?.response?.status;
       const networkOnly = !e.response;
-      // Retryable: network-only OR 5xx ("server waking up" is a known
-      // transient here — one 502 must not throw away a day's records).
-      // 401/403 also retry: auth comes back after re-login.
+      // Retryable: network-only, 5xx ("server waking up" is a known
+      // transient), or 401/403 (auth comes back after re-login). A queued
+      // field record is NEVER dropped for these — with the 60s drain
+      // heartbeat (round 4) a capped retry budget would burn through ~5
+      // minutes of downtime or a logged-out tab and silently lose a day's
+      // records. retryCount is informational only (mirrors drPhotoQueue's
+      // policy); only a DEFINITIVE server rejection (other 4xx) drops.
       const retryable = networkOnly || status >= 500 || status === 401 || status === 403;
+      // Auth failures don't even bump the informational counter — a tab
+      // idling on /login must leave the queue byte-identical (no churn).
+      const authWait = status === 401 || status === 403;
       const next = {
         ...req, // keep the REMAPPED url/data so a later drain needs no map
         id: raw.id,
         ...(raw.offlineCreate ? { offlineCreate: raw.offlineCreate } : {}),
-        retryCount: (raw.retryCount || 0) + 1,
+        retryCount: authWait ? (raw.retryCount || 0) : (raw.retryCount || 0) + 1,
         lastError: e?.response?.data?.detail || e.message || "unknown",
       };
-      if (retryable && next.retryCount < 5) {
+      if (retryable) {
         keep.push(next);
       } else if (raw.offlineCreate?.tempId) {
         // The CREATE itself is permanently rejected (validation/404/409):
@@ -372,7 +391,16 @@ export async function drainOfflineQueue(api) {
       // other permanent 4xx (validation / 404 / 409) -- drop it.
     }
   }
-  writeQueue(keep.map((r) => applyRemapToRequest(r, remap)));
+  // Skip the rewrite + event when the queue is byte-identical (e.g. every
+  // entry deferred or auth-waited) — otherwise the 60s heartbeat would
+  // dispatch ice-offline-queue-changed every minute and cycle the DR list
+  // reload + chip recount for no reason.
+  const finalQueue = keep.map((r) => applyRemapToRequest(r, remap));
+  try {
+    if (JSON.stringify(finalQueue) !== JSON.stringify(q)) writeQueue(finalQueue);
+  } catch {
+    writeQueue(finalQueue);
+  }
   if (remapGrew) {
     // Wake the photo/voice IndexedDB queues — they may hold rows keyed to a
     // provisional DR id that just became resolvable.
