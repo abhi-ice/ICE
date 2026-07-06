@@ -5765,7 +5765,7 @@ function GuidedDrFlow({
       if (!handleLockedAddError(hardErr, "photo")) {
         toast.error(formatErr(hardErr, "Photo upload"));
       }
-    } else if (tagged === 0 && queued === 0) {
+    } else if (tagged === 0 && queued === 0 && memOnly === 0) {
       toast.error("Upload failed — try again.");
     }
   };
