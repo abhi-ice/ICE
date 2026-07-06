@@ -40,14 +40,31 @@ const MAX_QUEUE_SIZE = 200;
 // these prefixes are queued; everything else surfaces the error
 // normally.
 const QUEUEABLE_PREFIXES = [
-  "/daily-reports/",       // PATCH report body, POST grid rows, etc.
-  "/daily-presence/",
+  "/daily-reports/",       // PATCH report body, POST grid rows, presence &
+                           // daily-presence aliases, unplanned-activity, etc.
+  "/daily-presence/",      // PATCH/DELETE an existing presence row (id in URL)
+  "/daily-presence",       // POST top-level create alias (daily_report_id in body,
+                           // no trailing slash) — must precede id-less create match
+  "/daily-report-activities/", // v7 guided flow: PATCH EOD% / DELETE a grid row
   "/delays/",
   "/safety-events/",
   "/qc-issues/",
   "/rfis/",
   "/deliveries/",
   "/coordination-events/",
+  "/photo-tags",           // v7 guided flow: POST tag/pin a photo to an activity,
+                           // DELETE /photo-tags/{id}. (Offline photo CAPTURE is
+                           // owned end-to-end by lib/drPhotoQueue; this only
+                           // catches tag mutations on already-uploaded photos.)
+  "/photo-tray/attach-to-dr", // attach an already-uploaded tray photo to the DR
+  // NOT queued: /photo-tray/review — that's the AI analysis run, which the
+  // offline spec explicitly scopes out ("everything except AI analysis").
+  // Queueing it would silently spend AI budget on reconnect; it fails
+  // loudly instead and the super can re-run it online.
+  // NOT queued: multipart uploads (/photo-tray, /voice/annotate,
+  // /daily-reports/{id}/voice/transcribe-and-extract) — FormData can't
+  // round-trip through localStorage JSON; lib/drPhotoQueue.js and
+  // lib/drVoiceQueue.js own those end-to-end in IndexedDB.
 ];
 
 function readQueue() {
@@ -64,6 +81,14 @@ function readQueue() {
 function writeQueue(arr) {
   try { localStorage.setItem(QUEUE_KEY, JSON.stringify(arr.slice(-MAX_QUEUE_SIZE))); }
   catch { /* quota or private-mode; nothing we can do */ }
+  // v7 (2026-07-05): let the flow landing's "N items will sync" chip
+  // live-update instead of polling. Same event name as the photo/voice
+  // queues (lib/drPhotoQueue.js, lib/drVoiceQueue.js).
+  try {
+    window.dispatchEvent(new CustomEvent("ice-offline-queue-changed", {
+      detail: { source: "requests" },
+    }));
+  } catch { /* non-window env */ }
 }
 
 export function isQueueable(method, url) {
@@ -91,6 +116,27 @@ export function enqueueRequest({ method, url, data }) {
 
 export function getQueueSize() {
   return readQueue().length;
+}
+
+/**
+ * v7 (2026-07-05) — combined pending-sync counts for the flow landing's
+ * "N items will sync" chip (spec F.6: photos + voice + requests).
+ * Each source is best-effort; a broken IndexedDB never breaks the chip.
+ * Returns { requests, photos, voice, total }.
+ */
+export async function getPendingSyncCounts(dailyReportId = null) {
+  const counts = { requests: 0, photos: 0, voice: 0, total: 0 };
+  counts.requests = getQueueSize();
+  try {
+    const { listPendingPhotos } = await import("./drPhotoQueue");
+    counts.photos = (await listPendingPhotos(dailyReportId)).length;
+  } catch { /* ignore */ }
+  try {
+    const { listPending } = await import("./drVoiceQueue");
+    counts.voice = (await listPending(dailyReportId)).length;
+  } catch { /* ignore */ }
+  counts.total = counts.requests + counts.photos + counts.voice;
+  return counts;
 }
 
 export function getQueue() {
@@ -166,7 +212,13 @@ export function installOfflineInterceptor(apiClient) {
       if (!err.response && err.config) {
         const cfg = err.config;
         const isDrain = cfg.headers?.["X-Drain-Replay"] === "1";
-        if (!isDrain && isQueueable(cfg.method, cfg.url || "")) {
+        // Multipart bodies can't survive a localStorage JSON round-trip —
+        // e.g. /daily-reports/{id}/voice/transcribe-and-extract matches the
+        // /daily-reports/ prefix but posts FormData. Those belong to the
+        // IndexedDB queues (drVoiceQueue / drPhotoQueue); queueing a
+        // stringified FormData here would replay as an empty body.
+        const isMultipart = typeof FormData !== "undefined" && cfg.data instanceof FormData;
+        if (!isDrain && !isMultipart && isQueueable(cfg.method, cfg.url || "")) {
           const id = enqueueRequest({
             method: cfg.method,
             url: cfg.url,
