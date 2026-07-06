@@ -42,14 +42,47 @@ const LEGACY_CACHE_PREFIXES = ["ice-shell-", "ice-static-", "workbox-", "ice-"];
 
 const NAV_TIMEOUT_MS = 3000;
 
+// Install-time precache (2026-07-06): the shell AND the script/style assets
+// it references. Previously install cached only "/" + "/index.html"; the
+// bundle was cached lazily by the fetch handler — which only controls the
+// page from the SECOND visit onward (the first load's requests happen before
+// this SW takes over). Net effect: offline after exactly one online visit
+// served the cached HTML with NO JavaScript — a blank page (field-reported).
+// Parsing the fresh index.html for its /static asset URLs and caching them
+// here makes ONE online visit enough to boot offline, for both the dev
+// bundle (/static/js/bundle.js) and hashed production files.
+async function precacheShell() {
+  let resp;
+  try {
+    resp = await fetch("/index.html", { cache: "no-cache" });
+  } catch {
+    return; // offline during install — nothing to precache
+  }
+  if (!resp || !resp.ok) return;
+  const shell = await caches.open(SHELL_CACHE);
+  await shell.put("/index.html", resp.clone()).catch(() => {});
+  await shell.put("/", resp.clone()).catch(() => {});
+  let html = "";
+  try {
+    html = await resp.clone().text();
+  } catch {
+    return;
+  }
+  const urls = new Set();
+  const re = /(?:src|href)=["'](\/[^"']+\.(?:m?js|css))["']/g;
+  let m;
+  while ((m = re.exec(html)) !== null) urls.add(m[1]);
+  const stat = await caches.open(STATIC_CACHE);
+  await Promise.all([...urls].map(async (u) => {
+    try {
+      const r = await fetch(u);
+      if (r && r.ok) await stat.put(u, r.clone());
+    } catch { /* best-effort per asset */ }
+  }));
+}
+
 self.addEventListener("install", (event) => {
-  // Pre-cache the app shell so the very first offline boot has an index.html.
-  event.waitUntil(
-    caches
-      .open(SHELL_CACHE)
-      .then((cache) => cache.addAll(["/", "/index.html"]).catch(() => {}))
-      .then(() => self.skipWaiting()),
-  );
+  event.waitUntil(precacheShell().then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
