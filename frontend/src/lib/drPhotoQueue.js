@@ -162,9 +162,25 @@ export async function queuePhoto({
     );
   }
   const id = `photo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const size = blob.size || 0;
+  // iOS FIX (round 6, 2026-07-06): the real cause of "Photo upload failed"
+  // offline. iOS Safari refuses to structured-clone certain camera File
+  // objects into IndexedDB — HEIC especially (the iPhone default format,
+  // which compressImage deliberately skips), and disk-backed Files after a
+  // network flip. Storing raw BYTES (ArrayBuffer) clones reliably on every
+  // engine; we rebuild a Blob at drain time (uploadOne). Legacy records that
+  // still carry `.blob` keep working.
+  let bytes = null;
+  try {
+    bytes = await blob.arrayBuffer();
+  } catch {
+    bytes = null; // fall back to storing the Blob (old behavior)
+  }
   const record = {
     id,
-    blob,
+    bytes,                       // ArrayBuffer — the reliable primary
+    blob: bytes ? null : blob,   // only when arrayBuffer() failed
+    _size: size,                 // memory-accounting (bytes has no .size)
     mimeType: mimeType || blob.type || "image/jpeg",
     dailyReportId: dailyReportId || null,
     projectId,
@@ -187,14 +203,14 @@ export async function queuePhoto({
     } catch {
       // IndexedDB unusable: memory fallback — never refuse a field photo
       // (bounded; past the cap fail with the real reason, not "Network Error").
-      if (_memBytes + (blob.size || 0) > MEM_MAX_BYTES) {
+      if (_memBytes + size > MEM_MAX_BYTES) {
         throw new Error(
           "offline storage is unavailable and session memory is full — reconnect to upload photos",
         );
       }
       record._memoryOnly = true;
       _memPending.push(record);
-      _memBytes += blob.size || 0;
+      _memBytes += size;
     }
   }
   notifyQueueChanged();
@@ -248,7 +264,7 @@ async function _idbDelete(id) {
 export async function removePhoto(id) {
   const i = _memPending.findIndex((r) => r.id === id);
   if (i >= 0) {
-    _memBytes -= (_memPending[i].blob && _memPending[i].blob.size) || 0;
+    _memBytes -= _memPending[i]._size || (_memPending[i].blob && _memPending[i].blob.size) || 0;
     if (_memBytes < 0) _memBytes = 0;
     _memPending.splice(i, 1);
   }
@@ -320,10 +336,14 @@ async function uploadOne(api, photo) {
     // so it doesn't wedge the queue forever.
     throw Object.assign(new Error("missing projectId"), { permanent: true });
   }
-  // 1) Upload bytes to the tray.
+  // 1) Upload bytes to the tray. Rebuild a Blob from the stored ArrayBuffer
+  //    (round 6); legacy records that still carry a Blob upload as-is.
   const fd = new FormData();
   const filename = `dr_${photo.id}.${extForMime(photo.mimeType)}`;
-  fd.append("file", photo.blob, filename);
+  const body = photo.bytes
+    ? new Blob([photo.bytes], { type: photo.mimeType || "image/jpeg" })
+    : photo.blob;
+  fd.append("file", body, filename);
   fd.append("project_id", photo.projectId);
   fd.append("capture_source", "mobile_camera");
   const trayResp = await api.post("/photo-tray", fd, {
