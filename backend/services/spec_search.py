@@ -15,7 +15,12 @@ import math
 import json
 import re
 from typing import List
-from sklearn.feature_extraction.text import TfidfVectorizer
+# 2026-07-06 (prod-deploy-fix) -- lazy sklearn imports to keep boot RSS
+# low (sklearn + scipy pull ~90MB). numpy stays at module level because
+# many function signatures / body-line references it (np.ndarray in type
+# annotations, np.linalg.norm, etc.) and moving those to lazy would
+# require rewriting the whole file.
+# from sklearn.feature_extraction.text import TfidfVectorizer  # lazy at call site
 import numpy as np
 from database import get_db, tenant_filter
 
@@ -29,6 +34,7 @@ async def fit_spec_index(tenant_id: str, project_spec_id: str) -> dict:
     vector array + vocabulary to spec_sections.embedding (a JSON list).
     Returns {section_count, vocab_size}.
     """
+    from sklearn.feature_extraction.text import TfidfVectorizer  # noqa: F401 (used in _fit_tfidf)
     db = get_db()
     sections = await db.spec_sections.find(
         tenant_filter(tenant_id, {"project_spec_id": project_spec_id}),

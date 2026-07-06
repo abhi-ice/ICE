@@ -7,9 +7,12 @@ result.
 from __future__ import annotations
 from threading import Lock
 from typing import Dict
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+# 2026-07-06 (prod-deploy-fix) -- sklearn + scipy add ~90MB to boot RSS
+# via ~500 transitive modules. Lazy the imports so cold pod memory stays
+# tight; KB search endpoints re-import at call time (cheap on 2nd hit).
+# from sklearn.feature_extraction.text import TfidfVectorizer   # moved into _rebuild
+# from sklearn.metrics.pairwise import cosine_similarity        # moved into search()
+# import numpy as np                                             # moved into call sites
 
 from database import get_db, tenant_filter
 
@@ -23,6 +26,7 @@ def invalidate_index(tenant_id: str) -> None:
 
 
 async def _rebuild(tenant_id: str) -> dict:
+    from sklearn.feature_extraction.text import TfidfVectorizer
     db = get_db()
     rows = await db.kb_entries.find(
         tenant_filter(tenant_id), {"_id": 0},
@@ -37,6 +41,8 @@ async def _rebuild(tenant_id: str) -> dict:
 
 
 async def search_kb(tenant_id: str, query: str, limit: int = 10) -> list[dict]:
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
     cache = _caches.get(tenant_id)
     if cache is None:
         cache = await _rebuild(tenant_id)

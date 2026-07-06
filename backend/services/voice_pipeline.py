@@ -14,8 +14,13 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from typing import Optional
-from emergentintegrations.llm.openai import OpenAISpeechToText
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+# 2026-07-06 (prod-deploy-fix) -- emergentintegrations.llm.openai and
+# emergentintegrations.llm.chat both pull in litellm, which adds ~160MB
+# to boot RSS via 900+ transitive imports. voice_router imports this
+# service at module load, so lazy the SDK to endpoint-time to keep the
+# cold pod under any reasonable k8s memory limit.
+# from emergentintegrations.llm.openai import OpenAISpeechToText   # moved inside transcribe_audio
+# from emergentintegrations.llm.chat import LlmChat, UserMessage    # moved inside call sites
 from database import get_db
 from models import gen_id, utc_now
 from services.storage import put_object, make_path, record_file
@@ -30,6 +35,7 @@ def _llm_key() -> str:
 
 async def transcribe_audio(audio_bytes: bytes, ext: str = "webm", language: str | None = "en") -> dict:
     """Whisper-1 transcription. Returns {text, language, duration?}."""
+    from emergentintegrations.llm.openai import OpenAISpeechToText
     stt = OpenAISpeechToText(api_key=_llm_key())
     # The lib expects a file-like; use a NamedTemporaryFile so it has a name+ext
     suffix = f".{ext.lstrip('.').lower()}"
@@ -130,6 +136,7 @@ def transcript_looks_like_coordination(transcript: str) -> bool:
 
 async def extract_fields(transcript: str, kind: str) -> dict:
     sys = EXTRACT_SYSTEMS.get(kind, EXTRACT_SYSTEMS["work_item"])
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
     chat = LlmChat(
         api_key=_llm_key(),
         session_id=f"voice-extract-{gen_id()}",
