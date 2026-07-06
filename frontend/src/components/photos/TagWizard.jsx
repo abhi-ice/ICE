@@ -16,6 +16,7 @@ import api from "../../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { toast } from "../ui/sonner";
 import { isDrActivityComplete } from "../../lib/taskCompletion";
+import { localTodayISO } from "../../lib/dateUtil";
 
 // Map AI-suggested event type values to the wizard's EVENT_TYPES.value.
 // AI returns "qc_issue" / "safety_event" / etc.; wizard fields are
@@ -46,7 +47,7 @@ const EVENT_TYPES = [
 const PHOTO_CLASSES = ["progress", "discovery", "damage", "quality",
                         "safety", "coordination", "closeout"];
 
-function isoToday() { return new Date().toISOString().slice(0, 10); }
+function isoToday() { return localTodayISO(); }
 
 // Bucket D Addition 5 (2026-05-12) -- new `isLocked` + `lockedAddReason`
 // props. Mirrors DelayForm gate: client-side validation rejects submit

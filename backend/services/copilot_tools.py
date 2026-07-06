@@ -32,6 +32,7 @@ from typing import Optional, Any
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
+from services.site_time import project_today_for, project_today_iso_for
 
 MODEL_PROVIDER = "anthropic"
 MODEL_NAME = "claude-sonnet-4-5-20250929"
@@ -484,7 +485,8 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
         rows = await db.tasks.find({**base, "slip_days": {"$gt": 0}}, proj_fields).sort("slip_days", -1).limit(30).to_list(30)
     elif view == "upcoming":
         days = int(args.get("days") or 14)
-        until = (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+        # Site-clock "today" so the upcoming-tasks cutoff isn't a UTC day ahead.
+        until = ((await project_today_for(db, ctx["tenant_id"], project_id)) + timedelta(days=days)).isoformat()
         rows = await db.tasks.find(
             {**base, "planned_start": {"$lte": until}, "status": {"$in": ["not_started", "in_progress"]}},
             proj_fields,
@@ -618,7 +620,7 @@ async def _tool_create_task(ctx: dict, args: dict) -> dict:
         if m:
             next_n = int(m.group(1)) + 1
     activity_code = f"A{next_n:04d}"
-    today = date.today()
+    today = await project_today_for(db, ctx["tenant_id"], project_id)
     ps = args.get("planned_start") or today.isoformat()
     dur = int(args.get("duration_days") or 5)
     pf = args.get("planned_finish") or (date.fromisoformat(ps) + timedelta(days=dur)).isoformat()
@@ -703,7 +705,7 @@ async def _tool_create_rfi(ctx: dict, args: dict) -> dict:
         "location_id": None,
         "status": "draft",
         "priority": "normal",
-        "date_initiated": date.today().isoformat(),
+        "date_initiated": await project_today_iso_for(db, ctx["tenant_id"], project_id),
         "date_required": None,
         "date_responded": None,
         "response_text": None,
@@ -720,7 +722,7 @@ async def _tool_create_rfi(ctx: dict, args: dict) -> dict:
 async def _tool_create_daily_report(ctx: dict, args: dict) -> dict:
     db = get_db()
     project_id = ctx.get("project_id")
-    rd = args.get("date") or date.today().isoformat()
+    rd = args.get("date") or await project_today_iso_for(db, ctx["tenant_id"], project_id)
     existing = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "report_date": rd}),
         {"_id": 0},
@@ -984,7 +986,7 @@ async def _tool_create_delay(ctx: dict, args: dict) -> dict:
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
         "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
-        "date": args.get("date") or date.today().isoformat(),
+        "date": args.get("date") or await project_today_iso_for(db, ctx["tenant_id"], ctx.get("project_id")),
         "description": args["description"],
         "severity": args.get("severity", "moderate"),
         "delay_days": float(args.get("delay_days", args.get("delay_minutes", 0)) or 0) if args.get("delay_days") is not None or args.get("delay_minutes") is not None else None,
@@ -1007,7 +1009,7 @@ async def _tool_create_safety_event(ctx: dict, args: dict) -> dict:
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
         "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
-        "date": args.get("date") or date.today().isoformat(),
+        "date": args.get("date") or await project_today_iso_for(db, ctx["tenant_id"], ctx.get("project_id")),
         "description": args["description"],
         "event_type": args.get("event_type", "near_miss"),
         "severity": args.get("severity", "minor"),
@@ -1042,7 +1044,7 @@ async def _tool_create_qc_issue(ctx: dict, args: dict) -> dict:
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
         "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
-        "date": args.get("date") or date.today().isoformat(),
+        "date": args.get("date") or await project_today_iso_for(db, ctx["tenant_id"], ctx.get("project_id")),
         "description": args["description"],
         "severity": args.get("severity", "minor"),
         "status": "open",
@@ -1117,7 +1119,7 @@ async def _tool_create_delivery(ctx: dict, args: dict) -> dict:
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
-        "delivery_date": args.get("delivery_date") or (date.today() + timedelta(days=7)).isoformat(),
+        "delivery_date": args.get("delivery_date") or ((await project_today_for(db, ctx["tenant_id"], ctx.get("project_id"))) + timedelta(days=7)).isoformat(),
         "vendor": args["vendor"],
         "description": args["description"],
         "po_number": args.get("po_number"),

@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from pydantic import Field
 from database import get_db, tenant_filter
+from services.site_time import project_today_iso_for
 from models import (
     DailyReport, DailyReportCreate, DailyReportUpdate,
     DailyReportActivity, DailyReportActivityUpdate,
@@ -998,7 +999,7 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                 "trade": t.get("trade_code") if t else None,
                 "location_id": t.get("location_id") if t else None,
                 "crew_id": after.get("crew_id"),
-                "date": utc_now().date().isoformat(),
+                "date": await project_today_iso_for(db, ctx["tenant_id"], dr.get("project_id") or (t.get("project_id") if t else None)),
                 "hours_worked": float(after.get("hours_worked") or 0),
                 "pct_delta": float(updates["pct_complete_end_of_day"]) - float(before.get("pct_complete_end_of_day", 0)),
                 "created_at": now_iso,

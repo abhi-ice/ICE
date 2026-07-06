@@ -8,6 +8,7 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import PageHelp from "../components/PageHelp";
+import { localISODate } from "../lib/dateUtil";
 
 const SEVERITY_TONE = {
   green: "bg-emerald-50 border-l-4 border-emerald-400",
@@ -71,8 +72,8 @@ export default function CascadeDashboard() {
       end.setDate(today.getDate() + 30);
       const r = await api.get(`/resource-leveling/dashboard`, {
         params: {
-          date_range_start: today.toISOString().slice(0, 10),
-          date_range_end: end.toISOString().slice(0, 10),
+          date_range_start: localISODate(today),
+          date_range_end: localISODate(end),
           project_id: activeId,
         },
       });

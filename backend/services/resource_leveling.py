@@ -40,6 +40,7 @@ from typing import Iterable, Optional
 from collections import defaultdict
 
 from database import get_db, tenant_filter
+from services.site_time import project_today
 
 log = logging.getLogger("resource_leveling")
 
@@ -682,7 +683,7 @@ async def recompute_capacity_for_crew(
         {"_id": 0, "id": 1, "trade": 1, "company_name": 1, "status": 1,
          "default_headcount": 1, "target_size": 1, "home_project_id": 1},
     )
-    today = date.today()
+    today = project_today()
     horizon = today + timedelta(days=horizon_days - 1)
     # Bucket H Phase 4 -- soft-delete via /crud/crews/{id} sets
     # status="deleted"; treat as archived for capacity recompute.
@@ -770,7 +771,7 @@ async def recompute_demand_for_project(
       - project archive (demand zeroes out)
     """
     db = get_db()
-    today = date.today()
+    today = project_today()
     horizon = today + timedelta(days=horizon_days - 1)
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}),

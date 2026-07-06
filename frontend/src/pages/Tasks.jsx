@@ -9,7 +9,7 @@ import { useProjects } from "../lib/projects";
 // renders dict-shape predecessors {code, type, lag_days} produced by
 // migration 018 (was: bare-string codes pre-018). Without this the
 // Predecessors column shows "[object Object]" via the bare .join.
-import { formatDateDisplay, slipDays, formatPredecessors } from "../lib/dateUtil";
+import { formatDateDisplay, slipDays, formatPredecessors, localISODate } from "../lib/dateUtil";
 // Bug #50 (2026-05-13): added FileText (submittal) icon for the
 // extended blocker tooltip. Bug #53 (2026-05-13): dropped ClipboardCheck
 // (qc_issue) and ShieldAlert (safety_event) imports since those types
@@ -87,8 +87,8 @@ function useTaskGapIndicator(projectId) {
       const today = new Date();
       const end = new Date();
       end.setDate(today.getDate() + 60);
-      const startIso = today.toISOString().slice(0, 10);
-      const endIso = end.toISOString().slice(0, 10);
+      const startIso = localISODate(today);
+      const endIso = localISODate(end);
       try {
         const r = await api.get(`/resource-leveling/dashboard`, {
           params: { date_range_start: startIso, date_range_end: endIso,

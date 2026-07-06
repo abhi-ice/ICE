@@ -14,6 +14,7 @@ import io
 import re
 import math
 from datetime import datetime, timezone, timedelta, date
+from services.site_time import project_today
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from typing import Optional, Literal, List
 from pydantic import Field
@@ -674,7 +675,7 @@ async def recovery_eval(project_id: Optional[str] = None, ctx: dict = Depends(re
         if applied_at:
             try:
                 applied_d = datetime.fromisoformat(applied_at.replace("Z", "+00:00")).date()
-                today = date.today()
+                today = project_today()
                 age_d = (today - applied_d).days
                 # crude proxy: pct progress * duration / 100
                 dur = float(target.get("duration_days") or 1.0)

@@ -20,6 +20,7 @@ import TaskPicker from "./TaskPicker";
 import JigsawField from "./JigsawField";
 import FieldLabel from "./FieldLabel";
 import { getUser } from "../../lib/auth";
+import { localISODate } from "../../lib/dateUtil";
 
 const CHANNELS = ["email", "phone", "in_person", "formal_letter",
                    "text_message", "meeting", "system_notification"];
@@ -42,8 +43,12 @@ const TRADES = ["general", "sitework", "demolition", "concrete", "masonry",
                  "fire_protection", "elevators", "abatement", "other"];
 
 function defaultsFromInitial(initial, linkedDailyReportId) {
+  // Local wall-clock "now" (YYYY-MM-DDTHH:MM) for the datetime-local default,
+  // NOT toISOString() (UTC), which shows next-day/shifted time for late US entry.
+  const _now = new Date();
+  const localNowMinute = `${localISODate(_now)}T${String(_now.getHours()).padStart(2, "0")}:${String(_now.getMinutes()).padStart(2, "0")}`;
   return {
-    occurred_at: initial?.occurred_at?.slice(0, 16) || new Date().toISOString().slice(0, 16),
+    occurred_at: initial?.occurred_at?.slice(0, 16) || localNowMinute,
     channel: initial?.channel || "phone",
     direction: initial?.direction || "inbound",
     other_party_name: initial?.other_party_name || "",

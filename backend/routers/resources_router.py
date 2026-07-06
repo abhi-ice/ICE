@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from datetime import date, timedelta
 from typing import Optional
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import (
     Crew, CrewCreate, Equipment, EquipmentCreate,
     Person, PersonCreate, Certification, CertificationCreate,
@@ -116,7 +117,7 @@ async def list_certs(expiring_within_days: Optional[int] = None, ctx: dict = Dep
     db = get_db()
     f = tenant_filter(ctx["tenant_id"])
     if expiring_within_days:
-        cutoff = (date.today() + timedelta(days=expiring_within_days)).isoformat()
+        cutoff = (project_today() + timedelta(days=expiring_within_days)).isoformat()
         f["expires_date"] = {"$lte": cutoff}
     docs = await db.certifications.find(f, {"_id": 0}).sort("expires_date", 1).to_list(2000)
     return [Certification(**d) for d in docs]

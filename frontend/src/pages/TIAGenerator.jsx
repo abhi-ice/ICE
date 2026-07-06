@@ -9,17 +9,18 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { FileText, Download, History, Sparkles, ShieldAlert, Loader2 } from "lucide-react";
 import api from "../lib/api";
+import { localTodayISO, localISODate } from "../lib/dateUtil";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import FieldLabel from "../components/forms/FieldLabel";
 
-function isoToday() { return new Date().toISOString().slice(0, 10); }
+function isoToday() { return localTodayISO(); }
 
 function isoFromNTPOrYearAgo(proj) {
   if (proj?.ntp_date) return String(proj.ntp_date).slice(0, 10);
   const d = new Date();
   d.setFullYear(d.getFullYear() - 1);
-  return d.toISOString().slice(0, 10);
+  return localISODate(d);
 }
 
 const CAUSE_CLASSES = [

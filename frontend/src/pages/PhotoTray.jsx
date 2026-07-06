@@ -14,7 +14,7 @@ import { useUrlState } from "../lib/useUrlState";
 // CPM Part G (2026-05-15) -- exif_taken_at badge rendered MM/DD/YYYY
 // via the chokepoint. The badge already truncated datetime to date
 // via .slice(0,10); formatDateDisplay does the same plus format.
-import { formatDateDisplay } from "../lib/dateUtil";
+import { formatDateDisplay, localISODate } from "../lib/dateUtil";
 import { confirmAction } from "../lib/confirmAction";
 import { deleteWithUndo } from "../lib/deleteWithUndo";
 import PageHelp from "../components/PageHelp";
@@ -34,7 +34,7 @@ const SOURCE_LABELS = {
 
 function isoDaysAgo(n) {
   const d = new Date(); d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return localISODate(d);
 }
 
 export default function PhotoTray() {
