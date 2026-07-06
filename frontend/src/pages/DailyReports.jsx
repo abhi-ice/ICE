@@ -14,7 +14,7 @@ import { useNavigate, Link } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
-import { localTodayISO, formatDateDisplay } from "../lib/dateUtil";
+import { localTodayISO, localISODate, formatDateDisplay } from "../lib/dateUtil";
 import { toast } from "../components/ui/sonner";
 import { confirmAction } from "../lib/confirmAction";
 import { deleteWithUndo } from "../lib/deleteWithUndo";
@@ -82,6 +82,9 @@ import { COMMON_TRADES, LockedReasonCard, isFlowReasonValid } from "../component
 // v7 voice notes (spec D) — voice-note-as-record (kind="voice_note", NO
 // transcription/extraction pipeline) + IndexedDB offline queue + playback.
 import DrVoiceNotes, { listPendingNotes as listPendingVoiceNotes } from "../components/dr/DrVoiceNotes";
+// v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
+// flow's DR header (landing + review). The DR exports via /pdf-rich.
+import ExportDropdown from "../components/ExportDropdown";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -345,24 +348,10 @@ export default function DailyReports() {
     }
   };
 
-  // Post-submit landing (spec E) — Export the report PDF straight from
-  // the list card (mobile). Reuses the same /pdf-rich endpoint the DR
-  // detail uses; only offered once a report is submitted/approved.
-  const exportReportPdf = async (r) => {
-    try {
-      const res = await api.get(`/daily-reports/${r.id}/pdf-rich`, {
-        params: { mode: "internal" }, responseType: "blob",
-      });
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `daily_report_${r.report_date}_internal.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Export failed");
-    }
-  };
+  // spec #8 (v7 cleanup) — the per-card Export was removed from the DR list;
+  // export now lives in the DR detail header (ExportDropdown in the guided
+  // flow's landing + review). The list-card exportReportPdf handler was
+  // deleted with the button.
 
   if (openId) {
     // onBack also refreshes the list so a just-submitted report shows its
@@ -467,13 +456,12 @@ export default function DailyReports() {
         </table>
       </div>
 
-      {/* Mobile card list (spec E) — status badge is prominent and
-          submitted/approved reports carry an Export control on the card.
-          md:hidden so desktop is untouched. */}
+      {/* Mobile card list (spec E) — status badge is prominent. Export was
+          removed from the card (spec #8, v7 cleanup); it now lives in the DR
+          detail header. md:hidden so desktop is untouched. */}
       <div className="md:hidden flex flex-col gap-2" data-testid="dr-list-mobile">
         {reports.map((r) => {
           const canDelete = r.status === "draft";
-          const isLocked = r.status === "submitted" || r.status === "approved";
           return (
             <div key={r.id} data-testid={`dr-card-${r.id}`}
               className={`rounded-xl border p-3${hotId === r.id ? " dr-flow-card-hot" : ""}`}
@@ -495,13 +483,8 @@ export default function DailyReports() {
                   </span>
                 )}
                 <div className="ml-auto flex items-center gap-2">
-                  {isLocked && (
-                    <button data-testid={`export-dr-m-${r.id}`} onClick={() => exportReportPdf(r)}
-                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium"
-                      style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-primary)", border: "1px solid var(--v4-border)" }}>
-                      <Download className="h-3.5 w-3.5" /> Export
-                    </button>
-                  )}
+                  {/* spec #8 — Export moved OFF the list card into the DR
+                      detail header (ExportDropdown, landing + review). */}
                   <button data-testid={`delete-dr-m-${r.id}`} onClick={() => removeReport(r)} disabled={!canDelete}
                     title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
                     className={`h-9 w-9 grid place-items-center rounded-lg ${canDelete ? "text-red-500" : "text-slate-300 cursor-not-allowed"}`}
@@ -5357,19 +5340,19 @@ function GuidedDrFlow({
   // Which bottom sheet is open on the current activity screen.
   const [sheet, setSheet] = useState(null); // {kind, activity} | null
   const [queueCount, setQueueCount] = useState(0);
-  // Locked-DR (spec B): ONE reason, entered once on any activity screen,
-  // feeds edit_reason on grid PATCHes and add_reason on photo tags. Event
-  // sheets keep their own LockedAddReasonBlock (existing panel behavior).
+  // Locked-DR (spec B / v7 spec #5): ONE reason, entered once on any
+  // activity screen, unlocks EVERYTHING on that activity — it feeds
+  // edit_reason on grid PATCHes, add_reason on photo tags, AND is carried
+  // into every issue/delivery/coordination create as add_reason. The clean
+  // flow issue forms never re-prompt for a reason.
   const [lockedReason, setLockedReason] = useState("");
   const lockedReasonOk = isFlowReasonValid(lockedReason);
   // Per-activity photo upload busy flag.
   const [photoBusy, setPhotoBusy] = useState(false);
-  // Live big-% mirror while the slider is being dragged (EodSlider owns the
-  // drag; its bubbled input event keeps the mockup's big readout live).
-  // Screen changes also reset scroll so each step starts at its title.
-  const [livePct, setLivePct] = useState(null);
+  // Screen changes reset scroll so each step starts at its title. (spec #6:
+  // the big-% readout above the slider was removed; EodSlider's own compact
+  // right-side value is the live readout now.)
   useEffect(() => {
-    setLivePct(null);
     try { window.scrollTo({ top: 0 }); } catch { /* ignore */ }
   }, [screen]);
   // Crew chips flip "off" optimistically during the delete-with-undo window
@@ -5666,7 +5649,11 @@ function GuidedDrFlow({
               onClick={onBack} aria-label="Back to daily reports" style={{ padding: "8px 12px" }}>
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <span style={{ marginLeft: "auto" }}>{statusPill}</span>
+            {/* spec #8 — Export lives in the DR header (dropdown of formats). */}
+            <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <DrFlowExport id={id} report={report} testidPrefix="dr-flow-export-landing" />
+              {statusPill}
+            </span>
           </div>
           <div className="dr-flow-hero-t">Daily report</div>
           <div className="dr-flow-hero-s">
@@ -5762,8 +5749,7 @@ function GuidedDrFlow({
         <FlowSheets
           sheet={sheet} setSheet={setSheet}
           id={id} project={project} report={report} grid={grid}
-          delays={delays} safetyEvents={safetyEvents} qcIssues={qcIssues} rfis={rfis}
-          locked={locked} reload={reload}
+          locked={locked} reload={reload} lockedReason={lockedReason}
         />
         {/* No-work-day dialog (reuses the parent's state + handler) */}
         <FlowNoWorkDialog noWorkModal={noWorkModal} setNoWorkModal={setNoWorkModal}
@@ -5799,9 +5785,11 @@ function GuidedDrFlow({
       <div className="dr-flow" data-testid={`dr-flow-activity-${screen}`}>
         {stepBar(screen)}
         <div className="dr-flow-body">
-          {/* spec B — compact reason card; its value feeds edit_reason on
-              grid PATCHes + add_reason on photo tags (event sheets keep
-              their own LockedAddReasonBlock). */}
+          {/* spec B / v7 spec #5 — compact reason card at the top of the
+              activity screen. Entering it unlocks everything on this
+              activity: it feeds edit_reason on grid PATCHes, add_reason on
+              photo tags, AND is carried into every issue/delivery/coord
+              create (the flow forms never re-prompt for a reason). */}
           {locked && (
             <LockedReasonCard value={lockedReason} onChange={setLockedReason} />
           )}
@@ -5811,12 +5799,13 @@ function GuidedDrFlow({
           </div>
 
           {/* Progress card — reuses EodSlider (B1 gating, clamps, override).
-              The bubbled input event mirrors the drag into the big readout. */}
+              spec #6: the big % above the slider is REMOVED; EodSlider's own
+              compact right-side value (emerald {val}%) is the readout and
+              updates live as the slider moves (and reflects the clamped
+              position when gate-locked). Card padding tightened. */}
           <div className="dr-flow-block">
             <div className="dr-flow-block-h"><span className="dr-flow-progress-ic">%</span> Progress today</div>
-            <div className="dr-flow-prog"
-              onInput={(e) => { const t = e.target; if (t && t.type === "range") setLivePct(Number(t.value) || 0); }}>
-              <div className="dr-flow-prog-big" data-testid={`dr-flow-pct-${screen}`}>{livePct ?? (r.pct_complete_end_of_day || 0)}%</div>
+            <div className="dr-flow-prog dr-flow-prog--compact" data-testid={`dr-flow-progress-${screen}`}>
               <div className="dr-flow-slider-wrap">
                 {plannedTick != null && (
                   <span className="dr-flow-sug" style={{ left: `${Math.max(0, Math.min(100, plannedTick))}%` }} />
@@ -5864,9 +5853,10 @@ function GuidedDrFlow({
             )}
           </div>
 
-          {/* Issues card */}
+          {/* Issues & deliveries card (spec #3 — heading renamed, green
+              icon, Delivery chip added; single-activity forms auto-link). */}
           <div className="dr-flow-block">
-            <div className="dr-flow-block-h"><AlertTriangle className="h-4 w-4" style={{ color: "#34d399" }} /> Anything wrong?</div>
+            <div className="dr-flow-block-h"><AlertTriangle className="h-4 w-4" style={{ color: "#34d399" }} /> Issues &amp; deliveries</div>
             <div className="dr-flow-issuebar">
               {thisIssues === 0
                 ? <span className="dr-flow-noissue"><CheckCircle2 className="h-3.5 w-3.5" /> No issues</span>
@@ -5876,7 +5866,8 @@ function GuidedDrFlow({
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-rfi" onClick={() => setSheet({ kind: "rfi", activity: r })}><MessageSquare className="h-3 w-3" /> RFI</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-safety" onClick={() => setSheet({ kind: "safety", activity: r })}><ShieldAlert className="h-3 w-3" /> Safety</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-qc" onClick={() => setSheet({ kind: "qc", activity: r })}><ClipboardCheck className="h-3 w-3" /> QC</button>
-                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-coord" onClick={() => setSheet({ kind: "coordination", activity: r })}><Truck className="h-3 w-3" /> Coord</button>
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-delivery" onClick={() => setSheet({ kind: "delivery", activity: r })}><Truck className="h-3 w-3" /> Delivery</button>
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-coord" onClick={() => setSheet({ kind: "coordination", activity: r })}><MessageSquare className="h-3 w-3" /> Coord</button>
               </span>
             </div>
             {/* spec A — this task's logged issues, one line each. */}
@@ -5916,6 +5907,12 @@ function GuidedDrFlow({
                 <div className="dr-flow-muted-note">No photos on this activity.</div>
               )}
             </div>
+            {/* spec #7 — AI analysis: compact collapsed bar → full-screen
+                dialog reusing the desktop review logic. Only when photos
+                exist on this activity. */}
+            {taskPhotos.length > 0 && (
+              <FlowPhotoAnalysis dailyReportId={id} photos={taskPhotos} />
+            )}
           </div>
         </div>
 
@@ -5933,8 +5930,7 @@ function GuidedDrFlow({
         <FlowSheets
           sheet={sheet} setSheet={setSheet}
           id={id} project={project} report={report} grid={grid}
-          delays={delays} safetyEvents={safetyEvents} qcIssues={qcIssues} rfis={rfis}
-          locked={locked} reload={reload}
+          locked={locked} reload={reload} lockedReason={lockedReason}
         />
       </div>
     );
@@ -5973,8 +5969,7 @@ function GuidedDrFlow({
         <FlowSheets
           sheet={sheet} setSheet={setSheet}
           id={id} project={project} report={report} grid={grid}
-          delays={delays} safetyEvents={safetyEvents} qcIssues={qcIssues} rfis={rfis}
-          locked={locked} reload={reload}
+          locked={locked} reload={reload} lockedReason={lockedReason}
         />
       </div>
     );
@@ -5985,7 +5980,11 @@ function GuidedDrFlow({
     <div className="dr-flow" data-testid="dr-flow-review">
       {stepBar(REVIEW)}
       <div className="dr-flow-body">
-        <div className="dr-flow-actname">Review &amp; submit</div>
+        <div className="dr-flow-rev-head">
+          <div className="dr-flow-actname">Review &amp; submit</div>
+          {/* spec #8 — Export dropdown in the DR header (also on review). */}
+          <DrFlowExport id={id} report={report} testidPrefix="dr-flow-export-review" />
+        </div>
         <div className="dr-flow-subline">{project?.name || "Project"} · {longDate} · everything for today</div>
 
         <div className="dr-flow-instr" data-testid="dr-flow-instr">
@@ -6023,11 +6022,14 @@ function GuidedDrFlow({
           );
         })}
 
+        {/* spec #9 — unplanned activities get their OWN separated section,
+            each on its own row under an "Unplanned work" heading. */}
         {unplannedRows.length > 0 && (
-          <>
+          <div data-testid="dr-flow-rev-unplanned">
             <div className="dr-flow-rowlbl">Unplanned work</div>
             {unplannedRows.map((r) => (
-              <div key={r.id} className="dr-flow-rev" style={{ cursor: "default" }}>
+              <div key={r.id} className="dr-flow-rev" style={{ cursor: "default" }}
+                data-testid={`dr-flow-rev-unplanned-${r.id}`}>
                 <div className="dr-flow-rev-top">
                   <ClipboardList className="h-4 w-4" style={{ color: "#34d399" }} />
                   <span className="dr-flow-rev-name">{r.activity_description || r.activity_code}</span>
@@ -6035,12 +6037,15 @@ function GuidedDrFlow({
                 </div>
               </div>
             ))}
-          </>
+          </div>
         )}
 
-        <div className="dr-flow-rev" style={{ cursor: "default" }}>
+        {/* spec #9 — Weather is its own clearly-separated, labeled section,
+            visually distinct from the unplanned rows above. */}
+        <div className="dr-flow-rowlbl">Weather</div>
+        <div className="dr-flow-rev dr-flow-rev-weather" style={{ cursor: "default" }} data-testid="dr-flow-rev-weather">
           <div className="dr-flow-rev-top">
-            <Cloud className="h-4 w-4" style={{ color: "#34d399" }} />
+            <Cloud className="h-4 w-4" style={{ color: "#6cb0f2" }} />
             <span className="dr-flow-rev-name">Weather</span>
             <span className="dr-flow-muted-note" style={{ marginLeft: "auto" }}>
               {[report.weather_conditions,
@@ -6123,6 +6128,166 @@ function FlowThumb({ photo }) {
   );
 }
 
+// spec #8 — Export control in the DR detail header within the guided flow
+// (landing + review). Uses the shared ExportDropdown with the DR's own
+// export endpoint (/pdf-rich, which takes a mode). Two PDF variants match
+// the desktop header's Internal / External options.
+function DrFlowExport({ id, report, testidPrefix = "dr-flow-export" }) {
+  return (
+    <ExportDropdown
+      label="Export"
+      testidPrefix={testidPrefix}
+      formats={["internal", "external"]}
+      buildUrl={(mode) => `/daily-reports/${id}/pdf-rich?mode=${mode}`}
+      filenameHint={(mode) => `daily_report_${report?.report_date || "report"}_${mode}.pdf`}
+    />
+  );
+}
+
+// spec #7 — mobile Photos AI analysis. REUSES the exact desktop PhotosPanel
+// review logic (POST /photo-tray/review with lens "combined", `reviews`
+// state, GET /daily-reports/{id}/photo-reviews, edit/copy/retry/delete).
+// Presented on mobile as a compact COLLAPSED bar ("AI analysis — tap to
+// view") that opens a FULL-SCREEN dialog with the same review card + Close.
+// This activity's photos are pinned automatically for the run.
+function FlowPhotoAnalysis({ dailyReportId, photos }) {
+  const [reviews, setReviews] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [open, setOpen] = useState(false);
+  // The backend /photo-tray/review accepts DR Photo (tagging-junction) ids
+  // (it resolves them to the tray storage key internally) — the SAME ids the
+  // desktop PhotosPanel pins. The persisted review's photo_ids echo these,
+  // so filtering this activity's reviews by p.id is correct.
+  const photoIds = (photos || []).map((p) => p.id).filter(Boolean);
+
+  const toReview = (d) => ({
+    id: d.id, lens: d.lens, severity: d.severity, label: d.label, text: d.text,
+    n: d.photo_count ?? (d.photo_ids || []).length, ids: d.photo_ids || [],
+    time: new Date(d.created_at || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+  });
+  // Load persisted reviews (same endpoint the desktop uses); filter to the
+  // reviews whose photos overlap THIS activity's photos so each activity
+  // shows only its own analysis.
+  useEffect(() => {
+    if (!dailyReportId) return undefined;
+    let cancelled = false;
+    api.get(`/daily-reports/${dailyReportId}/photo-reviews`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const mine = new Set(photoIds);
+        const rows = (data || []).map(toReview)
+          .filter((rv) => !mine.size || (rv.ids || []).some((pid) => mine.has(pid)));
+        setReviews(rows);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dailyReportId, photos]);
+
+  const runReview = async () => {
+    if (!photoIds.length || running) return;
+    setRunning(true);
+    try {
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: photoIds, lens: "combined", daily_report_id: dailyReportId });
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || photoIds }), ...r]);
+      setOpen(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Analysis failed — try again.");
+    } finally { setRunning(false); }
+  };
+  const setReviewText = (rid, text) => setReviews((r) => r.map((x) => x.id === rid ? { ...x, text } : x));
+  const deleteReview = async (rev) => {
+    try { await api.delete(`/photo-reviews/${rev.id}`); } catch { /* drop locally */ }
+    setReviews((r) => r.filter((x) => x.id !== rev.id));
+  };
+  const retryReview = async (rev) => {
+    if (running) return;
+    setRunning(true);
+    try {
+      await api.delete(`/photo-reviews/${rev.id}`);
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens, daily_report_id: dailyReportId });
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Re-run failed — try again.");
+    } finally { setRunning(false); }
+  };
+  const sevCls = (s) => "rev-sev " + (s === "clear" ? "rev-sev--clear"
+    : (s === "critical" || s === "major") ? "rev-sev--crit" : "rev-sev--warn");
+
+  if (!photoIds.length) return null;
+  const latest = reviews[0] || null;
+
+  return (
+    <div className="dr-flow-ai" data-testid="dr-flow-ai">
+      {latest ? (
+        // Compact collapsed bar — tap to open the full-screen dialog.
+        <button type="button" className="dr-flow-ai-bar" data-testid="dr-flow-ai-bar" onClick={() => setOpen(true)}>
+          <Sparkles className="h-3.5 w-3.5" />
+          <span className="dr-flow-ai-bar-t">AI analysis</span>
+          <span className={sevCls(latest.severity)}>{latest.label}</span>
+          <span className="dr-flow-ai-bar-open">tap to view ›</span>
+        </button>
+      ) : (
+        <button type="button" className="dr-flow-ai-run" data-testid="dr-flow-ai-run"
+          disabled={running} onClick={runReview}>
+          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          {running ? "Analyzing…" : "Run AI analysis"}
+        </button>
+      )}
+
+      {open && (
+        <div className="dr-flow-ai-dialog" data-testid="dr-flow-ai-dialog"
+          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
+          <div className="dr-flow-ai-panel" role="dialog" aria-modal="true">
+            <div className="dr-flow-ai-panel-head">
+              <span className="inline-flex items-center gap-1.5 text-sm font-bold rev-lens--ai">
+                <Sparkles className="h-4 w-4" /> AI analysis
+              </span>
+              <button type="button" className="dr-flow-ai-close" data-testid="dr-flow-ai-close"
+                onClick={() => setOpen(false)} aria-label="Close">Close</button>
+            </div>
+            <div className="dr-flow-ai-panel-body">
+              {reviews.length === 0 && (
+                <div className="dr-flow-muted-note" style={{ textAlign: "center", padding: "16px 0" }}>
+                  No analysis yet.
+                </div>
+              )}
+              {reviews.map((rev) => (
+                <div key={rev.id} className="dr-flow-ai-card" data-testid={`dr-flow-ai-card-${rev.id}`}>
+                  <div className="dr-flow-ai-card-head">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold rev-lens--ai">
+                      <Sparkles className="h-3.5 w-3.5" /> Foreman · {rev.n} photo{rev.n !== 1 ? "s" : ""}
+                    </span>
+                    <span className={sevCls(rev.severity)}>{rev.label}</span>
+                    <span className="dr-flow-ai-time">{rev.time}</span>
+                  </div>
+                  <textarea className="dr-flow-ai-text" data-testid={`dr-flow-ai-text-${rev.id}`}
+                    value={rev.text} rows={6}
+                    onChange={(e) => setReviewText(rev.id, e.target.value)} />
+                  <div className="dr-flow-ai-actions">
+                    <button type="button" className="rev-btn rev-ghost"
+                      onClick={() => { navigator.clipboard?.writeText(rev.text); toast.success("Analysis copied"); }}>
+                      <CopyIcon className="h-3.5 w-3.5" /> Copy
+                    </button>
+                    <button type="button" className="rev-btn rev-ghost" disabled={running}
+                      onClick={() => retryReview(rev)}>
+                      <RefreshCw className="h-3.5 w-3.5" /> Retry
+                    </button>
+                    <button type="button" className="rev-btn rev-danger" style={{ marginLeft: "auto" }}
+                      onClick={() => deleteReview(rev)}>
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // No-work-day dialog — thin phone-shaped wrapper over the parent's
 // noWorkModal state + submitNoWorkDay handler (reused verbatim).
 function FlowNoWorkDialog({ noWorkModal, setNoWorkModal, submitNoWorkDay, busy }) {
@@ -6165,53 +6330,43 @@ function FlowNoWorkDialog({ noWorkModal, setNoWorkModal, submitNoWorkDay, busy }
   );
 }
 
-// Bottom sheets for crew / unplanned / issues / photos. Each REUSES an
-// existing panel or form component so the create/save logic never
-// forks. Issue sheets render the existing panel AND dispatch the
-// dr-open-event-form event (with the activity's schedule_activity_id)
-// so the panel prelinks + focuses exactly as the desktop grid dropdown
-// does.
+// Bottom sheets for crew / unplanned / issues / delivery / coordination.
+// v7 cleanup (2026-07-05): the issue sheets NO LONGER embed the desktop
+// panels (DelaysPanel / RfisPanel / ...). Those dragged in panel chrome,
+// a logged-list, a task multi-picker, verbose helper text, and a second
+// locked-reason prompt. Instead each kind renders a CLEAN, purpose-built
+// mobile form (Flow*Form) that POSTs the SAME payload the panel's create
+// handler sends, then auto-closes back to the activity screen.
+//
+//   - Delay / RFI / Safety / QC / Coordination: SINGLE-activity. The task
+//     is auto-linked from `activity.schedule_activity_id` — no task picker.
+//   - Delivery: keeps its task selection (deliveries legitimately span
+//     tasks) via TaskPicker, pre-seeded with this activity's task.
+//   - Locked DR: the activity-screen reason (`lockedReason`) is carried
+//     into every create as add_reason — the forms never re-prompt.
 function FlowSheets({
   sheet, setSheet, id, project, report, grid,
-  delays, safetyEvents, qcIssues, rfis,
-  locked, reload,
+  locked, reload, lockedReason,
 }) {
   const kind = sheet?.kind;
   const activity = sheet?.activity;
   const reportDate = report?.report_date;
 
-  // For issue sheets: after the panel mounts, dispatch the prelink event
-  // so the existing useIssueDropdownListener opens the form + links the
-  // task. One shot per open.
-  useEffect(() => {
-    if (!kind || !activity) return;
-    const issueKinds = { delay: "delay", rfi: "rfi", safety: "safety", qc: "qc" };
-    const k = issueKinds[kind];
-    if (!k || !activity.schedule_activity_id) return;
-    const t = setTimeout(() => {
-      window.dispatchEvent(new CustomEvent("dr-open-event-form", {
-        detail: {
-          kind: k,
-          activityId: activity.schedule_activity_id,
-          activityCode: activity.activity_code,
-          activityDescription: activity.activity_description,
-        },
-      }));
-    }, 40);
-    return () => clearTimeout(t);
-  }, [kind, activity]);
-
   if (!kind) return null;
   const close = () => setSheet(null);
   // A successful save reloads the bundle; auto-close so the super lands
-  // back on the activity screen (matches the mockup's log-and-return).
+  // back on the exact activity screen (spec #1 — log-and-return).
   const doneAndClose = () => { reload(); close(); };
 
   const titles = {
     crew: "Add crew", unplanned: "Add unplanned activity",
-    delay: "Log delay", rfi: "Raise RFI", safety: "Safety event", qc: "QC issue", coordination: "Coordination event",
+    delay: "Log delay", rfi: "Raise RFI", safety: "Safety event",
+    qc: "QC issue", delivery: "Log delivery", coordination: "Coordination event",
   };
   const forLine = activity ? (activity.activity_description || activity.activity_code) : null;
+  // The single reason typed once on the activity screen; carried into
+  // every create call as add_reason so no form re-prompts (spec #5).
+  const addReason = locked ? (lockedReason || "") : null;
 
   return (
     <FlowSheet open onClose={close} title={titles[kind]} subtitle={forLine ? `on ${forLine}` : null} testid={`dr-flow-sheet-${kind}`}>
@@ -6220,41 +6375,498 @@ function FlowSheets({
           onSaved={doneAndClose} onCancel={close} />
       )}
       {kind === "unplanned" && (
-        <FlowUnplannedForm id={id} locked={locked} onSaved={doneAndClose} onCancel={close} />
+        <FlowUnplannedForm id={id} locked={locked} lockedReason={addReason}
+          onSaved={doneAndClose} onCancel={close} />
       )}
-      {/* (photos sheet removed — the activity screen's Add tile uploads +
-          tags to the grid row directly via uploadActivityPhotos.) */}
       {kind === "delay" && (
-        <div className="dr-flow-sheet-panel">
-          <DelaysPanel rows={delays} dailyReportId={id} projectId={project.id}
-            reportDate={reportDate} locked={locked} reload={reload} />
-        </div>
+        <FlowDelayForm id={id} project={project} activity={activity} reportDate={reportDate}
+          locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
       {kind === "rfi" && (
-        <div className="dr-flow-sheet-panel">
-          <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
-            reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
-        </div>
+        <FlowRfiForm id={id} project={project} activity={activity} reportDate={reportDate}
+          locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
       {kind === "safety" && (
-        <div className="dr-flow-sheet-panel">
-          <SafetyPanel rows={safetyEvents} dailyReportId={id} projectId={project.id}
-            reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
-        </div>
+        <FlowSafetyForm id={id} project={project} activity={activity} reportDate={reportDate}
+          locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
       {kind === "qc" && (
-        <div className="dr-flow-sheet-panel">
-          <QcPanel rows={qcIssues} dailyReportId={id} projectId={project.id}
-            reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
-        </div>
+        <FlowQcForm id={id} project={project} activity={activity} reportDate={reportDate}
+          locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
+      )}
+      {kind === "delivery" && (
+        <FlowDeliveryForm id={id} project={project} activity={activity} reportDate={reportDate}
+          locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
       {kind === "coordination" && (
-        <div className="dr-flow-sheet-panel">
-          <FlowCoordinationForm id={id} project={project} activity={activity}
-            locked={locked} onSaved={doneAndClose} onCancel={close} />
-        </div>
+        <FlowCoordinationForm id={id} project={project} activity={activity}
+          locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
     </FlowSheet>
+  );
+}
+
+// ---- clean mobile issue forms (v7 cleanup) ---------------------------
+// Each POSTs the SAME payload its desktop panel's create() sends (verified
+// against DelaysPanel/DelayForm, RfisPanel, SafetyPanel, QcPanel,
+// DeliveriesPanel). Terse labels, chips/segments/steppers per the mockup,
+// no verbose helper paragraphs, no logged-list, no second reason prompt.
+
+// Small stepper (mockup .stp). step defaults 1; supports decimals.
+function FlowStepper({ value, onChange, step = 1, min = 0, testid }) {
+  const round = (n) => Math.round(n * 100) / 100;
+  return (
+    <div className="dr-flow-stp">
+      <button type="button" onClick={() => onChange(round(Math.max(min, Number(value) - step)))}>−</button>
+      <span className="dr-flow-stp-val" data-testid={testid}>{value}</span>
+      <button type="button" onClick={() => onChange(round(Number(value) + step))}>+</button>
+    </div>
+  );
+}
+
+// Labeled segmented control (mockup .seg). `variant="sev"` tints the
+// active segment amber/red for severity scales.
+function FlowSeg({ value, onChange, options, variant, testid }) {
+  return (
+    <div className={`dr-flow-seg${variant === "sev" ? " sev" : ""}`} data-testid={testid}>
+      {options.map((o) => (
+        <button key={o.value} type="button" data-v={o.value}
+          className={value === o.value ? "on" : ""}
+          onClick={() => onChange(o.value)}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Chipset single-select (mockup .chipset[data-single]).
+function FlowChips({ value, onChange, options, testid }) {
+  return (
+    <div className="dr-flow-chipset" data-testid={testid}>
+      {options.map((o) => (
+        <button key={o.value} type="button"
+          className={`dr-flow-chip${value === o.value ? " on" : ""}`}
+          onClick={() => onChange(o.value)}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Today/Tomorrow → ISO date, computed from the report date (the app's
+// project-timezone anchor). Matches the desktop impact_start_date default.
+function impactStartISO(when, reportDate) {
+  const base = reportDate || localTodayISO();
+  if (when === "today") return base;
+  try {
+    const d = new Date(`${base}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    // localISODate (local wall-clock YYYY-MM-DD), NOT toISOString().slice
+    // — the latter returns the UTC date, which for UTC-positive field
+    // phones (e.g. India, UTC+5:30) resolves "tomorrow" back to today and
+    // anchors impact_start_date a day early. See lib/dateUtil.js header.
+    return localISODate(d);
+  } catch { return base; }
+}
+
+const FLOW_SEV_SEG = ["minor", "moderate", "major", "critical"]
+  .map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) }));
+
+// DELAY — payload verified against DelayForm.submit (cause_class +
+// reason_category mirror, owner_attribution default "none", per_task_impacts
+// [{task_id, projected_impact_days}], impact_start_date, status default
+// "open", add_reason when locked). Single activity: task auto-linked.
+function FlowDelayForm({ id, project, activity, reportDate, locked, lockedReason, onSaved, onCancel }) {
+  const [description, setDescription] = useState("");
+  const [cause, setCause] = useState("weather");
+  const [severity, setSeverity] = useState("minor");
+  const [status, setStatus] = useState("open"); // spec #4 — default "open"
+  const [impactDays, setImpactDays] = useState(0); // spec #4 — default 0
+  const [startsWhen, setStartsWhen] = useState("today");
+  const [owner, setOwner] = useState("none");
+  const [busy, setBusy] = useState(false);
+  const taskId = activity?.schedule_activity_id || null;
+
+  const causeOpts = [
+    "weather", "differing_site_condition", "concealed_condition",
+    "design_clarification", "design_change", "rfi_pending", "submittal_pending",
+    "procurement", "manpower", "utility", "regulatory",
+    "tenant_coordination", "building_coordination", "other",
+  ].map((c) => ({ value: c, label: c.replace(/_/g, " ") }));
+  const ownerOpts = [
+    { value: "none", label: "None" }, { value: "gc", label: "GC" },
+    { value: "a_e", label: "A/E" }, { value: "owner", label: "Owner/Gov" },
+    { value: "sub", label: "Sub" }, { value: "external_authority", label: "External" },
+    { value: "tenant", label: "Tenant" },
+  ];
+
+  const save = async () => {
+    if (busy) return;
+    if (!description.trim()) return toast.error("Describe what happened");
+    // POST /delays requires >=1 linked task (validate_linked_task_ids
+    // required=True). A section-2 activity can have a null
+    // schedule_activity_id (the desktop grid hides its issue dropdown in
+    // that case), so guard here to fail fast with a clear message rather
+    // than a backend 422 after the form is filled — mirrors FlowQcForm.
+    if (!taskId) return toast.error("This activity has no linked schedule task");
+    if (locked && !isAddReasonValid(lockedReason)) {
+      return toast.error("Enter the edit reason at the top of the activity screen first.");
+    }
+    setBusy(true);
+    try {
+      await api.post(`/delays`, {
+        project_id: project.id,
+        daily_report_id: id,
+        date: reportDate || localTodayISO(),
+        description: description.trim(),
+        severity, status,
+        cause_class: cause, reason_category: cause,
+        owner_attribution: owner || "none",
+        linked_task_ids: taskId ? [taskId] : [],
+        per_task_impacts: taskId ? [{ task_id: taskId, projected_impact_days: Number(impactDays) || 0 }] : [],
+        impact_start_date: impactStartISO(startsWhen, reportDate),
+        ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
+      });
+      toast.success("Delay logged");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "delay")) toast.error(formatErr(e, "Log delay"));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="dr-flow-form" data-testid="dr-flow-delay-form">
+      <div className="dr-flow-fld">
+        <label>What happened? *</label>
+        <textarea data-testid="dr-flow-delay-desc" value={description}
+          placeholder="Cause, who was affected…" onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Cause *</label>
+        <FlowChips value={cause} onChange={setCause} options={causeOpts} testid="dr-flow-delay-cause" />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Severity *</label>
+        <FlowSeg value={severity} onChange={setSeverity} options={FLOW_SEV_SEG} variant="sev" testid="dr-flow-delay-severity" />
+      </div>
+      <div className="dr-flow-row2">
+        <div className="dr-flow-fld">
+          <label>Impact (days)</label>
+          <FlowStepper value={impactDays} onChange={setImpactDays} step={0.5} testid="dr-flow-delay-impact" />
+        </div>
+        <div className="dr-flow-fld">
+          <label>Starts</label>
+          <FlowSeg value={startsWhen} onChange={setStartsWhen}
+            options={[{ value: "today", label: "Today" }, { value: "tomorrow", label: "Tomorrow" }]}
+            testid="dr-flow-delay-starts" />
+        </div>
+      </div>
+      <div className="dr-flow-fld">
+        <label>Status</label>
+        <FlowSeg value={status} onChange={setStatus}
+          options={[{ value: "open", label: "Open" }, { value: "in_progress", label: "In progress" }, { value: "resolved", label: "Resolved" }]}
+          testid="dr-flow-delay-status" />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Owner attribution</label>
+        <FlowChips value={owner} onChange={setOwner} options={ownerOpts} testid="dr-flow-delay-owner" />
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-delay-save" disabled={busy} onClick={save}>
+          {busy ? "Logging…" : "Log delay"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// RFI — payload verified against RfisPanel.create (subject, question alias,
+// priority, linked_task_ids required, per_task_impacts, impact_start_date,
+// add_reason). Impact days default 0 (spec #4). Single activity.
+function FlowRfiForm({ id, project, activity, reportDate, locked, lockedReason, onSaved, onCancel }) {
+  const [subject, setSubject] = useState("");
+  const [question, setQuestion] = useState("");
+  const [priority, setPriority] = useState("normal");
+  const [impactDays, setImpactDays] = useState(0); // spec #4 — default 0
+  const [startsWhen, setStartsWhen] = useState("today");
+  const [busy, setBusy] = useState(false);
+  const taskId = activity?.schedule_activity_id || null;
+
+  const save = async () => {
+    if (busy) return;
+    if (!subject.trim() || !question.trim()) return toast.error("Subject and question required");
+    // POST /rfis requires >=1 linked task (validate_linked_task_ids
+    // required=True). Guard the null-schedule_activity_id case the same
+    // way FlowQcForm does, so a task-less activity fails fast instead of
+    // 422-ing after the user has typed the subject + question.
+    if (!taskId) return toast.error("This activity has no linked schedule task");
+    if (locked && !isAddReasonValid(lockedReason)) {
+      return toast.error("Enter the edit reason at the top of the activity screen first.");
+    }
+    setBusy(true);
+    try {
+      const days = Number(impactDays) || 0;
+      await api.post(`/rfis`, {
+        project_id: project.id,
+        daily_report_id: id,
+        subject: subject.trim(),
+        question: question.trim(),
+        priority,
+        linked_task_ids: taskId ? [taskId] : [],
+        // Only send a per-task impact when the super entered a positive
+        // value — matches RfisPanel (empty array = binary blocker only).
+        per_task_impacts: (taskId && days > 0) ? [{ task_id: taskId, projected_impact_days: days }] : [],
+        impact_start_date: impactStartISO(startsWhen, reportDate),
+        ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
+      });
+      toast.success("RFI raised");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "rfi")) toast.error(formatErr(e, "Open RFI"));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="dr-flow-form" data-testid="dr-flow-rfi-form">
+      <div className="dr-flow-fld">
+        <label>Subject *</label>
+        <input type="text" data-testid="dr-flow-rfi-subject" value={subject}
+          placeholder="Short title" onChange={(e) => setSubject(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Question / context *</label>
+        <textarea data-testid="dr-flow-rfi-question" value={question}
+          placeholder="What needs clarifying?" onChange={(e) => setQuestion(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Priority *</label>
+        <FlowSeg value={priority} onChange={setPriority}
+          options={["low", "normal", "high", "urgent"].map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))}
+          testid="dr-flow-rfi-priority" />
+      </div>
+      <div className="dr-flow-row2">
+        <div className="dr-flow-fld">
+          <label>Schedule impact (optional)</label>
+          <FlowStepper value={impactDays} onChange={setImpactDays} step={1} testid="dr-flow-rfi-impact" />
+        </div>
+        <div className="dr-flow-fld">
+          <label>Impact starts on</label>
+          <FlowSeg value={startsWhen} onChange={setStartsWhen}
+            options={[{ value: "today", label: "Today" }, { value: "tomorrow", label: "Tomorrow" }]}
+            testid="dr-flow-rfi-starts" />
+        </div>
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-rfi-save" disabled={busy} onClick={save}>
+          {busy ? "Raising…" : "Raise RFI"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// SAFETY — payload verified against SafetyPanel.create (description,
+// severity, event_type, linked_task_ids, add_reason). Labeled dropdowns
+// (Event type / Severity) so nothing is a bare "Select". Single activity.
+function FlowSafetyForm({ id, project, activity, reportDate, locked, lockedReason, onSaved, onCancel }) {
+  const [eventType, setEventType] = useState("near_miss");
+  const [severity, setSeverity] = useState("minor");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const taskId = activity?.schedule_activity_id || null;
+
+  const save = async () => {
+    if (busy) return;
+    if (!description.trim()) return toast.error("Describe the event");
+    if (locked && !isAddReasonValid(lockedReason)) {
+      return toast.error("Enter the edit reason at the top of the activity screen first.");
+    }
+    setBusy(true);
+    try {
+      await api.post(`/safety-events`, {
+        project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
+        description: description.trim(), severity, event_type: eventType,
+        linked_task_ids: taskId ? [taskId] : [],
+        ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
+      });
+      toast.success("Safety event logged");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "safety")) toast.error(formatErr(e, "Create safety event"));
+    } finally { setBusy(false); }
+  };
+
+  const eventOpts = ["near_miss", "first_aid", "recordable", "lost_time", "fatality", "other"]
+    .map((s) => ({ value: s, label: s.replace(/_/g, " ").replace(/\b\w/, (c) => c.toUpperCase()) }));
+
+  return (
+    <div className="dr-flow-form" data-testid="dr-flow-safety-form">
+      <div className="dr-flow-fld">
+        <label>Event type *</label>
+        <FlowChips value={eventType} onChange={setEventType} options={eventOpts} testid="dr-flow-safety-type" />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Severity *</label>
+        <FlowSeg value={severity} onChange={setSeverity} options={FLOW_SEV_SEG} variant="sev" testid="dr-flow-safety-severity" />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Describe *</label>
+        <textarea data-testid="dr-flow-safety-desc" value={description}
+          placeholder="What happened?" onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-safety-save" disabled={busy} onClick={save}>
+          {busy ? "Logging…" : "Log safety"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// QC — payload verified against QcPanel.create (description, severity,
+// linked_task_ids required, rework_duration_days + rework_duration_basis
+// when severity=rework_required, add_reason). Single activity.
+function FlowQcForm({ id, project, activity, reportDate, locked, lockedReason, onSaved, onCancel }) {
+  const [severity, setSeverity] = useState("observation");
+  const [description, setDescription] = useState("");
+  const [reworkDays, setReworkDays] = useState(0);
+  const [basis, setBasis] = useState("");
+  const [busy, setBusy] = useState(false);
+  const taskId = activity?.schedule_activity_id || null;
+  const isRework = severity === "rework_required";
+
+  const save = async () => {
+    if (busy) return;
+    if (!description.trim()) return toast.error("Describe the defect");
+    if (!taskId) return toast.error("This activity has no linked schedule task");
+    if (isRework) {
+      if (!(Number(reworkDays) > 0)) return toast.error("Rework days required for rework");
+      if (!basis.trim()) return toast.error("Basis (spec ref) required for rework");
+    }
+    if (locked && !isAddReasonValid(lockedReason)) {
+      return toast.error("Enter the edit reason at the top of the activity screen first.");
+    }
+    setBusy(true);
+    try {
+      const payload = {
+        project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
+        description: description.trim(), severity,
+        linked_task_ids: [taskId],
+        ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
+      };
+      if (isRework) {
+        payload.rework_duration_days = Number(reworkDays);
+        payload.rework_duration_basis = basis.trim();
+      }
+      await api.post(`/qc-issues`, payload);
+      toast.success(isRework ? "QC rework filed" : "QC issue logged");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "qc")) toast.error(formatErr(e, "Create QC issue"));
+    } finally { setBusy(false); }
+  };
+
+  const sevOpts = ["observation", "minor", "moderate", "major", "critical", "rework_required", "stop_work"]
+    .map((s) => ({ value: s, label: s.replace(/_/g, " ").replace(/\b\w/, (c) => c.toUpperCase()) }));
+
+  return (
+    <div className="dr-flow-form" data-testid="dr-flow-qc-form">
+      <div className="dr-flow-fld">
+        <label>Severity *</label>
+        <FlowChips value={severity} onChange={setSeverity} options={sevOpts} testid="dr-flow-qc-severity" />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Describe *</label>
+        <textarea data-testid="dr-flow-qc-desc" value={description}
+          placeholder="Defect?" onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      {isRework && (
+        <div className="dr-flow-row2" data-testid="dr-flow-qc-rework">
+          <div className="dr-flow-fld">
+            <label>Rework (days) *</label>
+            <FlowStepper value={reworkDays} onChange={setReworkDays} step={0.5} testid="dr-flow-qc-rework-days" />
+          </div>
+          <div className="dr-flow-fld">
+            <label>Basis *</label>
+            <input type="text" data-testid="dr-flow-qc-basis" value={basis}
+              placeholder="Spec ref" onChange={(e) => setBasis(e.target.value)} />
+          </div>
+        </div>
+      )}
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-qc-save" disabled={busy} onClick={save}>
+          {busy ? "Logging…" : "Log QC"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// DELIVERY — payload verified against DeliveriesPanel.create (vendor,
+// description, po_number, linked_task_ids required, add_reason). KEEPS its
+// task selection (deliveries span tasks) via TaskPicker, pre-seeded with
+// this activity's task.
+function FlowDeliveryForm({ id, project, activity, reportDate, locked, lockedReason, onSaved, onCancel }) {
+  const [vendor, setVendor] = useState("");
+  const [description, setDescription] = useState("");
+  const [poNumber, setPoNumber] = useState("");
+  const [taskIds, setTaskIds] = useState(() => (activity?.schedule_activity_id ? [activity.schedule_activity_id] : []));
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (busy) return;
+    if (!vendor.trim() || !description.trim()) return toast.error("Vendor and description required");
+    if (!taskIds.length) return toast.error("Pick at least one task consuming this delivery");
+    if (locked && !isAddReasonValid(lockedReason)) {
+      return toast.error("Enter the edit reason at the top of the activity screen first.");
+    }
+    setBusy(true);
+    try {
+      await api.post(`/deliveries`, {
+        project_id: project.id, delivery_date: reportDate || localTodayISO(),
+        daily_report_id: id,
+        vendor: vendor.trim(), description: description.trim(),
+        po_number: poNumber.trim() || null,
+        linked_task_ids: taskIds,
+        ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
+      });
+      toast.success("Delivery logged");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "delivery")) toast.error(formatErr(e, "Log delivery"));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="dr-flow-form" data-testid="dr-flow-delivery-form">
+      <div className="dr-flow-fld">
+        <label>Vendor *</label>
+        <input type="text" data-testid="dr-flow-delivery-vendor" value={vendor}
+          placeholder="Who delivered" onChange={(e) => setVendor(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>What was delivered? *</label>
+        <textarea data-testid="dr-flow-delivery-desc" value={description}
+          placeholder="Materials / equipment" onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>PO #</label>
+        <input type="text" data-testid="dr-flow-delivery-po" value={poNumber}
+          placeholder="Optional" onChange={(e) => setPoNumber(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <TaskPicker projectId={project.id} value={taskIds} onChange={setTaskIds}
+          required label="Tasks consuming this delivery" testidPrefix="dr-flow-delivery-tasks" />
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-delivery-save" disabled={busy} onClick={save}>
+          {busy ? "Logging…" : "Log delivery"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -6350,16 +6962,26 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
 }
 
 // Unplanned add — reuses the SAME POST /daily-reports/{id}/unplanned-activity
-// contract as ActivityGridPanel.createUnplanned (incl. locked add_reason).
-function FlowUnplannedForm({ id, locked, onSaved, onCancel }) {
+// contract as ActivityGridPanel.createUnplanned. v7 cleanup: the locked
+// add_reason is carried from the activity-screen reason (lockedReason),
+// never re-prompted here.
+function FlowUnplannedForm({ id, locked, lockedReason, onSaved, onCancel }) {
   const [description, setDescription] = useState("");
   const [tradeCode, setTradeCode] = useState("");
-  const [addReason, setAddReason] = useState("");
   const [busy, setBusy] = useState(false);
+  // Unplanned is reachable from the landing/unplanned step (no per-activity
+  // reason card). When a valid carried reason exists (launched from an
+  // activity screen), use it silently; otherwise fall back to a local
+  // reason block so a locked-DR unplanned add still captures intent.
+  const carried = isAddReasonValid(lockedReason);
+  const [addReason, setAddReason] = useState("");
+  const effectiveReason = carried ? lockedReason : addReason;
   const save = async () => {
     if (!description.trim()) return toast.error("Describe the unplanned activity first");
-    if (locked && addReason.trim().length < ADD_REASON_MIN) {
-      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    if (locked && !isAddReasonValid(effectiveReason)) {
+      return toast.error(carried
+        ? "Enter the edit reason at the top of the activity screen first."
+        : `Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
     }
     setBusy(true);
     try {
@@ -6367,7 +6989,7 @@ function FlowUnplannedForm({ id, locked, onSaved, onCancel }) {
         description: description.trim(),
         trade_code: tradeCode || "",
         duration_days: 1,
-        ...(locked ? { add_reason: addReason.trim() } : {}),
+        ...(locked ? { add_reason: (effectiveReason || "").trim() } : {}),
       });
       toast.success(locked ? "Unplanned activity created (post-submit)." : "Unplanned activity created — flagged for PM review.");
       onSaved();
@@ -6377,7 +6999,7 @@ function FlowUnplannedForm({ id, locked, onSaved, onCancel }) {
   };
   return (
     <div className="dr-flow-form">
-      {locked && (
+      {locked && !carried && (
         <div style={{ marginBottom: 10 }}>
           <LockedAddReasonBlock value={addReason} onChange={setAddReason}
             eventLabel="this activity" testid="dr-flow-unplanned-reason" />
@@ -6408,23 +7030,18 @@ function FlowUnplannedForm({ id, locked, onSaved, onCancel }) {
 }
 
 // Coordination — reuses the EXISTING CoordinationEventForm (same as the
-// desktop header quick-log), pre-linked to this DR + locked add_reason.
-function FlowCoordinationForm({ id, project, activity, locked, onSaved, onCancel }) {
-  const [addReason, setAddReason] = useState("");
+// desktop header quick-log), pre-linked to this DR. v7 cleanup: launched
+// only from an activity screen, so the locked add_reason is carried from
+// the activity-screen reason (lockedReason) — no second prompt (spec #5).
+function FlowCoordinationForm({ id, project, activity, locked, lockedReason, onSaved, onCancel }) {
   return (
     <div className="dr-flow-form">
-      {locked && (
-        <div style={{ marginBottom: 10 }}>
-          <LockedAddReasonBlock value={addReason} onChange={setAddReason}
-            eventLabel="a coordination event" testid="dr-flow-coord-reason" />
-        </div>
-      )}
       <CoordinationEventForm
         projectId={project.id}
         linkedDailyReportId={id}
         abbreviated
         isLocked={locked}
-        lockedAddReason={locked ? addReason : null}
+        lockedAddReason={locked ? lockedReason : null}
         onSaved={() => { toast.success(locked ? "Coordination event logged (post-submit)." : "Coordination event logged"); onSaved(); }}
         onCancel={onCancel}
       />
