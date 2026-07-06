@@ -58,8 +58,13 @@ export default function ExportDropdown({
       let filename = filenameHint ? filenameHint(fmt) : `export.${fmt}`;
       const m = cd.match(/filename="?([^";]+)"?/i);
       if (m && m[1]) filename = m[1];
-      // Blob -> anchor click -> revoke URL.
-      const blobUrl = URL.createObjectURL(res.data);
+      // Force a DOWNLOAD, not an in-browser preview. Re-wrap the bytes as
+      // application/octet-stream: mobile Safari (iOS) ignores the `download`
+      // attribute for a blob whose type is application/pdf and opens the PDF
+      // in its viewer instead. octet-stream has no viewer, so the browser
+      // saves the file. Desktop is unaffected (still a normal download).
+      const dlBlob = new Blob([res.data], { type: "application/octet-stream" });
+      const blobUrl = URL.createObjectURL(dlBlob);
       const a = document.createElement("a");
       a.href = blobUrl;
       a.download = filename;
