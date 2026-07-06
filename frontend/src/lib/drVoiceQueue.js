@@ -2,22 +2,45 @@
  * IndexedDB voice-queue helpers for offline DR intake.
  *
  * 2026-05-25 — supports Phase A of the multi-modal DR voice feature.
+ * 2026-07-05 — v7 guided flow (spec D + F.5): the same store now also
+ *   queues persistent VOICE NOTES. A record's `target` field routes the
+ *   drain:
+ *     target absent / "extract"  -> POST /daily-reports/{id}/voice/
+ *                                   transcribe-and-extract  (legacy intake)
+ *     target "annotate"          -> POST /voice/annotate    (voice-note-as-
+ *                                   record; multipart field name is `file`,
+ *                                   plus kind + linked_entity_type/id — see
+ *                                   backend/routers/voice_router.py:14-49)
+ *   Use queueVoiceNote(...) for the new notes; queueClip(...) keeps its
+ *   original signature for VoiceIntakePanel.
  *
  * Storage layout
  *   DB:     ice-dr-voice
  *   Store:  pendingClips  (key: auto-generated id)
  *   Schema: { id, dailyReportId, blob, mimeType, durationMs,
- *             createdAt, retryCount, lastError }
+ *             createdAt, retryCount, lastError,
+ *             target?, kind?, linkedEntityType?, linkedEntityId? }
  *
  * 30 minute clip cap is enforced at the recorder boundary (MediaRecorder
  * stop() is called by the component); we only refuse oversized blobs
  * here as a final guard.
+ *
+ * Queue/remove dispatch window CustomEvent "ice-offline-queue-changed" so
+ * the flow landing's "N items will sync" chip can live-update.
  */
 
 const DB_NAME = "ice-dr-voice";
 const DB_VERSION = 1;
 const STORE = "pendingClips";
 const MAX_BLOB_BYTES = 30 * 1024 * 1024;   // 30 MB upper bound
+
+function notifyQueueChanged() {
+  try {
+    window.dispatchEvent(new CustomEvent("ice-offline-queue-changed", {
+      detail: { source: "voice" },
+    }));
+  } catch { /* non-window env */ }
+}
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -35,7 +58,11 @@ function openDb() {
   });
 }
 
-export async function queueClip({ dailyReportId, blob, mimeType, durationMs }) {
+export async function queueClip({
+  dailyReportId, blob, mimeType, durationMs,
+  // v7 voice notes (optional; absent for legacy intake clips):
+  target = null, kind = null, linkedEntityType = null, linkedEntityId = null,
+}) {
   if (!blob || !(blob instanceof Blob)) throw new Error("blob required");
   if (blob.size > MAX_BLOB_BYTES) {
     throw new Error(`recording too large (${blob.size} > ${MAX_BLOB_BYTES}); record a shorter clip`);
@@ -47,13 +74,42 @@ export async function queueClip({ dailyReportId, blob, mimeType, durationMs }) {
     durationMs: durationMs || null,
     createdAt: new Date().toISOString(),
     retryCount: 0, lastError: null,
+    target, kind, linkedEntityType, linkedEntityId,
   };
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).put(record);
-    tx.oncomplete = () => resolve(record);
+    tx.oncomplete = () => { notifyQueueChanged(); resolve(record); };
     tx.onerror = () => reject(tx.error);
   });
+}
+
+/**
+ * v7 guided flow (spec D): queue a persistent VOICE NOTE recorded offline.
+ * Drains to POST /voice/annotate linked to the daily report.
+ *
+ * kind MUST be "voice_note": the backend voice_annotate handler ONLY skips
+ * Whisper transcription + field extraction for kind=="voice_note" (see
+ * backend/routers/voice_router.py:33). Any other kind — including
+ * "work_item" — falls through to process_voice_annotation and runs the full
+ * transcription/extraction pipeline, which spec D forbids for these notes.
+ * Returns the stored record.
+ */
+export function queueVoiceNote({ dailyReportId, blob, mimeType, durationMs }) {
+  if (!dailyReportId) throw new Error("dailyReportId required");
+  return queueClip({
+    dailyReportId, blob, mimeType, durationMs,
+    target: "annotate",
+    kind: "voice_note",
+    linkedEntityType: "daily_report",
+    linkedEntityId: dailyReportId,
+  });
+}
+
+/** Pending voice NOTES only (target "annotate"), optionally per report. */
+export async function listPendingNotes(dailyReportId = null) {
+  const all = await listPending(dailyReportId);
+  return all.filter((c) => c.target === "annotate");
 }
 
 export async function listPending(dailyReportId = null) {
@@ -74,7 +130,7 @@ export async function removeClip(id) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => { notifyQueueChanged(); resolve(); };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -98,33 +154,58 @@ export async function markClipFailed(id, errMsg) {
 }
 
 /**
- * Background sync routine. Drains all queued clips by posting them to
- * /api/daily-reports/{drId}/voice/transcribe-and-extract.
+ * Background sync routine. Drains all queued clips. Each clip posts to its
+ * own target endpoint:
+ *   - target "annotate" (v7 voice notes) -> POST /voice/annotate
+ *     (multipart field `file` + kind + linked_entity_type/id)
+ *   - otherwise (legacy intake clips)    -> POST /daily-reports/{drId}/voice/
+ *     transcribe-and-extract (multipart field `audio`)
  * Caller passes their authenticated axios `api` instance so we don't
  * re-implement auth here.
  *
  * On success: clip is removed from IndexedDB.
  * On error:   clip is left in place with incremented retryCount.
  *
+ * MUTEX-GUARDED: VoiceIntakePanel auto-drains on reconnect AND api.js wires
+ * a global 'online' drain; concurrent calls share one in-flight drain so a
+ * clip can never upload twice.
+ *
  * Returns { synced, failed, remaining }.
  */
-export async function drainQueue(api) {
+let _drainInFlight = null;
+export function drainQueue(api) {
+  if (_drainInFlight) return _drainInFlight;
+  _drainInFlight = _drainAll(api).finally(() => { _drainInFlight = null; });
+  return _drainInFlight;
+}
+
+async function _drainAll(api) {
   if (!navigator.onLine) return { synced: 0, failed: 0, remaining: -1 };
   const pending = await listPending();
   let synced = 0, failed = 0;
   for (const clip of pending) {
     try {
+      const ext = (clip.mimeType || "audio/webm").split("/")[1] || "webm";
       const fd = new FormData();
-      fd.append(
-        "audio",
-        clip.blob,
-        `voice_${clip.id}.${(clip.mimeType || "audio/webm").split("/")[1] || "webm"}`,
-      );
-      await api.post(
-        `/daily-reports/${clip.dailyReportId}/voice/transcribe-and-extract`,
-        fd,
-        { headers: { "Content-Type": "multipart/form-data" }, timeout: 180000 },
-      );
+      if (clip.target === "annotate") {
+        // v7 voice note — voice_router.voice_annotate expects `file`.
+        fd.append("file", clip.blob, `voice_note_${clip.id}.${ext}`);
+        fd.append("kind", clip.kind || "work_item");
+        if (clip.linkedEntityType && clip.linkedEntityId) {
+          fd.append("linked_entity_type", clip.linkedEntityType);
+          fd.append("linked_entity_id", clip.linkedEntityId);
+        }
+        await api.post("/voice/annotate", fd, {
+          headers: { "Content-Type": "multipart/form-data" }, timeout: 180000,
+        });
+      } else {
+        fd.append("audio", clip.blob, `voice_${clip.id}.${ext}`);
+        await api.post(
+          `/daily-reports/${clip.dailyReportId}/voice/transcribe-and-extract`,
+          fd,
+          { headers: { "Content-Type": "multipart/form-data" }, timeout: 180000 },
+        );
+      }
       await removeClip(clip.id);
       synced += 1;
     } catch (e) {
@@ -134,6 +215,18 @@ export async function drainQueue(api) {
   }
   const remaining = (await listPending()).length;
   return { synced, failed, remaining };
+}
+
+// v7 full-offline — register a single global reconnect drain (mirrors
+// drPhotoQueue.wireAutoDrain). Called once from lib/api.js with the
+// authenticated client; idempotent.
+let _wired = false;
+export function wireAutoDrain(api) {
+  if (_wired) return;
+  _wired = true;
+  window.addEventListener("online", () => {
+    drainQueue(api).catch(() => {});
+  });
 }
 
 /**

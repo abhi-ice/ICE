@@ -68,27 +68,22 @@ import JigsawField from "../components/forms/JigsawField";
 // of the voice modes at New-DR time. Imported lazily-friendly default
 // from /components/VoiceIntakePanel.jsx.
 import VoiceIntakePanel from "../components/VoiceIntakePanel";
+// v7 guided flow — EodSlider extracted VERBATIM to components/dr/EodSlider
+// so the guided flow (GuidedDrFlow at the bottom of this file) reuses the
+// exact B1-gated component. Desktop grid rendering is unchanged (same
+// component, new home).
+import EodSlider from "../components/dr/EodSlider";
+// v7 guided flow — COMMON_TRADES moved to components/dr/drFlowShared.jsx
+// (values unchanged; pt.47/pt.62 notes preserved there) so the flow's crew
+// sheet and the Manpower Log share one list. LockedReasonCard +
+// isFlowReasonValid drive the locked-DR (spec B) reason plumbing on the
+// flow's activity screens.
+import { COMMON_TRADES, LockedReasonCard, isFlowReasonValid } from "../components/dr/drFlowShared";
+// v7 voice notes (spec D) — voice-note-as-record (kind="voice_note", NO
+// transcription/extraction pipeline) + IndexedDB offline queue + playback.
+import DrVoiceNotes, { listPendingNotes as listPendingVoiceNotes } from "../components/dr/DrVoiceNotes";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
-
-// pt.47 (2026-05-28): Manpower Log Trade column is a dropdown of the
-// trades a federal GC typically self-performs or subs out, with "Other"
-// as the catch-all last option. Persisted rows whose stored trade isn't
-// in this list still render (the value is injected as a leading option).
-// pt.62 (2026-05-28): alphabetical (localeCompare) with "Other" pinned last —
-// the standard SaaS select convention. Sorting at definition keeps the list
-// ordered even if someone appends a trade out of place later.
-const COMMON_TRADES = [
-  ...[
-    "Acoustical Ceilings", "Carpentry / Framing", "Concrete", "Demolition",
-    "Doors / Hardware", "Drywall", "Earthwork / Excavation", "Electrical",
-    "Fire Protection / Sprinkler", "Fireproofing", "Flooring", "General Labor",
-    "Glazing", "HVAC / Mechanical", "Insulation", "Landscaping / Sitework",
-    "Low-Voltage / Data", "Masonry", "Painting", "Plumbing", "Roofing",
-    "Steel / Structural", "Tile",
-  ].sort((a, b) => a.localeCompare(b)),
-  "Other",
-];
 
 // Bucket D Addition 5 (2026-05-12) -- "add to locked DR" reason capture.
 // Reused by every event panel + the activity grid when the user adds a
@@ -289,6 +284,24 @@ export default function DailyReports() {
     return () => setActiveDailyReportId(null);
   }, [openId]);
 
+  // v7 post-submit landing (spec E) — when the guided flow submits and
+  // navigates back it stamps sessionStorage; read + clear it here and pulse
+  // that report's mobile card so the new status badge is unmissable.
+  const [hotId, setHotId] = useState(null);
+  useEffect(() => {
+    if (openId) return undefined;
+    let t;
+    try {
+      const v = sessionStorage.getItem("ice-dr-just-submitted");
+      if (v) {
+        sessionStorage.removeItem("ice-dr-just-submitted");
+        setHotId(v);
+        t = setTimeout(() => setHotId(null), 4000);
+      }
+    } catch { /* ignore */ }
+    return () => clearTimeout(t);
+  }, [openId]);
+
   // Item 8 — date-picker driven create. Backend POST is idempotent on
   // (project_id, report_date) so picking a date that already exists
   // just returns that DR; no duplicates.
@@ -332,8 +345,30 @@ export default function DailyReports() {
     }
   };
 
+  // Post-submit landing (spec E) — Export the report PDF straight from
+  // the list card (mobile). Reuses the same /pdf-rich endpoint the DR
+  // detail uses; only offered once a report is submitted/approved.
+  const exportReportPdf = async (r) => {
+    try {
+      const res = await api.get(`/daily-reports/${r.id}/pdf-rich`, {
+        params: { mode: "internal" }, responseType: "blob",
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `daily_report_${r.report_date}_internal.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Export failed");
+    }
+  };
+
   if (openId) {
-    return <DailyReportDetail id={openId} intakeMode={openMode} onBack={() => { setOpenId(null); setOpenMode("manual"); }} />;
+    // onBack also refreshes the list so a just-submitted report shows its
+    // new status badge + Export on return (spec E / post-submit landing).
+    return <DailyReportDetail id={openId} intakeMode={openMode}
+      onBack={() => { setOpenId(null); setOpenMode("manual"); load(); }} />;
   }
 
   return (
@@ -398,7 +433,8 @@ export default function DailyReports() {
         </div>
       )}
 
-      <div className="bg-card border border-border rounded-lg overflow-hidden">
+      {/* Desktop table (unchanged) — hidden on phones. */}
+      <div className="bg-card border border-border rounded-lg overflow-hidden max-md:hidden">
         <table className="w-full dense-table">
           <thead><tr><th>Date</th><th>Status</th><th className="max-md:hidden">Submitted</th><th className="w-32"></th></tr></thead>
           <tbody>
@@ -430,8 +466,90 @@ export default function DailyReports() {
           </tbody>
         </table>
       </div>
+
+      {/* Mobile card list (spec E) — status badge is prominent and
+          submitted/approved reports carry an Export control on the card.
+          md:hidden so desktop is untouched. */}
+      <div className="md:hidden flex flex-col gap-2" data-testid="dr-list-mobile">
+        {reports.map((r) => {
+          const canDelete = r.status === "draft";
+          const isLocked = r.status === "submitted" || r.status === "approved";
+          return (
+            <div key={r.id} data-testid={`dr-card-${r.id}`}
+              className={`rounded-xl border p-3${hotId === r.id ? " dr-flow-card-hot" : ""}`}
+              style={{ borderColor: "var(--v4-border)", background: "var(--v4-bg-surface)" }}>
+              <button data-testid={`open-dr-m-${r.id}`} onClick={() => setOpenId(r.id)}
+                className="w-full flex items-center gap-2 text-left">
+                <span className="font-mono text-[15px] font-semibold" style={{ color: "var(--v4-fg-primary)" }}>
+                  {formatDateDisplay(r.report_date)}
+                </span>
+                <span className={`v4-pill v4-pill-${r.status === "approved" ? "closed" : r.status === "submitted" ? "submitted" : "draft"} ml-auto`}>
+                  {r.status === "approved" ? "Approved" : r.status === "submitted" ? "Submitted" : "Draft"}
+                </span>
+                <ChevronRight className="h-4 w-4 shrink-0" style={{ color: "var(--v4-fg-muted)" }} />
+              </button>
+              <div className="mt-2 flex items-center gap-2">
+                {r.submitted_at && (
+                  <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>
+                    Submitted {new Date(r.submitted_at).toLocaleDateString()}
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  {isLocked && (
+                    <button data-testid={`export-dr-m-${r.id}`} onClick={() => exportReportPdf(r)}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-sm font-medium"
+                      style={{ background: "var(--v4-bg-surface-2)", color: "var(--v4-fg-primary)", border: "1px solid var(--v4-border)" }}>
+                      <Download className="h-3.5 w-3.5" /> Export
+                    </button>
+                  )}
+                  <button data-testid={`delete-dr-m-${r.id}`} onClick={() => removeReport(r)} disabled={!canDelete}
+                    title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
+                    className={`h-9 w-9 grid place-items-center rounded-lg ${canDelete ? "text-red-500" : "text-slate-300 cursor-not-allowed"}`}
+                    style={{ border: "1px solid var(--v4-border)" }}>
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        {!reports.length && (
+          <div className="text-center py-6 text-sm text-muted-foreground">
+            No reports yet — tap "New daily report" to start one.
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+// ------------------------------------------------------------
+//  v7 Guided mobile flow — reactive viewport hook.
+//  Returns true on phones (<=767.98px). The DR detail renders the
+//  guided walkthrough (GuidedDrFlow) when this is true, and the
+//  untouched desktop layout otherwise. Kept as a top-level hook so
+//  both the detail wrapper and the flow share one source of truth.
+// ------------------------------------------------------------
+function useIsPhone() {
+  const query = "(max-width: 767.98px)";
+  const [isPhone, setIsPhone] = useState(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function"
+      && window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mql = window.matchMedia(query);
+    const onChange = () => setIsPhone(mql.matches);
+    onChange();
+    // addEventListener is the modern API; addListener is the Safari<14 fallback.
+    if (mql.addEventListener) mql.addEventListener("change", onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener("change", onChange);
+      else mql.removeListener(onChange);
+    };
+  }, []);
+  return isPhone;
 }
 
 // ------------------------------------------------------------
@@ -440,6 +558,10 @@ export default function DailyReports() {
 function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const [bundle, setBundle] = useState(null);
   const [busy, setBusy] = useState(false);
+  // v7 guided flow — phones get the activity-by-activity walkthrough
+  // (GuidedDrFlow) instead of the desktop panel stack. Desktop (>=768px)
+  // is byte-identical to before this feature.
+  const isPhone = useIsPhone();
   // 5-Route DR (2026-05-25) — allow switching to voice mode AFTER the
   // DR is already open. Initial value comes from the New-DR picker;
   // user can flip it from inside the detail page via the header
@@ -753,7 +875,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     } finally { setBusy(false); }
   };
 
-  const submit = async () => {
+  // v7 guided flow passes onSuccess so it can navigate back to the DR
+  // list on a successful submit (spec E). Desktop calls submit() with no
+  // args, so onSuccess is undefined there and behavior is unchanged.
+  const submit = async (onSuccess) => {
     // Test 2G follow-up (2026-05-12) -- validate() now only flags
     // logical contradictions (crew-empty-with-progress, all-rows-
     // untouched). Empty DRs intentionally pass client validation and
@@ -765,11 +890,12 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       toast.error("Cannot submit: " + errors[0]);
       return;
     }
-    await _submitWith({});
+    const okSubmit = await _submitWith({});
+    if (okSubmit && typeof onSuccess === "function") onSuccess();
   };
 
   // Addition 3 -- modal confirm: resubmit with is_no_work_day=true.
-  const submitNoWorkDay = async () => {
+  const submitNoWorkDay = async (onSuccess) => {
     if (!noWorkModal) return;
     if (!noWorkModal.reason) {
       toast.error("Pick a reason.");
@@ -779,11 +905,12 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       toast.error("Note is required when reason is 'other'.");
       return;
     }
-    await _submitWith({
+    const okSubmit = await _submitWith({
       is_no_work_day: true,
       no_work_reason: noWorkModal.reason,
       no_work_note: (noWorkModal.note || "").trim() || null,
     });
+    if (okSubmit && typeof onSuccess === "function") onSuccess();
   };
 
   const approve = async () => {
@@ -792,8 +919,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       await api.post(`/daily-reports/${id}/approve`);
       toast.success("Daily report approved.");
       reload();
+      return true;
     } catch (e) {
       toast.error(e.response?.data?.detail || "Approve failed");
+      return false;
     } finally { setBusy(false); }
   };
 
@@ -913,6 +1042,40 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     // For now we fire a window event the list page listens to.
     window.dispatchEvent(new CustomEvent("dr-jump-to-date", { detail: { iso: d.toISOString().slice(0, 10) } }));
   };
+
+  // ---- v7 GUIDED FLOW (phones only) ----------------------------------
+  // Everything the flow needs is derived above from the same bundle the
+  // desktop layout uses; the flow calls the SAME endpoints/handlers so
+  // save logic never forks. Desktop falls straight through to the
+  // untouched return below.
+  if (isPhone) {
+    return (
+      <GuidedDrFlow
+        id={id}
+        report={report}
+        project={project}
+        grid={grid}
+        presence={presence}
+        photos={photos}
+        voiceAnnotations={voice_annotations}
+        delays={delays}
+        safetyEvents={safety_events}
+        qcIssues={qc_issues}
+        rfis={rfis}
+        deliveries={deliveries}
+        locked={locked}
+        reload={reload}
+        onBack={onBack}
+        busy={busy}
+        submit={submit}
+        noWorkModal={noWorkModal}
+        setNoWorkModal={setNoWorkModal}
+        submitNoWorkDay={submitNoWorkDay}
+        approve={approve}
+        onDownloadPdf={downloadPdf}
+      />
+    );
+  }
 
   return (
     <div data-testid="dr-detail" className="space-y-5 dr-grid">
@@ -2514,103 +2677,10 @@ function useIssueDropdownListener(kind, panelTestid, onOpen) {
 }
 
 // CPM B1 (2026-06-12) -- relationship-aware EOD-slider gating.
-// `gate` (r.slider_gate) is stamped by the backend ONLY when
-// FF_SLIDER_GATING is on; when absent the slider behaves exactly as it did
-// pre-B1 (free 0-100). When present, the slider clamps to gate.max_pct
-// (FS lock 0% / SS lock 0% / FF cap 95% / SF cap 99%, most-restrictive
-// predecessor) and shows the lock reason. A PM/Admin can override past the
-// cap with a logged reason (sent as slider_gate_override_reason; the server
-// re-validates role + reason and audits the override).
-function EodSlider({ rowId, initialValue, locked, updateRow, activityCode, gate }) {
-  const [val, setVal] = useState(Number(initialValue) || 0);
-  const [override, setOverride] = useState(false);
-  const overrideReasonRef = useRef("");
-  useEffect(() => { setVal(Number(initialValue) || 0); }, [initialValue]);
-
-  const maxPct = gate && typeof gate.max_pct === "number" ? gate.max_pct : 100;
-  const gated = maxPct < 100;
-  const user = getUser();
-  const canOverride = ["admin", "pm"].includes((user?.role || "").toLowerCase());
-  // Effective ceiling for the slider. The gate only constrains INCREASES past
-  // the cap (the server allows lowering or keeping a value already above the
-  // cap -- e.g. a successor that was 50% before its predecessor was reopened).
-  // So the user may set anything up to max(cap, current value); an active
-  // override lifts it to 100. This mirrors evaluate_eod_gate exactly:
-  // allow iff new <= max(old_eod, max_pct).
-  const startVal = Number(initialValue) || 0;
-  const effMax = override ? 100 : Math.max(maxPct, startVal);
-
-  const commit = (v) => {
-    let n = Math.max(0, Math.min(100, Number(v) || 0));
-    if (n > effMax) {
-      // Tried to increase past the gate (and past the current value).
-      n = effMax;
-      setVal(n);
-      if (!override && gated) {
-        toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
-      }
-    }
-    if (n === startVal) { setVal(n); return; }
-    const payload = { pct_complete_end_of_day: n };
-    // Send the override reason only on a true increase past the gate cap.
-    if (override && n > maxPct && n > startVal && overrideReasonRef.current) {
-      payload.slider_gate_override_reason = overrideReasonRef.current;
-    }
-    setVal(n);
-    updateRow(rowId, payload);
-  };
-
-  const startOverride = () => {
-    const reason = window.prompt(
-      `Override the schedule gate on ${activityCode}? ` +
-      `${gate?.reason || ""}\n\nEnter a reason (min 8 characters) — this is logged.`,
-    );
-    if (reason && reason.trim().length >= 8) {
-      overrideReasonRef.current = reason.trim();
-      setOverride(true);
-      toast.success("Gate override active for this activity. Move the slider to set progress.");
-    } else if (reason !== null) {
-      toast.error("Override reason must be at least 8 characters.");
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-2 min-w-[180px] max-md:min-w-[120px]" data-testid={`dr-pct-wrap-${activityCode}`}>
-      <input
-        data-testid={`dr-pct-${activityCode}`}
-        type="range" min="0" max="100" step="1"
-        value={val}
-        onChange={(e) => setVal(Math.min(effMax, Number(e.target.value)))}
-        onMouseUp={(e) => commit(e.target.value)}
-        onTouchEnd={(e) => commit(e.target.value)}
-        onKeyUp={(e) => commit(e.target.value)}
-        disabled={locked}
-        className="eod-range flex-1 cursor-pointer disabled:opacity-50"
-        style={{ "--eod-fill": `${val}%` }}
-      />
-      <span className="text-xs tabular-nums font-medium text-emerald-300 w-9 text-right">{val}%</span>
-      {gated && !override && (
-        <span
-          data-testid={`dr-gate-${activityCode}`}
-          title={gate?.reason || "Gated by predecessors"}
-          className="inline-flex items-center text-amber-600"
-        >
-          <Lock className="h-3 w-3" />
-          {canOverride && (
-            <button
-              type="button"
-              data-testid={`dr-gate-override-${activityCode}`}
-              onClick={startOverride}
-              className="ml-1 text-[10px] underline text-amber-700 hover:text-amber-900"
-            >
-              override
-            </button>
-          )}
-        </span>
-      )}
-    </div>
-  );
-}
+// v7 guided flow (2026-07-05): the EodSlider component moved VERBATIM to
+// components/dr/EodSlider.jsx (imported at the top of this file) so the
+// mobile guided flow reuses the exact same B1-gated slider. No behavior
+// change on the desktop grid.
 
 function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
                    submitRowErrors, presence, updateRow, removeRow,
@@ -4490,6 +4560,25 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       // idle, or a flaky site connection) so a momentary blip doesn't silently
       // drop the whole batch. Capture the real error so the toast is actionable
       // instead of a generic "upload failed".
+      // Offline queue (spec F.4): if the tray POST fails with NO response
+      // object (network down / offline), the photo isn't lost — it's stashed
+      // in lib/drPhotoQueue and re-uploaded + attached to this DR on the next
+      // 'online' event. A response-bearing failure (4xx/5xx) is a real reject
+      // and still surfaces to the user. Online behavior is byte-identical.
+      const queuePhotoOffline = async (file) => {
+        try {
+          // eslint-disable-next-line global-require
+          const pq = require("../lib/drPhotoQueue");
+          await pq.queuePhoto({
+            blob: file,
+            mimeType: file.type || "image/jpeg",
+            dailyReportId,
+            projectId,
+            photoClass: "progress",
+          });
+          return true;
+        } catch { return false; }
+      };
       const uploadOne = async (file) => {
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
@@ -4500,8 +4589,11 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
             return { id: r.data?.id || null };
           } catch (err) {
-            const transient = !err.response || (err.response.status >= 500);
+            const offline = !err.response;
+            const transient = offline || (err.response.status >= 500);
             if (transient && attempt === 0) { await new Promise((res) => setTimeout(res, 900)); continue; }
+            // Offline (no response even after the retry): queue, never drop.
+            if (offline && await queuePhotoOffline(file)) return { id: null, queued: true };
             return { id: null, err };
           }
         }
@@ -4509,8 +4601,16 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       };
       const results = await Promise.all(files.map(uploadOne));
       const trayIds = results.map((r) => r.id).filter(Boolean);
-      const failed = results.length - trayIds.length;
+      const queued = results.filter((r) => r.queued).length;
+      const failed = results.length - trayIds.length - queued;
       if (!trayIds.length) {
+        if (queued > 0) {
+          // Nothing reached the server, but every failure was offline and is
+          // now safely queued — treat as a local save, not a loss.
+          toast(`${queued} photo${queued !== 1 ? "s" : ""} saved — will upload when you reconnect.`);
+          if (locked) setAddReason("");
+          return;
+        }
         const firstErr = results.find((r) => r.err)?.err;
         const status = firstErr?.response?.status;
         const detail = firstErr?.response?.data?.detail || firstErr?.message;
@@ -4536,8 +4636,12 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       const n = data?.created ?? trayIds.length;
       // pt.65: surface partial failures — don't show a clean success toast
       // when some files silently failed to upload (easy to miss on a phone).
+      // A mixed batch may also have offline-queued photos (queued>0) that will
+      // upload on reconnect; call those out so the count isn't confusing.
       if (failed > 0) {
         toast.error(`${n} photo${n !== 1 ? "s" : ""} added · ${failed} failed to upload — please retry those.`);
+      } else if (queued > 0) {
+        toast.success(`${n} added · ${queued} saved to upload when you reconnect.`);
       } else {
         toast.success(`${n} photo${n !== 1 ? "s" : ""} added to this report.`);
       }
@@ -5155,4 +5259,1175 @@ function formatErr(e, action = "Action") {
   }
   if (typeof detail === "string") return `${action} failed (${r.status}): ${detail}`;
   return `${action} failed (${r.status})`;
+}
+
+/* ============================================================
+ *  v7 GUIDED DAILY-REPORT FLOW  (phones only)
+ *  ------------------------------------------------------------
+ *  A client state machine layered over the SAME bundle + handlers
+ *  the desktop layout uses. Screens:
+ *     landing → activity[0..N-1] → unplanned → review
+ *  Every write hits an existing endpoint:
+ *     grid PATCH      /daily-report-activities/{rowId}
+ *     presence create /daily-reports/{id}/presence
+ *     presence delete /daily-presence/{rid}
+ *     unplanned       /daily-reports/{id}/unplanned-activity
+ *     issues          existing Delay/Safety/QC/RFI/Coord panels
+ *     photos          existing PhotosPanel upload/tag plumbing
+ *     voice notes     POST /voice/annotate + GET /voice/annotations
+ *     submit          the parent's submit()/no-work/ locked rules
+ *  Desktop (>=768px) never mounts this — DailyReportDetail returns
+ *  its original layout there.
+ * ============================================================ */
+
+// Optional offline photo queue owned by the parallel offline agent
+// (lib/drPhotoQueue.js). We lazy-require it so this file compiles and
+// runs whether or not that module exists yet; when present we use
+// queuePhoto()/listPendingPhotos(). Mirrors the existing lazy-require
+// pattern used for lib/drOfflineSync above.
+function _photoQueue() {
+  try {
+    // eslint-disable-next-line global-require
+    return require("../lib/drPhotoQueue");
+  } catch { return null; }
+}
+
+// Pill tint for an activity's rollup status (matches GridStatusPill vocab).
+function flowStatusOf(row) {
+  const s = row.auto_status || row.status_at_end_of_day || "not_started";
+  if (s === "blocked") return { label: "Blocked", cls: "dr-flow-pill-rd" };
+  if (s === "complete") return { label: "Complete", cls: "dr-flow-pill-gr" };
+  if (s === "in_progress") return { label: "In progress", cls: "dr-flow-pill-bl" };
+  const pct = row.pct_complete_end_of_day || 0;
+  if (pct >= 100) return { label: "Complete", cls: "dr-flow-pill-gr" };
+  if (pct > 0) return { label: "In progress", cls: "dr-flow-pill-bl" };
+  return { label: "Not started", cls: "dr-flow-pill-sl" };
+}
+function flowFillColor(row) {
+  const s = row.auto_status || row.status_at_end_of_day || "not_started";
+  const pct = row.pct_complete_end_of_day || 0;
+  if (s === "blocked") return "var(--v4-fg-faint, #868a93)";
+  if (s === "complete" || pct >= 100) return "#34d399";
+  if (pct > 0) return "#6cb0f2";
+  return "#868a93";
+}
+
+// A reusable bottom sheet (dim backdrop + slide-up panel). Reuses the
+// existing dr-msheet CSS conventions; new dr-flow-* classes are added
+// to index.css. Backdrop click + the grip close it.
+function FlowSheet({ open, onClose, title, subtitle, children, testid }) {
+  if (!open) return null;
+  return (
+    <div className="dr-flow-ov" data-testid={testid} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="dr-flow-sheet" role="dialog" aria-modal="true">
+        <div className="dr-flow-grip" onClick={onClose} />
+        {title && (
+          <div className="dr-flow-sheet-head">
+            <div className="dr-flow-sheet-title">{title}</div>
+            {subtitle && <div className="dr-flow-sheet-sub">{subtitle}</div>}
+          </div>
+        )}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Voice notes: the flow renders components/dr/DrVoiceNotes (spec D —
+// kind="voice_note", NO transcription/extraction, IndexedDB offline queue
+// that drains to /voice/annotate, blob playback). Imported at the top.
+
+function GuidedDrFlow({
+  id, report, project, grid, presence, photos, voiceAnnotations,
+  delays, safetyEvents, qcIssues, rfis, deliveries,
+  locked, reload, onBack, busy, submit, noWorkModal, setNoWorkModal,
+  submitNoWorkDay, approve, onDownloadPdf,
+}) {
+  // Editable "today's planned" activities (Field Work section) in grid order.
+  const activities = (grid || []).filter((r) => gridSectionOf(r.work_category) === 2);
+  const unplannedRows = activities.filter((r) => (r.activity_code || "").startsWith("AF"));
+  // Screens: 0..N-1 activities, then "unplanned", then "review".
+  const N = activities.length;
+  const UNPLANNED = N;
+  const REVIEW = N + 1;
+
+  // "landing" | number(screen index)
+  const [screen, setScreen] = useState("landing");
+  const [returnToReview, setReturnToReview] = useState(false);
+  // Which bottom sheet is open on the current activity screen.
+  const [sheet, setSheet] = useState(null); // {kind, activity} | null
+  const [queueCount, setQueueCount] = useState(0);
+  // Locked-DR (spec B): ONE reason, entered once on any activity screen,
+  // feeds edit_reason on grid PATCHes and add_reason on photo tags. Event
+  // sheets keep their own LockedAddReasonBlock (existing panel behavior).
+  const [lockedReason, setLockedReason] = useState("");
+  const lockedReasonOk = isFlowReasonValid(lockedReason);
+  // Per-activity photo upload busy flag.
+  const [photoBusy, setPhotoBusy] = useState(false);
+  // Live big-% mirror while the slider is being dragged (EodSlider owns the
+  // drag; its bubbled input event keeps the mockup's big readout live).
+  // Screen changes also reset scroll so each step starts at its title.
+  const [livePct, setLivePct] = useState(null);
+  useEffect(() => {
+    setLivePct(null);
+    try { window.scrollTo({ top: 0 }); } catch { /* ignore */ }
+  }, [screen]);
+  // Crew chips flip "off" optimistically during the delete-with-undo window
+  // (mockup behavior); Undo restores them instantly.
+  const [pendingOffIds, setPendingOffIds] = useState(() => new Set());
+  // Queued v7 voice notes (offline) — counted into the sync chip and used
+  // to decide whether the landing shows the Voice notes section.
+  const [voiceNotePending, setVoiceNotePending] = useState(0);
+  // Spec D: only voice-note-as-record rows surface in the flow (intake
+  // memos with other kinds stay a separate feature).
+  const voiceNoteRows = (voiceAnnotations || []).filter((v) => v.kind === "voice_note");
+
+  // Pending-sync chip: photos + voice + queued requests combined.
+  const refreshQueueCount = useCallback(async () => {
+    let total = 0;
+    try {
+      // eslint-disable-next-line global-require
+      const { getQueueSize } = require("../lib/drOfflineSync");
+      total += getQueueSize() || 0;
+    } catch { /* ignore */ }
+    try {
+      // eslint-disable-next-line global-require
+      const vq = require("../lib/drVoiceQueue");
+      const clips = await vq.listPending(id);
+      total += (clips || []).length;
+    } catch { /* ignore */ }
+    try {
+      // v7 voice notes queue their own store (drains to /voice/annotate,
+      // NOT the transcribe-and-extract intake) — count those too.
+      const noteClips = await listPendingVoiceNotes(id);
+      total += (noteClips || []).length;
+      setVoiceNotePending((noteClips || []).length);
+    } catch { /* ignore */ }
+    try {
+      const pq = _photoQueue();
+      if (pq && pq.listPendingPhotos) {
+        const pend = await pq.listPendingPhotos(id);
+        total += (pend || []).length;
+      }
+    } catch { /* ignore */ }
+    setQueueCount(total);
+  }, [id]);
+  useEffect(() => {
+    refreshQueueCount();
+    const on = () => refreshQueueCount();
+    window.addEventListener("online", on);
+    window.addEventListener("offline", on);
+    const t = setInterval(refreshQueueCount, 6000);
+    return () => {
+      window.removeEventListener("online", on);
+      window.removeEventListener("offline", on);
+      clearInterval(t);
+    };
+  }, [refreshQueueCount]);
+
+  // --- CARRY-FORWARD CREW (spec A) --------------------------------
+  // On a DRAFT report's first mobile open with zero presence rows,
+  // fetch the project's most recent PRIOR report's presence and clone
+  // those rows into THIS report once. Guard flag lives in localStorage.
+  const [carriedWeekday, setCarriedWeekday] = useState(null);
+  useEffect(() => {
+    if (locked) return;
+    if (!id || !project?.id) return;
+    if ((presence || []).length > 0) return;
+    // Guard key per spec: "ice-dr-carried-<reportId>".
+    const guardKey = `ice-dr-carried-${id}`;
+    if (localStorage.getItem(guardKey)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: reports } = await api.get(`/projects/${project.id}/daily-reports`);
+        const prior = (reports || [])
+          .filter((r) => r.id !== id && r.report_date < report.report_date)
+          .sort((a, b) => (a.report_date < b.report_date ? 1 : -1))[0];
+        if (!prior) { localStorage.setItem(guardKey, "none"); return; }
+        const { data: prevPresence } = await api.get(`/daily-reports/${prior.id}/presence`)
+          .catch(() => ({ data: [] }));
+        if (cancelled || !Array.isArray(prevPresence) || !prevPresence.length) {
+          localStorage.setItem(guardKey, "none"); return;
+        }
+        // Mark the guard BEFORE the writes so a mid-flight remount can't
+        // double-carry; if a write fails the super can add crew manually.
+        localStorage.setItem(guardKey, "done");
+        // Only keep a task link if that task is on TODAY's grid — a stale
+        // link would make the row invisible on every activity screen.
+        const todaysTaskIds = new Set((grid || []).map((g) => g.schedule_activity_id).filter(Boolean));
+        for (const p of prevPresence) {
+          await api.post(`/daily-reports/${id}/presence`, {
+            trade: p.trade || "",
+            company_name: p.company_name || "",
+            headcount: Number(p.headcount) || 0,
+            hours_per_person: Number(p.hours_per_person) || 0,
+            notes: p.notes || "",
+            schedule_activity_id: todaysTaskIds.has(p.schedule_activity_id) ? p.schedule_activity_id : null,
+            shift: p.shift || "first",
+            daily_report_id: id,
+          }).catch(() => { /* skip a bad row, keep going */ });
+        }
+        if (cancelled) return;
+        let weekday = "";
+        try { weekday = new Date(`${prior.report_date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long" }); } catch { /* ignore */ }
+        setCarriedWeekday(weekday || "the prior report");
+        reload();
+        toast.success(`Crew carried forward from ${weekday || "the prior report"}. Tap a chip to remove anyone who's off.`);
+      } catch {
+        // Non-fatal: leave presence empty, super adds crew by hand.
+        try { localStorage.setItem(guardKey, "error"); } catch { /* ignore */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, project?.id, locked]);
+
+  // ---- shared write handlers (SAME endpoints as desktop) ----------
+  const updateRow = async (rowId, fields) => {
+    const row = (grid || []).find((r) => r.id === rowId) || {};
+    const payload = { ...fields };
+    if (row.task_updated_at) payload.task_last_modified_at = row.task_updated_at;
+    // Spec B — on a locked DR the grid PATCH requires an edit_reason; the
+    // activity screen's reason card supplies it (same field the desktop
+    // LockedEventEditModal sends).
+    if (locked) {
+      if (!lockedReasonOk) {
+        toast.error("Enter the edit reason at the top of the screen first.");
+        return;
+      }
+      payload.edit_reason = lockedReason.trim();
+    }
+    try {
+      await api.patch(`/daily-report-activities/${rowId}`, payload);
+      reload();
+    } catch (e) {
+      if (e.response?.status === 409) {
+        toast.error("Schedule changed externally — reopen the report to pull the latest.");
+      } else {
+        toast.error(formatErr(e, "Update activity"));
+      }
+    }
+  };
+  const deletePresence = (rid) => {
+    if (pendingOffIds.has(rid)) return; // delete already queued
+    setPendingOffIds((s) => { const n = new Set(s); n.add(rid); return n; });
+    deleteWithUndo({
+      label: "Crew removed",
+      onCommit: async () => {
+        try { await api.delete(`/daily-presence/${rid}`); reload(); }
+        catch (e) {
+          toast.error(formatErr(e, "Remove crew"));
+          setPendingOffIds((s) => { const n = new Set(s); n.delete(rid); return n; });
+        }
+      },
+      onRestore: () => setPendingOffIds((s) => { const n = new Set(s); n.delete(rid); return n; }),
+    });
+  };
+
+  // Photos (spec A) — upload to the tray, then tag each photo to THIS grid
+  // row via the EXISTING POST /photo-tags plumbing (daily_report_activity_id
+  // is the tag's event ref). Locked DRs pass the reason as add_reason.
+  const uploadActivityPhotos = async (row, files) => {
+    if (!files.length) return;
+    if (locked && !lockedReasonOk) {
+      toast.error("Enter the edit reason at the top of the screen first.");
+      return;
+    }
+    setPhotoBusy(true);
+    // Offline queue (spec F.4): a network failure (no err.response) means we're
+    // offline — stash the bytes in lib/drPhotoQueue so they upload + tag to
+    // this activity on reconnect, instead of silently losing the photo. Any
+    // other error (validation / locked-add / server reject) still surfaces.
+    const pq = _photoQueue();
+    let tagged = 0;
+    let queued = 0;
+    let hardErr = null;
+    try {
+      for (const file of files) {
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          fd.append("project_id", project.id);
+          fd.append("capture_source", "manual_upload");
+          const r = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+          const trayId = r.data?.id;
+          if (!trayId) continue;
+          await api.post(`/photo-tags`, {
+            tray_photo_id: trayId,
+            daily_report_id: id,
+            daily_report_activity_id: row.id,
+            photo_class: "progress",
+            ...(locked ? { add_reason: lockedReason.trim() } : {}),
+          });
+          tagged += 1;
+        } catch (e) {
+          // No response object => network/offline. Never lose the photo:
+          // queue it (tagged to THIS activity) for a reconnect drain.
+          if (!e?.response && pq?.queuePhoto) {
+            try {
+              await pq.queuePhoto({
+                blob: file,
+                mimeType: file.type || "image/jpeg",
+                dailyReportId: id,
+                projectId: project.id,
+                activityRowId: row.id,
+                photoClass: "progress",
+              });
+              queued += 1;
+              continue;
+            } catch { /* fall through to hardErr */ }
+          }
+          hardErr = e;
+        }
+      }
+    } finally { setPhotoBusy(false); }
+    if (queued > 0) {
+      toast(`${queued} photo${queued === 1 ? "" : "s"} saved — will upload when you reconnect.`);
+    }
+    if (tagged > 0) { reload(); toast.success(`${tagged} photo${tagged === 1 ? "" : "s"} added.`); }
+    if (hardErr) {
+      if (!handleLockedAddError(hardErr, "photo")) {
+        toast.error(formatErr(hardErr, "Photo upload"));
+      }
+    } else if (tagged === 0 && queued === 0) {
+      toast.error("Upload failed — try again.");
+    }
+  };
+
+  const goActivity = (idx, opts = {}) => {
+    setReturnToReview(!!opts.returnToReview);
+    setSheet(null);
+    setScreen(idx);
+  };
+
+  // Submit wrappers that navigate back to the DR list on success (spec E).
+  // A successful submit/approve stamps sessionStorage so the list can flag
+  // the just-submitted card.
+  const backToList = () => {
+    try { sessionStorage.setItem("ice-dr-just-submitted", id); } catch { /* ignore */ }
+    onBack();
+  };
+  const submitAndReturn = () => submit(backToList);
+  const submitNoWorkAndReturn = () => submitNoWorkDay(backToList);
+  // Spec B — review on a SUBMITTED report keeps the existing next action:
+  // Approve (same handler the desktop header button calls).
+  const approveAndReturn = async () => {
+    const ok = await approve();
+    if (ok) backToList();
+  };
+
+  // Progress dots + step label.
+  const stepBar = (activeIdx) => {
+    const steps = [];
+    for (let i = 0; i < N; i++) steps.push(i);
+    steps.push(UNPLANNED, REVIEW);
+    const label = activeIdx < N
+      ? <><b>Activity {activeIdx + 1}</b> of {N}</>
+      : activeIdx === UNPLANNED ? <b>Unplanned work</b> : <b>Review</b>;
+    return (
+      <div className="dr-flow-steps" data-testid="dr-flow-steps">
+        <button className="dr-flow-steps-x" onClick={() => { setSheet(null); setScreen("landing"); }}
+          aria-label="Back to start" data-testid="dr-flow-exit"><X className="h-4.5 w-4.5" /></button>
+        <span className="dr-flow-steps-lbl">{label}</span>
+        <div className="dr-flow-dots">
+          {steps.map((s, k) => (
+            <span key={k} className={`dr-flow-dot${s === activeIdx ? " on" : (k < steps.indexOf(activeIdx) ? " done" : "")}`} />
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const longDate = (() => {
+    try { return new Date(`${report.report_date}T00:00:00`).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }); }
+    catch { return formatDateDisplay(report.report_date); }
+  })();
+  const statusPill = (
+    <span className={`v4-pill v4-pill-${report.status === "approved" ? "closed" : report.status === "submitted" ? "submitted" : "draft"}`}>
+      {report.status === "approved" ? "Approved" : report.status === "submitted" ? "Submitted" : "Draft"}
+    </span>
+  );
+
+  // ============ LANDING ============
+  if (screen === "landing") {
+    return (
+      <div className="dr-flow" data-testid="dr-flow-landing">
+        {queueCount > 0 && (
+          <div className="dr-flow-syncchip" data-testid="dr-flow-syncchip">
+            <span className="dr-flow-rec-dot" /> {queueCount} item{queueCount === 1 ? "" : "s"} will sync
+          </div>
+        )}
+        <div className="dr-flow-hero">
+          {/* back-to-list — the landing is the flow's root, so it carries
+              the exit to the DR list (the step-bar X only returns HERE). */}
+          <div className="dr-flow-hero-row" style={{ marginBottom: 8 }}>
+            <button type="button" className="dr-flow-back" data-testid="dr-flow-back-list"
+              onClick={onBack} aria-label="Back to daily reports" style={{ padding: "8px 12px" }}>
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span style={{ marginLeft: "auto" }}>{statusPill}</span>
+          </div>
+          <div className="dr-flow-hero-t">Daily report</div>
+          <div className="dr-flow-hero-s">
+            {longDate} · {project?.name || "Project"} · {N} {N === 1 ? "activity" : "activities"}
+            {carriedWeekday ? `, carried from ${carriedWeekday}` : ""}
+          </div>
+          {locked && (
+            <div className="dr-flow-hero-row">
+              <span className="dr-flow-locked-tag"><Lock className="h-3 w-3" /> Submitted</span>
+            </div>
+          )}
+          {N > 0 ? (
+            <button className="dr-flow-cta" data-testid="dr-flow-start" onClick={() => goActivity(0)}>
+              {locked ? "Review report" : "Start"} <ChevronRight className="h-4 w-4" />
+            </button>
+          ) : (
+            <div className="dr-flow-empty">
+              <ClipboardList className="h-8 w-8" style={{ color: "var(--v4-fg-faint)" }} />
+              <div className="dr-flow-empty-t">No activities scheduled</div>
+              <div className="dr-flow-empty-s">Nothing on the plan today. Log work done off-schedule, or file a no-work day.</div>
+              <button className="dr-flow-cta" data-testid="dr-flow-empty-unplanned" onClick={() => setSheet({ kind: "unplanned" })}>
+                <Plus className="h-4 w-4" /> Add unplanned activity
+              </button>
+              {!locked && (
+                <button className="dr-flow-alt" data-testid="dr-flow-empty-nowork" onClick={submitAndReturn}>
+                  File as no-work day
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {N > 0 && (
+          <>
+            <div className="dr-flow-rowlbl">Today's activities</div>
+            <div className="dr-flow-mini">
+              {activities.map((r, i) => {
+                const st = flowStatusOf(r);
+                return (
+                  <button key={r.id} className="dr-flow-minirow" data-testid={`dr-flow-minirow-${i}`} onClick={() => goActivity(i)}>
+                    <span className="dr-flow-mini-dot" style={{ background: flowFillColor(r) }} />
+                    <span className="dr-flow-mini-name">{r.activity_description || r.activity_code}</span>
+                    <span className="dr-flow-mini-r">
+                      <span className={`dr-flow-pill ${st.cls}`}>{r.pct_complete_end_of_day || 0}%</span>
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        <div className="dr-flow-rowlbl">Site-wide</div>
+        <div className="dr-flow-bigcard" style={{ cursor: "default" }}>
+          <Cloud className="h-6 w-6" style={{ color: "#34d399" }} />
+          <div className="dr-flow-big-body">
+            <div className="dr-flow-big-t">Weather</div>
+            <div className="dr-flow-big-s">
+              {[
+                report.weather_conditions
+                  ? report.weather_conditions.charAt(0).toUpperCase() + report.weather_conditions.slice(1)
+                  : null,
+                (report.weather_temp_high_f != null || report.weather_temp_low_f != null)
+                  ? `${report.weather_temp_high_f != null ? Math.round(report.weather_temp_high_f) : "—"}° / ${report.weather_temp_low_f != null ? Math.round(report.weather_temp_low_f) : "—"}°`
+                  : null,
+                report.weather_fetched_at ? "auto-added" : null,
+              ].filter(Boolean).join(" · ") || "Not set"}
+            </div>
+          </div>
+          {report.weather_conditions && <CheckCircle2 className="h-4 w-4" style={{ color: "#34d399" }} />}
+        </div>
+        <button className="dr-flow-bigcard" data-testid="dr-flow-unplanned-card" onClick={() => setSheet({ kind: "unplanned" })}>
+          <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
+          <div className="dr-flow-big-body">
+            <div className="dr-flow-big-t">Unplanned work</div>
+            <div className="dr-flow-big-s">Log anything done off the schedule</div>
+          </div>
+          <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />
+        </button>
+
+        {/* spec D — voice notes list (playable) on the landing whenever the
+            report has notes; recording lives on the Review step. */}
+        {(voiceNoteRows.length > 0 || voiceNotePending > 0) && (
+          <>
+            <div className="dr-flow-rowlbl">Voice notes ({voiceNoteRows.length + voiceNotePending})</div>
+            <DrVoiceNotes reportId={id} notes={voiceNoteRows} reload={reload}
+              allowRecord={false} onPendingChange={setVoiceNotePending} />
+          </>
+        )}
+
+        {/* Sheets reachable from the landing */}
+        <FlowSheets
+          sheet={sheet} setSheet={setSheet}
+          id={id} project={project} report={report} grid={grid}
+          delays={delays} safetyEvents={safetyEvents} qcIssues={qcIssues} rfis={rfis}
+          locked={locked} reload={reload}
+        />
+        {/* No-work-day dialog (reuses the parent's state + handler) */}
+        <FlowNoWorkDialog noWorkModal={noWorkModal} setNoWorkModal={setNoWorkModal}
+          submitNoWorkDay={submitNoWorkAndReturn} busy={busy} />
+      </div>
+    );
+  }
+
+  // ============ ACTIVITY SCREEN ============
+  if (typeof screen === "number" && screen < N) {
+    const r = activities[screen];
+    const st = flowStatusOf(r);
+    const thisPresence = (presence || []).filter((p) => p.schedule_activity_id && p.schedule_activity_id === r.schedule_activity_id);
+    // Photos are tagged to a grid row via daily_report_activity_id (the
+    // photo-tag event ref uploadActivityPhotos writes).
+    const taskPhotos = (photos || []).filter((p) => p.daily_report_activity_id === r.id);
+    const issueItems = listIssuesForTask(r.schedule_activity_id, { delays, safetyEvents, qcIssues, rfis, deliveries });
+    const thisIssues = issueItems.length;
+    const plannedTick = typeof r.planned_pct_complete === "number" ? r.planned_pct_complete
+      : (typeof r.planned_pct === "number" ? r.planned_pct : null);
+
+    const footerNext = () => {
+      if (returnToReview) { setReturnToReview(false); setScreen(REVIEW); return; }
+      if (screen < N - 1) setScreen(screen + 1);
+      else setScreen(UNPLANNED);
+    };
+    const footerBack = () => {
+      if (screen > 0) setScreen(screen - 1);
+      else setScreen("landing");
+    };
+
+    return (
+      <div className="dr-flow" data-testid={`dr-flow-activity-${screen}`}>
+        {stepBar(screen)}
+        <div className="dr-flow-body">
+          {/* spec B — compact reason card; its value feeds edit_reason on
+              grid PATCHes + add_reason on photo tags (event sheets keep
+              their own LockedAddReasonBlock). */}
+          {locked && (
+            <LockedReasonCard value={lockedReason} onChange={setLockedReason} />
+          )}
+          <div className="dr-flow-actname">{r.activity_description || r.activity_code}</div>
+          <div className="dr-flow-subline">
+            {project?.name || "Project"} · {longDate} · <span className={`dr-flow-pill ${st.cls}`}>{st.label}</span>
+          </div>
+
+          {/* Progress card — reuses EodSlider (B1 gating, clamps, override).
+              The bubbled input event mirrors the drag into the big readout. */}
+          <div className="dr-flow-block">
+            <div className="dr-flow-block-h"><span className="dr-flow-progress-ic">%</span> Progress today</div>
+            <div className="dr-flow-prog"
+              onInput={(e) => { const t = e.target; if (t && t.type === "range") setLivePct(Number(t.value) || 0); }}>
+              <div className="dr-flow-prog-big" data-testid={`dr-flow-pct-${screen}`}>{livePct ?? (r.pct_complete_end_of_day || 0)}%</div>
+              <div className="dr-flow-slider-wrap">
+                {plannedTick != null && (
+                  <span className="dr-flow-sug" style={{ left: `${Math.max(0, Math.min(100, plannedTick))}%` }} />
+                )}
+                {/* Locked DR: the slider unlocks once the reason card is
+                    valid — updateRow then PATCHes with edit_reason (the
+                    exact desktop locked-edit plumbing). */}
+                <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
+                  locked={locked && !lockedReasonOk} updateRow={updateRow}
+                  activityCode={r.activity_code}
+                  gate={r.slider_gate} />
+              </div>
+              <div className="dr-flow-prog-meta">
+                was {r.pct_complete_start_of_day || 0}%
+                {plannedTick != null ? ` · planned ${plannedTick}%` : ""}
+              </div>
+            </div>
+          </div>
+
+          {/* Crew card */}
+          <div className="dr-flow-block">
+            <div className="dr-flow-block-h">
+              <Users className="h-4 w-4" style={{ color: "#34d399" }} /> Crew
+              {carriedWeekday && thisPresence.length > 0 && <span className="dr-flow-block-n">carried from {carriedWeekday}</span>}
+            </div>
+            <div className="dr-flow-crewline">
+              {thisPresence.map((p) => (
+                <button key={p.id} type="button" data-testid={`dr-flow-crewchip-${p.id}`}
+                  className={`dr-flow-crewchip${pendingOffIds.has(p.id) ? " off" : ""}`}
+                  onClick={() => !locked && deletePresence(p.id)}
+                  title={locked ? "Locked report" : "Tap to remove"}>
+                  <CheckCircle2 className="h-3.5 w-3.5 dr-flow-ck" />
+                  {(p.company_name || p.trade)}{p.headcount ? ` · ${p.headcount}×${p.hours_per_person || 0}h` : ""}
+                </button>
+              ))}
+              {!locked && (
+                <button type="button" className="dr-flow-addc" data-testid="dr-flow-crew-add"
+                  onClick={() => setSheet({ kind: "crew", activity: r })}>
+                  <Plus className="h-3.5 w-3.5" /> Add
+                </button>
+              )}
+            </div>
+            {thisPresence.length === 0 && (
+              <div className="dr-flow-muted-note">No crew on this activity yet.</div>
+            )}
+          </div>
+
+          {/* Issues card */}
+          <div className="dr-flow-block">
+            <div className="dr-flow-block-h"><AlertTriangle className="h-4 w-4" style={{ color: "#34d399" }} /> Anything wrong?</div>
+            <div className="dr-flow-issuebar">
+              {thisIssues === 0
+                ? <span className="dr-flow-noissue"><CheckCircle2 className="h-3.5 w-3.5" /> No issues</span>
+                : <span className="dr-flow-hasissue"><AlertTriangle className="h-3.5 w-3.5" /> {thisIssues} logged</span>}
+              <span className="dr-flow-qadd">
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-delay" onClick={() => setSheet({ kind: "delay", activity: r })}><AlertTriangle className="h-3 w-3" /> Delay</button>
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-rfi" onClick={() => setSheet({ kind: "rfi", activity: r })}><MessageSquare className="h-3 w-3" /> RFI</button>
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-safety" onClick={() => setSheet({ kind: "safety", activity: r })}><ShieldAlert className="h-3 w-3" /> Safety</button>
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-qc" onClick={() => setSheet({ kind: "qc", activity: r })}><ClipboardCheck className="h-3 w-3" /> QC</button>
+                <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-coord" onClick={() => setSheet({ kind: "coordination", activity: r })}><Truck className="h-3 w-3" /> Coord</button>
+              </span>
+            </div>
+            {/* spec A — this task's logged issues, one line each. */}
+            {issueItems.length > 0 && (
+              <div className="dr-flow-items" data-testid={`dr-flow-issue-list-${screen}`}>
+                {issueItems.map((it) => (
+                  <div key={it.key} className="dr-flow-it">
+                    <span className={`dr-flow-pill ${it.cls}`}>{it.kind}</span>
+                    <span className="dr-flow-it-tx">{it.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Photos card — capture/upload goes straight to the tray and is
+              tagged to THIS grid row (uploadActivityPhotos). Locked DRs
+              stay uploadable once the reason card is valid (add_reason). */}
+          <div className="dr-flow-block">
+            <div className="dr-flow-block-h">
+              <ImageIcon className="h-4 w-4" style={{ color: "#34d399" }} /> Photos
+              {taskPhotos.length > 0 && <span className="dr-flow-block-n">{taskPhotos.length}</span>}
+            </div>
+            <div className="dr-flow-thumbs">
+              {taskPhotos.map((p) => <FlowThumb key={p.id} photo={p} />)}
+              {(!locked || lockedReasonOk) && (
+                <label className="dr-flow-thumb-add" data-testid="dr-flow-photo-add">
+                  {photoBusy
+                    ? <Loader2 className="h-5 w-5 animate-spin" />
+                    : <><ImageIcon className="h-5 w-5" /><span>Add</span></>}
+                  <input type="file" accept="image/*" multiple className="hidden" disabled={photoBusy}
+                    data-testid="dr-flow-photo-input"
+                    onChange={(e) => { uploadActivityPhotos(r, Array.from(e.target.files || [])); e.target.value = ""; }} />
+                </label>
+              )}
+              {locked && !lockedReasonOk && taskPhotos.length === 0 && (
+                <div className="dr-flow-muted-note">No photos on this activity.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="dr-flow-nav" data-testid="dr-flow-nav">
+          <button className="dr-flow-back" data-testid="dr-flow-back" onClick={footerBack}><ChevronLeft className="h-4 w-4" /></button>
+          <button className="dr-flow-next" data-testid="dr-flow-next" onClick={footerNext}>
+            {returnToReview
+              ? <>Finish <CheckCircle2 className="h-4 w-4" /></>
+              : screen < N - 1
+                ? <>Confirm &amp; next <ChevronRight className="h-4 w-4" /></>
+                : <>Continue <ChevronRight className="h-4 w-4" /></>}
+          </button>
+        </div>
+
+        <FlowSheets
+          sheet={sheet} setSheet={setSheet}
+          id={id} project={project} report={report} grid={grid}
+          delays={delays} safetyEvents={safetyEvents} qcIssues={qcIssues} rfis={rfis}
+          locked={locked} reload={reload}
+        />
+      </div>
+    );
+  }
+
+  // ============ UNPLANNED STEP ============
+  if (screen === UNPLANNED) {
+    return (
+      <div className="dr-flow" data-testid="dr-flow-unplanned-step">
+        {stepBar(UNPLANNED)}
+        <div className="dr-flow-body">
+          <div className="dr-flow-actname">Unplanned work</div>
+          <div className="dr-flow-subline">Anything done today that wasn't on the schedule? Add it, or continue.</div>
+          <div className="dr-flow-items">
+            {unplannedRows.length === 0
+              ? <div className="dr-flow-muted-note" style={{ textAlign: "center", padding: "10px 0" }}>Nothing added — most days this stays empty.</div>
+              : unplannedRows.map((r) => (
+                <div key={r.id} className="dr-flow-it" data-testid={`dr-flow-unplanned-row-${r.id}`}>
+                  <ClipboardList className="h-4 w-4" style={{ color: "#34d399" }} />
+                  <span>{r.activity_description || r.activity_code}</span>
+                  <span className="dr-flow-pill dr-flow-pill-am">field</span>
+                </div>
+              ))}
+          </div>
+          {!locked && (
+            <button type="button" className="dr-flow-ghost" data-testid="dr-flow-unplanned-add"
+              onClick={() => setSheet({ kind: "unplanned" })}>
+              <Plus className="h-4 w-4" /> Add unplanned activity
+            </button>
+          )}
+        </div>
+        <div className="dr-flow-nav">
+          <button className="dr-flow-back" onClick={() => setScreen(N > 0 ? N - 1 : "landing")}><ChevronLeft className="h-4 w-4" /></button>
+          <button className="dr-flow-next" data-testid="dr-flow-to-review" onClick={() => setScreen(REVIEW)}>Review <ChevronRight className="h-4 w-4" /></button>
+        </div>
+        <FlowSheets
+          sheet={sheet} setSheet={setSheet}
+          id={id} project={project} report={report} grid={grid}
+          delays={delays} safetyEvents={safetyEvents} qcIssues={qcIssues} rfis={rfis}
+          locked={locked} reload={reload}
+        />
+      </div>
+    );
+  }
+
+  // ============ REVIEW & SUBMIT ============
+  return (
+    <div className="dr-flow" data-testid="dr-flow-review">
+      {stepBar(REVIEW)}
+      <div className="dr-flow-body">
+        <div className="dr-flow-actname">Review &amp; submit</div>
+        <div className="dr-flow-subline">{project?.name || "Project"} · {longDate} · everything for today</div>
+
+        <div className="dr-flow-instr" data-testid="dr-flow-instr">
+          <Pencil className="h-3.5 w-3.5" />
+          Missed something? Tap the pencil to revisit an activity — photos, issues, crew.
+        </div>
+
+        {activities.length === 0 && (
+          <div className="dr-flow-emptynote">No scheduled activities today.</div>
+        )}
+        {activities.map((r, i) => {
+          const st = flowStatusOf(r);
+          const crewN = (presence || []).filter((p) => p.schedule_activity_id && p.schedule_activity_id === r.schedule_activity_id).length;
+          const issuesN = countIssuesForTask(r.schedule_activity_id, { delays, safetyEvents, qcIssues, rfis, deliveries });
+          const photoN = (photos || []).filter((p) => p.daily_report_activity_id === r.id).length;
+          return (
+            <div key={r.id} className="dr-flow-rev" data-testid={`dr-flow-rev-${i}`}>
+              <div className="dr-flow-rev-top">
+                <CheckCircle2 className="h-4 w-4" style={{ color: "#34d399" }} />
+                <span className="dr-flow-rev-name">{r.activity_description || r.activity_code}</span>
+                <span className={`dr-flow-pill ${st.cls}`} style={{ marginLeft: "auto" }}>{r.pct_complete_end_of_day || 0}%</span>
+                <button type="button" className="dr-flow-rev-edit" data-testid={`dr-flow-rev-edit-${i}`}
+                  onClick={() => goActivity(i, { returnToReview: true })} aria-label="Edit activity">
+                  <Pencil className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="dr-flow-rev-chips">
+                <span className="dr-flow-mc"><Users className="h-3 w-3" /> {crewN} crew</span>
+                {issuesN > 0
+                  ? <span className="dr-flow-mc dr-flow-mc-am"><AlertTriangle className="h-3 w-3" /> {issuesN} issue{issuesN > 1 ? "s" : ""}</span>
+                  : <span className="dr-flow-mc dr-flow-mc-gr"><CheckCircle2 className="h-3 w-3" /> no issues</span>}
+                {photoN > 0 && <span className="dr-flow-mc"><ImageIcon className="h-3 w-3" /> {photoN}</span>}
+              </div>
+            </div>
+          );
+        })}
+
+        {unplannedRows.length > 0 && (
+          <>
+            <div className="dr-flow-rowlbl">Unplanned work</div>
+            {unplannedRows.map((r) => (
+              <div key={r.id} className="dr-flow-rev" style={{ cursor: "default" }}>
+                <div className="dr-flow-rev-top">
+                  <ClipboardList className="h-4 w-4" style={{ color: "#34d399" }} />
+                  <span className="dr-flow-rev-name">{r.activity_description || r.activity_code}</span>
+                  <span className="dr-flow-pill dr-flow-pill-am" style={{ marginLeft: "auto" }}>field</span>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+
+        <div className="dr-flow-rev" style={{ cursor: "default" }}>
+          <div className="dr-flow-rev-top">
+            <Cloud className="h-4 w-4" style={{ color: "#34d399" }} />
+            <span className="dr-flow-rev-name">Weather</span>
+            <span className="dr-flow-muted-note" style={{ marginLeft: "auto" }}>
+              {[report.weather_conditions,
+                (report.weather_temp_high_f != null || report.weather_temp_low_f != null)
+                  ? `${report.weather_temp_high_f != null ? Math.round(report.weather_temp_high_f) : "—"}°/${report.weather_temp_low_f != null ? Math.round(report.weather_temp_low_f) : "—"}°`
+                  : null].filter(Boolean).join(" ") || "not set"}
+            </span>
+          </div>
+        </div>
+
+        {/* spec D — record + playable list on the Review step. */}
+        <div className="dr-flow-rowlbl">Voice notes</div>
+        <DrVoiceNotes reportId={id} notes={voiceNoteRows} reload={reload}
+          allowRecord onPendingChange={setVoiceNotePending} />
+      </div>
+
+      <div className="dr-flow-nav">
+        <button className="dr-flow-back" onClick={() => setScreen(UNPLANNED)}><ChevronLeft className="h-4 w-4" /></button>
+        {report.status === "approved" ? (
+          <button className="dr-flow-next" data-testid="dr-flow-export" onClick={() => onDownloadPdf("internal")}>
+            <Download className="h-4 w-4" /> Export PDF
+          </button>
+        ) : report.status === "submitted" ? (
+          <button className="dr-flow-next" data-testid="dr-flow-approve" disabled={busy} onClick={approveAndReturn}>
+            <CheckCircle2 className="h-4 w-4" /> {busy ? "Approving…" : "Approve report"}
+          </button>
+        ) : (
+          <button className="dr-flow-next" data-testid="dr-flow-submit" disabled={busy} onClick={submitAndReturn}>
+            <CheckCircle2 className="h-4 w-4" /> {busy ? "Submitting…" : "Submit report"}
+          </button>
+        )}
+      </div>
+
+      <FlowNoWorkDialog noWorkModal={noWorkModal} setNoWorkModal={setNoWorkModal}
+        submitNoWorkDay={submitNoWorkAndReturn} busy={busy} />
+    </div>
+  );
+}
+
+// Count issues (delays/safety/qc/rfis/deliveries) linked to one task.
+function countIssuesForTask(taskId, { delays, safetyEvents, qcIssues, rfis, deliveries }) {
+  if (!taskId) return 0;
+  const has = (arr) => (arr || []).filter((x) => Array.isArray(x.linked_task_ids) && x.linked_task_ids.includes(taskId)).length;
+  return has(delays) + has(safetyEvents) + has(qcIssues) + has(rfis) + has(deliveries);
+}
+
+// Spec A — the activity screen lists this task's logged issues under the
+// quick-add chips. Same linkage the count above uses; short one-line rows.
+function listIssuesForTask(taskId, { delays, safetyEvents, qcIssues, rfis, deliveries }) {
+  if (!taskId) return [];
+  const linked = (arr) => (arr || []).filter((x) => Array.isArray(x.linked_task_ids) && x.linked_task_ids.includes(taskId));
+  return [
+    ...linked(delays).map((d) => ({ key: `d-${d.id}`, kind: "Delay", cls: "dr-flow-pill-am", text: d.description })),
+    ...linked(rfis).map((x) => ({ key: `r-${x.id}`, kind: "RFI", cls: "dr-flow-pill-bl", text: x.subject })),
+    ...linked(safetyEvents).map((s) => ({ key: `s-${s.id}`, kind: "Safety", cls: "dr-flow-pill-rd", text: s.description })),
+    ...linked(qcIssues).map((q) => ({ key: `q-${q.id}`, kind: "QC", cls: "dr-flow-pill-bl", text: q.description })),
+    ...linked(deliveries).map((v) => ({ key: `v-${v.id}`, kind: "Delivery", cls: "dr-flow-pill-sl", text: v.description || v.vendor })),
+  ];
+}
+
+// Locked-report reason: the flow renders components/dr/drFlowShared's
+// LockedReasonCard on each activity screen (spec B). Its value feeds
+// edit_reason on grid PATCHes + add_reason on photo tags.
+
+// Authenticated photo thumbnail (blob → object URL), reused pattern
+// from AuthPhoto but sized for the flow's thumb grid.
+function FlowThumb({ photo }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let cancelled = false; let blobUrl = null;
+    api.get(`/photos/${photo.id}/file`, { responseType: "blob" })
+      .then((res) => { if (cancelled) return; blobUrl = URL.createObjectURL(res.data); setSrc(blobUrl); })
+      .catch(() => { /* placeholder */ });
+    return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
+  }, [photo.id]);
+  return (
+    <div className="dr-flow-thumb" data-testid={`dr-flow-thumb-${photo.id}`}>
+      {src ? <img src={src} alt={photo.caption || ""} /> : <span>…</span>}
+    </div>
+  );
+}
+
+// No-work-day dialog — thin phone-shaped wrapper over the parent's
+// noWorkModal state + submitNoWorkDay handler (reused verbatim).
+function FlowNoWorkDialog({ noWorkModal, setNoWorkModal, submitNoWorkDay, busy }) {
+  if (!noWorkModal) return null;
+  return (
+    <div className="dr-flow-ov" data-testid="dr-flow-nowork" onClick={(e) => { if (e.target === e.currentTarget) setNoWorkModal(null); }}>
+      <div className="dr-flow-sheet" role="dialog" aria-modal="true">
+        <div className="dr-flow-grip" onClick={() => setNoWorkModal(null)} />
+        <div className="dr-flow-sheet-head">
+          <div className="dr-flow-sheet-title">No activities or events</div>
+          <div className="dr-flow-sheet-sub">File as a no-work day so the record shows why it's blank.</div>
+        </div>
+        <div className="dr-flow-fld">
+          <label>Reason</label>
+          <select value={noWorkModal.reason || ""} data-testid="dr-flow-nowork-reason"
+            onChange={(e) => setNoWorkModal({ ...noWorkModal, reason: e.target.value })}>
+            <option value="">Select…</option>
+            <option value="weather">Weather (storm, extreme cold, snow, etc.)</option>
+            <option value="holiday">Holiday</option>
+            <option value="scheduled_non_work">Scheduled non-work day</option>
+            <option value="crew_unavailable">Crew unavailable</option>
+            <option value="tenant_restriction">Tenant or owner access restricted</option>
+            <option value="other">Other (note required)</option>
+          </select>
+        </div>
+        <div className="dr-flow-fld">
+          <label>Note{noWorkModal.reason === "other" ? " *" : ""}</label>
+          <textarea value={noWorkModal.note || ""} data-testid="dr-flow-nowork-note"
+            placeholder={noWorkModal.reason === "other" ? "Required: describe the reason." : "Optional context."}
+            onChange={(e) => setNoWorkModal({ ...noWorkModal, note: e.target.value })} />
+        </div>
+        <div className="dr-flow-sheet-foot">
+          <button className="dr-flow-sheet-cancel" onClick={() => setNoWorkModal(null)}>Cancel</button>
+          <button className="dr-flow-sheet-save" data-testid="dr-flow-nowork-confirm" disabled={busy} onClick={submitNoWorkDay}>
+            {busy ? "Submitting…" : "Submit as no-work day"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Bottom sheets for crew / unplanned / issues / photos. Each REUSES an
+// existing panel or form component so the create/save logic never
+// forks. Issue sheets render the existing panel AND dispatch the
+// dr-open-event-form event (with the activity's schedule_activity_id)
+// so the panel prelinks + focuses exactly as the desktop grid dropdown
+// does.
+function FlowSheets({
+  sheet, setSheet, id, project, report, grid,
+  delays, safetyEvents, qcIssues, rfis,
+  locked, reload,
+}) {
+  const kind = sheet?.kind;
+  const activity = sheet?.activity;
+  const reportDate = report?.report_date;
+
+  // For issue sheets: after the panel mounts, dispatch the prelink event
+  // so the existing useIssueDropdownListener opens the form + links the
+  // task. One shot per open.
+  useEffect(() => {
+    if (!kind || !activity) return;
+    const issueKinds = { delay: "delay", rfi: "rfi", safety: "safety", qc: "qc" };
+    const k = issueKinds[kind];
+    if (!k || !activity.schedule_activity_id) return;
+    const t = setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("dr-open-event-form", {
+        detail: {
+          kind: k,
+          activityId: activity.schedule_activity_id,
+          activityCode: activity.activity_code,
+          activityDescription: activity.activity_description,
+        },
+      }));
+    }, 40);
+    return () => clearTimeout(t);
+  }, [kind, activity]);
+
+  if (!kind) return null;
+  const close = () => setSheet(null);
+  // A successful save reloads the bundle; auto-close so the super lands
+  // back on the activity screen (matches the mockup's log-and-return).
+  const doneAndClose = () => { reload(); close(); };
+
+  const titles = {
+    crew: "Add crew", unplanned: "Add unplanned activity",
+    delay: "Log delay", rfi: "Raise RFI", safety: "Safety event", qc: "QC issue", coordination: "Coordination event",
+  };
+  const forLine = activity ? (activity.activity_description || activity.activity_code) : null;
+
+  return (
+    <FlowSheet open onClose={close} title={titles[kind]} subtitle={forLine ? `on ${forLine}` : null} testid={`dr-flow-sheet-${kind}`}>
+      {kind === "crew" && (
+        <FlowCrewForm id={id} project={project} activity={activity} grid={grid}
+          onSaved={doneAndClose} onCancel={close} />
+      )}
+      {kind === "unplanned" && (
+        <FlowUnplannedForm id={id} locked={locked} onSaved={doneAndClose} onCancel={close} />
+      )}
+      {/* (photos sheet removed — the activity screen's Add tile uploads +
+          tags to the grid row directly via uploadActivityPhotos.) */}
+      {kind === "delay" && (
+        <div className="dr-flow-sheet-panel">
+          <DelaysPanel rows={delays} dailyReportId={id} projectId={project.id}
+            reportDate={reportDate} locked={locked} reload={reload} />
+        </div>
+      )}
+      {kind === "rfi" && (
+        <div className="dr-flow-sheet-panel">
+          <RfisPanel rows={rfis} dailyReportId={id} projectId={project.id}
+            reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </div>
+      )}
+      {kind === "safety" && (
+        <div className="dr-flow-sheet-panel">
+          <SafetyPanel rows={safetyEvents} dailyReportId={id} projectId={project.id}
+            reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </div>
+      )}
+      {kind === "qc" && (
+        <div className="dr-flow-sheet-panel">
+          <QcPanel rows={qcIssues} dailyReportId={id} projectId={project.id}
+            reportDate={reportDate} locked={locked} reload={reload} grid={grid} />
+        </div>
+      )}
+      {kind === "coordination" && (
+        <div className="dr-flow-sheet-panel">
+          <FlowCoordinationForm id={id} project={project} activity={activity}
+            locked={locked} onSaved={doneAndClose} onCancel={close} />
+        </div>
+      )}
+    </FlowSheet>
+  );
+}
+
+// Crew add — reuses the SAME POST /daily-reports/{id}/presence contract
+// PresencePanel.saveDraft uses. Pre-links this activity's task.
+function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
+  const [subs, setSubs] = useState([]);
+  const [company, setCompany] = useState("");
+  const [trade, setTrade] = useState("");
+  const [headcount, setHeadcount] = useState(3);
+  const [hours, setHours] = useState(8);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!project?.id) return;
+    Promise.all([
+      api.get("/subcontractors").catch(() => ({ data: [] })),
+      api.get(`/projects/${project.id}`).catch(() => ({ data: {} })),
+    ]).then(([subsRes, projRes]) => {
+      const all = Array.isArray(subsRes.data) ? subsRes.data : [];
+      const ids = new Set((projRes.data && projRes.data.subcontractor_ids) || []);
+      setSubs(ids.size ? all.filter((s) => ids.has(s.id)) : []);
+    });
+  }, [project?.id]);
+  const save = async () => {
+    if (!trade.trim()) return toast.error("Trade is required");
+    setBusy(true);
+    try {
+      await api.post(`/daily-reports/${id}/presence`, {
+        trade: trade.trim(),
+        company_name: company.trim(),
+        headcount: Number(headcount) || 0,
+        hours_per_person: Number(hours) || 0,
+        notes: "",
+        schedule_activity_id: activity?.schedule_activity_id || null,
+        shift: "first",
+        daily_report_id: id,
+      });
+      toast.success("Crew added");
+      onSaved();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Add failed");
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="dr-flow-form">
+      <div className="dr-flow-fld">
+        <label>Company</label>
+        <div className="dr-flow-chipset">
+          {subs.map((s) => (
+            <button key={s.id} type="button" className={`dr-flow-chip${company === s.name ? " on" : ""}`}
+              onClick={() => { setCompany(s.name); if (!trade && s.default_trade) setTrade(s.default_trade); }}>{s.name}</button>
+          ))}
+          {subs.length === 0 && <span className="dr-flow-muted-note">Add subs on the Project page to pick here — or type below.</span>}
+        </div>
+        <input type="text" value={company} data-testid="dr-flow-crew-company"
+          placeholder="Company name" onChange={(e) => setCompany(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Trade *</label>
+        <div className="dr-flow-chipset">
+          {COMMON_TRADES.map((t) => (
+            <button key={t} type="button" className={`dr-flow-chip${trade === t ? " on" : ""}`}
+              onClick={() => setTrade(t)}>{t}</button>
+          ))}
+        </div>
+      </div>
+      <div className="dr-flow-row2">
+        <div className="dr-flow-fld">
+          <label>Workers *</label>
+          <div className="dr-flow-stp">
+            <button type="button" onClick={() => setHeadcount((n) => Math.max(0, Number(n) - 1))}>−</button>
+            <span className="dr-flow-stp-val" data-testid="dr-flow-crew-headcount">{headcount}</span>
+            <button type="button" onClick={() => setHeadcount((n) => Number(n) + 1)}>+</button>
+          </div>
+        </div>
+        <div className="dr-flow-fld">
+          <label>Hours each *</label>
+          <div className="dr-flow-stp">
+            <button type="button" onClick={() => setHours((n) => Math.max(0, Number(n) - 0.5))}>−</button>
+            <span className="dr-flow-stp-val">{hours}</span>
+            <button type="button" onClick={() => setHours((n) => Number(n) + 0.5)}>+</button>
+          </div>
+        </div>
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-crew-save" disabled={busy} onClick={save}>
+          {busy ? "Adding…" : "Add crew"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Unplanned add — reuses the SAME POST /daily-reports/{id}/unplanned-activity
+// contract as ActivityGridPanel.createUnplanned (incl. locked add_reason).
+function FlowUnplannedForm({ id, locked, onSaved, onCancel }) {
+  const [description, setDescription] = useState("");
+  const [tradeCode, setTradeCode] = useState("");
+  const [addReason, setAddReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!description.trim()) return toast.error("Describe the unplanned activity first");
+    if (locked && addReason.trim().length < ADD_REASON_MIN) {
+      return toast.error(`Add reason required (min ${ADD_REASON_MIN} chars) on a locked DR.`);
+    }
+    setBusy(true);
+    try {
+      await api.post(`/daily-reports/${id}/unplanned-activity`, {
+        description: description.trim(),
+        trade_code: tradeCode || "",
+        duration_days: 1,
+        ...(locked ? { add_reason: addReason.trim() } : {}),
+      });
+      toast.success(locked ? "Unplanned activity created (post-submit)." : "Unplanned activity created — flagged for PM review.");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "activity")) toast.error(formatErr(e, "Create unplanned"));
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="dr-flow-form">
+      {locked && (
+        <div style={{ marginBottom: 10 }}>
+          <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+            eventLabel="this activity" testid="dr-flow-unplanned-reason" />
+        </div>
+      )}
+      <div className="dr-flow-fld">
+        <label>What was done? *</label>
+        <input type="text" value={description} data-testid="dr-flow-unplanned-desc"
+          placeholder="Describe the work" onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Trade</label>
+        <div className="dr-flow-chipset">
+          {COMMON_TRADES.map((t) => (
+            <button key={t} type="button" className={`dr-flow-chip${tradeCode === t ? " on" : ""}`}
+              onClick={() => setTradeCode(t)}>{t}</button>
+          ))}
+        </div>
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-unplanned-save" disabled={busy} onClick={save}>
+          {busy ? "Adding…" : "Add"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Coordination — reuses the EXISTING CoordinationEventForm (same as the
+// desktop header quick-log), pre-linked to this DR + locked add_reason.
+function FlowCoordinationForm({ id, project, activity, locked, onSaved, onCancel }) {
+  const [addReason, setAddReason] = useState("");
+  return (
+    <div className="dr-flow-form">
+      {locked && (
+        <div style={{ marginBottom: 10 }}>
+          <LockedAddReasonBlock value={addReason} onChange={setAddReason}
+            eventLabel="a coordination event" testid="dr-flow-coord-reason" />
+        </div>
+      )}
+      <CoordinationEventForm
+        projectId={project.id}
+        linkedDailyReportId={id}
+        abbreviated
+        isLocked={locked}
+        lockedAddReason={locked ? addReason : null}
+        onSaved={() => { toast.success(locked ? "Coordination event logged (post-submit)." : "Coordination event logged"); onSaved(); }}
+        onCancel={onCancel}
+      />
+    </div>
+  );
 }
