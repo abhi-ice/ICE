@@ -5835,13 +5835,18 @@ function GuidedDrFlow({
               {thisPresence.map((p) => (
                 <button key={p.id} type="button" data-testid={`dr-flow-crewchip-${p.id}`}
                   className={`dr-flow-crewchip${pendingOffIds.has(p.id) ? " off" : ""}`}
-                  onClick={() => !locked && deletePresence(p.id)}
-                  title={locked ? "Locked report" : "Tap to remove"}>
+                  onClick={() => (!locked || lockedReasonOk) && deletePresence(p.id)}
+                  title={(locked && !lockedReasonOk) ? "Enter the edit reason above first" : "Tap to remove"}>
                   <CheckCircle2 className="h-3.5 w-3.5 dr-flow-ck" />
                   {(p.company_name || p.trade)}{p.headcount ? ` · ${p.headcount}×${p.hours_per_person || 0}h` : ""}
                 </button>
               ))}
-              {!locked && (
+              {/* Crew add: available on a live DR, and on a locked/submitted DR
+                  once the edit reason is entered — matches the photos + issues
+                  gates so the whole activity unlocks together (not just some
+                  cards). Previously gated on !locked only, so a submitted DR
+                  hid Add crew even after the reason was written. */}
+              {(!locked || lockedReasonOk) && (
                 <button type="button" className="dr-flow-addc" data-testid="dr-flow-crew-add"
                   onClick={() => setSheet({ kind: "crew", activity: r })}>
                   <Plus className="h-3.5 w-3.5" /> Add
@@ -5883,37 +5888,16 @@ function GuidedDrFlow({
             )}
           </div>
 
-          {/* Photos card — capture/upload goes straight to the tray and is
-              tagged to THIS grid row (uploadActivityPhotos). Locked DRs
-              stay uploadable once the reason card is valid (add_reason). */}
-          <div className="dr-flow-block">
-            <div className="dr-flow-block-h">
-              <ImageIcon className="h-4 w-4" style={{ color: "#34d399" }} /> Photos
-              {taskPhotos.length > 0 && <span className="dr-flow-block-n">{taskPhotos.length}</span>}
-            </div>
-            <div className="dr-flow-thumbs">
-              {taskPhotos.map((p) => <FlowThumb key={p.id} photo={p} />)}
-              {(!locked || lockedReasonOk) && (
-                <label className="dr-flow-thumb-add" data-testid="dr-flow-photo-add">
-                  {photoBusy
-                    ? <Loader2 className="h-5 w-5 animate-spin" />
-                    : <><ImageIcon className="h-5 w-5" /><span>Add</span></>}
-                  <input type="file" accept="image/*" multiple className="hidden" disabled={photoBusy}
-                    data-testid="dr-flow-photo-input"
-                    onChange={(e) => { uploadActivityPhotos(r, Array.from(e.target.files || [])); e.target.value = ""; }} />
-                </label>
-              )}
-              {locked && !lockedReasonOk && taskPhotos.length === 0 && (
-                <div className="dr-flow-muted-note">No photos on this activity.</div>
-              )}
-            </div>
-            {/* spec #7 — AI analysis: compact collapsed bar → full-screen
-                dialog reusing the desktop review logic. Only when photos
-                exist on this activity. */}
-            {taskPhotos.length > 0 && (
-              <FlowPhotoAnalysis dailyReportId={id} photos={taskPhotos} />
-            )}
-          </div>
+          {/* Photos card — v7 live-feedback rework: multi-add, per-photo pin
+              (which photos AI analyzes) + delete, tap-to-enlarge, and an
+              always-visible AI analysis button (FlowPhotos). */}
+          {/* key={r.id} so FlowPhotos REMOUNTS per activity — its pinned-set
+              + seenRef are per-activity state; without a distinct key React
+              reconciles it in place across Next/Back and a revisited activity
+              would show 0 pinned (auto-pin only fires for never-seen ids). */}
+          <FlowPhotos key={r.id} dailyReportId={id} photos={taskPhotos}
+            canAdd={!locked || lockedReasonOk} photoBusy={photoBusy}
+            onAddFiles={(files) => uploadActivityPhotos(r, files)} reload={reload} />
         </div>
 
         <div className="dr-flow-nav" data-testid="dr-flow-nav">
@@ -6112,7 +6096,10 @@ function listIssuesForTask(taskId, { delays, safetyEvents, qcIssues, rfis, deliv
 
 // Authenticated photo thumbnail (blob → object URL), reused pattern
 // from AuthPhoto but sized for the flow's thumb grid.
-function FlowThumb({ photo }) {
+// One photo tile: fetches the authenticated blob, shows the image (tap to
+// enlarge), a PIN toggle (which photos AI analyzes), and a DELETE control.
+// Mirrors the desktop pin/remove affordances on a phone-sized tile.
+function FlowPhotoTile({ photo, pinned, onTogglePin, onEnlarge, onDelete, deleting, canEdit }) {
   const [src, setSrc] = useState(null);
   useEffect(() => {
     let cancelled = false; let blobUrl = null;
@@ -6122,8 +6109,58 @@ function FlowThumb({ photo }) {
     return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, [photo.id]);
   return (
-    <div className="dr-flow-thumb" data-testid={`dr-flow-thumb-${photo.id}`}>
-      {src ? <img src={src} alt={photo.caption || ""} /> : <span>…</span>}
+    <div className={`dr-flow-thumb${pinned ? " pinned" : ""}`} data-testid={`dr-flow-thumb-${photo.id}`}>
+      <button type="button" className="dr-flow-thumb-img" onClick={() => onEnlarge(photo)} aria-label="Enlarge photo">
+        {src ? <img src={src} alt={photo.caption || ""} /> : <span>…</span>}
+      </button>
+      <button type="button"
+        className={`dr-flow-thumb-pin${pinned ? " on" : ""}`}
+        data-testid={`dr-flow-thumb-pin-${photo.id}`}
+        onClick={() => onTogglePin(photo.id)}
+        aria-label={pinned ? "Unpin photo" : "Pin photo for AI analysis"}
+        title={pinned ? "Pinned for AI analysis — tap to unpin" : "Pin for AI analysis"}>
+        <Pin className="h-3 w-3" />
+      </button>
+      {canEdit && (
+        <button type="button" className="dr-flow-thumb-del"
+          data-testid={`dr-flow-thumb-del-${photo.id}`}
+          disabled={deleting} onClick={() => onDelete(photo.id)}
+          aria-label="Delete photo" title="Delete photo">
+          {deleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Full-screen enlarge for one photo, with a delete control.
+function FlowLightbox({ photo, onClose, onDelete, canEdit, deleting }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    if (!photo) { setSrc(null); return undefined; }
+    let cancelled = false; let blobUrl = null;
+    api.get(`/photos/${photo.id}/file`, { responseType: "blob" })
+      .then((res) => { if (cancelled) return; blobUrl = URL.createObjectURL(res.data); setSrc(blobUrl); })
+      .catch(() => {});
+    return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
+  }, [photo]);
+  if (!photo) return null;
+  return (
+    <div className="dr-flow-lb" data-testid="dr-flow-lightbox"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="dr-flow-lb-bar">
+        {canEdit && (
+          <button type="button" className="dr-flow-lb-del" data-testid="dr-flow-lightbox-del"
+            disabled={deleting} onClick={() => onDelete(photo.id)}>
+            {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Delete
+          </button>
+        )}
+        <button type="button" className="dr-flow-lb-close" data-testid="dr-flow-lightbox-close"
+          onClick={onClose} aria-label="Close">Close</button>
+      </div>
+      <div className="dr-flow-lb-img" onClick={onClose}>
+        {src ? <img src={src} alt={photo.caption || ""} /> : <Loader2 className="h-6 w-6 animate-spin" style={{ color: "#fff" }} />}
+      </div>
     </div>
   );
 }
@@ -6144,30 +6181,57 @@ function DrFlowExport({ id, report, testidPrefix = "dr-flow-export" }) {
   );
 }
 
-// spec #7 — mobile Photos AI analysis. REUSES the exact desktop PhotosPanel
-// review logic (POST /photo-tray/review with lens "combined", `reviews`
-// state, GET /daily-reports/{id}/photo-reviews, edit/copy/retry/delete).
-// Presented on mobile as a compact COLLAPSED bar ("AI analysis — tap to
-// view") that opens a FULL-SCREEN dialog with the same review card + Close.
-// This activity's photos are pinned automatically for the run.
-function FlowPhotoAnalysis({ dailyReportId, photos }) {
+// Photos card for the flow's activity screen (v7 live-feedback rework):
+//  - add multiple photos at once
+//  - each thumb has a PIN toggle (which photos AI analyzes) + a DELETE, and
+//    tapping opens a full-screen enlarge (also deletable)
+//  - "AI analysis" is ALWAYS shown when photos exist; it runs on the PINNED
+//    photos (new photos auto-pin). Reuses the desktop review logic
+//    (POST /photo-tray/review lens "combined", GET photo-reviews,
+//    edit/copy/retry/delete) in a full-screen dialog. Fixes the old bug
+//    where the run button vanished after the first photo/review.
+function FlowPhotos({ dailyReportId, photos, canAdd, photoBusy, onAddFiles, reload }) {
+  const photoIds = (photos || []).map((p) => p.id).filter(Boolean);
+  const seenRef = useRef(new Set());
+  const [pinned, setPinned] = useState(() => new Set(photoIds));
+  const [lightbox, setLightbox] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [running, setRunning] = useState(false);
   const [open, setOpen] = useState(false);
+
+  // Keep the pinned set aligned with the live gallery: auto-pin brand-new
+  // photos, drop pins for deleted ones (so "run" always targets real ids).
+  useEffect(() => {
+    setPinned((prev) => {
+      const live = new Set(photoIds);
+      const next = new Set([...prev].filter((pid) => live.has(pid)));
+      photoIds.forEach((pid) => { if (!seenRef.current.has(pid)) next.add(pid); });
+      photoIds.forEach((pid) => seenRef.current.add(pid));
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos]);
+
+  const pinnedIds = [...pinned].filter((pid) => photoIds.includes(pid));
+  const togglePin = (pid) => setPinned((s) => {
+    const n = new Set(s); if (n.has(pid)) n.delete(pid); else n.add(pid); return n;
+  });
+  const deletePhoto = async (pid) => {
+    setDeletingId(pid);
+    try { await api.delete(`/photo-tags/${pid}`); setLightbox(null); reload(); }
+    catch (e) { toast.error(e.response?.data?.detail || "Delete failed — try again."); }
+    finally { setDeletingId(null); }
+  };
+
   // The backend /photo-tray/review accepts DR Photo (tagging-junction) ids
   // (it resolves them to the tray storage key internally) — the SAME ids the
-  // desktop PhotosPanel pins. The persisted review's photo_ids echo these,
-  // so filtering this activity's reviews by p.id is correct.
-  const photoIds = (photos || []).map((p) => p.id).filter(Boolean);
-
+  // desktop PhotosPanel pins. Persisted reviews echo these back as photo_ids.
   const toReview = (d) => ({
     id: d.id, lens: d.lens, severity: d.severity, label: d.label, text: d.text,
     n: d.photo_count ?? (d.photo_ids || []).length, ids: d.photo_ids || [],
     time: new Date(d.created_at || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
   });
-  // Load persisted reviews (same endpoint the desktop uses); filter to the
-  // reviews whose photos overlap THIS activity's photos so each activity
-  // shows only its own analysis.
   useEffect(() => {
     if (!dailyReportId) return undefined;
     let cancelled = false;
@@ -6185,11 +6249,12 @@ function FlowPhotoAnalysis({ dailyReportId, photos }) {
   }, [dailyReportId, photos]);
 
   const runReview = async () => {
-    if (!photoIds.length || running) return;
+    if (running) return;
+    if (!pinnedIds.length) { toast.error("Pin at least one photo to analyze."); return; }
     setRunning(true);
     try {
-      const { data } = await api.post(`/photo-tray/review`, { tray_ids: photoIds, lens: "combined", daily_report_id: dailyReportId });
-      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || photoIds }), ...r]);
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: pinnedIds, lens: "combined", daily_report_id: dailyReportId });
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || pinnedIds }), ...r]);
       setOpen(true);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Analysis failed — try again.");
@@ -6213,27 +6278,58 @@ function FlowPhotoAnalysis({ dailyReportId, photos }) {
   };
   const sevCls = (s) => "rev-sev " + (s === "clear" ? "rev-sev--clear"
     : (s === "critical" || s === "major") ? "rev-sev--crit" : "rev-sev--warn");
-
-  if (!photoIds.length) return null;
   const latest = reviews[0] || null;
 
   return (
-    <div className="dr-flow-ai" data-testid="dr-flow-ai">
-      {latest ? (
-        // Compact collapsed bar — tap to open the full-screen dialog.
-        <button type="button" className="dr-flow-ai-bar" data-testid="dr-flow-ai-bar" onClick={() => setOpen(true)}>
-          <Sparkles className="h-3.5 w-3.5" />
-          <span className="dr-flow-ai-bar-t">AI analysis</span>
-          <span className={sevCls(latest.severity)}>{latest.label}</span>
-          <span className="dr-flow-ai-bar-open">tap to view ›</span>
-        </button>
-      ) : (
-        <button type="button" className="dr-flow-ai-run" data-testid="dr-flow-ai-run"
-          disabled={running} onClick={runReview}>
-          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-          {running ? "Analyzing…" : "Run AI analysis"}
-        </button>
+    <div className="dr-flow-block">
+      <div className="dr-flow-block-h">
+        <ImageIcon className="h-4 w-4" style={{ color: "#34d399" }} /> Photos
+        {photoIds.length > 0 && <span className="dr-flow-block-n">{photoIds.length}</span>}
+      </div>
+      <div className="dr-flow-thumbs">
+        {(photos || []).map((p) => (
+          <FlowPhotoTile key={p.id} photo={p} pinned={pinned.has(p.id)} onTogglePin={togglePin}
+            onEnlarge={setLightbox} onDelete={deletePhoto} deleting={deletingId === p.id} canEdit={canAdd} />
+        ))}
+        {canAdd && (
+          <label className="dr-flow-thumb-add" data-testid="dr-flow-photo-add">
+            {photoBusy
+              ? <Loader2 className="h-5 w-5 animate-spin" />
+              : <><ImageIcon className="h-5 w-5" /><span>Add</span></>}
+            <input type="file" accept="image/*" multiple className="hidden" disabled={photoBusy}
+              data-testid="dr-flow-photo-input"
+              onChange={(e) => { onAddFiles(Array.from(e.target.files || [])); e.target.value = ""; }} />
+          </label>
+        )}
+        {!canAdd && photoIds.length === 0 && (
+          <div className="dr-flow-muted-note">No photos on this activity.</div>
+        )}
+      </div>
+
+      {/* AI analysis — ALWAYS visible when photos exist; runs on the pinned
+          subset. The results bar (if any) sits beside it and opens the
+          full-screen dialog. */}
+      {photoIds.length > 0 && (
+        <div className="dr-flow-ai" data-testid="dr-flow-ai">
+          <div className="dr-flow-ai-row">
+            <button type="button" className="dr-flow-ai-run" data-testid="dr-flow-ai-run"
+              disabled={running} onClick={runReview}
+              title={`Run AI analysis on ${pinnedIds.length} pinned photo${pinnedIds.length !== 1 ? "s" : ""}`}>
+              {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+              {running ? "Analyzing…" : `AI analysis · ${pinnedIds.length} pinned`}
+            </button>
+            {latest && (
+              <button type="button" className="dr-flow-ai-bar" data-testid="dr-flow-ai-bar" onClick={() => setOpen(true)}>
+                <span className={sevCls(latest.severity)}>{latest.label}</span>
+                <span className="dr-flow-ai-bar-open">view ›</span>
+              </button>
+            )}
+          </div>
+        </div>
       )}
+
+      <FlowLightbox photo={lightbox} onClose={() => setLightbox(null)} onDelete={deletePhoto}
+        canEdit={canAdd} deleting={!!lightbox && deletingId === lightbox.id} />
 
       {open && (
         <div className="dr-flow-ai-dialog" data-testid="dr-flow-ai-dialog"
@@ -6399,7 +6495,7 @@ function FlowSheets({
           locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
       {kind === "coordination" && (
-        <FlowCoordinationForm id={id} project={project} activity={activity}
+        <FlowCoordForm id={id} project={project} activity={activity}
           locked={locked} lockedReason={addReason} onSaved={doneAndClose} onCancel={close} />
       )}
     </FlowSheet>
@@ -6856,10 +6952,8 @@ function FlowDeliveryForm({ id, project, activity, reportDate, locked, lockedRea
         <input type="text" data-testid="dr-flow-delivery-po" value={poNumber}
           placeholder="Optional" onChange={(e) => setPoNumber(e.target.value)} />
       </div>
-      <div className="dr-flow-fld">
-        <TaskPicker projectId={project.id} value={taskIds} onChange={setTaskIds}
-          required label="Tasks consuming this delivery" testidPrefix="dr-flow-delivery-tasks" />
-      </div>
+      <FlowTaskChips projectId={project.id} value={taskIds} onChange={setTaskIds}
+        label="Tasks consuming this delivery" />
       <div className="dr-flow-sheet-foot">
         <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
         <button className="dr-flow-sheet-save" data-testid="dr-flow-delivery-save" disabled={busy} onClick={save}>
@@ -7029,22 +7123,171 @@ function FlowUnplannedForm({ id, locked, lockedReason, onSaved, onCancel }) {
   );
 }
 
-// Coordination — reuses the EXISTING CoordinationEventForm (same as the
-// desktop header quick-log), pre-linked to this DR. v7 cleanup: launched
-// only from an activity screen, so the locked add_reason is carried from
-// the activity-screen reason (lockedReason) — no second prompt (spec #5).
-function FlowCoordinationForm({ id, project, activity, locked, lockedReason, onSaved, onCancel }) {
+// Clean mobile multi-task selector — replaces the desktop TaskPicker widget
+// inside the flow. Toggle chips; scrollable; search box appears once the
+// list is long. Used by Delivery + Coordination, which legitimately span
+// tasks (per user: keep multi-task on these two only).
+function FlowTaskChips({ projectId, value, onChange, label = "Linked tasks", optional = false }) {
+  const [tasks, setTasks] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    if (!projectId) { setTasks([]); setLoaded(true); return undefined; }
+    let cancelled = false;
+    api.get(`/projects/${projectId}/tasks`)
+      .then(({ data }) => { if (!cancelled) setTasks(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setTasks([]); })
+      .finally(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+  const sel = new Set(value || []);
+  const toggle = (tid) => {
+    const n = new Set(sel);
+    if (n.has(tid)) n.delete(tid); else n.add(tid);
+    onChange([...n]);
+  };
+  const ql = q.trim().toLowerCase();
+  const shown = tasks.filter((t) => !ql || sel.has(t.id)
+    || (t.description || "").toLowerCase().includes(ql)
+    || (t.activity_code || "").toLowerCase().includes(ql));
   return (
-    <div className="dr-flow-form">
-      <CoordinationEventForm
-        projectId={project.id}
-        linkedDailyReportId={id}
-        abbreviated
-        isLocked={locked}
-        lockedAddReason={locked ? lockedReason : null}
-        onSaved={() => { toast.success(locked ? "Coordination event logged (post-submit)." : "Coordination event logged"); onSaved(); }}
-        onCancel={onCancel}
-      />
+    <div className="dr-flow-fld" data-testid="dr-flow-taskchips">
+      <label>{label}{optional ? " (optional)" : " *"}{sel.size ? ` · ${sel.size} selected` : ""}</label>
+      {!loaded ? (
+        <div className="dr-flow-muted-note">Loading tasks…</div>
+      ) : tasks.length === 0 ? (
+        <div className="dr-flow-muted-note">No schedule tasks on this project.</div>
+      ) : (
+        <>
+          {tasks.length > 8 && (
+            <input type="text" className="dr-flow-taskchips-q" placeholder="Search tasks…"
+              value={q} onChange={(e) => setQ(e.target.value)} data-testid="dr-flow-taskchips-q" />
+          )}
+          <div className="dr-flow-taskchips-list">
+            {shown.map((t) => (
+              <button key={t.id} type="button"
+                className={`dr-flow-chip${sel.has(t.id) ? " on" : ""}`}
+                onClick={() => toggle(t.id)}>
+                {t.description || t.activity_code || "Task"}{t.is_critical_path ? " · CP" : ""}
+              </button>
+            ))}
+            {!shown.length && <span className="dr-flow-muted-note">No match.</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// COORDINATION — clean mobile form (replaces the embedded desktop
+// CoordinationEventForm). POSTs the SAME /coordination-events payload;
+// keeps multi-task linkage (coordination can span tasks), pre-seeded with
+// this activity's task. Auto-closes back to the activity screen (spec #1).
+const FLOW_COORD_CHANNELS = ["phone", "email", "in_person", "meeting", "text_message", "formal_letter", "system_notification"];
+const FLOW_COORD_TOPICS = ["tenant_access", "building_coordination", "a_e_clarification", "owner_direction", "sub_coordination", "regulatory", "safety", "quality", "scope", "payment", "other"];
+const FLOW_COORD_OUTCOMES = ["agreement", "disagreement", "pending", "informational", "escalation_required"];
+const _flowTitleCase = (s) => String(s).replace(/_/g, " ").replace(/\b\w/, (c) => c.toUpperCase());
+
+function FlowCoordForm({ id, project, activity, locked, lockedReason, onSaved, onCancel }) {
+  const [channel, setChannel] = useState("phone");
+  const [direction, setDirection] = useState("inbound");
+  const [party, setParty] = useState("");
+  const [org, setOrg] = useState("");
+  const [topic, setTopic] = useState("tenant_access");
+  const [topicOther, setTopicOther] = useState("");
+  const [summary, setSummary] = useState("");
+  const [outcome, setOutcome] = useState("informational");
+  const [taskIds, setTaskIds] = useState(() => (activity?.schedule_activity_id ? [activity.schedule_activity_id] : []));
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (busy) return;
+    if (!summary.trim()) return toast.error("Summary is required");
+    if (!party.trim()) return toast.error("Other party name is required");
+    if (topic === "other" && !topicOther.trim()) return toast.error("Describe the topic");
+    if (locked && !isAddReasonValid(lockedReason)) {
+      return toast.error("Enter the edit reason at the top of the activity screen first.");
+    }
+    setBusy(true);
+    try {
+      const _now = new Date();
+      const occurred_at = `${localISODate(_now)}T${String(_now.getHours()).padStart(2, "0")}:${String(_now.getMinutes()).padStart(2, "0")}`;
+      await api.post(`/coordination-events`, {
+        project_id: project.id,
+        linked_daily_report_id: id,
+        occurred_at,
+        channel, direction,
+        other_party_name: party.trim(),
+        other_party_org: org.trim() || null,
+        other_party_role: null, other_party_email: null, other_party_phone: null,
+        topic, topic_other_description: topic === "other" ? topicOther.trim() : null,
+        summary: summary.trim(), detail_text: null,
+        outcome, outcome_notes: null,
+        linked_task_ids: taskIds,
+        trade_code: null,
+        ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
+      });
+      toast.success("Coordination event logged");
+      onSaved();
+    } catch (e) {
+      if (!handleLockedAddError(e, "coordination")) toast.error(formatErr(e, "Log coordination event"));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="dr-flow-form" data-testid="dr-flow-coord-form">
+      <div className="dr-flow-fld">
+        <label>Channel *</label>
+        <FlowChips value={channel} onChange={setChannel} testid="dr-flow-coord-channel"
+          options={FLOW_COORD_CHANNELS.map((c) => ({ value: c, label: _flowTitleCase(c) }))} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Direction *</label>
+        <FlowSeg value={direction} onChange={setDirection} testid="dr-flow-coord-direction"
+          options={[{ value: "inbound", label: "Inbound" }, { value: "outbound", label: "Outbound" }, { value: "internal", label: "Internal" }]} />
+      </div>
+      <div className="dr-flow-row2">
+        <div className="dr-flow-fld">
+          <label>Other party *</label>
+          <input type="text" data-testid="dr-flow-coord-party" value={party}
+            placeholder="Who" onChange={(e) => setParty(e.target.value)} />
+        </div>
+        <div className="dr-flow-fld">
+          <label>Org</label>
+          <input type="text" data-testid="dr-flow-coord-org" value={org}
+            placeholder="Company" onChange={(e) => setOrg(e.target.value)} />
+        </div>
+      </div>
+      <div className="dr-flow-fld">
+        <label>Topic *</label>
+        <FlowChips value={topic} onChange={setTopic} testid="dr-flow-coord-topic"
+          options={FLOW_COORD_TOPICS.map((t) => ({ value: t, label: _flowTitleCase(t) }))} />
+      </div>
+      {topic === "other" && (
+        <div className="dr-flow-fld">
+          <label>Describe topic *</label>
+          <input type="text" data-testid="dr-flow-coord-topic-other" value={topicOther}
+            placeholder="Topic" onChange={(e) => setTopicOther(e.target.value)} />
+        </div>
+      )}
+      <div className="dr-flow-fld">
+        <label>Summary *</label>
+        <textarea data-testid="dr-flow-coord-summary" value={summary}
+          placeholder="What was discussed / agreed" onChange={(e) => setSummary(e.target.value)} />
+      </div>
+      <div className="dr-flow-fld">
+        <label>Outcome *</label>
+        <FlowChips value={outcome} onChange={setOutcome} testid="dr-flow-coord-outcome"
+          options={FLOW_COORD_OUTCOMES.map((o) => ({ value: o, label: _flowTitleCase(o) }))} />
+      </div>
+      <FlowTaskChips projectId={project.id} value={taskIds} onChange={setTaskIds}
+        label="Linked tasks" optional />
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-coord-save" disabled={busy} onClick={save}>
+          {busy ? "Logging…" : "Log coordination"}
+        </button>
+      </div>
     </div>
   );
 }
