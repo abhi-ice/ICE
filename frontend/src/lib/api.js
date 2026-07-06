@@ -124,17 +124,42 @@ export const asArray = (v) => (Array.isArray(v) ? v : []);
 // 5-Route DR Entry (2026-05-25) — install the offline request queue
 // so PATCH/POST mutations against /daily-reports/* and friends survive
 // connection loss. Drains automatically on the next 'online' event.
-import { installOfflineInterceptor } from "./drOfflineSync";
+import { installOfflineInterceptor, drainOfflineQueue, getQueueSize } from "./drOfflineSync";
 installOfflineInterceptor(client);
 
 // v7 full-offline (2026-07-05) — drain the offline PHOTO and VOICE queues on
 // reconnect, using this same authenticated client. queuePhoto/queueVoiceNote
 // are called by the guided flow; each drainQueue re-uploads via the existing
 // endpoints (both are mutex-guarded, so a page-level drain can't race these).
-import { wireAutoDrain as wirePhotoDrain } from "./drPhotoQueue";
-import { wireAutoDrain as wireVoiceDrain } from "./drVoiceQueue";
+import { wireAutoDrain as wirePhotoDrain, drainQueue as drainPhotoQueue } from "./drPhotoQueue";
+import { wireAutoDrain as wireVoiceDrain, drainQueue as drainVoiceQueue } from "./drVoiceQueue";
 wirePhotoDrain(client);
 wireVoiceDrain(client);
+
+// Round 4 (2026-07-06) — DRAIN ON LOAD + HEARTBEAT. The queues previously
+// drained ONLY on the browser's offline->online transition event. Real field
+// sequence: work offline, reconnect, REFRESH the page (or reopen the app) —
+// the page loads already-online, the event never fires, and everything sits
+// queued ("N items will sync" forever; an offline-created report missing
+// from the listing; a voice note taking 15 minutes because only a panel
+// mount happened to drain it). Now: one sweep shortly after every page load
+// and a 60s heartbeat while anything is pending. All three drains are
+// mutex-guarded and no-op on empty queues, so this is cheap.
+function drainAllQueues() {
+  if (typeof navigator !== "undefined" && !navigator.onLine) return;
+  // No token = every replay would 401 (e.g. a tab idling on /login) —
+  // nothing can sync, so don't even try; the post-login load drains.
+  try { if (!getToken()) return; } catch { /* proceed */ }
+  try { if (getQueueSize() > 0) drainOfflineQueue(client).catch(() => {}); }
+  catch { /* ignore */ }
+  // Photo/voice drains check their own IndexedDB stores internally.
+  try { drainPhotoQueue(client).catch(() => {}); } catch { /* ignore */ }
+  try { drainVoiceQueue(client).catch(() => {}); } catch { /* ignore */ }
+}
+try {
+  setTimeout(drainAllQueues, 4000);      // post-load (after token hydration)
+  setInterval(drainAllQueues, 60000);    // heartbeat while the app is open
+} catch { /* non-window env */ }
 
 // Round 3 (2026-07-06) — tenant-wide offline warm-up: yesterday/today/
 // tomorrow + 5 recent reports per project, plus schedule tasks (offline

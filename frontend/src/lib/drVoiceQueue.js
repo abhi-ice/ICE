@@ -219,6 +219,22 @@ async function _drainAll(api) {
     } catch (e) {
       failed += 1;
       await markClipFailed(clip.id, e?.response?.data?.detail || e?.message);
+      const status = e?.response?.status;
+      if (!e?.response) {
+        // Network-only: still offline — keep everything, stop draining
+        // (hammering the rest of the queue is pointless). Mirrors the
+        // photo queue's policy.
+        break;
+      }
+      // Deterministic server rejection (404/413/422 — e.g. the target DR
+      // was deleted): drop the clip so the 60s heartbeat doesn't re-upload
+      // a multi-megabyte blob every minute forever. 401/403 are kept —
+      // auth comes back after re-login.
+      const permanent = status >= 400 && status < 500
+        && status !== 401 && status !== 403;
+      if (permanent) {
+        await removeClip(clip.id).catch(() => {});
+      }
     }
   }
   const remaining = (await listPending()).length;
