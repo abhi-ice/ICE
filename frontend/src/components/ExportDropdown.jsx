@@ -17,6 +17,17 @@ import { Download, Loader2 } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "./ui/sonner";
 
+// Menu-item label for a format value. File-format acronyms stay uppercase
+// (PDF, XLSX); word-like formats (internal, external) render title-case.
+// No "Export" prefix — the menu already hangs off the Export button, and
+// "Export EXTERNAL" read as shouting on the DR header (user, 2026-07-06).
+const FORMAT_ACRONYMS = new Set(["pdf", "xlsx", "csv", "docx", "json", "zip"]);
+function formatLabel(fmt) {
+  const s = String(fmt || "");
+  if (FORMAT_ACRONYMS.has(s.toLowerCase())) return s.toUpperCase();
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
 export default function ExportDropdown({
   label = "Export",
   testidPrefix = "export",
@@ -72,7 +83,7 @@ export default function ExportDropdown({
       a.click();
       a.remove();
       URL.revokeObjectURL(blobUrl);
-      toast.success(`${label} ${fmt.toUpperCase()} downloaded`);
+      toast.success(`${formatLabel(fmt)} export downloaded`);
     } catch (e) {
       const detail = e.response?.data?.detail
         || e.message
@@ -109,7 +120,7 @@ export default function ExportDropdown({
               onClick={() => download(fmt)}
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50 first:rounded-t last:rounded-b"
             >
-              Export {fmt.toUpperCase()}
+              {formatLabel(fmt)}
             </button>
           ))}
         </div>
