@@ -250,10 +250,88 @@ export async function drainOfflineQueue(api) {
       return [...deadTempIds].some((t) => hay.includes(t));
     } catch { return false; }
   };
+  // Provisional GRID-ROW resolution (round 3, 2026-07-06): rows synthesized
+  // for an offline-created report carry ids "offline-row-<tempDr>__<taskId>".
+  // The server generates its own row ids when the queued create replays, so
+  // requests referencing a provisional row (EOD% PATCH, photo tags) are
+  // rewritten by matching the real grid's schedule_activity_id. Grid fetched
+  // once per report per drain; unresolvable yet -> kept for the next drain.
+  const gridCache = {};
+  // Temp DR ids whose create still sits in this queue — a row token whose
+  // DR is neither mapped nor pending can never resolve (orphan -> drop).
+  const pendingCreates = new Set(
+    q.filter((r) => r.offlineCreate?.tempId).map((r) => r.offlineCreate.tempId),
+  );
+  const resolveRowIds = async (req) => {
+    const hay = `${req.url || ""}|${req.data != null ? JSON.stringify(req.data) : ""}`;
+    const tokens = [...new Set(hay.match(/offline-row-[A-Za-z0-9_-]+/g) || [])];
+    if (!tokens.length) return { status: "ok", req };
+    const subs = {};
+    for (const token of tokens) {
+      const body = token.slice("offline-row-".length);
+      const cut = body.lastIndexOf("__");
+      if (cut < 0) return { status: "drop" };
+      const tempDr = body.slice(0, cut);
+      const taskId = body.slice(cut + 2);
+      // The DR-id slot may ALREADY hold the real id: applyRemapToRequest
+      // blindly rewrites the temp DR id substring INSIDE this token (review
+      // blocker, 2026-07-06) — so a non-"offline-" value here IS the real
+      // id. This also heals queue entries persisted with rewritten tokens.
+      const realDr = remap[tempDr]
+        || (tempDr.startsWith("offline-") ? null : tempDr);
+      if (!realDr) {
+        // Still provisional: defer while its create is pending in this
+        // queue; if the create is GONE (dropped/evicted), the row can never
+        // resolve — drop instead of deferring forever.
+        return pendingCreates.has(tempDr)
+          ? { status: "defer" }
+          : { status: "drop" };
+      }
+      if (!(realDr in gridCache)) {
+        try {
+          const g = await api.get(`/daily-reports/${realDr}/grid`,
+            { headers: { "X-Drain-Replay": "1" } });
+          gridCache[realDr] = Array.isArray(g.data) ? g.data : [];
+        } catch { gridCache[realDr] = null; }
+      }
+      const rows = gridCache[realDr];
+      if (rows === null) return { status: "defer" }; // grid unreadable — retry later
+      const row = rows.find((r) => r && r.schedule_activity_id === taskId);
+      if (!row) return { status: "drop" }; // task no longer on that day's grid
+      subs[token] = row.id;
+    }
+    let { url, data } = req;
+    for (const [t, real] of Object.entries(subs)) {
+      if (url && url.includes(t)) url = url.split(t).join(real);
+      if (data != null) {
+        try {
+          const s = JSON.stringify(data);
+          if (s.includes(t)) data = JSON.parse(s.split(t).join(real));
+        } catch { /* leave data as-is */ }
+      }
+    }
+    return { status: "ok", req: { ...req, url, data } };
+  };
+
   const keep = [];
   for (const raw of q) {
-    const req = applyRemapToRequest(raw, remap);
+    let req = applyRemapToRequest(raw, remap);
     if (referencesDeadId(req)) { failed += 1; continue; } // dropped with its create
+    const rowRes = await resolveRowIds(req);
+    if (rowRes.status === "drop") { failed += 1; continue; }
+    if (rowRes.status === "defer") {
+      // Waiting on its DR create / a readable grid — NOT a failure of this
+      // request, so do NOT burn its retry budget (a slow sync must never
+      // silently discard EOD data). The orphan case above bounds this.
+      keep.push({
+        ...req, id: raw.id,
+        ...(raw.offlineCreate ? { offlineCreate: raw.offlineCreate } : {}),
+        retryCount: raw.retryCount || 0,
+        lastError: "waiting for the synced report's grid rows",
+      });
+      continue;
+    }
+    req = rowRes.req;
     try {
       const resp = await api.request({
         method: req.method,

@@ -215,7 +215,22 @@ async function uploadOne(api, photo) {
   //    Calling attach-to-dr first and photo-tags second would create TWO
   //    rows for the same image (the Bug #30 "Tagged to (2)" duplicate),
   //    because the tag dedup only matches on the same event-ref field.
-  const activityId = photo.activityRowId || null;
+  let activityId = photo.activityRowId || null;
+  // Provisional grid row (offline-created report): the server generated its
+  // own row ids when the queued create synced — match the real row by the
+  // STABLE schedule task id (photo.taskId). No match -> plain DR attach.
+  if (activityId && activityId.startsWith("offline-row-")) {
+    activityId = null;
+    if (photo.taskId && photo.dailyReportId) {
+      try {
+        const g = await api.get(`/daily-reports/${photo.dailyReportId}/grid`,
+          { headers: { "X-Drain-Replay": "1" } });
+        const row = (Array.isArray(g.data) ? g.data : [])
+          .find((r) => r && r.schedule_activity_id === photo.taskId);
+        if (row) activityId = row.id;
+      } catch { /* fall through to plain attach */ }
+    }
+  }
   let tagged = false;
   if (activityId && photo.dailyReportId) {
     const tagPayload = {

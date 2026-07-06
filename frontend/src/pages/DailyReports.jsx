@@ -18,6 +18,8 @@ import { localTodayISO, localISODate, formatDateDisplay } from "../lib/dateUtil"
 // Offline round 2 (2026-07-06): provisional DR create + queued-save detection.
 import { createDrOffline } from "../lib/drOfflineCreate";
 import { resolveOfflineId } from "../lib/drOfflineSync";
+import { warmOfflineCache } from "../lib/drPrefetch";
+import { primeOfflineGet, readCachedGet } from "../lib/api";
 // Client-side photo compression — a 10MB phone photo becomes ~0.5MB before
 // upload, so "Add photo" feels instant on site connectivity.
 import { compressImage, compressImages } from "../lib/imageCompress";
@@ -297,24 +299,11 @@ export default function DailyReports() {
     if (!activeId) return;
     api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => {
       setReports(data);
-      // Offline round 2 (2026-07-06): warm the read-through cache with the
-      // most recent reports' /context bundles so ANY of them opens offline —
-      // not just the ones the super happened to visit online. Fire-and-forget
-      // GETs (the api interceptor mirrors them into IndexedDB); throttled to
-      // one warm per project per 10 minutes so list refreshes don't hammer.
-      try {
-        if (!navigator.onLine || !Array.isArray(data) || !data.length) return;
-        const stampKey = `ice-dr-prefetch-${activeId}`;
-        const last = Number(sessionStorage.getItem(stampKey) || 0);
-        if (Date.now() - last < 10 * 60 * 1000) return;
-        sessionStorage.setItem(stampKey, String(Date.now()));
-        [...data]
-          .sort((a, b) => String(b.report_date).localeCompare(String(a.report_date)))
-          .slice(0, 10)
-          .forEach((r) => {
-            api.get(`/daily-reports/${r.id}/context`).catch(() => {});
-          });
-      } catch { /* prefetch is best-effort */ }
+      // Round 3 (2026-07-06): tenant-wide offline warm-up — yesterday/today/
+      // tomorrow + 5 recent reports per project, schedule tasks (offline grid
+      // synthesis for calendar-created reports), subcontractors. Throttled
+      // internally (10 min); fire-and-forget.
+      warmOfflineCache(api);
     });
   }, [activeId]);
   useEffect(() => { load(); }, [load]);
@@ -5598,7 +5587,21 @@ function GuidedDrFlow({
       payload.edit_reason = lockedReason.trim();
     }
     try {
-      await api.patch(`/daily-report-activities/${rowId}`, payload);
+      const res = await api.patch(`/daily-report-activities/${rowId}`, payload);
+      if (res?.data?._offline) {
+        // Offline: the PATCH queued, but reload() reads the CACHED bundle —
+        // which would snap the slider back to its old value. Write the edit
+        // into the cached copies so the offline view keeps what was entered
+        // (the queued PATCH makes it real on reconnect).
+        try {
+          const ctx = await readCachedGet(`/daily-reports/${id}/context`);
+          if (ctx && Array.isArray(ctx.grid)) {
+            const mergedGrid = ctx.grid.map((r) => (r.id === rowId ? { ...r, ...fields } : r));
+            primeOfflineGet(`/daily-reports/${id}/context`, { ...ctx, grid: mergedGrid });
+            primeOfflineGet(`/daily-reports/${id}/grid`, mergedGrid);
+          }
+        } catch { /* best-effort */ }
+      }
       reload();
     } catch (e) {
       if (e.response?.status === 409) {
@@ -5675,6 +5678,10 @@ function GuidedDrFlow({
                 dailyReportId: id,
                 projectId: project.id,
                 activityRowId: row.id,
+                // Stable schedule task id — lets the drain re-find the real
+                // grid row when this photo was taken on an offline-created
+                // report whose provisional row ids never reach the server.
+                taskId: row.schedule_activity_id || null,
                 photoClass: "progress",
               });
               queued += 1;

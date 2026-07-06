@@ -136,6 +136,12 @@ import { wireAutoDrain as wireVoiceDrain } from "./drVoiceQueue";
 wirePhotoDrain(client);
 wireVoiceDrain(client);
 
+// Round 3 (2026-07-06) — tenant-wide offline warm-up: yesterday/today/
+// tomorrow + 5 recent reports per project, plus schedule tasks (offline
+// grid synthesis) and subcontractors. Runs after load and on reconnect.
+import { wirePrefetch } from "./drPrefetch";
+wirePrefetch(client);
+
 // Bug #25 fix (2026-05-13) -- shared API error message extractor.
 //
 // Backend returns structured error envelopes in several shapes
