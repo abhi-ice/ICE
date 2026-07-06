@@ -10,7 +10,7 @@
  * call DR-only tools: record_presence, mark_activity_status, create_unplanned_activity.
  */
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
