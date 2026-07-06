@@ -566,6 +566,61 @@ class MsProject:
             hpd = 8.0
         return hpd * 60.0
 
+    # -- per-task calendar working-day arithmetic (2026-07-06) ---------------
+    def task_calendar(self, task):
+        """The task's OWN Calendar COM object when one is assigned, else the
+        project's calendar, else None. Project stores "None" (the string) in
+        Task.Calendar when the task rides the project default."""
+        try:
+            name = str(task.Calendar or "")
+            if name and name.lower() != "none":
+                cal = task.CalendarObject
+                if cal is not None:
+                    return cal
+        except Exception:
+            pass
+        try:
+            return self.proj.Calendar
+        except Exception:
+            return None
+
+    def is_working_day_on(self, cal, d: date) -> bool:
+        """Ask Microsoft Project whether `d` is a working day on `cal`.
+
+        Probe: DateAdd(d 00:00, one working MINUTE, cal) — Project returns the
+        first instant after one minute of working time. If that instant is
+        still on `d`, the day has working time (a working day); a non-working
+        day jumps past midnight to the next working day. This honours the
+        calendar's weekend pattern AND its exceptions/holidays — the task's
+        real calendar, not our Mon-Fri assumption. COM failure falls back to
+        the old weekday()<5 test so a push never dies on a calendar probe."""
+        try:
+            probe_from = datetime(d.year, d.month, d.day, 0, 0)
+            if cal is not None:
+                probe = self.app.DateAdd(probe_from, "1m", cal)
+            else:
+                probe = self.app.DateAdd(probe_from, "1m")
+            return com_date_str(probe) == d.isoformat()
+        except Exception:
+            return d.weekday() < 5
+
+    def walk_working_days(self, task, base: date, n: int) -> date:
+        """Move `base` by `n` working days ON THE TASK'S OWN CALENDAR (same
+        one-day-at-a-time walk as add_working_days, but the working-day test
+        is Project's, via is_working_day_on). Replaces the Mon-Fri-only,
+        holiday-blind add_working_days for milestone impact shifts: a shift
+        spanning Thanksgiving no longer lands ON the holiday, and a
+        weekend-working milestone counts Saturday/Sunday as real days."""
+        cal = self.task_calendar(task)
+        step = 1 if n >= 0 else -1
+        remaining = abs(int(n))
+        out = date(base.year, base.month, base.day)
+        while remaining > 0:
+            out += timedelta(days=step)
+            if self.is_working_day_on(cal, out):
+                remaining -= 1
+        return out
+
     def real_tasks(self):
         """Non-blank, non-summary, non-external tasks (real activities)."""
         out = []
@@ -888,7 +943,10 @@ class MsProject:
                         "start date — impact days left untouched", code)
             return False
         base = date.fromisoformat(base_str)
-        new_date = add_working_days(base, delta)
+        # Calendar-true shift (2026-07-06): count the delta on the TASK'S own
+        # Project calendar (weekends + holiday exceptions), not the worker's
+        # Mon-Fri assumption — see walk_working_days.
+        new_date = self.walk_working_days(task, base, delta)
         try:
             orig_type = int(task.ConstraintType)
         except Exception:

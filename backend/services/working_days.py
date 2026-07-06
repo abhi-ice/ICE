@@ -221,3 +221,49 @@ def calendar_days_between(start: date, end: date) -> int:
     -- calendar days never skip anything. Here for the (still empty)
     case where a predecessor lag is genuinely elapsed/calendar."""
     return (end - start).days
+
+
+# =====================================================================
+# Per-task WORK-CALENDAR variants (2026-07-06) -- Diagram 2's
+# WorkCalendar (workweek list + holiday set) threaded into the working-
+# day count. ADDITIVE: the Mon-Fri helpers above are untouched; these
+# accept an explicit workweek so an activity that works weekends (e.g.
+# workweek=[0..6] curing) counts Saturday/Sunday as real days. Both
+# params default to the legacy behavior (Mon-Fri, federal holidays), so
+# working_days_between_cal(a, b) == working_days_between(a, b).
+# =====================================================================
+_MON_FRI: frozenset[int] = frozenset({0, 1, 2, 3, 4})
+
+
+def is_working_day_cal(
+    d: date,
+    workweek: Optional[frozenset] = None,
+    holidays: Optional[frozenset] = None,
+) -> bool:
+    """True iff `d`'s weekday is in `workweek` AND `d` is not a holiday.
+    workweek=None -> Mon-Fri; holidays=None -> FEDERAL_HOLIDAYS."""
+    ww = _MON_FRI if workweek is None else workweek
+    return d.weekday() in ww and d not in _resolve(holidays)
+
+
+def working_days_between_cal(
+    start: date, end: date,
+    workweek: Optional[frozenset] = None,
+    holidays: Optional[frozenset] = None,
+) -> int:
+    """working_days_between on an explicit work calendar. Same semantics
+    (start inclusive, end exclusive, negative when end < start); only the
+    working-day test changes. Guards a degenerate empty workweek (would
+    always return 0 rather than loop forever -- the walk is bounded by the
+    date span, but be explicit about the contract)."""
+    ww = _MON_FRI if workweek is None else workweek
+    hol = _resolve(holidays)
+    if start > end:
+        return -working_days_between_cal(end, start, ww, hol)
+    d = start
+    count = 0
+    while d < end:
+        if is_working_day_cal(d, ww, hol):
+            count += 1
+        d += timedelta(days=1)
+    return count

@@ -70,7 +70,9 @@ from zoneinfo import ZoneInfo
 from database import get_db, tenant_filter
 from models import gen_id, pred_code, pred_relationship
 from services.feature_flags import schedule_mode_2_enabled
-from services.working_days import working_days_between
+from services.working_days import (
+    FEDERAL_HOLIDAYS, working_days_between, working_days_between_cal,
+)
 
 # Job lifecycle.
 PENDING, CLAIMED, DONE, ERROR, PARKED = "pending", "claimed", "done", "error", "parked"
@@ -123,9 +125,34 @@ async def _next_seq(db, tenant_id: str, project_id: str) -> int:
 # --------------------------------------------------------------------------
 # Time-aware per-task impact target (2026-07-03).
 # --------------------------------------------------------------------------
+def _calendar_params(cal_doc) -> tuple:
+    """(workweek, holidays) frozensets for a db.work_calendars doc, or
+    (None, None) — the legacy federal Mon-Fri — when the doc is missing.
+    Mirrors enterprise_cpm.resolve_holidays (extra_holidays unioned with the
+    federal set when use_federal) and ADDS the workweek, so a 7-day curing
+    calendar counts Saturday/Sunday as working days (Diagram 2, wired into
+    the Mode 2 impact math 2026-07-06)."""
+    if not cal_doc:
+        return None, None
+    try:
+        ww = frozenset(int(w) for w in (cal_doc.get("workweek") or [0, 1, 2, 3, 4]))
+    except (TypeError, ValueError):
+        ww = None
+    extra = set()
+    for h in (cal_doc.get("extra_holidays") or []):
+        d = _parse(h)
+        if d:
+            extra.add(d)
+    hol = (frozenset(extra | set(FEDERAL_HOLIDAYS))
+           if cal_doc.get("use_federal", True) else frozenset(extra))
+    return ww, hol
+
+
 async def _msp_target_impact_for_task(
     db, tenant_id: str, task_id: str, adopted_after: Optional[str] = None,
     tz_name: Optional[str] = None,
+    workweek: Optional[frozenset] = None,
+    holidays: Optional[frozenset] = None,
 ) -> int:
     """The number of working days the Microsoft Project worker should hold
     this task pushed by, RIGHT NOW. Mirrors the query shapes of task_status.
@@ -199,6 +226,14 @@ async def _msp_target_impact_for_task(
     today = _project_today(tz_name)
     adopt_d = _parse(adopted_after)
 
+    def _wd(a: date, b: date) -> int:
+        # Per-task calendar (2026-07-06): elapsed/actual day-counts run on
+        # the TASK's workweek + holiday set (weekend-working activities count
+        # Sat/Sun; custom holidays are skipped). workweek/holidays of
+        # None/None == the legacy federal Mon-Fri — byte-identical for tasks
+        # with no calendar assigned.
+        return working_days_between_cal(a, b, workweek, holidays)
+
     def _est(imp) -> float:
         try:
             return float(imp.get("projected_impact_days") or 0)
@@ -211,7 +246,7 @@ async def _msp_target_impact_for_task(
         into the uploaded file's plan — only the portion beyond the gate
         still pushes. Anchor on/after the gate, or no gate: unchanged."""
         if adopt_d and anchor and anchor < adopt_d:
-            baked = float(working_days_between(anchor, adopt_d))
+            baked = float(_wd(anchor, adopt_d))
             return max(0.0, contribution - baked)
         return contribution
 
@@ -242,7 +277,7 @@ async def _msp_target_impact_for_task(
                 # max(0, elapsed): a FUTURE anchor (impact starts tomorrow)
                 # yields negative working days -- clamp so the estimate
                 # alone rides until the window starts elapsing.
-                elapsed = working_days_between(anchor, today) if anchor else 0
+                elapsed = _wd(anchor, today) if anchor else 0
                 contribution = max(_est(imp), float(max(0, elapsed)))
             else:  # resolved -> the actual, never re-grown
                 actual = d.get("actual_impact_days")
@@ -252,7 +287,7 @@ async def _msp_target_impact_for_task(
                     actual = None
                 if actual is None:
                     resolved = _parse(d.get("resolved_date"))
-                    actual = (float(working_days_between(anchor, resolved))
+                    actual = (float(_wd(anchor, resolved))
                               if (anchor and resolved) else 0.0)
                 contribution = max(0.0, actual)
             total += _gate(anchor, contribution)
@@ -278,11 +313,11 @@ async def _msp_target_impact_for_task(
                 continue
             if r.get("status") in ("draft", "sent", "in_review"):
                 # Same future-anchor clamp as the delay walk above.
-                elapsed = working_days_between(anchor, today) if anchor else 0
+                elapsed = _wd(anchor, today) if anchor else 0
                 contribution = max(_est(imp), float(max(0, elapsed)))
             else:  # answered / closed -> actual elapsed, backdate-friendly
                 closed_at = _parse(r.get("date_responded") or r.get("answered_date"))
-                contribution = (float(max(0, working_days_between(anchor, closed_at)))
+                contribution = (float(max(0, _wd(anchor, closed_at)))
                                 if (anchor and closed_at) else 0.0)
             total += _gate(anchor, contribution)
 
@@ -334,7 +369,8 @@ async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
     # or legacy projects) -> gate off.
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}),
-        {"_id": 0, "ms_project_file_adopted_at": 1, "timezone": 1}) or {}
+        {"_id": 0, "ms_project_file_adopted_at": 1, "timezone": 1,
+         "calendar_id": 1}) or {}
     adopted_raw = proj.get("ms_project_file_adopted_at")
     adopted_after = str(adopted_raw)[:10] if adopted_raw else None
     # Site timezone (2026-07-03): "today" for the elapsed-day growth below
@@ -344,15 +380,37 @@ async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0, "id": 1, "activity_code": 1, "external_task_id": 1,
-         "pct_complete": 1, "actual_start": 1, "actual_finish": 1},
+         "pct_complete": 1, "actual_start": 1, "actual_finish": 1,
+         "calendar_id": 1},
     ).to_list(5000)
+    # Per-task calendars (Diagram 2 -> Mode 2, 2026-07-06): one fetch per
+    # push; the impact day-count then runs on each task's own workweek +
+    # holiday set (task calendar_id, falling back to the project's). Any
+    # failure (or no calendars defined) degrades to (None, None) == the
+    # legacy federal Mon-Fri count.
+    cals_by_id: dict = {}
+    try:
+        cal_docs = await db.work_calendars.find(
+            tenant_filter(tenant_id, {"$or": [
+                {"project_id": project_id}, {"project_id": None},
+            ]}),
+            {"_id": 0, "id": 1, "workweek": 1, "extra_holidays": 1,
+             "use_federal": 1},
+        ).to_list(200)
+        cals_by_id = {c["id"]: c for c in (cal_docs or []) if c.get("id")}
+    except Exception:
+        cals_by_id = {}
+    proj_cal_id = proj.get("calendar_id")
     updates = []
     for t in tasks:
         code = t.get("activity_code")
         if not code:
             continue
+        cal_id = t.get("calendar_id") or proj_cal_id
+        workweek, holidays = _calendar_params(cals_by_id.get(cal_id) if cal_id else None)
         impact = await _msp_target_impact_for_task(
-            db, tenant_id, t["id"], adopted_after, tz_name)
+            db, tenant_id, t["id"], adopted_after, tz_name,
+            workweek=workweek, holidays=holidays)
         upd = {
             "external_task_id": t.get("external_task_id"),
             "activity_code": code,

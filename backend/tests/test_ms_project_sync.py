@@ -21,6 +21,12 @@ def _match(row, q):
     for k, v in (q or {}).items():
         if k == "_id":
             continue
+        if k == "$or":
+            # Minimal $or (2026-07-06): the work-calendars fetch queries
+            # {"$or": [{"project_id": P}, {"project_id": None}]}.
+            if not any(_match(row, sub) for sub in (v or [])):
+                return False
+            continue
         rv = row.get(k)
         if isinstance(v, dict):
             if "$ne" in v and rv == v["$ne"]:
@@ -1013,3 +1019,81 @@ def test_project_today_falls_back_to_utc_on_bad_zone(monkeypatch):
     # _project_today falls back to the UTC date (via _now).
     monkeypatch.setattr(mps, "_now", lambda: FROZEN_NOW)
     assert mps._project_today("Not/A_Zone") == FROZEN_NOW.date()
+
+
+# --------------------------------------------------------------------------
+# Per-task work calendars (Diagram 2 -> Mode 2, 2026-07-06) -- the impact
+# day-count runs on the TASK's workweek + holiday set when a calendar is
+# assigned (weekend-working activities count Sat/Sun; custom holidays are
+# skipped). No calendar / no kwargs == the legacy federal Mon-Fri count,
+# which every test above continues to pin.
+# --------------------------------------------------------------------------
+def test_growth_counts_weekends_on_7day_calendar(monkeypatch):
+    # Same seed as test_open_delay_grows_past_estimate (anchor Fri Mar 6,
+    # frozen today Thu Mar 12): Mon-Fri elapsed = 4; a 7-day workweek adds
+    # Sat Mar 7 + Sun Mar 8 -> 6.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-06")
+    got = asyncio.run(mps._msp_target_impact_for_task(
+        _STUB, T, "task-A",
+        workweek=frozenset(range(7)), holidays=frozenset()))
+    assert got == 6
+
+
+def test_no_calendar_kwargs_matches_legacy_count(monkeypatch):
+    # Explicit regression pin: omitting the calendar kwargs is byte-identical
+    # to the pre-calendar behavior (4, per test_open_delay_grows_past_estimate).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 2, date="2026-03-06")
+    assert _impact("task-A") == 4
+
+
+def test_extra_holiday_reduces_elapsed_growth(monkeypatch):
+    # A custom holiday inside the window (Tue Mar 10) is skipped: Mon-Fri
+    # elapsed drops from 4 to 3.
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_delay("task-A", 1, date="2026-03-06")
+    got = asyncio.run(mps._msp_target_impact_for_task(
+        _STUB, T, "task-A",
+        holidays=frozenset({date(2026, 3, 10)})))
+    assert got == 3
+
+
+def test_calendar_params_resolution():
+    # work_calendars doc -> (workweek frozenset, holidays frozenset);
+    # use_federal unions the federal set; missing doc -> (None, None).
+    ww, hol = mps._calendar_params({
+        "id": "c1", "workweek": [0, 1, 2, 3, 4, 5, 6],
+        "extra_holidays": ["2026-03-10"], "use_federal": False})
+    assert ww == frozenset(range(7))
+    assert hol == frozenset({date(2026, 3, 10)})
+    ww2, hol2 = mps._calendar_params({
+        "id": "c2", "workweek": [0, 1, 2, 3, 4],
+        "extra_holidays": [], "use_federal": True})
+    assert date(2026, 11, 26) in hol2       # Thanksgiving via federal union
+    assert mps._calendar_params(None) == (None, None)
+
+
+def test_push_change_set_uses_task_calendar(monkeypatch):
+    # End-to-end through enqueue_push_job: the task carries calendar_id and
+    # work_calendars defines a 7-day, no-federal calendar -> the pushed
+    # impact grows across the weekend (6), while a calendar-less task with
+    # the same delay pushes the legacy Mon-Fri count (4).
+    _reset(); _freeze_today(monkeypatch)
+    _seed_task("A", "2026-01-05", "2026-01-09")
+    _seed_task("B", "2026-01-12", "2026-01-16")
+    _STUB.tasks.rows[0]["calendar_id"] = "cal-7d"
+    _STUB.work_calendars.rows.append({
+        "id": "cal-7d", "tenant_id": T, "project_id": P,
+        "workweek": [0, 1, 2, 3, 4, 5, 6], "extra_holidays": [],
+        "use_federal": False})
+    _seed_delay("task-A", 2, date="2026-03-06")
+    _seed_delay("task-B", 2, date="2026-03-06")
+    out = asyncio.run(mps.enqueue_push_job(T, P))
+    job = next(j for j in _STUB.schedule_jobs.rows if j["id"] == out["job_id"])
+    by = {u["activity_code"]: u for u in job["change_set"]["task_updates"]}
+    assert by["A"]["impact_days_total"] == 6
+    assert by["B"]["impact_days_total"] == 4
