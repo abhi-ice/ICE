@@ -71,6 +71,7 @@ from typing import Optional
 from collections import defaultdict, deque
 
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import pred_code, pred_relationship
 from services.working_days import (
     FEDERAL_HOLIDAYS,
@@ -242,7 +243,7 @@ class _Inputs:
                  "crit_tf_threshold", "long_lag_threshold", "high_float_threshold")
 
     def __init__(self, project):
-        self.data_date = _to_date(project.get("data_date")) or date.today()
+        self.data_date = _to_date(project.get("data_date")) or project_today(project.get("timezone"))
         self.imposed_finish = _to_date(project.get("imposed_finish_date"))
         self.oos_mode = project.get("out_of_sequence_mode") or "retained_logic"
         self.crit_mode = project.get("crit_mode") or "driving"

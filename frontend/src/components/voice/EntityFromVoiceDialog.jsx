@@ -10,6 +10,7 @@ import {
 import { useProjects } from "../../lib/projects";
 import { toast } from "../ui/sonner";
 import FieldLabel from "../forms/FieldLabel";
+import { localTodayISO } from "../../lib/dateUtil";
 
 const KIND_TO_API = {
   delay: "/delays",
@@ -109,7 +110,7 @@ export default function EntityFromVoiceDialog({ open, onClose, voiceAnnotation }
   const submit = async () => {
     setBusy(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localTodayISO();
       const payload = buildPayload(kind, form, {
         projectId: activeId, today, activityId, locationId,
       });

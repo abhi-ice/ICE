@@ -20,6 +20,7 @@ from fastapi import (
 )
 
 from database import get_db, tenant_filter
+from services.site_time import project_today_for
 from auth import require_tenant, has_project_access
 from audit import write_audit
 from models import RecoveryReportCreate, RecoveryReport
@@ -77,9 +78,10 @@ async def _load_report(ctx: dict, report_id: str) -> dict:
     return row
 
 
-def _resolve_default_period(report_type: str) -> tuple[Optional[date], Optional[date]]:
-    """Per spec: period_start/end optional -- derive from report_type."""
-    today = datetime.now(timezone.utc).date()
+def _resolve_default_period(report_type: str, today: date) -> tuple[Optional[date], Optional[date]]:
+    """Per spec: period_start/end optional -- derive from report_type.
+    `today` is the project's SITE-clock today (not the server's UTC day) so
+    weekly/friday windows don't snap to the wrong week late in the US day."""
     if report_type == "weekly_variance":
         monday = today - timedelta(days=today.weekday())
         return monday, monday + timedelta(days=6)
@@ -109,7 +111,8 @@ async def generate_report(
     period_start = payload.period_start
     period_end = payload.period_end
     if period_start is None and period_end is None:
-        period_start, period_end = _resolve_default_period(payload.report_type)
+        site_today = await project_today_for(get_db(), ctx["tenant_id"], payload.project_id)
+        period_start, period_end = _resolve_default_period(payload.report_type, site_today)
     # Custom report_type must provide both period bounds.
     if payload.report_type == "custom":
         if not period_start or not period_end:
@@ -204,7 +207,7 @@ async def generate_report(
             elif report_type == "daily_variance":
                 out = await rr.generate_daily_variance(
                     tenant_id=ctx["tenant_id"], project_id=project_id,
-                    target_date=ps or datetime.now(timezone.utc).date(),
+                    target_date=ps or await project_today_for(get_db(), ctx["tenant_id"], project_id),
                     actor_id=actor_id, request_id=request_id,
                     idempotency_key=idem,
                 )

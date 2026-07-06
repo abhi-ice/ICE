@@ -4,17 +4,18 @@
 import { useEffect, useState, useCallback } from "react";
 import { CalendarClock, Download, Search } from "lucide-react";
 import api from "../lib/api";
+import { localTodayISO, localISODate } from "../lib/dateUtil";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 
 function isoDaysAgo(n) {
   const d = new Date();
   d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return localISODate(d);
 }
 
 function isoToday() {
-  return new Date().toISOString().slice(0, 10);
+  return localTodayISO();
 }
 
 function rowTone(r) {

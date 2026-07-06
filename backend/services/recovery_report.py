@@ -29,6 +29,7 @@ from datetime import datetime, timezone, timedelta, date
 from typing import Optional, Any
 
 from database import get_db, tenant_filter
+from services.site_time import project_today_for
 from models import gen_id, utc_now
 from audit import write_audit
 from services.storage import put_object, get_object, make_path, record_file
@@ -414,7 +415,7 @@ async def generate_friday_recovery(
 ) -> dict:
     """Mon-Fri snapshot with AI recovery + calibration RAG."""
     if not period_start or not period_end:
-        today = datetime.now(timezone.utc).date()
+        today = await project_today_for(get_db(), tenant_id, project_id)
         # Find current Monday (weekday 0).
         monday = today - timedelta(days=today.weekday())
         friday = monday + timedelta(days=4)

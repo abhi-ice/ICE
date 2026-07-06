@@ -16,7 +16,7 @@ import { deleteWithUndo } from "../lib/deleteWithUndo";
 // recovery action due_date rendered MM/DD/YYYY via the lib/dateUtil
 // chokepoint. Budget reset_at (toLocaleDateString) is a datetime
 // + time-aware display and stays untouched.
-import { formatDateDisplay } from "../lib/dateUtil";
+import { formatDateDisplay, localTodayISO, localISODate } from "../lib/dateUtil";
 
 // Bucket H Phase 5 (2026-05-08) -- audit op filter dropdown options.
 // Grouped for legibility; "(all)" sentinel left as empty string so the
@@ -1768,7 +1768,7 @@ function WeeklyRollupTab() {
   const [week, setWeek] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - d.getDay()); // Sunday
-    return d.toISOString().slice(0, 10);
+    return localISODate(d);
   });
   const [data, setData] = useState(null);
   useEffect(() => {
@@ -1839,17 +1839,17 @@ const STATUS_PILL = {
   archived:  "bg-slate-100 text-slate-500 border-slate-200",
 };
 
-function _today() { return new Date().toISOString().slice(0, 10); }
+function _today() { return localTodayISO(); }
 function _monday(d) {
   const dt = new Date(d || Date.now());
   const diff = (dt.getDay() + 6) % 7;     // Mon=0
   dt.setDate(dt.getDate() - diff);
-  return dt.toISOString().slice(0, 10);
+  return localISODate(dt);
 }
 function _friday(monday) {
   const dt = new Date(monday);
   dt.setDate(dt.getDate() + 4);
-  return dt.toISOString().slice(0, 10);
+  return localISODate(dt);
 }
 
 function ReportsGeneratorTab() {
@@ -1877,7 +1877,7 @@ function ReportsGeneratorTab() {
       setPeriodStart(m);
       const sun = new Date(m);
       sun.setDate(sun.getDate() + 6);
-      setPeriodEnd(sun.toISOString().slice(0, 10));
+      setPeriodEnd(localISODate(sun));
     } else if (reportType === "friday_recovery") {
       const m = _monday();
       setPeriodStart(m);

@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, UploadFile, File
 from typing import Optional
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import (
     Project, ProjectCreate, ProjectUpdate,
     Floor, FloorCreate, Location, LocationCreate,
@@ -30,9 +31,9 @@ async def _initialize_project_calendar(
     if not s:
         raw = proj.get("start_date") or proj.get("created_at")
         try:
-            s = date.fromisoformat(str(raw)[:10]) if raw else date.today()
+            s = date.fromisoformat(str(raw)[:10]) if raw else project_today(proj.get("timezone"))
         except Exception:
-            s = date.today()
+            s = project_today(proj.get("timezone"))
     e = end
     if not e:
         raw = proj.get("planned_completion_date") or proj.get("actual_completion_date")

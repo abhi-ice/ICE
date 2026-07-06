@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import Task, TaskCreate, TaskUpdate, gen_id, utc_now, StrictModel
 from auth import require_tenant
 from audit import write_audit
@@ -485,7 +486,7 @@ async def lookahead(
 ):
     """Master prompt §3: '2WLA is a date-bounded query, not a separate table.'"""
     db = get_db()
-    start_d = start or date.today()
+    start_d = start or project_today()
     end_d = start_d + timedelta(days=days)
     # pt.72: slip-aware look-ahead window — a task whose EFFECTIVE window
     # (projected when slipped, else planned) overlaps [start_d, end_d] is in

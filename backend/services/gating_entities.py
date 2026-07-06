@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import gen_id, utc_now
 
 
@@ -160,7 +161,7 @@ async def compute_age_fields(ge: dict, *, today: Optional[date] = None) -> dict:
     """Returns {current_age_calendar_days, current_age_working_days,
     is_over_sla} for the given gating_entities dict. Pure-ish — does
     one DB query for the working-day calendar."""
-    today = today or utc_now().date()
+    today = today or project_today()
     submitted = ge.get("submitted_at")
     sla = int(ge.get("sla_working_days") or 0)
     if not submitted:

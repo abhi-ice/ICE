@@ -36,6 +36,7 @@ from datetime import date, datetime, timezone, timedelta
 from typing import Optional, Any
 
 from database import get_db, tenant_filter
+from services.site_time import project_today
 
 log = logging.getLogger("tasks_exports")
 
@@ -70,7 +71,7 @@ def _filter_hash(filters: dict) -> str:
 
 
 def _today_iso() -> str:
-    return date.today().isoformat()
+    return project_today().isoformat()
 
 
 def _project_short_id(project_id: str) -> str:
@@ -346,15 +347,15 @@ async def gather_lookahead_for_export(
         return {
             "project": None, "rows": [], "count": 0, "at_risk_count": 0,
             "tenant_id": tenant_id, "project_id": project_id,
-            "window_start": (start_date or date.today()).isoformat(),
-            "window_end": ((start_date or date.today())
+            "window_start": (start_date or project_today()).isoformat(),
+            "window_end": ((start_date or project_today())
                             + timedelta(days=days)).isoformat(),
             "days": days,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "filter_hash": _filter_hash({"p": project_id, "d": days}),
         }
 
-    today_d = start_date or date.today()
+    today_d = start_date or project_today(proj.get("timezone"))
     end_d = today_d + timedelta(days=days)
     # pt.72: slip-aware look-ahead window (effective = projected when slipped,
     # else planned), matching the Lookahead page + DR grid.

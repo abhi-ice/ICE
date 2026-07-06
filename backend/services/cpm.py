@@ -108,6 +108,7 @@ from datetime import date, timedelta
 from typing import Iterable, Optional
 from collections import defaultdict, deque
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import pred_code, pred_relationship
 # CPM Step 1 (2026-05-17) -- these working-day helpers are now
 # FEDERAL-HOLIDAY-AWARE by default (working_days.py D1 / Option A).
@@ -341,7 +342,7 @@ async def compute_cpm(tenant_id: str, project_id: str) -> dict:
         # business day (a legacy import may have landed it on a
         # weekend / holiday).
         ps = t.get("planned_start")
-        imported_start = _to_date(ps) if ps else date.today()
+        imported_start = _to_date(ps) if ps else project_today()
         if not is_business_day(imported_start):
             imported_start = next_business_day(
                 imported_start - timedelta(days=1)
@@ -610,8 +611,8 @@ def _to_date(v):
         try:
             return date.fromisoformat(v[:10])
         except ValueError:
-            return date.today()
-    return date.today()
+            return project_today()
+    return project_today()
 
 
 # ---------------------------------------------------------------------------

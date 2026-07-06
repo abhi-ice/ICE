@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import tenant_filter
+from services.site_time import project_today_for
 from models import gen_id, pred_code, pred_relationship
 # CPM B2 (2026-06-12) -- the progress-cascade feature flag. Imported at
 # module top (feature_flags has no service deps, so no import cycle). The
@@ -236,10 +237,13 @@ async def compute_and_persist_status(
     recompute". Idempotent — only writes when at least one of the four
     derived fields changes. Returns the new field values (or None if the
     task is gone)."""
-    today = today or datetime.utcnow().date()
     task = await db.tasks.find_one(tenant_filter(tenant_id, {"id": task_id}), {"_id": 0})
     if not task:
         return None
+    # Default "today" to the project's SITE clock, not the server's UTC day
+    # -- else on_track/behind flips a day early for a US super working late.
+    if today is None:
+        today = await project_today_for(db, tenant_id, task.get("project_id"))
     count, summary = await count_open_blockers(db, tenant_id, task_id)
     has_blocker = count > 0
     pct = float(task.get("pct_complete") or 0)
@@ -528,12 +532,13 @@ async def compute_projected_finish_dates(
     if progress_cascade_enabled():
         from services.progress_cascade import build_progress_shift_map_from_db
         # Data date: the project-global as-of date the forward pass measures
-        # "behind-ness" against. We use date.today() (the default) rather than
-        # any single Daily Report's report_date BY DESIGN -- a CPM data date
-        # is one date for the WHOLE schedule walk; binding it to one row's
-        # report date would mis-size every OTHER task's planned-percent. The
-        # `data_date` param exists only so tests can pin a deterministic date.
-        dd = data_date or date.today()
+        # "behind-ness" against. We use the project's SITE-clock today (the
+        # default) rather than any single Daily Report's report_date BY DESIGN
+        # -- a CPM data date is one date for the WHOLE schedule walk; binding
+        # it to one row's report date would mis-size every OTHER task's
+        # planned-percent. The `data_date` param exists only so tests can pin a
+        # deterministic date.
+        dd = data_date or await project_today_for(db, tenant_id, project_id)
         progress_shift = await build_progress_shift_map_from_db(
             db, tenant_id, project_id, dd,
         )

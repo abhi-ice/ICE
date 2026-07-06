@@ -3,6 +3,7 @@ from datetime import date as _date, datetime as _datetime
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate, SafetyEventUpdate,
     QcIssue, QcIssueCreate, QcIssueUpdate, QcReworkOutcome,
@@ -355,7 +356,7 @@ def _enrich_delay_for_read(d: dict) -> dict:
     elif logged and d.get("status") in ("open", "in_progress"):
         try:
             ld = _date.fromisoformat(str(logged)[:10])
-            d["duration_days"] = max(0, (_date.today() - ld).days)
+            d["duration_days"] = max(0, (project_today() - ld).days)
         except Exception:
             d["duration_days"] = None
 
@@ -368,9 +369,9 @@ def _enrich_delay_for_read(d: dict) -> dict:
         elif d.get("created_at"):
             d["date"] = str(d["created_at"])[:10]
         else:
-            d["date"] = _date.today().isoformat()
+            d["date"] = project_today().isoformat()
     if not d.get("reported_at"):
-        d["reported_at"] = d.get("created_at") or d.get("logged_date") or _date.today().isoformat()
+        d["reported_at"] = d.get("created_at") or d.get("logged_date") or project_today().isoformat()
     # 2026-02-XX (Abhi pull) -- back-fill legacy status enums. Voice-
     # intake delays inserted before the schema tightened sometimes
     # land with status='investigating' (mapped to in_progress here)
@@ -1168,9 +1169,9 @@ def _enrich_safety_for_read(d: dict) -> dict:
         if d.get("created_at"):
             d["date"] = str(d["created_at"])[:10]
         else:
-            d["date"] = _date.today().isoformat()
+            d["date"] = project_today().isoformat()
     if not d.get("reported_at"):
-        d["reported_at"] = d.get("created_at") or _date.today().isoformat()
+        d["reported_at"] = d.get("created_at") or project_today().isoformat()
     return d
 
 
@@ -1404,9 +1405,9 @@ def _enrich_qc_for_read(d: dict) -> dict:
         if d.get("created_at"):
             d["date"] = str(d["created_at"])[:10]
         else:
-            d["date"] = _date.today().isoformat()
+            d["date"] = project_today().isoformat()
     if not d.get("reported_at"):
-        d["reported_at"] = d.get("created_at") or _date.today().isoformat()
+        d["reported_at"] = d.get("created_at") or project_today().isoformat()
     return d
 
 

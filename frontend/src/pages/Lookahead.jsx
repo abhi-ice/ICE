@@ -13,7 +13,7 @@ import ExportDropdown from "../components/ExportDropdown";
 // Tasks.jsx + Lookahead.jsx + the Gantt projected-shift overlay
 // all share one calendar-day computation. Behavior preserved for
 // the Gantt path (slip > 0 only -- acceleration is not a "slip").
-import { formatDateDisplay, slipDays } from "../lib/dateUtil";
+import { formatDateDisplay, slipDays, localISODate } from "../lib/dateUtil";
 
 const DAY_PX = 32; // pixels per day in Gantt
 const ROW_H = 32;
@@ -376,7 +376,7 @@ function GanttView({ rows, days, onRefresh }) {
     if (!drag || !drag.deltaDays) return;
     const shift = (iso) => {
       const d = new Date(iso); d.setDate(d.getDate() + drag.deltaDays);
-      return d.toISOString().slice(0, 10);
+      return localISODate(d);
     };
     try {
       await api.patch(`/tasks/${drag.taskId}`, {

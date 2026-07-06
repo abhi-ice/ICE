@@ -7,8 +7,12 @@
 // or creates a fresh one. Locked DRs (status=submitted/approved) flip
 // the caller into the supplement flow.
 import api from "./api";
+import { localTodayISO } from "./dateUtil";
 
-function isoToday() { return new Date().toISOString().slice(0, 10); }
+// Local wall-clock date, NOT toISOString().slice (which is the UTC day and,
+// at ~8 PM Pacific, is already tomorrow -> the "+ New" button would open
+// tomorrow's DR). See lib/dateUtil.js.
+function isoToday() { return localTodayISO(); }
 
 export async function resolveTodaysDr(projectId) {
   if (!projectId) throw new Error("projectId required");

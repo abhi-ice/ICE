@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { confirmAction } from "../lib/confirmAction";
+import { localTodayISO, localISODate } from "../lib/dateUtil";
 import {
   Users, RefreshCw, Plus, AlertTriangle, AlertCircle, CheckCircle2,
   Calendar, Filter, ChevronRight, X, Info, ShieldCheck, FileBarChart,
@@ -1066,13 +1067,13 @@ function SkeletonBlock({ height = "1rem" }) {
 }
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  return localTodayISO();
 }
 
 function futureISO(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return localISODate(d);
 }
 
 // Phase 4 fix #1 -- buildCrewUtilization placeholder removed. The

@@ -33,6 +33,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import Field
 
 from database import get_db, tenant_filter
+from services.site_time import project_today
 from models import (
     CrewCapacity, CrewCapacityCreate, CrewCapacityUpdate,
     CrewDemand, GapRow, StrictModel, gen_id, utc_now,
@@ -116,7 +117,7 @@ def _enforce_write_reallocation(ctx: dict) -> None:
 
 def _parse_range(start: Optional[str], end: Optional[str],
                   default_window_days: int = 14) -> tuple[date, date]:
-    today = date.today()
+    today = project_today()
     if not start and not end:
         return today, today + timedelta(days=default_window_days - 1)
     try:
