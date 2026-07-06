@@ -926,11 +926,33 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
       && (!r.status_at_end_of_day || r.status_at_end_of_day === "not_started")
     );
-    if (grid.length > 0 && untouched.length === grid.length) {
+    // Round 7 (2026-07-06): a row whose EOD slider is GATE-LOCKED by its
+    // predecessors (slider_gate.max_pct at/below where it started) CANNOT be
+    // progressed — the super has literally nothing to log on it, so it must
+    // not count against the "show some progress" guard. And any logged event
+    // (delay / RFI / QC / safety / delivery) means the day wasn't idle. So
+    // block ONLY when there's a row the super COULD have moved yet the whole
+    // grid is untouched AND no event was logged. The SERVER already accepts a
+    // with-activities/no-progress DR (submit-time constraint gate was removed
+    // — see daily_reports_router submit); this is purely a client nudge.
+    const gateBlocked = (r) => {
+      const g = r.slider_gate;
+      if (!g) return false;
+      if (g.locked === true) return true; // fully predecessor-locked (max_pct 0)
+      // Or already at the gate ceiling — can't be raised any further.
+      return typeof g.max_pct === "number"
+        && g.max_pct <= (r.pct_complete_start_of_day ?? 0);
+    };
+    const hasAnyEvent =
+      (delays?.length || 0) + (safety_events?.length || 0)
+      + (qc_issues?.length || 0) + (rfis?.length || 0)
+      + (deliveries?.length || 0) > 0;
+    if (grid.length > 0 && untouched.length === grid.length
+        && !hasAnyEvent
+        && untouched.some((r) => !gateBlocked(r))) {
       errors.push(
-        "Activity grid has rows but none show progress. Either record EOD% "
-        + "or status on at least one row, or remove the rows and submit "
-        + "as a no-work day.",
+        "No progress recorded. Set EOD% or status on at least one unlocked "
+        + "activity, or log a delay / RFI to explain why the day didn't move.",
       );
     }
     return { ok: errors.length === 0, errors };
