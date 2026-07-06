@@ -407,16 +407,38 @@ async def _ensure_indexes():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await _ensure_indexes()
+    logger.info("Lifespan: entering startup")
+    # 2026-07-06 (prod-deploy-fix) -- k8s readiness probe was timing out
+    # because `_ensure_indexes()` blocks startup for the ~60 createIndex
+    # round-trips (many indexes, each 100-300ms on Atlas cold). Boot
+    # takes 15-30s serialized, which pushes /api/health past the
+    # readiness deadline on a cold pod. Defer to a background task so
+    # /api/health is reachable in <1s; indexes are idempotent and will
+    # keep converging while requests start flowing. Wrap in a shielded
+    # log so an index-creation error doesn't nuke the loop.
+    async def _ensure_indexes_bg():
+        try:
+            await _ensure_indexes()
+            logger.info("Indexes ensured")
+        except Exception as _exc:
+            logger.warning("Index ensure failed (will retry on next boot): %s", _exc)
+    import asyncio as _asyncio_boot
+    app.state.ensure_indexes_task = _asyncio_boot.create_task(_ensure_indexes_bg())
     # UI runtime settings (2026-07-02): load the admin-set flags + worker token
     # into the in-process cache, and keep it converging every 30s in case this
     # deployment ever runs more than one process. Best-effort: a cold DB at
     # boot must not block startup (flags just fall back to env until it loads).
+    # 2026-07-06 (prod-deploy-fix) -- cap the first cache load at 5s so a
+    # cold Atlas connection can't push lifespan past the k8s readiness
+    # deadline; the periodic refresh_loop will keep trying.
     try:
         import asyncio as _asyncio  # the shared alias is imported further down; this block runs first
         from services import runtime_settings as _rt
-        await _rt.refresh_cache()
-        logger.info("Runtime settings cache loaded")
+        try:
+            await _asyncio.wait_for(_rt.refresh_cache(), timeout=5.0)
+            logger.info("Runtime settings cache loaded")
+        except _asyncio.TimeoutError:
+            logger.warning("Runtime settings cache load timed out (env fallback active; refresh loop will retry)")
 
         async def _rt_refresh_loop():
             while True:
@@ -450,10 +472,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("bcrypt runtime self-test: errored out: %s", e)
     # Init Emergent object storage (best-effort — voice/upload work even if it fails)
+    # 2026-07-06 (prod-deploy-fix) -- init_storage() is a SYNC requests.post
+    # with a 30s timeout to integrations.emergentagent.com. Run it in a
+    # thread + shorter deadline so a slow init endpoint can't block the
+    # k8s readiness probe. Uploads lazily re-init if _storage_key is None.
     try:
         from services.storage import init_storage
-        init_storage()
-        logger.info("Object storage initialized")
+        try:
+            await _asyncio.wait_for(_asyncio.to_thread(init_storage), timeout=8.0)
+            logger.info("Object storage initialized")
+        except _asyncio.TimeoutError:
+            logger.warning("Object storage init timed out (will re-init on first upload)")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
     # Bucket F Phase 3 -- pending-row sweeper on startup. Catches photos
@@ -463,22 +492,27 @@ async def lifespan(app: FastAPI):
     # on the same boot. Cap at 100 rows so startup isn't blocked by
     # a big backlog; the admin-only /photo-tray/sweep-stuck-pending
     # endpoint can drain the rest.
-    try:
-        from services.photo_ai import sweep_stuck_pending
-        sweep_result = await sweep_stuck_pending(
-            tenant_id=None, older_than_minutes=5, limit=100,
-        )
-        if sweep_result.get("swept"):
-            logger.info(
-                "Photo AI startup sweep: %s rows touched (complete=%s, "
-                "skipped=%s, failed=%s, budget_paused=%s, tenants=%s)",
-                sweep_result.get("swept"), sweep_result.get("complete"),
-                sweep_result.get("skipped"), sweep_result.get("failed"),
-                sweep_result.get("budget_paused"),
-                sweep_result.get("tenants_touched"),
+    # 2026-07-06 (prod-deploy-fix) -- fire this in the background so
+    # startup isn't blocked on Claude Vision calls; the sweep only
+    # matters for previously-stuck rows and can happen post-boot.
+    async def _photo_sweep_bg():
+        try:
+            from services.photo_ai import sweep_stuck_pending
+            sweep_result = await sweep_stuck_pending(
+                tenant_id=None, older_than_minutes=5, limit=100,
             )
-    except Exception as e:
-        logger.warning("Photo AI startup sweep failed (non-fatal): %s", e)
+            if sweep_result.get("swept"):
+                logger.info(
+                    "Photo AI startup sweep: %s rows touched (complete=%s, "
+                    "skipped=%s, failed=%s, budget_paused=%s, tenants=%s)",
+                    sweep_result.get("swept"), sweep_result.get("complete"),
+                    sweep_result.get("skipped"), sweep_result.get("failed"),
+                    sweep_result.get("budget_paused"),
+                    sweep_result.get("tenants_touched"),
+                )
+        except Exception as _exc:
+            logger.warning("Photo AI startup sweep errored: %s", _exc)
+    app.state.photo_sweep_task = _asyncio.create_task(_photo_sweep_bg())
 
     # Bucket G Phase 5 (2026-05-11) -- field_suggestions expiration
     # sweep. Pending suggestions older than EXPIRATION_DAYS (30) get
@@ -486,27 +520,29 @@ async def lifespan(app: FastAPI):
     # FIELD_SUGGESTION_EXPIRED. Stops zombie suggestions from
     # cluttering the Review Queue forever.
     #
-    # Boot pass: cap at 1000 rows so a backlog can't slow startup.
-    # Recurring pass: every 6 hours via asyncio task. Cancelled on
-    # shutdown via the lifespan exit path below.
-    try:
-        from services.field_suggestions import expire_stale_pending
-        boot_sweep = await expire_stale_pending(
-            tenant_id=None, older_than_days=30, limit=1000,
-        )
-        if boot_sweep.get("swept"):
-            logger.info(
-                "field_suggestions boot expiration sweep: swept=%s "
-                "expired=%s tenants_touched=%s failures=%s",
-                boot_sweep.get("swept"), boot_sweep.get("expired"),
-                boot_sweep.get("tenants_touched"),
-                boot_sweep.get("failures"),
+    # 2026-07-06 (prod-deploy-fix) -- boot pass moved to background
+    # so a big backlog can't push /api/health past k8s readiness.
+    # Recurring pass: every 6 hours via asyncio task (unchanged below).
+    async def _field_suggestions_boot_bg():
+        try:
+            from services.field_suggestions import expire_stale_pending
+            boot_sweep = await expire_stale_pending(
+                tenant_id=None, older_than_days=30, limit=1000,
             )
-    except Exception as e:
-        logger.warning(
-            "field_suggestions boot expiration sweep failed (non-fatal): %s",
-            e,
-        )
+            if boot_sweep.get("swept"):
+                logger.info(
+                    "field_suggestions boot expiration sweep: swept=%s "
+                    "expired=%s tenants_touched=%s failures=%s",
+                    boot_sweep.get("swept"), boot_sweep.get("expired"),
+                    boot_sweep.get("tenants_touched"),
+                    boot_sweep.get("failures"),
+                )
+        except Exception as _exc:
+            logger.warning(
+                "field_suggestions boot expiration sweep failed (non-fatal): %s",
+                _exc,
+            )
+    app.state.field_suggestions_boot_task = _asyncio.create_task(_field_suggestions_boot_bg())
 
     # Recurring 6-hour expiration sweep. asyncio.create_task so it
     # runs alongside the API server without blocking request handling.
@@ -807,6 +843,7 @@ async def lifespan(app: FastAPI):
     app.state.msp_impact_refresh_task = _asyncio.create_task(
         _periodic_msp_impact_refresh(),
     )
+    logger.info("Lifespan: startup complete, yielding to app")
     yield
     # Cancel the recurring tasks before closing the DB so the next
     # tick doesn't hit a closed connection.
