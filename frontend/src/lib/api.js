@@ -64,6 +64,20 @@ function cacheKeyFor(cfg) {
   return `${getActiveTenantId() || "anon"}|${uri}`;
 }
 
+// Offline DR create (2026-07-06) — plant/read GET-cache entries under the
+// SAME tenant-scoped key convention the read-through interceptor uses, so a
+// provisionally-created report renders offline exactly like a cached one.
+export function primeOfflineGet(url, data) {
+  try { putCached(cacheKeyFor({ url }), data, 200); } catch { /* best-effort */ }
+}
+
+export async function readCachedGet(url) {
+  try {
+    const row = await getCached(cacheKeyFor({ url }));
+    return row ? row.data : null;
+  } catch { return null; }
+}
+
 client.interceptors.response.use(
   (resp) => {
     try {
@@ -121,6 +135,12 @@ import { wireAutoDrain as wirePhotoDrain } from "./drPhotoQueue";
 import { wireAutoDrain as wireVoiceDrain } from "./drVoiceQueue";
 wirePhotoDrain(client);
 wireVoiceDrain(client);
+
+// Round 3 (2026-07-06) — tenant-wide offline warm-up: yesterday/today/
+// tomorrow + 5 recent reports per project, plus schedule tasks (offline
+// grid synthesis) and subcontractors. Runs after load and on reconnect.
+import { wirePrefetch } from "./drPrefetch";
+wirePrefetch(client);
 
 // Bug #25 fix (2026-05-13) -- shared API error message extractor.
 //

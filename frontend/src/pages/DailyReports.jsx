@@ -15,6 +15,14 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { localTodayISO, localISODate, formatDateDisplay } from "../lib/dateUtil";
+// Offline round 2 (2026-07-06): provisional DR create + queued-save detection.
+import { createDrOffline } from "../lib/drOfflineCreate";
+import { resolveOfflineId } from "../lib/drOfflineSync";
+import { warmOfflineCache } from "../lib/drPrefetch";
+import { primeOfflineGet, readCachedGet } from "../lib/api";
+// Client-side photo compression — a 10MB phone photo becomes ~0.5MB before
+// upload, so "Add photo" feels instant on site connectivity.
+import { compressImage, compressImages } from "../lib/imageCompress";
 import { toast } from "../components/ui/sonner";
 import { confirmAction } from "../lib/confirmAction";
 import { deleteWithUndo } from "../lib/deleteWithUndo";
@@ -242,7 +250,29 @@ export default function DailyReports() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const target = params.get("openId");
-    if (target) setOpenId(target);
+    // Offline round 2 (2026-07-06): a restored provisional id
+    // ("offline-dr-*") may have synced while the page was closed — resolve
+    // it to the real id so refresh doesn't land on a dead-link screen.
+    if (target) setOpenId(resolveOfflineId(target));
+  }, []);
+
+  // Offline round 2 (2026-07-06): when the request queue drains a
+  // provisionally-created report, swap the OPEN page over to the real id
+  // immediately. Without this, a super who created a report offline and
+  // walked back into coverage kept writing to the dead temp id — event
+  // creates landed as orphans (the backend accepts unknown daily_report_id)
+  // and DR-scoped calls 404'd. The id-prop change remounts the detail, which
+  // reloads the real (fully synced) report from the server.
+  useEffect(() => {
+    const onRemap = () => {
+      setOpenId((cur) => {
+        if (!cur) return cur;
+        const real = resolveOfflineId(cur);
+        return real === cur ? cur : real;
+      });
+    };
+    window.addEventListener("ice-offline-remap-ready", onRemap);
+    return () => window.removeEventListener("ice-offline-remap-ready", onRemap);
   }, []);
 
   // pt.39 (2026-05-27): write openId back to the URL so refreshing
@@ -267,7 +297,14 @@ export default function DailyReports() {
 
   const load = useCallback(() => {
     if (!activeId) return;
-    api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => setReports(data));
+    api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => {
+      setReports(data);
+      // Round 3 (2026-07-06): tenant-wide offline warm-up — yesterday/today/
+      // tomorrow + 5 recent reports per project, schedule tasks (offline grid
+      // synthesis for calendar-created reports), subcontractors. Throttled
+      // internally (10 min); fire-and-forget.
+      warmOfflineCache(api);
+    });
   }, [activeId]);
   useEffect(() => { load(); }, [load]);
 
@@ -324,6 +361,26 @@ export default function DailyReports() {
       setOpenId(data.id);
       load();
     } catch (e) {
+      // Offline (no response): open a PROVISIONAL report (lib/drOfflineCreate)
+      // — the queued create syncs + id-remaps on reconnect. An existing report
+      // for that date opens from its cached bundle instead when we have one.
+      if (!e?.response) {
+        const existing = reports.find((r) => r.report_date === pickerDate);
+        if (existing) {
+          setPickerOpen(false);
+          setOpenMode(pickerMode || "manual");
+          setOpenId(existing.id);
+          return;
+        }
+        try {
+          const dr = await createDrOffline(activeId, pickerDate);
+          toast.success(`Offline report started for ${formatDateDisplay(pickerDate)} — it syncs when you're back online.`);
+          setPickerOpen(false);
+          setOpenMode(pickerMode || "manual");
+          setOpenId(dr.id);
+          return;
+        } catch { /* fall through to the error toast */ }
+      }
       toast.error(e.response?.data?.detail || "Failed");
     }
   };
@@ -597,16 +654,30 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   }, []);
 
   const [reminders, setReminders] = useState([]);
+  // Offline round 2 (2026-07-06): a report whose /context was never cached
+  // used to leave the page on "Loading…" FOREVER when opened offline (the
+  // rejected fetch was unhandled). Track the failure so the page can show a
+  // clear offline state with a retry instead.
+  const [loadFailed, setLoadFailed] = useState(null); // null | "offline" | "error"
   const reload = useCallback(async () => {
     // 2026-05-19 -- /available-tasks call removed along with the
     // planned-activity picker. The grid renders straight from the
     // master schedule via /context.
-    const [{ data: ctx }, remindersRes] = await Promise.all([
-      api.get(`/daily-reports/${id}/context`),
-      api.get(`/daily-reports/${id}/delay-reminders`).catch(() => ({ data: [] })),
-    ]);
-    setBundle(ctx);
-    setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
+    try {
+      const [{ data: ctx }, remindersRes] = await Promise.all([
+        api.get(`/daily-reports/${id}/context`),
+        api.get(`/daily-reports/${id}/delay-reminders`).catch(() => ({ data: [] })),
+      ]);
+      setBundle(ctx);
+      setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
+      setLoadFailed(null);
+    } catch (e) {
+      // No response = offline with no cached copy; anything else is a real
+      // server error. Only flip to the failure screen when nothing rendered
+      // yet — a background reload failure on an already-open report is not
+      // a reason to blank the page.
+      setLoadFailed((prev) => prev ?? (!e?.response ? "offline" : "error"));
+    }
   }, [id]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -737,6 +808,33 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       .catch(() => setTemplateMeta({ present: false }));
   }, [projectIdForTemplate]);
 
+  if (!bundle && loadFailed) {
+    return (
+      <div className="p-6 max-w-md mx-auto text-center space-y-3" data-testid="dr-load-failed">
+        <div className="text-sm font-semibold">
+          {loadFailed === "offline"
+            ? "This report isn't available offline yet"
+            : "Couldn't load this report"}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {loadFailed === "offline"
+            ? "Open it once while you have signal and it will be saved for offline use."
+            : "The server rejected the request — it may have been deleted, or the link is stale."}
+        </div>
+        <div className="flex items-center justify-center gap-2 pt-1">
+          <button className="sbtn sbtn-md" data-testid="dr-load-retry"
+            onClick={() => { setLoadFailed(null); reload(); }}>
+            Retry
+          </button>
+          {onBack && (
+            <button className="sbtn sbtn-md sbtn-primary" onClick={onBack}>
+              Back to reports
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
   if (!bundle) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
   const { report, project, grid, presence, photos, voice_annotations, delays,
@@ -3774,7 +3872,7 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
     }
     setBusy(true);
     try {
-      await api.post(`/safety-events`, {
+      const res = await api.post(`/safety-events`, {
         project_id: projectId, daily_report_id: dailyReportId, date: reportDate,
         description: draft.description, severity: draft.severity, event_type: draft.event_type,
         linked_task_ids: draft.linked_task_ids,
@@ -3784,7 +3882,8 @@ function SafetyPanel({ rows, dailyReportId, projectId, reportDate, locked, reloa
                   linked_task_ids: [] });
       setAddReason("");
       reload();
-      if (locked) toast.success("Safety event added (post-submit). Audit chain captured.");
+      if (res?.data?._offline) toast.success("Saved offline — will sync when you're back online.");
+      else if (locked) toast.success("Safety event added (post-submit). Audit chain captured.");
     } catch (e) {
       if (!handleLockedAddError(e, "safety")) {
         toast.error(formatErr(e, "Create safety event"));
@@ -3951,13 +4050,14 @@ function QcPanel({ rows, dailyReportId, projectId, reportDate, locked, reload, g
         payload.rework_duration_days = Number(draft.rework_duration_days);
         payload.rework_duration_basis = draft.rework_duration_basis.trim();
       }
-      await api.post(`/qc-issues`, payload);
+      const res = await api.post(`/qc-issues`, payload);
       setDraft({ description: "", severity: "minor",
                   rework_duration_days: "", rework_duration_basis: "",
                   linked_task_ids: [] });
       setAddReason("");
       reload();
-      toast.success(isRework
+      if (res?.data?._offline) toast.success("Saved offline — will sync when you're back online.");
+      else toast.success(isRework
         ? "QC rework filed -- synthetic delay created and CPM cascade running."
         : (locked ? "QC issue added (post-submit). Audit chain captured." : "QC issue logged."));
     } catch (e) {
@@ -4167,7 +4267,7 @@ function RfisPanel({ rows, dailyReportId, projectId, reportDate, locked, reload,
       // PerTaskImpactsInput: empty / 0 inputs already pruned, only
       // positive integers + task_ids remain). Empty array is fine;
       // backend treats it as "no impact captured yet".
-      await api.post(`/rfis`, {
+      const res = await api.post(`/rfis`, {
         project_id: projectId, daily_report_id: dailyReportId,
         subject: draft.subject,
         question: draft.description,  // backend alias -> description
@@ -4186,7 +4286,8 @@ function RfisPanel({ rows, dailyReportId, projectId, reportDate, locked, reload,
       });
       setAddReason("");
       reload();
-      if (locked) toast.success("RFI added (post-submit). Audit chain captured.");
+      if (res?.data?._offline) toast.success("Saved offline — will sync when you're back online.");
+      else if (locked) toast.success("RFI added (post-submit). Audit chain captured.");
     } catch (e) {
       if (!handleLockedAddError(e, "rfi")) {
         toast.error(formatErr(e, "Open RFI"));
@@ -4346,7 +4447,7 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
     }
     setBusy(true);
     try {
-      await api.post(`/deliveries`, {
+      const res = await api.post(`/deliveries`, {
         project_id: projectId, delivery_date: reportDate,
         daily_report_id: dailyReportId,
         vendor: draft.vendor, description: draft.description,
@@ -4357,7 +4458,8 @@ function DeliveriesPanel({ rows, dailyReportId, projectId, reportDate, locked, r
       setDraft({ vendor: "", description: "", po_number: "", linked_task_ids: [] });
       setAddReason("");
       reload();
-      if (locked) toast.success("Delivery added (post-submit). Audit chain captured.");
+      if (res?.data?._offline) toast.success("Saved offline — will sync when you're back online.");
+      else if (locked) toast.success("Delivery added (post-submit). Audit chain captured.");
     } catch (e) {
       if (!handleLockedAddError(e, "delivery")) {
         toast.error(formatErr(e, "Log delivery"));
@@ -4582,7 +4684,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
         }
         return { id: null };
       };
-      const results = await Promise.all(files.map(uploadOne));
+      // Compress SEQUENTIALLY first (parallel full-res decodes stall phones),
+      // then run the network uploads in parallel over the small files.
+      const compressed = await compressImages(Array.from(files));
+      const results = await Promise.all(compressed.map(uploadOne));
       const trayIds = results.map((r) => r.id).filter(Boolean);
       const queued = results.filter((r) => r.queued).length;
       const failed = results.length - trayIds.length - queued;
@@ -5482,7 +5587,21 @@ function GuidedDrFlow({
       payload.edit_reason = lockedReason.trim();
     }
     try {
-      await api.patch(`/daily-report-activities/${rowId}`, payload);
+      const res = await api.patch(`/daily-report-activities/${rowId}`, payload);
+      if (res?.data?._offline) {
+        // Offline: the PATCH queued, but reload() reads the CACHED bundle —
+        // which would snap the slider back to its old value. Write the edit
+        // into the cached copies so the offline view keeps what was entered
+        // (the queued PATCH makes it real on reconnect).
+        try {
+          const ctx = await readCachedGet(`/daily-reports/${id}/context`);
+          if (ctx && Array.isArray(ctx.grid)) {
+            const mergedGrid = ctx.grid.map((r) => (r.id === rowId ? { ...r, ...fields } : r));
+            primeOfflineGet(`/daily-reports/${id}/context`, { ...ctx, grid: mergedGrid });
+            primeOfflineGet(`/daily-reports/${id}/grid`, mergedGrid);
+          }
+        } catch { /* best-effort */ }
+      }
       reload();
     } catch (e) {
       if (e.response?.status === 409) {
@@ -5527,7 +5646,11 @@ function GuidedDrFlow({
     let queued = 0;
     let hardErr = null;
     try {
-      for (const file of files) {
+      for (const rawFile of files) {
+        // Compress BEFORE upload/queue: a 10MB phone photo becomes ~0.5MB, so
+        // the upload is near-instant and the offline queue stays small. Any
+        // compression failure falls back to the original bytes.
+        const file = await compressImage(rawFile);
         try {
           const fd = new FormData();
           fd.append("file", file);
@@ -5555,6 +5678,10 @@ function GuidedDrFlow({
                 dailyReportId: id,
                 projectId: project.id,
                 activityRowId: row.id,
+                // Stable schedule task id — lets the drain re-find the real
+                // grid row when this photo was taken on an offline-created
+                // report whose provisional row ids never reach the server.
+                taskId: row.schedule_activity_id || null,
                 photoClass: "progress",
               });
               queued += 1;
@@ -6566,6 +6693,18 @@ function impactStartISO(when, reportDate) {
 const FLOW_SEV_SEG = ["minor", "moderate", "major", "critical"]
   .map((s) => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) }));
 
+// Offline round 2 (2026-07-06): when a create fails with no network, the
+// offline queue (lib/drOfflineSync) resolves it with {queued, _offline}
+// instead of throwing. Tell the user the truth — saved locally, syncs on
+// reconnect — rather than pretending it reached the server.
+function flowSavedToast(res, onlineMsg) {
+  if (res?.data?._offline) {
+    toast.success("Saved offline — will sync when you're back online.");
+  } else {
+    toast.success(onlineMsg);
+  }
+}
+
 // DELAY — payload verified against DelayForm.submit (cause_class +
 // reason_category mirror, owner_attribution default "none", per_task_impacts
 // [{task_id, projected_impact_days}], impact_start_date, status default
@@ -6608,7 +6747,7 @@ function FlowDelayForm({ id, project, activity, reportDate, locked, lockedReason
     }
     setBusy(true);
     try {
-      await api.post(`/delays`, {
+      const res = await api.post(`/delays`, {
         project_id: project.id,
         daily_report_id: id,
         date: reportDate || localTodayISO(),
@@ -6621,7 +6760,7 @@ function FlowDelayForm({ id, project, activity, reportDate, locked, lockedReason
         impact_start_date: impactStartISO(startsWhen, reportDate),
         ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
       });
-      toast.success("Delay logged");
+      flowSavedToast(res, "Delay logged");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "delay")) toast.error(formatErr(e, "Log delay"));
@@ -6701,7 +6840,7 @@ function FlowRfiForm({ id, project, activity, reportDate, locked, lockedReason, 
     setBusy(true);
     try {
       const days = Number(impactDays) || 0;
-      await api.post(`/rfis`, {
+      const res = await api.post(`/rfis`, {
         project_id: project.id,
         daily_report_id: id,
         subject: subject.trim(),
@@ -6714,7 +6853,7 @@ function FlowRfiForm({ id, project, activity, reportDate, locked, lockedReason, 
         impact_start_date: impactStartISO(startsWhen, reportDate),
         ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
       });
-      toast.success("RFI raised");
+      flowSavedToast(res, "RFI raised");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "rfi")) toast.error(formatErr(e, "Open RFI"));
@@ -6779,13 +6918,13 @@ function FlowSafetyForm({ id, project, activity, reportDate, locked, lockedReaso
     }
     setBusy(true);
     try {
-      await api.post(`/safety-events`, {
+      const res = await api.post(`/safety-events`, {
         project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
         description: description.trim(), severity, event_type: eventType,
         linked_task_ids: taskId ? [taskId] : [],
         ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
       });
-      toast.success("Safety event logged");
+      flowSavedToast(res, "Safety event logged");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "safety")) toast.error(formatErr(e, "Create safety event"));
@@ -6855,8 +6994,8 @@ function FlowQcForm({ id, project, activity, reportDate, locked, lockedReason, o
         payload.rework_duration_days = Number(reworkDays);
         payload.rework_duration_basis = basis.trim();
       }
-      await api.post(`/qc-issues`, payload);
-      toast.success(isRework ? "QC rework filed" : "QC issue logged");
+      const res = await api.post(`/qc-issues`, payload);
+      flowSavedToast(res, isRework ? "QC rework filed" : "QC issue logged");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "qc")) toast.error(formatErr(e, "Create QC issue"));
@@ -6920,7 +7059,7 @@ function FlowDeliveryForm({ id, project, activity, reportDate, locked, lockedRea
     }
     setBusy(true);
     try {
-      await api.post(`/deliveries`, {
+      const res = await api.post(`/deliveries`, {
         project_id: project.id, delivery_date: reportDate || localTodayISO(),
         daily_report_id: id,
         vendor: vendor.trim(), description: description.trim(),
@@ -6928,7 +7067,7 @@ function FlowDeliveryForm({ id, project, activity, reportDate, locked, lockedRea
         linked_task_ids: taskIds,
         ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
       });
-      toast.success("Delivery logged");
+      flowSavedToast(res, "Delivery logged");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "delivery")) toast.error(formatErr(e, "Log delivery"));
@@ -6988,7 +7127,7 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
     if (!trade.trim()) return toast.error("Trade is required");
     setBusy(true);
     try {
-      await api.post(`/daily-reports/${id}/presence`, {
+      const res = await api.post(`/daily-reports/${id}/presence`, {
         trade: trade.trim(),
         company_name: company.trim(),
         headcount: Number(headcount) || 0,
@@ -6998,7 +7137,7 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
         shift: "first",
         daily_report_id: id,
       });
-      toast.success("Crew added");
+      flowSavedToast(res, "Crew added");
       onSaved();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Add failed");
@@ -7079,13 +7218,13 @@ function FlowUnplannedForm({ id, locked, lockedReason, onSaved, onCancel }) {
     }
     setBusy(true);
     try {
-      await api.post(`/daily-reports/${id}/unplanned-activity`, {
+      const res = await api.post(`/daily-reports/${id}/unplanned-activity`, {
         description: description.trim(),
         trade_code: tradeCode || "",
         duration_days: 1,
         ...(locked ? { add_reason: (effectiveReason || "").trim() } : {}),
       });
-      toast.success(locked ? "Unplanned activity created (post-submit)." : "Unplanned activity created — flagged for PM review.");
+      flowSavedToast(res, locked ? "Unplanned activity created (post-submit)." : "Unplanned activity created — flagged for PM review.");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "activity")) toast.error(formatErr(e, "Create unplanned"));
@@ -7212,7 +7351,7 @@ function FlowCoordForm({ id, project, activity, locked, lockedReason, onSaved, o
     try {
       const _now = new Date();
       const occurred_at = `${localISODate(_now)}T${String(_now.getHours()).padStart(2, "0")}:${String(_now.getMinutes()).padStart(2, "0")}`;
-      await api.post(`/coordination-events`, {
+      const res = await api.post(`/coordination-events`, {
         project_id: project.id,
         linked_daily_report_id: id,
         occurred_at,
@@ -7227,7 +7366,7 @@ function FlowCoordForm({ id, project, activity, locked, lockedReason, onSaved, o
         trade_code: null,
         ...(locked ? { add_reason: (lockedReason || "").trim() } : {}),
       });
-      toast.success("Coordination event logged");
+      flowSavedToast(res, "Coordination event logged");
       onSaved();
     } catch (e) {
       if (!handleLockedAddError(e, "coordination")) toast.error(formatErr(e, "Log coordination event"));

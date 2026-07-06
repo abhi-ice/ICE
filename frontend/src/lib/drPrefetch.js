@@ -1,0 +1,87 @@
+/**
+ * Tenant-wide offline warm-up (2026-07-06 — field-test round 3).
+ *
+ * While online, pre-download into the read-through GET cache (IndexedDB,
+ * lib/offlineCache via the api interceptor) everything a super needs to work
+ * a Daily Report with zero signal — for EVERY project in the tenant:
+ *
+ *   - the project's DR list
+ *   - the /context bundle of reports dated yesterday / today / tomorrow
+ *     (the ones a field crew actually opens) plus the 5 most recent
+ *   - the project's schedule tasks (/projects/{id}/tasks) — REQUIRED to
+ *     synthesize planned activities when a NEW report is created offline
+ *     from the calendar (lib/drOfflineCreate)
+ *   - the subcontractors list (crew add sheet)
+ *
+ * All fire-and-forget GETs through the authenticated api client; the
+ * response interceptor mirrors them into IndexedDB. Failures are ignored —
+ * a warm is opportunistic, never load-bearing. Throttled to one sweep per
+ * 10 minutes per tenant session (sessionStorage stamp).
+ */
+import { localTodayISO, localISODate } from "./dateUtil";
+
+const THROTTLE_MS = 10 * 60 * 1000;
+const STAMP_KEY = "ice-offline-warm-at";
+const RECENT_PER_PROJECT = 5;
+
+function nearDates() {
+  const today = localTodayISO();
+  const base = new Date(`${today}T00:00:00`);
+  const y = new Date(base); y.setDate(y.getDate() - 1);
+  const t = new Date(base); t.setDate(t.getDate() + 1);
+  return new Set([localISODate(y), today, localISODate(t)]);
+}
+
+export async function warmOfflineCache(api, { force = false } = {}) {
+  try {
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    if (!force) {
+      const last = Number(sessionStorage.getItem(STAMP_KEY) || 0);
+      if (Date.now() - last < THROTTLE_MS) return;
+    }
+  } catch { /* sessionStorage unavailable — warm anyway */ }
+
+  try {
+    const { data: projects } = await api.get("/projects");
+    if (!Array.isArray(projects) || !projects.length) return;
+    // Stamp AFTER the first fetch succeeds — a pre-login or transient
+    // failure must not consume the 10-minute window (the 5s post-load warm
+    // can fire before token hydration; the next trigger should retry).
+    try { sessionStorage.setItem(STAMP_KEY, String(Date.now())); } catch { /* ok */ }
+    const near = nearDates();
+    api.get("/subcontractors").catch(() => {});
+    for (const p of projects) {
+      if (!p || !p.id) continue;
+      // Schedule tasks: powers offline grid synthesis for new reports.
+      api.get(`/projects/${p.id}/tasks`).catch(() => {});
+      try {
+        const { data: reports } = await api.get(`/projects/${p.id}/daily-reports`);
+        const rows = Array.isArray(reports) ? reports : [];
+        const nearby = rows.filter(
+          (r) => r && near.has(String(r.report_date).slice(0, 10)),
+        );
+        const recent = [...rows]
+          .sort((a, b) => String(b.report_date).localeCompare(String(a.report_date)))
+          .slice(0, RECENT_PER_PROJECT);
+        const ids = [...new Set([...nearby, ...recent].map((r) => r.id).filter(Boolean))];
+        for (const rid of ids) {
+          api.get(`/daily-reports/${rid}/context`).catch(() => {});
+        }
+      } catch { /* per-project best-effort */ }
+    }
+  } catch { /* unauthenticated or transient — next trigger retries */ }
+}
+
+/** Wire the automatic warms: shortly after app load (token ready) and on
+ *  every reconnect. Idempotent. */
+let _wired = false;
+export function wirePrefetch(api) {
+  if (_wired) return;
+  _wired = true;
+  try {
+    window.addEventListener("online", () => { warmOfflineCache(api); });
+    // First warm ~5s after load — after login/token hydration, off the
+    // critical rendering path.
+    setTimeout(() => { warmOfflineCache(api); }, 5000);
+  } catch { /* non-window env */ }
+}

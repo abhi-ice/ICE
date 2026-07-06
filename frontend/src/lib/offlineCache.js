@@ -31,7 +31,11 @@
 const DB_NAME = "ice-dr-getcache";
 const DB_VERSION = 1;
 const STORE = "responses";
-const MAX_ENTRIES = 50;
+// 900 (2026-07-06, was 50 then 300): the tenant-wide warm (lib/drPrefetch)
+// caches ~12 entries per project (list + up to 8 context bundles + tasks) —
+// 300 LRU-evicted what a ~28-project tenant had just warmed. 900 covers
+// ~75 projects; rows are small JSON and the prune walk is per-write cheap.
+const MAX_ENTRIES = 900;
 
 // Substring allow-list. A GET whose url contains ANY of these is cached on
 // success and served from cache on offline failure. Kept deliberately broad

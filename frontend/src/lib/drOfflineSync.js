@@ -46,12 +46,17 @@ const QUEUEABLE_PREFIXES = [
   "/daily-presence",       // POST top-level create alias (daily_report_id in body,
                            // no trailing slash) — must precede id-less create match
   "/daily-report-activities/", // v7 guided flow: PATCH EOD% / DELETE a grid row
-  "/delays/",
-  "/safety-events/",
-  "/qc-issues/",
-  "/rfis/",
-  "/deliveries/",
-  "/coordination-events/",
+  // Event endpoints — BARE, no trailing slash (2026-07-06 field fix): the
+  // create POSTs go to "/delays", "/rfis", ... and `url.includes("/delays/")`
+  // does NOT match them, so every offline issue log died with "Network
+  // Error" while only id-suffixed edits were queueable. Bare prefixes match
+  // both the create POST and /xxx/{id} mutations.
+  "/delays",
+  "/safety-events",
+  "/qc-issues",
+  "/rfis",
+  "/deliveries",
+  "/coordination-events",
   "/photo-tags",           // v7 guided flow: POST tag/pin a photo to an activity,
                            // DELETE /photo-tags/{id}. (Offline photo CAPTURE is
                            // owned end-to-end by lib/drPhotoQueue; this only
@@ -79,7 +84,17 @@ function readQueue() {
 }
 
 function writeQueue(arr) {
-  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(arr.slice(-MAX_QUEUE_SIZE))); }
+  // Cap the queue, but NEVER evict a DR create (offlineCreate): it is by
+  // construction the OLDEST entry for a provisional report, and slicing it
+  // away would orphan every queued child that references its temp id.
+  // Creates stay at the front, preserving the create-before-children order.
+  let out = arr;
+  if (arr.length > MAX_QUEUE_SIZE) {
+    const creates = arr.filter((r) => r.offlineCreate);
+    const rest = arr.filter((r) => !r.offlineCreate);
+    out = [...creates, ...rest.slice(-(MAX_QUEUE_SIZE - creates.length))];
+  }
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(out)); }
   catch { /* quota or private-mode; nothing we can do */ }
   // v7 (2026-07-05): let the flow landing's "N items will sync" chip
   // live-update instead of polling. Same event name as the photo/voice
@@ -98,8 +113,16 @@ export function isQueueable(method, url) {
   return QUEUEABLE_PREFIXES.some((p) => url.includes(p));
 }
 
-export function enqueueRequest({ method, url, data }) {
+export function enqueueRequest({ method, url, data, offlineCreate = null }) {
   const q = readQueue();
+  // Offline DR create (2026-07-06): deterministic dedupe — a double-tap on
+  // "+ New" while offline must not queue two creates for the same
+  // (url, tempId). The backend create is idempotent anyway; this just keeps
+  // the queue clean.
+  if (offlineCreate?.tempId) {
+    const dup = q.find((r) => r.offlineCreate?.tempId === offlineCreate.tempId);
+    if (dup) return dup.id;
+  }
   const id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   q.push({
     id,
@@ -109,9 +132,58 @@ export function enqueueRequest({ method, url, data }) {
     createdAt: new Date().toISOString(),
     retryCount: 0,
     lastError: null,
+    ...(offlineCreate ? { offlineCreate } : {}),
   });
   writeQueue(q);
   return id;
+}
+
+// ---------------------------------------------------------------------------
+// Offline-created record id remap (2026-07-06). A DR created offline gets a
+// provisional id ("offline-dr-<project>-<date>"); every queued child mutation
+// references it. When the queued create replays, the server returns the REAL
+// id — the map below lets the drain (and the photo/voice IndexedDB queues)
+// rewrite provisional ids before replaying. Persisted so a partially-drained
+// queue survives a reload between drains.
+// ---------------------------------------------------------------------------
+const REMAP_KEY = "ice-offline-id-remap";
+
+function readRemap() {
+  try { return JSON.parse(localStorage.getItem(REMAP_KEY) || "{}") || {}; }
+  catch { return {}; }
+}
+
+function saveRemap(map) {
+  try { localStorage.setItem(REMAP_KEY, JSON.stringify(map)); } catch { /* ignore */ }
+}
+
+/** Resolve a possibly-provisional id to its synced real id (or itself). */
+export function resolveOfflineId(id) {
+  if (!id || typeof id !== "string" || !id.startsWith("offline-")) return id;
+  const map = readRemap();
+  return map[id] || id;
+}
+
+/** True when `id` is a provisional offline id with no server mapping yet. */
+export function isUnresolvedOfflineId(id) {
+  return typeof id === "string" && id.startsWith("offline-")
+    && resolveOfflineId(id) === id;
+}
+
+function applyRemapToRequest(req, map) {
+  const entries = Object.entries(map);
+  if (!entries.length) return req;
+  let { url, data } = req;
+  for (const [tempId, realId] of entries) {
+    if (url && url.includes(tempId)) url = url.split(tempId).join(realId);
+    if (data != null) {
+      try {
+        const s = JSON.stringify(data);
+        if (s.includes(tempId)) data = JSON.parse(s.split(tempId).join(realId));
+      } catch { /* leave data as-is */ }
+    }
+  }
+  return { ...req, url, data };
 }
 
 export function getQueueSize() {
@@ -161,10 +233,107 @@ export async function drainOfflineQueue(api) {
   if (!q.length) return { synced: 0, failed: 0, remaining: 0 };
   let synced = 0;
   let failed = 0;
-  const keep = [];
-  for (const req of q) {
+  // Offline-create remap (2026-07-06): start from any persisted mappings
+  // (a previous partial drain), rewrite every request's provisional ids
+  // before replaying, and capture new mappings as creates land. FIFO order
+  // guarantees a DR create replays before its children.
+  const remap = readRemap();
+  let remapGrew = false;
+  // Temp ids whose CREATE was permanently rejected: their children can never
+  // succeed (the report will never exist) — drop them instead of replaying
+  // orphan writes or wedging the queue.
+  const deadTempIds = new Set();
+  const referencesDeadId = (req) => {
+    if (!deadTempIds.size) return false;
     try {
-      await api.request({
+      const hay = `${req.url || ""}|${req.data != null ? JSON.stringify(req.data) : ""}`;
+      return [...deadTempIds].some((t) => hay.includes(t));
+    } catch { return false; }
+  };
+  // Provisional GRID-ROW resolution (round 3, 2026-07-06): rows synthesized
+  // for an offline-created report carry ids "offline-row-<tempDr>__<taskId>".
+  // The server generates its own row ids when the queued create replays, so
+  // requests referencing a provisional row (EOD% PATCH, photo tags) are
+  // rewritten by matching the real grid's schedule_activity_id. Grid fetched
+  // once per report per drain; unresolvable yet -> kept for the next drain.
+  const gridCache = {};
+  // Temp DR ids whose create still sits in this queue — a row token whose
+  // DR is neither mapped nor pending can never resolve (orphan -> drop).
+  const pendingCreates = new Set(
+    q.filter((r) => r.offlineCreate?.tempId).map((r) => r.offlineCreate.tempId),
+  );
+  const resolveRowIds = async (req) => {
+    const hay = `${req.url || ""}|${req.data != null ? JSON.stringify(req.data) : ""}`;
+    const tokens = [...new Set(hay.match(/offline-row-[A-Za-z0-9_-]+/g) || [])];
+    if (!tokens.length) return { status: "ok", req };
+    const subs = {};
+    for (const token of tokens) {
+      const body = token.slice("offline-row-".length);
+      const cut = body.lastIndexOf("__");
+      if (cut < 0) return { status: "drop" };
+      const tempDr = body.slice(0, cut);
+      const taskId = body.slice(cut + 2);
+      // The DR-id slot may ALREADY hold the real id: applyRemapToRequest
+      // blindly rewrites the temp DR id substring INSIDE this token (review
+      // blocker, 2026-07-06) — so a non-"offline-" value here IS the real
+      // id. This also heals queue entries persisted with rewritten tokens.
+      const realDr = remap[tempDr]
+        || (tempDr.startsWith("offline-") ? null : tempDr);
+      if (!realDr) {
+        // Still provisional: defer while its create is pending in this
+        // queue; if the create is GONE (dropped/evicted), the row can never
+        // resolve — drop instead of deferring forever.
+        return pendingCreates.has(tempDr)
+          ? { status: "defer" }
+          : { status: "drop" };
+      }
+      if (!(realDr in gridCache)) {
+        try {
+          const g = await api.get(`/daily-reports/${realDr}/grid`,
+            { headers: { "X-Drain-Replay": "1" } });
+          gridCache[realDr] = Array.isArray(g.data) ? g.data : [];
+        } catch { gridCache[realDr] = null; }
+      }
+      const rows = gridCache[realDr];
+      if (rows === null) return { status: "defer" }; // grid unreadable — retry later
+      const row = rows.find((r) => r && r.schedule_activity_id === taskId);
+      if (!row) return { status: "drop" }; // task no longer on that day's grid
+      subs[token] = row.id;
+    }
+    let { url, data } = req;
+    for (const [t, real] of Object.entries(subs)) {
+      if (url && url.includes(t)) url = url.split(t).join(real);
+      if (data != null) {
+        try {
+          const s = JSON.stringify(data);
+          if (s.includes(t)) data = JSON.parse(s.split(t).join(real));
+        } catch { /* leave data as-is */ }
+      }
+    }
+    return { status: "ok", req: { ...req, url, data } };
+  };
+
+  const keep = [];
+  for (const raw of q) {
+    let req = applyRemapToRequest(raw, remap);
+    if (referencesDeadId(req)) { failed += 1; continue; } // dropped with its create
+    const rowRes = await resolveRowIds(req);
+    if (rowRes.status === "drop") { failed += 1; continue; }
+    if (rowRes.status === "defer") {
+      // Waiting on its DR create / a readable grid — NOT a failure of this
+      // request, so do NOT burn its retry budget (a slow sync must never
+      // silently discard EOD data). The orphan case above bounds this.
+      keep.push({
+        ...req, id: raw.id,
+        ...(raw.offlineCreate ? { offlineCreate: raw.offlineCreate } : {}),
+        retryCount: raw.retryCount || 0,
+        lastError: "waiting for the synced report's grid rows",
+      });
+      continue;
+    }
+    req = rowRes.req;
+    try {
+      const resp = await api.request({
         method: req.method,
         url: req.url,
         data: req.data,
@@ -172,24 +341,44 @@ export async function drainOfflineQueue(api) {
         // network failure during drain.
         headers: { "X-Drain-Replay": "1" },
       });
+      if (raw.offlineCreate?.tempId && resp?.data?.id) {
+        remap[raw.offlineCreate.tempId] = resp.data.id;
+        remapGrew = true;
+        saveRemap(remap); // persist immediately — children may fail later
+      }
       synced += 1;
     } catch (e) {
       failed += 1;
-      // Surface 4xx / 5xx but DON'T retry indefinitely -- after 5
-      // retries we drop the request and surface a toast via caller.
+      const status = e?.response?.status;
       const networkOnly = !e.response;
+      // Retryable: network-only OR 5xx ("server waking up" is a known
+      // transient here — one 502 must not throw away a day's records).
+      // 401/403 also retry: auth comes back after re-login.
+      const retryable = networkOnly || status >= 500 || status === 401 || status === 403;
       const next = {
-        ...req,
-        retryCount: (req.retryCount || 0) + 1,
+        ...req, // keep the REMAPPED url/data so a later drain needs no map
+        id: raw.id,
+        ...(raw.offlineCreate ? { offlineCreate: raw.offlineCreate } : {}),
+        retryCount: (raw.retryCount || 0) + 1,
         lastError: e?.response?.data?.detail || e.message || "unknown",
       };
-      if (networkOnly && next.retryCount < 5) {
+      if (retryable && next.retryCount < 5) {
         keep.push(next);
+      } else if (raw.offlineCreate?.tempId) {
+        // The CREATE itself is permanently rejected (validation/404/409):
+        // everything referencing its temp id is unsyncable — mark it dead.
+        deadTempIds.add(raw.offlineCreate.tempId);
       }
-      // 4xx is a permanent failure (validation / 404 / 409) -- drop it.
+      // other permanent 4xx (validation / 404 / 409) -- drop it.
     }
   }
-  writeQueue(keep);
+  writeQueue(keep.map((r) => applyRemapToRequest(r, remap)));
+  if (remapGrew) {
+    // Wake the photo/voice IndexedDB queues — they may hold rows keyed to a
+    // provisional DR id that just became resolvable.
+    try { window.dispatchEvent(new Event("ice-offline-remap-ready")); }
+    catch { /* non-window env */ }
+  }
   return { synced, failed, remaining: keep.length };
 }
 
