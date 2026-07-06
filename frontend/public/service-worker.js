@@ -32,7 +32,7 @@
  * mean a new SW takes over as soon as it installs.
  */
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL_CACHE = `ice-shell-${CACHE_VERSION}`;
 const STATIC_CACHE = `ice-static-${CACHE_VERSION}`;
 const OUR_CACHES = [SHELL_CACHE, STATIC_CACHE];
@@ -74,6 +74,17 @@ self.addEventListener("activate", (event) => {
 
 function isStaticAsset(url) {
   return url.pathname.startsWith("/static/");
+}
+
+// A filename is content-HASHED only if it carries an 8+ hex-char fingerprint
+// segment (CRA production: main.a1b2c3d4.js, 453.f9e8...chunk.js, logo.abcd1234.png).
+// Emergent serves a DEV build whose entry bundle is the STABLE name
+// static/js/bundle.js — NOT hashed — so it must never be cache-first (its bytes
+// change on every deploy while the URL stays the same == permanent stale bundle,
+// the exact failure the old SW was deleted for). Only truly-hashed URLs are safe
+// to cache forever; everything else goes network-first.
+function isHashedAsset(url) {
+  return /\.[0-9a-f]{8,}\.[a-z0-9]+$/i.test(url.pathname);
 }
 
 function isApi(url) {
@@ -127,6 +138,25 @@ async function cacheFirstStatic(request) {
   return netResp;
 }
 
+// NETWORK-FIRST for NON-hashed static assets (the dev build's bundle.js): fetch
+// fresh so a deploy is always picked up online, but keep the last-good copy so
+// the app still loads offline. This is what makes offline work without ever
+// serving a stale bundle when the network is reachable.
+async function networkFirstStatic(request) {
+  const cache = await caches.open(STATIC_CACHE);
+  try {
+    const netResp = await fetch(request);
+    if (netResp && netResp.ok) {
+      cache.put(request, netResp.clone()).catch(() => {});
+    }
+    return netResp;
+  } catch (err) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    throw err;
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
 
@@ -155,9 +185,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Hashed static assets -> cache-first.
+  // Static assets: cache-first ONLY when the filename is content-hashed
+  // (safe forever); the stable-named dev bundle (static/js/bundle.js) goes
+  // network-first so every deploy is picked up online, cached for offline.
   if (isStaticAsset(url)) {
-    event.respondWith(cacheFirstStatic(request));
+    event.respondWith(
+      isHashedAsset(url) ? cacheFirstStatic(request) : networkFirstStatic(request),
+    );
     return;
   }
 
