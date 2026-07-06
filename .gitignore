@@ -30,10 +30,25 @@ next-env.d.ts
 dist/
 dist
 
-# Environment files (comprehensive coverage)
-
+# Secrets that must never be committed
 *token.json*
 *credentials.json*
+credentials.json
+.credentials
+*.pem
+*.key
+
+# 2026-07-06 -- Emergent k8s deploys build the production container
+# straight from the git repo (no separate secret plumbing on this app),
+# so backend/.env and frontend/.env MUST stay tracked. Historic
+# `-e`-prefixed .env blocks that used to sit here caused four straight
+# deploy failures because MONGO_URL was missing in the container ->
+# _ensure_indexes() hung -> readiness probe timed out.
+# DO NOT re-add `.env` / `*.env` blanket ignores.
+# Only local overlays are ignored below.
+*.env.local
+.env.local
+.env.*.local
 
 # Logs and debug files
 npm-debug.log*
@@ -44,11 +59,11 @@ dump.rdb
 
 # System files
 .DS_Store
-*.pem
 
 # Python
 __pycache__/
-*pyc*
+*.pyc
+*.pyo
 venv/
 .venv/
 
@@ -76,65 +91,10 @@ agenthub/agents/youtube/db
 # Build caches
 .cache/
 
+# Local-only credential file the testing agent reads
 memory/test_credentials.md
 
 # Mobile development
-android-sdk/frontend/node_modules/.cache/default-development/8.pack
-frontend/node_modules/.cache/default-development/8.pack
+android-sdk/
+frontend/node_modules/.cache/
 frontend/node_modules/.cache/default-development/0.pack
-frontend/node_modules/.cache/default-development/2.pack
-frontend/node_modules/.cache/default-development/6.pack
-frontend/node_modules/.cache/default-development/13.pack
-frontend/node_modules/.cache/default-development/14.pack
-frontend/node_modules/.cache/default-development/17.pack
-frontend/node_modules/.cache/default-development/10.pack
-frontend/node_modules/.cache/default-development/1.pack
-frontend/node_modules/.cache/default-development/9.pack
-frontend/node_modules/.cache/default-development/12.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
-frontend/node_modules/.cache/default-development/4.pack
-frontend/node_modules/.cache/default-development/3.pack
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
--e 
-# Environment and credential files
-.env
-.env.*
-*.env
-credentials.json
-*.pem
-*.key
-.credentials
-frontend/node_modules/.cache/default-development/5.pack
-frontend/node_modules/.cache/default-development/7.pack
-frontend/node_modules/.cache/default-development/20.pack
-frontend/node_modules/.cache/default-development/21.pack
-frontend/node_modules/.cache/default-development/23.pack
-frontend/node_modules/.cache/default-development/24.pack
-frontend/node_modules/.cache/default-development/27.pack
-frontend/node_modules/.cache/default-development/34.pack
-frontend/node_modules/.cache/default-development/11.pack
