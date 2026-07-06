@@ -23,6 +23,10 @@ import { localTodayISO, localISODate } from "./dateUtil";
 const THROTTLE_MS = 10 * 60 * 1000;
 const STAMP_KEY = "ice-offline-warm-at";
 const RECENT_PER_PROJECT = 5;
+// Deep-warm only the most-recently-active projects (user spec, round 5):
+// their schedule tasks + report bundles. Every project's report LIST is
+// still cached (it powers the ranking and costs one small GET each).
+const TOP_PROJECTS = 5;
 
 function nearDates() {
   const today = localTodayISO();
@@ -50,24 +54,40 @@ export async function warmOfflineCache(api, { force = false } = {}) {
     try { sessionStorage.setItem(STAMP_KEY, String(Date.now())); } catch { /* ok */ }
     const near = nearDates();
     api.get("/subcontractors").catch(() => {});
+    // Rank projects by activity (newest report date) — fetching each DR
+    // list also mirrors it into the cache, so ranking costs nothing extra.
+    const ranked = [];
     for (const p of projects) {
       if (!p || !p.id) continue;
-      // Schedule tasks: powers offline grid synthesis for new reports.
+      // Schedule tasks warm for EVERY project (small JSON): a report created
+      // offline from the calendar synthesizes its activity grid from these,
+      // and that must work even on a project outside the deep-warm top 5.
       api.get(`/projects/${p.id}/tasks`).catch(() => {});
       try {
         const { data: reports } = await api.get(`/projects/${p.id}/daily-reports`);
         const rows = Array.isArray(reports) ? reports : [];
-        const nearby = rows.filter(
-          (r) => r && near.has(String(r.report_date).slice(0, 10)),
+        // Guard the ranking against a null/missing report_date —
+        // String(null) is "null", which compares GREATER than any ISO date
+        // and would steal a deep-warm slot for an inactive project.
+        const newest = rows.reduce(
+          (m, r) => (r && r.report_date && String(r.report_date) > m
+            ? String(r.report_date) : m), "",
         );
-        const recent = [...rows]
-          .sort((a, b) => String(b.report_date).localeCompare(String(a.report_date)))
-          .slice(0, RECENT_PER_PROJECT);
-        const ids = [...new Set([...nearby, ...recent].map((r) => r.id).filter(Boolean))];
-        for (const rid of ids) {
-          api.get(`/daily-reports/${rid}/context`).catch(() => {});
-        }
+        ranked.push({ p, rows, newest });
       } catch { /* per-project best-effort */ }
+    }
+    ranked.sort((a, b) => b.newest.localeCompare(a.newest));
+    for (const { p, rows } of ranked.slice(0, TOP_PROJECTS)) {
+      const nearby = rows.filter(
+        (r) => r && near.has(String(r.report_date).slice(0, 10)),
+      );
+      const recent = [...rows]
+        .sort((a, b) => String(b.report_date).localeCompare(String(a.report_date)))
+        .slice(0, RECENT_PER_PROJECT);
+      const ids = [...new Set([...nearby, ...recent].map((r) => r.id).filter(Boolean))];
+      for (const rid of ids) {
+        api.get(`/daily-reports/${rid}/context`).catch(() => {});
+      }
     }
   } catch { /* unauthenticated or transient — next trigger retries */ }
 }

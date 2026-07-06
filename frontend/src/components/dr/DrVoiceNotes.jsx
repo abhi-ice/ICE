@@ -22,14 +22,28 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Square, Play, Pause, Loader2, CloudOff, Trash2 } from "lucide-react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
+// Offline-created DRs: a note recorded against a provisional "offline-dr-*"
+// id must wait for the request queue's drain to create the real report,
+// then post against the REAL id (otherwise the annotation orphans).
+import { resolveOfflineId, isUnresolvedOfflineId } from "../../lib/drOfflineSync";
 
 // ---------------- pending-note IndexedDB store ----------------
+// Hardened (round 5, 2026-07-06) exactly like lib/drPhotoQueue: cached
+// identity-guarded connection, one retry after 300ms (iOS Safari flakes the
+// first open after a network flip), heal-on-failure everywhere, and a
+// bounded in-session memory fallback — an offline recording is NEVER
+// refused by a storage flake.
 const DB_NAME = "ice-dr-voice-notes";
 const STORE = "pendingNotes";
 
-function openDb() {
+function openDbOnce() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    let req;
+    try {
+      req = indexedDB.open(DB_NAME, 1);
+    } catch (e) {
+      return reject(e);
+    }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -42,38 +56,96 @@ function openDb() {
   });
 }
 
-async function queuePendingNote({ dailyReportId, blob, mimeType, durationSec }) {
+let _dbPromise = null;
+function openDb() {
+  if (_dbPromise) return _dbPromise;
+  const p = openDbOnce().catch(
+    () => new Promise((r) => setTimeout(r, 300)).then(() => openDbOnce()),
+  );
+  _dbPromise = p;
+  p.then((db) => {
+    try {
+      db.onclose = () => { if (_dbPromise === p) _dbPromise = null; };
+      db.onversionchange = () => {
+        try { db.close(); } catch { /* already closing */ }
+        if (_dbPromise === p) _dbPromise = null;
+      };
+    } catch { /* older engines */ }
+  }).catch(() => { if (_dbPromise === p) _dbPromise = null; });
+  return p;
+}
+function healDb() { _dbPromise = null; }
+
+const _memPending = [];
+const MEM_MAX_BYTES = 150 * 1024 * 1024;
+let _memBytes = 0;
+
+async function _idbPut(rec) {
   const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(rec);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("tx aborted"));
+  });
+}
+
+async function queuePendingNote({ dailyReportId, blob, mimeType, durationSec }) {
   const rec = {
     id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     dailyReportId, blob, mimeType,
     durationSec: durationSec || null,
     createdAt: new Date().toISOString(),
   };
+  try {
+    await _idbPut(rec);
+  } catch {
+    healDb();
+    try {
+      await _idbPut(rec);
+    } catch {
+      if (_memBytes + (blob.size || 0) > MEM_MAX_BYTES) {
+        throw new Error(
+          "offline storage is unavailable and session memory is full — reconnect to upload recordings",
+        );
+      }
+      rec._memoryOnly = true;
+      _memPending.push(rec);
+      _memBytes += blob.size || 0;
+    }
+  }
+  return rec;
+}
+
+async function _idbList(dailyReportId) {
+  const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(rec);
-    tx.oncomplete = () => resolve(rec);
-    tx.onerror = () => reject(tx.error);
+    const tx = db.transaction(STORE, "readonly");
+    const store = tx.objectStore(STORE);
+    const req = dailyReportId
+      ? store.index("by_dr").getAll(IDBKeyRange.only(dailyReportId))
+      : store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
   });
 }
 
 export async function listPendingNotes(dailyReportId = null) {
+  let rows = [];
   try {
-    const db = await openDb();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readonly");
-      const store = tx.objectStore(STORE);
-      const req = dailyReportId
-        ? store.index("by_dr").getAll(IDBKeyRange.only(dailyReportId))
-        : store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-  } catch { return []; }
+    rows = await _idbList(dailyReportId);
+  } catch {
+    healDb();
+    try { rows = await _idbList(dailyReportId); } catch { rows = []; }
+  }
+  const mem = dailyReportId
+    ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
+    : [..._memPending];
+  return [...rows, ...mem];
 }
 
-async function removePendingNote(id) {
+async function _idbDelete(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -81,6 +153,21 @@ async function removePendingNote(id) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+async function removePendingNote(id) {
+  const i = _memPending.findIndex((r) => r.id === id);
+  if (i >= 0) {
+    _memBytes -= (_memPending[i].blob && _memPending[i].blob.size) || 0;
+    if (_memBytes < 0) _memBytes = 0;
+    _memPending.splice(i, 1);
+  }
+  try {
+    await _idbDelete(id);
+  } catch {
+    healDb(); // a swallowed delete would re-post the note (duplicates)
+    try { await _idbDelete(id); } catch { /* memory-only or IDB dead */ }
+  }
 }
 
 async function postNote(dailyReportId, blob, mimeType, durationSec) {
@@ -102,8 +189,11 @@ export async function drainPendingNotes() {
   const pending = await listPendingNotes();
   let synced = 0;
   for (const n of pending) {
+    // Provisional report id with no server mapping yet: WAIT — posting now
+    // would orphan the note against a report id that will never exist.
+    if (isUnresolvedOfflineId(n.dailyReportId)) continue;
     try {
-      await postNote(n.dailyReportId, n.blob, n.mimeType, n.durationSec);
+      await postNote(resolveOfflineId(n.dailyReportId), n.blob, n.mimeType, n.durationSec);
       await removePendingNote(n.id);
       synced += 1;
     } catch { /* stays queued */ }
@@ -189,8 +279,14 @@ export default function DrVoiceNotes({ reportId, notes = [], reload, allowRecord
       refreshPending();
     };
     window.addEventListener("online", drain);
+    // Re-drain when an offline-created report's id mapping lands — notes
+    // skipped as "unresolved" become postable at that moment.
+    window.addEventListener("ice-offline-remap-ready", drain);
     drain();
-    return () => window.removeEventListener("online", drain);
+    return () => {
+      window.removeEventListener("online", drain);
+      window.removeEventListener("ice-offline-remap-ready", drain);
+    };
   }, [refreshPending, reload]);
 
   const upload = useCallback(async (blob, mimeType, durationSec) => {

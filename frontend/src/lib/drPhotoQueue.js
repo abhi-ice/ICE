@@ -53,9 +53,23 @@ function notifyQueueChanged() {
   } catch { /* non-window env */ }
 }
 
-function openDb() {
+// Field fix (2026-07-06, "Photo upload failed: Network Error" offline):
+// iOS Safari's IndexedDB server is known to refuse the FIRST open right
+// after a network flip / app switch / cold start. The old openDb had no
+// retry and no cached connection, so that one flake rejected queuePhoto and
+// the flow fell through to its hard-error toast. Now:
+//   - the connection is CACHED (one open per session, like offlineCache)
+//   - a failed open is retried once after a short beat
+//   - a connection Safari closes out from under us drops the cache so the
+//     next call reopens cleanly
+function openDbOnce() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    let req;
+    try {
+      req = indexedDB.open(DB_NAME, DB_VERSION);
+    } catch (e) {
+      return reject(e);
+    }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -66,6 +80,55 @@ function openDb() {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+  });
+}
+
+let _dbPromise = null;
+function openDb() {
+  if (_dbPromise) return _dbPromise;
+  const p = openDbOnce().catch(
+    () => new Promise((r) => setTimeout(r, 300)).then(() => openDbOnce()),
+  );
+  _dbPromise = p;
+  p.then((db) => {
+    try {
+      // Identity-guarded resets: only clear the cache if it still holds
+      // THIS promise — a stale handler must never wipe a newer healthy
+      // connection (that caused reopen churn).
+      db.onclose = () => { if (_dbPromise === p) _dbPromise = null; };
+      db.onversionchange = () => {
+        try { db.close(); } catch { /* already closing */ }
+        if (_dbPromise === p) _dbPromise = null;
+      };
+    } catch { /* older engines */ }
+  }).catch(() => { if (_dbPromise === p) _dbPromise = null; });
+  return p;
+}
+
+// Drop the cached connection so the next call reopens fresh. Used by every
+// operation's failure path — Safari can kill a connection WITHOUT firing
+// onclose, and a read path that kept trusting the dead handle would make the
+// queue silently invisible (chip shows 0, drains upload nothing).
+function healDb() { _dbPromise = null; }
+
+// LAST-RESORT memory queue: when IndexedDB is truly unusable (private tab,
+// storage pressure), queued records live here for the session — they still
+// upload on reconnect, they just don't survive a full page reload. A field
+// photo is NEVER refused below the byte cap; past it we fail HONESTLY
+// (uncapped RAM blobs would get the tab jetsam-killed on iOS, losing
+// everything at once — strictly worse than refusing the Nth photo).
+const _memPending = [];
+const MEM_MAX_BYTES = 150 * 1024 * 1024;
+let _memBytes = 0;
+
+async function _idbPut(record) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("tx aborted"));
   });
 }
 
@@ -98,7 +161,6 @@ export async function queuePhoto({
       `photo too large (${blob.size} > ${MAX_BLOB_BYTES}); use a photo under 25MB`,
     );
   }
-  const db = await openDb();
   const id = `photo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const record = {
     id,
@@ -114,18 +176,35 @@ export async function queuePhoto({
     retryCount: 0,
     lastError: null,
   };
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(record);
-    tx.oncomplete = () => { notifyQueueChanged(); resolve(record); };
-    tx.onerror = () => reject(tx.error);
-  });
+  try {
+    await _idbPut(record);
+  } catch {
+    // Heal a dead cached connection and retry once on a fresh handle
+    // (Safari closes IndexedDB connections behind our back).
+    healDb();
+    try {
+      await _idbPut(record);
+    } catch {
+      // IndexedDB unusable: memory fallback — never refuse a field photo
+      // (bounded; past the cap fail with the real reason, not "Network Error").
+      if (_memBytes + (blob.size || 0) > MEM_MAX_BYTES) {
+        throw new Error(
+          "offline storage is unavailable and session memory is full — reconnect to upload photos",
+        );
+      }
+      record._memoryOnly = true;
+      _memPending.push(record);
+      _memBytes += blob.size || 0;
+    }
+  }
+  notifyQueueChanged();
+  return record;
 }
 
 /** List pending photos, optionally filtered to one daily report.
  *  Exported both as listPending (drVoiceQueue parity) and as the
  *  explicit listPendingPhotos alias the DR flow imports. */
-export async function listPending(dailyReportId = null) {
+async function _idbList(dailyReportId) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readonly");
@@ -138,34 +217,79 @@ export async function listPending(dailyReportId = null) {
   });
 }
 
+export async function listPending(dailyReportId = null) {
+  let rows = [];
+  try {
+    rows = await _idbList(dailyReportId);
+  } catch {
+    // Heal-and-retry: a dead cached connection here would make the queue
+    // silently INVISIBLE (chip 0, drain uploads nothing) until a write
+    // happened to heal it.
+    healDb();
+    try { rows = await _idbList(dailyReportId); } catch { rows = []; }
+  }
+  const mem = dailyReportId
+    ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
+    : [..._memPending];
+  return [...rows, ...mem];
+}
+
 /** Remove a queued photo (after a successful upload, or a user discard). */
-export async function removePhoto(id) {
+async function _idbDelete(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => { notifyQueueChanged(); resolve(); };
+    tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
+export async function removePhoto(id) {
+  const i = _memPending.findIndex((r) => r.id === id);
+  if (i >= 0) {
+    _memBytes -= (_memPending[i].blob && _memPending[i].blob.size) || 0;
+    if (_memBytes < 0) _memBytes = 0;
+    _memPending.splice(i, 1);
+  }
+  try {
+    await _idbDelete(id);
+  } catch {
+    // Heal + retry: a swallowed delete would re-upload this photo on every
+    // later drain (server dedup is the only backstop).
+    healDb();
+    try { await _idbDelete(id); } catch { /* memory-only entry or IDB dead */ }
+  }
+  notifyQueueChanged();
+}
+
 /** Mark a queued photo failed: bump retryCount, record the error. */
 export async function markFailed(id, errMsg) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    const store = tx.objectStore(STORE);
-    const getReq = store.get(id);
-    getReq.onsuccess = () => {
-      const r = getReq.result;
-      if (!r) return;
-      r.retryCount = (r.retryCount || 0) + 1;
-      r.lastError = String(errMsg || "").slice(0, 500);
-      store.put(r);
-    };
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const mem = _memPending.find((r) => r.id === id);
+  if (mem) {
+    mem.retryCount = (mem.retryCount || 0) + 1;
+    mem.lastError = String(errMsg || "").slice(0, 500);
+    return;
+  }
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const r = getReq.result;
+        if (!r) return;
+        r.retryCount = (r.retryCount || 0) + 1;
+        r.lastError = String(errMsg || "").slice(0, 500);
+        store.put(r);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    healDb(); // bookkeeping only — but heal so the NEXT operation recovers
+  }
 }
 
 /** Explicit alias — the guided flow calls listPendingPhotos(drId). */

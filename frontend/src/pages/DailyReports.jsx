@@ -17,9 +17,14 @@ import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copil
 import { localTodayISO, localISODate, formatDateDisplay } from "../lib/dateUtil";
 // Offline round 2 (2026-07-06): provisional DR create + queued-save detection.
 import { createDrOffline } from "../lib/drOfflineCreate";
-import { resolveOfflineId, getQueue } from "../lib/drOfflineSync";
+import { resolveOfflineId, getQueue, getQueueSize, drainOfflineQueue } from "../lib/drOfflineSync";
+import { listPending as listPendingVoiceClips } from "../lib/drVoiceQueue";
 import { warmOfflineCache } from "../lib/drPrefetch";
 import { primeOfflineGet, readCachedGet } from "../lib/api";
+// Round 5 (2026-07-06): STATIC imports — the old lazy require() left the
+// offline photo queue unreachable if the require ever failed, turning an
+// offline photo into "Photo upload failed" instead of a local save.
+import { queuePhoto, listPendingPhotos } from "../lib/drPhotoQueue";
 // Client-side photo compression — a 10MB phone photo becomes ~0.5MB before
 // upload, so "Add photo" feels instant on site connectivity.
 import { compressImage, compressImages } from "../lib/imageCompress";
@@ -651,9 +656,6 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   useEffect(() => {
     const refresh = () => {
       try {
-        // Lazy require to avoid a circular dep at module init.
-        // eslint-disable-next-line global-require
-        const { getQueueSize } = require("../lib/drOfflineSync");
         setQueueSize(getQueueSize());
       } catch { /* ignore */ }
     };
@@ -1300,8 +1302,6 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
               data-testid="dr-offline-drain"
               onClick={async () => {
                 try {
-                  // eslint-disable-next-line global-require
-                  const { drainOfflineQueue } = require("../lib/drOfflineSync");
                   const r = await drainOfflineQueue(api);
                   if (r.synced > 0) toast.success(`Synced ${r.synced} pending change${r.synced === 1 ? "" : "s"}.`);
                   if (r.remaining > 0) toast.error(`${r.remaining} change${r.remaining === 1 ? "" : "s"} still pending — will retry.`);
@@ -4682,17 +4682,18 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       // and still surfaces to the user. Online behavior is byte-identical.
       const queuePhotoOffline = async (file) => {
         try {
-          // eslint-disable-next-line global-require
-          const pq = require("../lib/drPhotoQueue");
-          await pq.queuePhoto({
+          return await queuePhoto({
             blob: file,
             mimeType: file.type || "image/jpeg",
             dailyReportId,
             projectId,
             photoClass: "progress",
           });
-          return true;
-        } catch { return false; }
+        } catch (qe) {
+          // Real reason (25MB cap / session memory full) — not a vague fail.
+          toast.error(`Photo couldn't be saved offline: ${qe?.message || "storage unavailable"}`);
+          return null;
+        }
       };
       const uploadOne = async (file) => {
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -4708,7 +4709,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
             const transient = offline || (err.response.status >= 500);
             if (transient && attempt === 0) { await new Promise((res) => setTimeout(res, 900)); continue; }
             // Offline (no response even after the retry): queue, never drop.
-            if (offline && await queuePhotoOffline(file)) return { id: null, queued: true };
+            if (offline) {
+              const rec = await queuePhotoOffline(file);
+              if (rec) return { id: null, queued: true, memOnly: !!rec._memoryOnly };
+            }
             return { id: null, err };
           }
         }
@@ -4721,6 +4725,10 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
       const trayIds = results.map((r) => r.id).filter(Boolean);
       const queued = results.filter((r) => r.queued).length;
       const failed = results.length - trayIds.length - queued;
+      const memOnly = results.filter((r) => r.memOnly).length;
+      if (memOnly > 0) {
+        toast.error(`${memOnly} photo${memOnly === 1 ? "" : "s"} saved for THIS SESSION only — keep the app open until you reconnect.`);
+      }
       if (!trayIds.length) {
         if (queued > 0) {
           // Nothing reached the server, but every failure was offline and is
@@ -5398,17 +5406,10 @@ function formatErr(e, action = "Action") {
  *  its original layout there.
  * ============================================================ */
 
-// Optional offline photo queue owned by the parallel offline agent
-// (lib/drPhotoQueue.js). We lazy-require it so this file compiles and
-// runs whether or not that module exists yet; when present we use
-// queuePhoto()/listPendingPhotos(). Mirrors the existing lazy-require
-// pattern used for lib/drOfflineSync above.
-function _photoQueue() {
-  try {
-    // eslint-disable-next-line global-require
-    return require("../lib/drPhotoQueue");
-  } catch { return null; }
-}
+// Round 5 (2026-07-06): the lazy-require _photoQueue() helper is gone —
+// lib/drPhotoQueue is imported statically at the top of this file. The
+// require() indirection meant a single import hiccup silently disabled the
+// offline photo queue ("Photo upload failed" instead of a local save).
 
 // Pill tint for an activity's rollup status (matches GridStatusPill vocab).
 function flowStatusOf(row) {
@@ -5504,8 +5505,6 @@ function GuidedDrFlow({
   const refreshQueueCount = useCallback(async () => {
     let total = 0;
     try {
-      // eslint-disable-next-line global-require
-      const { getQueue } = require("../lib/drOfflineSync");
       // Round 4 (2026-07-06): count only THIS report's queued requests —
       // the global queue size leaked onto every report's chip ("24 items
       // will sync" on a report never touched offline). Match on the report
@@ -5531,9 +5530,7 @@ function GuidedDrFlow({
       }).length;
     } catch { /* ignore */ }
     try {
-      // eslint-disable-next-line global-require
-      const vq = require("../lib/drVoiceQueue");
-      const clips = await vq.listPending(id);
+      const clips = await listPendingVoiceClips(id);
       total += (clips || []).length;
     } catch { /* ignore */ }
     try {
@@ -5544,11 +5541,8 @@ function GuidedDrFlow({
       setVoiceNotePending((noteClips || []).length);
     } catch { /* ignore */ }
     try {
-      const pq = _photoQueue();
-      if (pq && pq.listPendingPhotos) {
-        const pend = await pq.listPendingPhotos(id);
-        total += (pend || []).length;
-      }
+      const pend = await listPendingPhotos(id);
+      total += (pend || []).length;
     } catch { /* ignore */ }
     setQueueCount(total);
     // Child-id sets come from the live bundle props — refresh when they change.
@@ -5699,9 +5693,9 @@ function GuidedDrFlow({
     // offline — stash the bytes in lib/drPhotoQueue so they upload + tag to
     // this activity on reconnect, instead of silently losing the photo. Any
     // other error (validation / locked-add / server reject) still surfaces.
-    const pq = _photoQueue();
     let tagged = 0;
     let queued = 0;
+    let memOnly = 0;
     let hardErr = null;
     try {
       for (const rawFile of files) {
@@ -5728,9 +5722,11 @@ function GuidedDrFlow({
         } catch (e) {
           // No response object => network/offline. Never lose the photo:
           // queue it (tagged to THIS activity) for a reconnect drain.
-          if (!e?.response && pq?.queuePhoto) {
+          // queuePhoto itself can no longer throw for storage reasons —
+          // it falls back to an in-session memory queue (round 5).
+          if (!e?.response) {
             try {
-              await pq.queuePhoto({
+              const rec = await queuePhoto({
                 blob: file,
                 mimeType: file.type || "image/jpeg",
                 dailyReportId: id,
@@ -5742,9 +5738,15 @@ function GuidedDrFlow({
                 taskId: row.schedule_activity_id || null,
                 photoClass: "progress",
               });
-              queued += 1;
+              if (rec && rec._memoryOnly) memOnly += 1;
+              else queued += 1;
               continue;
-            } catch { /* fall through to hardErr */ }
+            } catch (qe) {
+              // Surface the REAL reason (25MB cap / memory full) — not the
+              // original network error, which read as an offline bug.
+              hardErr = qe;
+              continue;
+            }
           }
           hardErr = e;
         }
@@ -5752,6 +5754,11 @@ function GuidedDrFlow({
     } finally { setPhotoBusy(false); }
     if (queued > 0) {
       toast(`${queued} photo${queued === 1 ? "" : "s"} saved — will upload when you reconnect.`);
+    }
+    if (memOnly > 0) {
+      // Storage was blocked; the photo lives in session memory only — an
+      // honest warning, not the usual "saved" promise (a reload loses it).
+      toast.error(`${memOnly} photo${memOnly === 1 ? "" : "s"} saved for THIS SESSION only — keep the app open until you reconnect.`);
     }
     if (tagged > 0) { reload(); toast.success(`${tagged} photo${tagged === 1 ? "" : "s"} added.`); }
     if (hardErr) {

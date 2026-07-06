@@ -42,9 +42,18 @@ function notifyQueueChanged() {
   } catch { /* non-window env */ }
 }
 
-function openDb() {
+// Hardened like drPhotoQueue (2026-07-06): cached connection, one retry on
+// a failed open (iOS Safari flake right after a network flip / app switch),
+// self-heal when Safari closes the connection, and a last-resort in-session
+// memory queue so a recording is NEVER refused.
+function openDbOnce() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    let req;
+    try {
+      req = indexedDB.open(DB_NAME, DB_VERSION);
+    } catch (e) {
+      return reject(e);
+    }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
@@ -58,6 +67,47 @@ function openDb() {
   });
 }
 
+let _dbPromise = null;
+function openDb() {
+  if (_dbPromise) return _dbPromise;
+  const p = openDbOnce().catch(
+    () => new Promise((r) => setTimeout(r, 300)).then(() => openDbOnce()),
+  );
+  _dbPromise = p;
+  p.then((db) => {
+    try {
+      // Identity-guarded resets — a stale handler must never wipe a newer
+      // healthy connection (reopen churn).
+      db.onclose = () => { if (_dbPromise === p) _dbPromise = null; };
+      db.onversionchange = () => {
+        try { db.close(); } catch { /* already closing */ }
+        if (_dbPromise === p) _dbPromise = null;
+      };
+    } catch { /* older engines */ }
+  }).catch(() => { if (_dbPromise === p) _dbPromise = null; });
+  return p;
+}
+
+// Safari can kill a connection WITHOUT firing onclose — every operation's
+// failure path drops the cache so the next call reopens fresh.
+function healDb() { _dbPromise = null; }
+
+// Bounded in-session memory fallback (see drPhotoQueue for the rationale).
+const _memPending = [];
+const MEM_MAX_BYTES = 150 * 1024 * 1024;
+let _memBytes = 0;
+
+async function _idbPut(record) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("tx aborted"));
+  });
+}
+
 export async function queueClip({
   dailyReportId, blob, mimeType, durationMs,
   // v7 voice notes (optional; absent for legacy intake clips):
@@ -67,7 +117,6 @@ export async function queueClip({
   if (blob.size > MAX_BLOB_BYTES) {
     throw new Error(`recording too large (${blob.size} > ${MAX_BLOB_BYTES}); record a shorter clip`);
   }
-  const db = await openDb();
   const id = `clip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const record = {
     id, dailyReportId, blob, mimeType,
@@ -76,12 +125,25 @@ export async function queueClip({
     retryCount: 0, lastError: null,
     target, kind, linkedEntityType, linkedEntityId,
   };
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(record);
-    tx.oncomplete = () => { notifyQueueChanged(); resolve(record); };
-    tx.onerror = () => reject(tx.error);
-  });
+  try {
+    await _idbPut(record);
+  } catch {
+    healDb(); // heal a dead cached connection, retry fresh
+    try {
+      await _idbPut(record);
+    } catch {
+      if (_memBytes + (blob.size || 0) > MEM_MAX_BYTES) {
+        throw new Error(
+          "offline storage is unavailable and session memory is full — reconnect to upload recordings",
+        );
+      }
+      record._memoryOnly = true; // storage blocked — keep it this session
+      _memPending.push(record);
+      _memBytes += blob.size || 0;
+    }
+  }
+  notifyQueueChanged();
+  return record;
 }
 
 /**
@@ -112,7 +174,7 @@ export async function listPendingNotes(dailyReportId = null) {
   return all.filter((c) => c.target === "annotate");
 }
 
-export async function listPending(dailyReportId = null) {
+async function _idbList(dailyReportId) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readonly");
@@ -125,32 +187,74 @@ export async function listPending(dailyReportId = null) {
   });
 }
 
-export async function removeClip(id) {
+export async function listPending(dailyReportId = null) {
+  let rows = [];
+  try {
+    rows = await _idbList(dailyReportId);
+  } catch {
+    healDb(); // dead cached connection: heal + retry so the queue can't go invisible
+    try { rows = await _idbList(dailyReportId); } catch { rows = []; }
+  }
+  const mem = dailyReportId
+    ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
+    : [..._memPending];
+  return [...rows, ...mem];
+}
+
+async function _idbDelete(id) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => { notifyQueueChanged(); resolve(); };
+    tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
+export async function removeClip(id) {
+  const i = _memPending.findIndex((r) => r.id === id);
+  if (i >= 0) {
+    _memBytes -= (_memPending[i].blob && _memPending[i].blob.size) || 0;
+    if (_memBytes < 0) _memBytes = 0;
+    _memPending.splice(i, 1);
+  }
+  try {
+    await _idbDelete(id);
+  } catch {
+    // Heal + retry — a swallowed delete would re-post this clip on every
+    // later drain (duplicate voice-note rows server-side).
+    healDb();
+    try { await _idbDelete(id); } catch { /* memory-only entry or IDB dead */ }
+  }
+  notifyQueueChanged();
+}
+
 export async function markClipFailed(id, errMsg) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    const store = tx.objectStore(STORE);
-    const getReq = store.get(id);
-    getReq.onsuccess = () => {
-      const r = getReq.result;
-      if (!r) return resolve();
-      r.retryCount = (r.retryCount || 0) + 1;
-      r.lastError = String(errMsg || "").slice(0, 500);
-      store.put(r);
-    };
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  const mem = _memPending.find((r) => r.id === id);
+  if (mem) {
+    mem.retryCount = (mem.retryCount || 0) + 1;
+    mem.lastError = String(errMsg || "").slice(0, 500);
+    return;
+  }
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const r = getReq.result;
+        if (!r) return resolve();
+        r.retryCount = (r.retryCount || 0) + 1;
+        r.lastError = String(errMsg || "").slice(0, 500);
+        store.put(r);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    healDb(); // bookkeeping only — but heal so the NEXT operation recovers
+  }
 }
 
 /**
