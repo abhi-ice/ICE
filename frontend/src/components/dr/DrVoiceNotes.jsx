@@ -22,184 +22,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Square, Play, Pause, Loader2, CloudOff, Trash2 } from "lucide-react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
-// Offline-created DRs: a note recorded against a provisional "offline-dr-*"
-// id must wait for the request queue's drain to create the real report,
-// then post against the REAL id (otherwise the annotation orphans).
-import { resolveOfflineId, isUnresolvedOfflineId } from "../../lib/drOfflineSync";
-
-// ---------------- pending-note IndexedDB store ----------------
-// Hardened (round 5, 2026-07-06) exactly like lib/drPhotoQueue: cached
-// identity-guarded connection, one retry after 300ms (iOS Safari flakes the
-// first open after a network flip), heal-on-failure everywhere, and a
-// bounded in-session memory fallback — an offline recording is NEVER
-// refused by a storage flake.
-const DB_NAME = "ice-dr-voice-notes";
-const STORE = "pendingNotes";
-
-function openDbOnce() {
-  return new Promise((resolve, reject) => {
-    let req;
-    try {
-      req = indexedDB.open(DB_NAME, 1);
-    } catch (e) {
-      return reject(e);
-    }
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        const s = db.createObjectStore(STORE, { keyPath: "id" });
-        s.createIndex("by_dr", "dailyReportId", { unique: false });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-let _dbPromise = null;
-function openDb() {
-  if (_dbPromise) return _dbPromise;
-  const p = openDbOnce().catch(
-    () => new Promise((r) => setTimeout(r, 300)).then(() => openDbOnce()),
-  );
-  _dbPromise = p;
-  p.then((db) => {
-    try {
-      db.onclose = () => { if (_dbPromise === p) _dbPromise = null; };
-      db.onversionchange = () => {
-        try { db.close(); } catch { /* already closing */ }
-        if (_dbPromise === p) _dbPromise = null;
-      };
-    } catch { /* older engines */ }
-  }).catch(() => { if (_dbPromise === p) _dbPromise = null; });
-  return p;
-}
-function healDb() { _dbPromise = null; }
-
-const _memPending = [];
-const MEM_MAX_BYTES = 150 * 1024 * 1024;
-let _memBytes = 0;
-
-async function _idbPut(rec) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(rec);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error || new Error("tx aborted"));
-  });
-}
-
-async function queuePendingNote({ dailyReportId, blob, mimeType, durationSec }) {
-  const rec = {
-    id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    dailyReportId, blob, mimeType,
-    durationSec: durationSec || null,
-    createdAt: new Date().toISOString(),
-  };
-  try {
-    await _idbPut(rec);
-  } catch {
-    healDb();
-    try {
-      await _idbPut(rec);
-    } catch {
-      if (_memBytes + (blob.size || 0) > MEM_MAX_BYTES) {
-        throw new Error(
-          "offline storage is unavailable and session memory is full — reconnect to upload recordings",
-        );
-      }
-      rec._memoryOnly = true;
-      _memPending.push(rec);
-      _memBytes += blob.size || 0;
-    }
-  }
-  return rec;
-}
-
-async function _idbList(dailyReportId) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
-    const store = tx.objectStore(STORE);
-    const req = dailyReportId
-      ? store.index("by_dr").getAll(IDBKeyRange.only(dailyReportId))
-      : store.getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-export async function listPendingNotes(dailyReportId = null) {
-  let rows = [];
-  try {
-    rows = await _idbList(dailyReportId);
-  } catch {
-    healDb();
-    try { rows = await _idbList(dailyReportId); } catch { rows = []; }
-  }
-  const mem = dailyReportId
-    ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
-    : [..._memPending];
-  return [...rows, ...mem];
-}
-
-async function _idbDelete(id) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function removePendingNote(id) {
-  const i = _memPending.findIndex((r) => r.id === id);
-  if (i >= 0) {
-    _memBytes -= (_memPending[i].blob && _memPending[i].blob.size) || 0;
-    if (_memBytes < 0) _memBytes = 0;
-    _memPending.splice(i, 1);
-  }
-  try {
-    await _idbDelete(id);
-  } catch {
-    healDb(); // a swallowed delete would re-post the note (duplicates)
-    try { await _idbDelete(id); } catch { /* memory-only or IDB dead */ }
-  }
-}
-
-async function postNote(dailyReportId, blob, mimeType, durationSec) {
-  const fd = new FormData();
-  const ext = ((mimeType || "audio/webm").split("/")[1] || "webm").split(";")[0];
-  fd.append("file", blob, `note_${Date.now()}.${ext}`);
-  fd.append("kind", "voice_note");
-  fd.append("linked_entity_type", "daily_report");
-  fd.append("linked_entity_id", dailyReportId);
-  if (durationSec != null) fd.append("duration_sec", String(durationSec));
-  await api.post("/voice/annotate", fd, {
-    headers: { "Content-Type": "multipart/form-data" }, timeout: 120000,
-  });
-}
-
-// Drain every queued note (all reports). Returns count synced.
-export async function drainPendingNotes() {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return 0;
-  const pending = await listPendingNotes();
-  let synced = 0;
-  for (const n of pending) {
-    // Provisional report id with no server mapping yet: WAIT — posting now
-    // would orphan the note against a report id that will never exist.
-    if (isUnresolvedOfflineId(n.dailyReportId)) continue;
-    try {
-      await postNote(resolveOfflineId(n.dailyReportId), n.blob, n.mimeType, n.durationSec);
-      await removePendingNote(n.id);
-      synced += 1;
-    } catch { /* stays queued */ }
-  }
-  return synced;
-}
+// Voice-note offline queue lives in lib/drNoteQueue (round 7, 2026-07-06) so
+// it drains GLOBALLY — api.js runs it on page load, on reconnect, and on the
+// 60s heartbeat — instead of only while THIS component is mounted. That was
+// the field bug: a note recorded offline, then backing out to the DR list
+// (this component unmounts), then reconnecting, left the note un-synced and
+// invisible. listPendingNotes is re-exported for the DR page's sync chip.
+import { queuePendingNote, listPendingNotes, removePendingNote, drainNotes, postNote } from "../../lib/drNoteQueue";
+export { listPendingNotes };
 
 // ---------------- UI ----------------
 const fmtDur = (s) => {
@@ -272,9 +102,17 @@ export default function DrVoiceNotes({ reportId, notes = [], reload, allowRecord
   }, [reportId, onPendingChange]);
 
   useEffect(() => { refreshPending(); }, [refreshPending]);
+  // Keep the local pending list fresh when ANY queue drains globally (the
+  // 60s heartbeat may sync this report's note while we're mounted) — so the
+  // "will upload" row clears without waiting for a reconnect event.
+  useEffect(() => {
+    const onChanged = () => { refreshPending(); };
+    window.addEventListener("ice-offline-queue-changed", onChanged);
+    return () => window.removeEventListener("ice-offline-queue-changed", onChanged);
+  }, [refreshPending]);
   useEffect(() => {
     const drain = async () => {
-      const n = await drainPendingNotes();
+      const n = await drainNotes(api);
       if (n > 0) { toast.success(`${n} voice note${n === 1 ? "" : "s"} uploaded.`); reload?.(); }
       refreshPending();
     };
@@ -291,7 +129,7 @@ export default function DrVoiceNotes({ reportId, notes = [], reload, allowRecord
 
   const upload = useCallback(async (blob, mimeType, durationSec) => {
     try {
-      await postNote(reportId, blob, mimeType, durationSec);
+      await postNote(api, reportId, blob, mimeType, durationSec);
       toast.success("Voice note saved.");
       reload?.();
     } catch (e) {

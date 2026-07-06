@@ -133,8 +133,14 @@ installOfflineInterceptor(client);
 // endpoints (both are mutex-guarded, so a page-level drain can't race these).
 import { wireAutoDrain as wirePhotoDrain, drainQueue as drainPhotoQueue } from "./drPhotoQueue";
 import { wireAutoDrain as wireVoiceDrain, drainQueue as drainVoiceQueue } from "./drVoiceQueue";
+// Round 7 (2026-07-06): the guided-flow voice NOTES store (was trapped inside
+// the DrVoiceNotes component, draining only while mounted) is now a lib and
+// joins the global drains — a note recorded then abandoned to the DR list
+// still syncs.
+import { wireAutoDrain as wireNoteDrain, drainNotes } from "./drNoteQueue";
 wirePhotoDrain(client);
 wireVoiceDrain(client);
+wireNoteDrain(client);
 
 // Round 4 (2026-07-06) — DRAIN ON LOAD + HEARTBEAT. The queues previously
 // drained ONLY on the browser's offline->online transition event. Real field
@@ -152,9 +158,10 @@ function drainAllQueues() {
   try { if (!getToken()) return; } catch { /* proceed */ }
   try { if (getQueueSize() > 0) drainOfflineQueue(client).catch(() => {}); }
   catch { /* ignore */ }
-  // Photo/voice drains check their own IndexedDB stores internally.
+  // Photo/voice/note drains check their own IndexedDB stores internally.
   try { drainPhotoQueue(client).catch(() => {}); } catch { /* ignore */ }
   try { drainVoiceQueue(client).catch(() => {}); } catch { /* ignore */ }
+  try { drainNotes(client).catch(() => {}); } catch { /* ignore */ }
 }
 try {
   setTimeout(drainAllQueues, 4000);      // post-load (after token hydration)
