@@ -8,6 +8,7 @@
 // the caller into the supplement flow.
 import api from "./api";
 import { localTodayISO } from "./dateUtil";
+import { createDrOffline } from "./drOfflineCreate";
 
 // Local wall-clock date, NOT toISOString().slice (which is the UTC day and,
 // at ~8 PM Pacific, is already tomorrow -> the "+ New" button would open
@@ -17,10 +18,17 @@ function isoToday() { return localTodayISO(); }
 export async function resolveTodaysDr(projectId) {
   if (!projectId) throw new Error("projectId required");
   const today = isoToday();
-  const { data } = await api.post("/daily-reports", {
-    project_id: projectId, report_date: today,
-  });
-  return data;  // {id, report_date, status, ...}
+  try {
+    const { data } = await api.post("/daily-reports", {
+      project_id: projectId, report_date: today,
+    });
+    return data;  // {id, report_date, status, ...}
+  } catch (e) {
+    // Offline (no response at all): open a PROVISIONAL report instead of
+    // erroring — the queued create syncs + id-remaps on reconnect.
+    if (!e?.response) return createDrOffline(projectId, today);
+    throw e;
+  }
 }
 
 // Convenience wrapper: resolve today's DR + return the navigation URL

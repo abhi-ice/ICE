@@ -38,6 +38,11 @@ const DB_VERSION = 1;
 const STORE = "pendingPhotos";
 const MAX_BLOB_BYTES = 25 * 1024 * 1024; // matches backend /photo-tray 25MB cap
 
+// Offline-created DRs (2026-07-06): a photo queued against a provisional
+// "offline-dr-*" id can only upload after the request queue's drain has
+// created the real report and recorded the id mapping.
+import { resolveOfflineId, isUnresolvedOfflineId } from "./drOfflineSync";
+
 // Queue/remove dispatch this event so the flow landing's "N items will
 // sync" chip can live-update without polling.
 function notifyQueueChanged() {
@@ -301,8 +306,15 @@ async function _drainAll(api) {
   let synced = 0;
   let failed = 0;
   for (const photo of pending) {
+    // Provisional DR id with no server mapping yet: leave it queued (its
+    // create is still in the request queue) — a remap-ready event or the
+    // next 'online' drain picks it up once the mapping exists.
+    if (isUnresolvedOfflineId(photo.dailyReportId)) continue;
     try {
-      await uploadOne(api, photo);
+      await uploadOne(api, {
+        ...photo,
+        dailyReportId: resolveOfflineId(photo.dailyReportId),
+      });
       await removePhoto(photo.id);
       synced += 1;
     } catch (e) {
@@ -335,5 +347,13 @@ export function wireAutoDrain(api) {
   _wired = true;
   window.addEventListener("online", () => {
     drainQueue(api).catch(() => {});
+  });
+  // Re-drain when the request queue resolves offline-created DR ids: rows
+  // skipped as "unresolved" above become uploadable the moment the map lands.
+  // Chained twice: if a drain is already in flight (the mutex returns its
+  // promise), the second pass runs AFTER it with the fresh remap — otherwise
+  // the event would be swallowed by the stale in-flight drain.
+  window.addEventListener("ice-offline-remap-ready", () => {
+    drainQueue(api).then(() => drainQueue(api)).catch(() => {});
   });
 }

@@ -118,6 +118,15 @@ export default function EntityFromVoiceDialog({ open, onClose, voiceAnnotation }
       Object.keys(payload).forEach((k) => { if (payload[k] === null) delete payload[k]; });
       const apiPath = KIND_TO_API[kind];
       const { data } = await api.post(apiPath, payload);
+      // Offline (2026-07-06): the mutation queue resolves a network-failed
+      // create with {queued, _offline} and NO id — the entity syncs on
+      // reconnect, but there is no id to link the voice annotation to.
+      // Say so honestly instead of silently losing the link.
+      if (data?._offline) {
+        toast.success(`Saved offline — the ${kind.replace(/_/g, " ")} will sync when you're back online (voice link not attached).`);
+        onClose(data);
+        return;
+      }
       const linkType = ({
         delay: "delay",
         safety_event: "safety_event",

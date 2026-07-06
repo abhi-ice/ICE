@@ -181,9 +181,17 @@ export function drainQueue(api) {
 
 async function _drainAll(api) {
   if (!navigator.onLine) return { synced: 0, failed: 0, remaining: -1 };
+  // Offline-created DRs (2026-07-06): clips recorded against a provisional
+  // "offline-dr-*" id can only upload after the request queue's drain has
+  // created the real report and recorded the id mapping.
+  const { resolveOfflineId, isUnresolvedOfflineId } = await import("./drOfflineSync");
   const pending = await listPending();
   let synced = 0, failed = 0;
   for (const clip of pending) {
+    // No server mapping yet: leave it queued — the remap-ready event or the
+    // next 'online' drain retries once the DR create has replayed.
+    if (isUnresolvedOfflineId(clip.dailyReportId)) continue;
+    const drId = resolveOfflineId(clip.dailyReportId);
     try {
       const ext = (clip.mimeType || "audio/webm").split("/")[1] || "webm";
       const fd = new FormData();
@@ -193,7 +201,7 @@ async function _drainAll(api) {
         fd.append("kind", clip.kind || "work_item");
         if (clip.linkedEntityType && clip.linkedEntityId) {
           fd.append("linked_entity_type", clip.linkedEntityType);
-          fd.append("linked_entity_id", clip.linkedEntityId);
+          fd.append("linked_entity_id", resolveOfflineId(clip.linkedEntityId));
         }
         await api.post("/voice/annotate", fd, {
           headers: { "Content-Type": "multipart/form-data" }, timeout: 180000,
@@ -201,7 +209,7 @@ async function _drainAll(api) {
       } else {
         fd.append("audio", clip.blob, `voice_${clip.id}.${ext}`);
         await api.post(
-          `/daily-reports/${clip.dailyReportId}/voice/transcribe-and-extract`,
+          `/daily-reports/${drId}/voice/transcribe-and-extract`,
           fd,
           { headers: { "Content-Type": "multipart/form-data" }, timeout: 180000 },
         );
@@ -226,6 +234,13 @@ export function wireAutoDrain(api) {
   _wired = true;
   window.addEventListener("online", () => {
     drainQueue(api).catch(() => {});
+  });
+  // Re-drain when the request queue resolves offline-created DR ids: clips
+  // skipped as "unresolved" above become uploadable once the map lands.
+  // Chained twice so an already-in-flight drain (whose pass predates the
+  // remap) can't swallow the event — the second pass sees the fresh map.
+  window.addEventListener("ice-offline-remap-ready", () => {
+    drainQueue(api).then(() => drainQueue(api)).catch(() => {});
   });
 }
 

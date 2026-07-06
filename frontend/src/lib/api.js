@@ -64,6 +64,20 @@ function cacheKeyFor(cfg) {
   return `${getActiveTenantId() || "anon"}|${uri}`;
 }
 
+// Offline DR create (2026-07-06) — plant/read GET-cache entries under the
+// SAME tenant-scoped key convention the read-through interceptor uses, so a
+// provisionally-created report renders offline exactly like a cached one.
+export function primeOfflineGet(url, data) {
+  try { putCached(cacheKeyFor({ url }), data, 200); } catch { /* best-effort */ }
+}
+
+export async function readCachedGet(url) {
+  try {
+    const row = await getCached(cacheKeyFor({ url }));
+    return row ? row.data : null;
+  } catch { return null; }
+}
+
 client.interceptors.response.use(
   (resp) => {
     try {

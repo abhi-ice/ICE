@@ -31,7 +31,10 @@
 const DB_NAME = "ice-dr-getcache";
 const DB_VERSION = 1;
 const STORE = "responses";
-const MAX_ENTRIES = 50;
+// 300 (2026-07-06, was 50): the DR list now PREFETCHES recent reports'
+// /context bundles for offline use — ~10 bundles plus lists/projects/tasks
+// blew straight through 50 and LRU-evicted the very data just warmed.
+const MAX_ENTRIES = 300;
 
 // Substring allow-list. A GET whose url contains ANY of these is cached on
 // success and served from cache on offline failure. Kept deliberately broad
