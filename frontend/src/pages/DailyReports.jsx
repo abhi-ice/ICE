@@ -95,6 +95,10 @@ import { COMMON_TRADES, LockedReasonCard, isFlowReasonValid } from "../component
 // v7 voice notes (spec D) — voice-note-as-record (kind="voice_note", NO
 // transcription/extraction pipeline) + IndexedDB offline queue + playback.
 import DrVoiceNotes, { listPendingNotes as listPendingVoiceNotes } from "../components/dr/DrVoiceNotes";
+// Desktop guided view (2026-07-12) — 1:1 build of the approved
+// ICE-DR-guided.html mockup: accordion activity cards + guided prompt
+// dialogs, wired to the same endpoints as the mobile flow.
+import DrGuidedDesktop from "../components/dr/DrGuidedDesktop";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
@@ -1208,6 +1212,45 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         submitNoWorkDay={submitNoWorkDay}
         approve={approve}
         onDownloadPdf={downloadPdf}
+      />
+    );
+  }
+
+  // ---- DESKTOP GUIDED VIEW (2026-07-12) --------------------------------
+  // 100%-identical build of the approved ICE-DR-guided.html mockup.
+  // The legacy panel layout below is kept intact behind this return for
+  // reference/rollback — flip USE_GUIDED_DESKTOP to false to restore it.
+  const USE_GUIDED_DESKTOP = true;
+  if (USE_GUIDED_DESKTOP) {
+    return (
+      <DrGuidedDesktop
+        id={id}
+        report={report}
+        project={project}
+        grid={grid}
+        presence={presence}
+        photos={photos}
+        voiceAnnotations={voice_annotations}
+        delays={delays}
+        safetyEvents={safety_events}
+        qcIssues={qc_issues}
+        rfis={rfis}
+        deliveries={deliveries}
+        locked={locked}
+        reload={reload}
+        onBack={onBack}
+        busy={busy}
+        submit={submit}
+        submitNoWorkDay={submitNoWorkDay}
+        noWorkModal={noWorkModal}
+        setNoWorkModal={setNoWorkModal}
+        approve={approve}
+        onDownloadPdf={downloadPdf}
+        onDownloadClientTemplate={downloadClientTemplate}
+        clientTemplatePresent={!!templateMeta?.present}
+        submitRowErrors={submitRowErrors}
+        online={online}
+        queueSize={queueSize}
       />
     );
   }
