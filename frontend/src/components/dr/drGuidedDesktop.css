@@ -55,14 +55,13 @@ html[data-theme="dark"] .drgx, html.dark .drgx{
 .drgx .none{color:var(--muted);font-size:16px}
 .drgx .hint{color:var(--muted);font-size:14px;margin-top:6px}
 
-/* ---------- report header ---------- */
-.drgx .rephead{background:var(--surface);border-bottom:1px solid var(--border)}
-.drgx .top-in{max-width:980px;margin:0 auto;padding:20px 24px;
-  display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap}
+/* ---------- report header — a regular card, same width/rhythm as the rest ---------- */
+.drgx .rhcard{padding:18px 28px 20px}
+.drgx .rhcard .rhrow{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap}
 .drgx .kicker{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--brand-primary-strong);margin-bottom:4px}
+  color:var(--brand-primary-strong);margin-bottom:2px}
 .drgx .proj h1{font-size:25px}
-.drgx .proj .addr{color:var(--muted);font-size:16px;margin-top:3px}
+.drgx .proj .addr{color:var(--muted);font-size:16px;margin-top:2px}
 .drgx .saved{margin-left:auto;color:var(--brand-primary-strong);font-size:14px;font-weight:600;
   padding-bottom:4px;white-space:nowrap}
 

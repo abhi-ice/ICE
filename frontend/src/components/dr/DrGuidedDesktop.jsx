@@ -224,7 +224,8 @@ export default function DrGuidedDesktop({
   const voiceNotes = useMemo(() => (voiceAnnotations || []).filter((v) => v.kind === "voice_note"), [voiceAnnotations]);
   const issueBags = { delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents };
 
-  const model = useMemo(() => cardRows.map((r) => {
+  const [model, unplannedModel] = useMemo(() => {
+    const build = (r) => {
     const sod = r.pct_complete_start_of_day ?? 0;
     const pct = pctDraft[r.id] !== undefined ? pctDraft[r.id] : (r.pct_complete_end_of_day ?? sod);
     const crew = (presence || []).filter((p) => p.schedule_activity_id && p.schedule_activity_id === r.schedule_activity_id);
@@ -241,13 +242,19 @@ export default function DrGuidedDesktop({
       || crew.length > 0 || issues.length > 0 || rowPhotos.length > 0;
     return { row: r, sod, pct, crew, rowPhotos, issues, gate, overridden, gateBlocked, planned, updated,
       status: gateBlocked ? { cls: "blocker", word: "Blocked" } : statusOf(r, pct) };
+    };
+    // Unplanned (AF) rows get the SAME full card model — the backend gives
+    // them a real schedule task, so progress/crew/issues/photos all work
+    // exactly like planned activities (mobile parity). They render under
+    // the Unplanned work section and stay out of the "N of M" count.
+    return [cardRows.map(build), unplannedRows.map(build)];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [cardRows, presence, photos, delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents, pctDraft, overrides, touched]);
+  }, [cardRows, unplannedRows, presence, photos, delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents, pctDraft, overrides, touched]);
 
   const updatedCount = model.filter((m) => m.updated).length;
-  const taskOpts = useMemo(() => cardRows
+  const taskOpts = useMemo(() => activities
     .filter((r) => r.schedule_activity_id)
-    .map((r) => ({ name: r.activity_description, id: r.schedule_activity_id, done: (r.auto_status || r.status_at_end_of_day) === "complete" })), [cardRows]);
+    .map((r) => ({ name: r.activity_description, id: r.schedule_activity_id, done: (r.auto_status || r.status_at_end_of_day) === "complete" })), [activities]);
 
   const lockedReasonOk = isFlowReasonValid(lockedReason);
   const needReason = () => {
@@ -1047,24 +1054,23 @@ export default function DrGuidedDesktop({
 
   return (
     <div className="drgx" data-testid="drgx-desktop">
-      {/* ============ report header ============ */}
-      <div className="rephead">
-        <div className="top-in">
-          <div className="proj">
-            <div className="kicker">
-              <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 12, letterSpacing: ".08em", fontWeight: 700, textTransform: "uppercase" }}
-                onClick={onBack} data-testid="drgx-back">&larr; Daily report</button>
-            </div>
-            <h1>{project?.name || "Daily report"}</h1>
-            <div className="addr">
-              {[project?.client_name, project?.contractor_name, dateSub].filter(Boolean).join(" · ")}
-            </div>
-          </div>
-          <div className="saved">Saved automatically</div>
-        </div>
-      </div>
-
       <div className="wrap">
+        {/* ============ report header — a normal card, same width as the rest ============ */}
+        <div className="card rhcard" data-testid="drgx-header">
+          <div className="rhrow">
+            <div className="proj">
+              <div className="kicker">
+                <button className="btn link" style={{ padding: 0, minHeight: 0, fontSize: 12, letterSpacing: ".08em", fontWeight: 700, textTransform: "uppercase" }}
+                  onClick={onBack} data-testid="drgx-back">&larr; Daily report</button>
+              </div>
+              <h1>{project?.name || "Daily report"}</h1>
+              <div className="addr">
+                {[project?.client_name, project?.contractor_name, dateSub].filter(Boolean).join(" · ")}
+              </div>
+            </div>
+            <div className="saved">Saved automatically</div>
+          </div>
+        </div>
         {(!online || queueSize > 0) && (
           <div className="card" style={{ borderColor: "var(--open-line)", background: "var(--open-bg)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", color: "var(--open-fg)", fontWeight: 600 }}>
@@ -1138,18 +1144,14 @@ export default function DrGuidedDesktop({
         <div className="card" data-testid="drgx-unplanned">
           <div className="sec-title">Unplanned work</div>
           <div className="sec-sub">Did the crew do something that wasn't on the schedule? Log it here. The office will review it.</div>
-          <div className="listgap">
-            {unplannedRows.length === 0
-              ? <div className="none" style={{ padding: "4px 0 10px" }}>Nothing logged yet.</div>
-              : unplannedRows.map((u) => (
-                <div className="urow" key={u.id}>
-                  <span style={{ flex: 1 }}>{u.activity_description}</span>
-                  {(u.trade_code || u.location_name) ? <span className="utag">{u.trade_code || u.location_name}</span> : null}
-                </div>
-              ))}
-          </div>
+          {unplannedModel.length === 0 && (
+            <div className="none" style={{ padding: "4px 0 14px" }}>Nothing logged yet.</div>
+          )}
           <button className="btn ghost" onClick={() => openFlow(FLOW_unplanned())}>Add unplanned activity</button>
         </div>
+        {/* Each unplanned item is a FULL activity card (progress, crew,
+            issues & deliveries, photos) — same as the mobile flow. */}
+        {unplannedModel.map(renderCard)}
 
         {/* ============ Voice notes (site-wide) ============ */}
         <div className="card" data-testid="drgx-voice">
@@ -1183,7 +1185,6 @@ export default function DrGuidedDesktop({
           {!locked && (
             <button className="btn link" onClick={() => openFlow(FLOW_nowork())}>File as no-work day</button>
           )}
-          <button className="btn small" onClick={() => onDownloadPdf("internal")}>&#11015; PDF</button>
           <div style={{ position: "relative" }}>
             <div className={`exportmenu${exportOpen ? " show" : ""}`}>
               <button onClick={() => { setExportOpen(false); onDownloadPdf("internal"); }}>Internal</button>
