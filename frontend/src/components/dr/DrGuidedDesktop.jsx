@@ -958,11 +958,6 @@ export default function DrGuidedDesktop({
               <div className="progmeta">was {m.sod}%{m.planned != null ? ` · planned ${m.planned}%` : ""}</div>
               <input type="range" className="progrange" min="0" max="100" step="5" value={m.pct}
                 disabled={gateLockedUi} onChange={(e) => setProg(m, e.target.value, false)} />
-              <div className="quick">
-                {[["Nothing yet", 0], ["A little", 25], ["Halfway", 50], ["Most of it", 75], ["All done", 100]].map(([q, v]) => (
-                  <button key={q} disabled={gateLockedUi} onClick={() => setProg(m, v, true)}>{q}</button>
-                ))}
-              </div>
             </div>
             <div className="ra" />
           </div>

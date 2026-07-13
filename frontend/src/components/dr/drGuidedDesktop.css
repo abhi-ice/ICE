@@ -149,11 +149,6 @@ html[data-theme="dark"] .drgx, html.dark .drgx{
 .drgx .progval.zero{color:var(--muted)}
 .drgx .progmeta{color:var(--muted);font-size:14px;margin:6px 0 4px}
 .drgx .progrange{width:100%;max-width:540px;display:block;margin:12px 0 12px;height:14px;accent-color:var(--brand-primary)}
-.drgx .quick{display:flex;gap:10px;flex-wrap:wrap;max-width:600px}
-.drgx .quick button{flex:1;min-width:92px;min-height:46px;border:1px solid var(--border);
-  background:var(--input-bg);color:var(--fg);border-radius:var(--radius-btn);font-size:15px;font-weight:600}
-.drgx .quick button:hover{border-color:var(--brand-primary)}
-.drgx .quick button:disabled{cursor:not-allowed}
 
 /* crew + issue chips on the card */
 .drgx .chiprow{display:flex;flex-wrap:wrap;gap:10px;padding-top:2px}
