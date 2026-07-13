@@ -102,15 +102,31 @@ function savedToast(res, msg) {
   if (res?.data?._offline) toast.success(`${msg} — saved offline, will sync when you reconnect.`);
   else toast.success(msg);
 }
-function listIssuesForTask(taskId, { delays, safetyEvents, qcIssues, rfis, deliveries }) {
+// Chip text mirrors what the mockup baked in at creation time:
+// "what · Severity", "subject · Priority", "vendor (PO n)" etc.
+const capWords = (s) => String(s || "").replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+function listIssuesForTask(taskId, { delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents }) {
   if (!taskId) return [];
   const has = (x) => Array.isArray(x?.linked_task_ids) && x.linked_task_ids.includes(taskId);
   const out = [];
-  (delays || []).filter(has).forEach((x) => out.push({ key: `d${x.id}`, kind: "Delay", cls: "prob", text: x.description }));
-  (rfis || []).filter(has).forEach((x) => out.push({ key: `r${x.id}`, kind: "RFI", cls: "info", text: x.subject }));
-  (safetyEvents || []).filter(has).forEach((x) => out.push({ key: `s${x.id}`, kind: "Safety", cls: "prob", text: x.description }));
-  (qcIssues || []).filter(has).forEach((x) => out.push({ key: `q${x.id}`, kind: "QC", cls: "prob", text: x.description }));
-  (deliveries || []).filter(has).forEach((x) => out.push({ key: `v${x.id}`, kind: "Delivery", cls: "ok", text: x.description || x.vendor }));
+  (delays || []).filter(has).forEach((x) => out.push({
+    key: `d${x.id}`, kind: "Delay", cls: "prob",
+    text: `${trunc(x.description, 44)}${x.severity ? ` · ${capWords(x.severity)}` : ""}` }));
+  (rfis || []).filter(has).forEach((x) => out.push({
+    key: `r${x.id}`, kind: "RFI", cls: "info",
+    text: `${trunc(x.subject, 44)}${x.priority ? ` · ${capWords(x.priority)}` : ""}` }));
+  (safetyEvents || []).filter(has).forEach((x) => out.push({
+    key: `s${x.id}`, kind: "Safety", cls: "prob",
+    text: x.event_type ? `${capWords(x.event_type)}${x.severity ? ` · ${capWords(x.severity)}` : ""}` : trunc(x.description, 44) }));
+  (qcIssues || []).filter(has).forEach((x) => out.push({
+    key: `q${x.id}`, kind: "QC", cls: "prob",
+    text: `${capWords(x.severity) || trunc(x.description, 44)}${x.rework_duration_days ? ` · rework ${x.rework_duration_days}d` : ""}` }));
+  (deliveries || []).filter(has).forEach((x) => out.push({
+    key: `v${x.id}`, kind: "Delivery", cls: "ok",
+    text: `${x.vendor || x.description || ""}${x.po_number ? ` (PO ${x.po_number})` : ""}` }));
+  (coordEvents || []).filter(has).forEach((x) => out.push({
+    key: `c${x.id}`, kind: "Coord", cls: "info",
+    text: `${capWords(x.topic)}${x.summary ? ` · ${trunc(x.summary, 36)}` : ""}` }));
   return out;
 }
 function statusOf(row, pct) {
@@ -138,6 +154,9 @@ const WeatherIcon = () => (
   <svg className="sun" viewBox="0 0 48 48" aria-hidden="true">
     <circle cx="17" cy="20" r="9" fill="#f2c14e" />
     <path d="M8 34a9 9 0 0 1 1-18 12 12 0 0 1 23 2 8 8 0 0 1-2 16z" fill="#cdd8e2" />
+    <line x1="16" y1="40" x2="14" y2="45" stroke="#9aa1a8" strokeWidth="3" strokeLinecap="round" />
+    <line x1="26" y1="40" x2="24" y2="45" stroke="#9aa1a8" strokeWidth="3" strokeLinecap="round" />
+    <line x1="36" y1="40" x2="34" y2="45" stroke="#9aa1a8" strokeWidth="3" strokeLinecap="round" />
   </svg>
 );
 
@@ -161,6 +180,8 @@ export default function DrGuidedDesktop({
   const [aiOpen, setAiOpen] = useState(() => new Set());
   const [reviews, setReviews] = useState([]);
   const [aiBusy, setAiBusy] = useState(false);
+  const [touched, setTouched] = useState(() => new Set()); // rowIds interacted with this session (mockup's touch())
+  const [coordEvents, setCoordEvents] = useState([]);
   const [overrides, setOverrides] = useState({});   // rowId -> reason (gate unlocked this session)
   const [ovOpen, setOvOpen] = useState({});          // rowId -> bool (override box revealed)
   const [ovDraft, setOvDraft] = useState({});        // rowId -> draft reason text
@@ -179,13 +200,31 @@ export default function DrGuidedDesktop({
     } catch (e) { return reportDate; }
   }, [reportDate]);
 
+  const touch = useCallback((rowId) => {
+    setTouched((p) => { if (p.has(rowId)) return p; const n = new Set(p); n.add(rowId); return n; });
+  }, []);
+
+  // Coordination events aren't in the /context bundle — fetch them so a
+  // logged Coord shows up as a chip on its activity (mockup parity).
+  const loadCoords = useCallback(async () => {
+    try {
+      const r = await api.get(`/coordination-events`, { params: { project_id: project?.id } });
+      const rows = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
+      setCoordEvents(rows.filter((x) => x.linked_daily_report_id === id));
+    } catch (e) { /* endpoint variant — chips simply stay absent */ }
+  }, [id, project?.id]);
+  useEffect(() => { loadCoords(); }, [loadCoords]);
+
   /* ---------- per-activity model ---------- */
   const activities = useMemo(() => (grid || []).filter((r) => gridSectionOf(r.work_category) === 2), [grid]);
   const unplannedRows = useMemo(() => activities.filter((r) => (r.activity_code || "").startsWith("AF")), [activities]);
+  // Mockup containment: unplanned items live ONLY in the Unplanned work
+  // card — they are not activity cards and don't count toward "N of M".
+  const cardRows = useMemo(() => activities.filter((r) => !(r.activity_code || "").startsWith("AF")), [activities]);
   const voiceNotes = useMemo(() => (voiceAnnotations || []).filter((v) => v.kind === "voice_note"), [voiceAnnotations]);
-  const issueBags = { delays, safetyEvents, qcIssues, rfis, deliveries };
+  const issueBags = { delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents };
 
-  const model = useMemo(() => activities.map((r) => {
+  const model = useMemo(() => cardRows.map((r) => {
     const sod = r.pct_complete_start_of_day ?? 0;
     const pct = pctDraft[r.id] !== undefined ? pctDraft[r.id] : (r.pct_complete_end_of_day ?? sod);
     const crew = (presence || []).filter((p) => p.schedule_activity_id && p.schedule_activity_id === r.schedule_activity_id);
@@ -195,17 +234,20 @@ export default function DrGuidedDesktop({
     const overridden = !!overrides[r.id];
     const gateBlocked = !!(gate && gate.locked && !overridden && (gate.max_pct ?? 0) <= sod);
     const planned = r.planned_pct_complete ?? r.planned_pct ?? null;
-    const updated = (r.pct_complete_end_of_day != null && r.pct_complete_end_of_day !== sod)
+    // Mockup's touch(): ANY interaction this session counts as updated,
+    // in addition to persisted signals.
+    const updated = touched.has(r.id)
+      || (r.pct_complete_end_of_day != null && r.pct_complete_end_of_day !== sod)
       || crew.length > 0 || issues.length > 0 || rowPhotos.length > 0;
     return { row: r, sod, pct, crew, rowPhotos, issues, gate, overridden, gateBlocked, planned, updated,
       status: gateBlocked ? { cls: "blocker", word: "Blocked" } : statusOf(r, pct) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [activities, presence, photos, delays, safetyEvents, qcIssues, rfis, deliveries, pctDraft, overrides]);
+  }), [cardRows, presence, photos, delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents, pctDraft, overrides, touched]);
 
   const updatedCount = model.filter((m) => m.updated).length;
-  const taskOpts = useMemo(() => activities
+  const taskOpts = useMemo(() => cardRows
     .filter((r) => r.schedule_activity_id)
-    .map((r) => ({ name: r.activity_description, id: r.schedule_activity_id, done: (r.auto_status || r.status_at_end_of_day) === "complete" })), [activities]);
+    .map((r) => ({ name: r.activity_description, id: r.schedule_activity_id, done: (r.auto_status || r.status_at_end_of_day) === "complete" })), [cardRows]);
 
   const lockedReasonOk = isFlowReasonValid(lockedReason);
   const needReason = () => {
@@ -268,6 +310,7 @@ export default function DrGuidedDesktop({
       toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
     }
     if (n < 0) n = 0;
+    touch(m.row.id);
     setPctDraft((p) => ({ ...p, [m.row.id]: n }));
     clearTimeout(commitTimers.current[m.row.id]);
     commitTimers.current[m.row.id] = setTimeout(() => commitPct(m, n), immediate ? 0 : 650);
@@ -301,6 +344,7 @@ export default function DrGuidedDesktop({
         daily_report_id: id, ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Add crew")); throw e; });
       savedToast(res, "Crew added.");
+      touch(m.row.id);
       reload();
     },
   });
@@ -344,7 +388,8 @@ export default function DrGuidedDesktop({
         impact_start_date: a.starts || reportDate || localTodayISO(),
         ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Log delay")); throw e; });
-      savedToast(res, "Delay logged");
+      savedToast(res, "Delay logged.");
+      touch(m.row.id);
       reload();
     },
   });
@@ -376,7 +421,8 @@ export default function DrGuidedDesktop({
         impact_start_date: a.sstart || reportDate || localTodayISO(),
         ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Raise RFI")); throw e; });
-      savedToast(res, "RFI raised");
+      savedToast(res, "RFI logged.");
+      touch(m.row.id);
       reload();
     },
   });
@@ -399,7 +445,8 @@ export default function DrGuidedDesktop({
         linked_task_ids: m.row.schedule_activity_id ? [m.row.schedule_activity_id] : [],
         ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Log safety")); throw e; });
-      savedToast(res, "Safety event logged");
+      savedToast(res, "Safety logged.");
+      touch(m.row.id);
       reload();
     },
   });
@@ -428,7 +475,8 @@ export default function DrGuidedDesktop({
           ? { rework_duration_days: Number(a.rw) || 0, rework_duration_basis: (a.basis || "").trim() } : {}),
         ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Log QC")); throw e; });
-      savedToast(res, "QC issue logged");
+      savedToast(res, "QC logged.");
+      touch(m.row.id);
       reload();
     },
   });
@@ -443,8 +491,7 @@ export default function DrGuidedDesktop({
                  { k: "po", label: "PO #", t: "text", ph: "e.g. 4471" }] },
       { q: "Tasks consuming this delivery", gloss: "Pick every task that will use it.",
         fields: [{ k: "tasks", label: "Tasks consuming this delivery", t: "multichips", req: 1,
-          opts: taskOpts.map((t) => ({ label: t.name, value: t.id })),
-          def: m.row.schedule_activity_id ? [m.row.schedule_activity_id] : [] }] },
+          opts: taskOpts.map((t) => ({ label: t.name, value: t.id })) }] },
     ],
     onSave: async (a) => {
       if (needReason()) throw new Error("reason");
@@ -453,7 +500,8 @@ export default function DrGuidedDesktop({
         vendor: a.vendor.trim(), description: a.what_d.trim(), po_number: (a.po || "").trim() || null,
         linked_task_ids: a.tasks, ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Log delivery")); throw e; });
-      savedToast(res, "Delivery logged");
+      savedToast(res, "Delivery logged.");
+      touch(m.row.id);
       reload();
     },
   });
@@ -480,7 +528,7 @@ export default function DrGuidedDesktop({
       { q: "More details (for the office) — optional", optional: 1,
         gloss: "Skip this if you're not sure — the office can fill it in later.",
         fields: [{ k: "when", label: "When", mini: "(when the conversation happened)", t: "datetime",
-                   def: `${reportDate}T14:00` },
+                   def: `${reportDate}T14:35` },
                  { k: "ctrade", label: "Trade", t: "chips", opts: OPT.coordTrade },
                  { k: "detail", label: "Detail", t: "textarea", ph: "A longer narrative — what was discussed, what was agreed, next steps." },
                  { k: "ltasks", label: "Linked tasks (optional)", t: "multichips",
@@ -493,7 +541,7 @@ export default function DrGuidedDesktop({
         : (m.row.schedule_activity_id ? [m.row.schedule_activity_id] : []);
       const res = await api.post(`/coordination-events`, {
         project_id: project.id, linked_daily_report_id: id,
-        occurred_at: a.when || `${reportDate}T12:00`,
+        occurred_at: a.when || `${reportDate}T14:35`,
         channel: a.chan, direction: a.dir,
         other_party_name: a.party.trim(), other_party_org: (a.org || "").trim() || null,
         other_party_role: null, other_party_email: null, other_party_phone: null,
@@ -503,8 +551,10 @@ export default function DrGuidedDesktop({
         linked_task_ids: linked, trade_code: a.ctrade || null,
         ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Log coordination")); throw e; });
-      savedToast(res, "Coordination logged");
+      savedToast(res, "Coord logged.");
+      touch(m.row.id);
       reload();
+      loadCoords();
     },
   });
 
@@ -540,6 +590,7 @@ export default function DrGuidedDesktop({
           await api.patch(`/photos/${tag.data.id}`, { caption: cap }).catch(() => {});
         }
         toast.success("Photo added.");
+        touch(m.row.id);
         reload();
       } catch (e) {
         if (!e?.response) {
@@ -549,6 +600,7 @@ export default function DrGuidedDesktop({
             activityRowId: m.row.id, taskId: m.row.schedule_activity_id, photoClass,
           });
           toast.success("Photo saved offline — it will upload when you reconnect.");
+          touch(m.row.id);
           reload();
           return;
         }
@@ -628,16 +680,20 @@ export default function DrGuidedDesktop({
   });
 
   /* ---------- photos: pin / delete / AI ---------- */
-  const togglePin = (photoId) => setPinned((p) => {
-    const n = new Set(p);
-    if (n.has(photoId)) n.delete(photoId); else n.add(photoId);
-    return n;
-  });
-  const deletePhoto = async (photoId) => {
+  const togglePin = (rowId, photoId) => {
+    touch(rowId);
+    setPinned((p) => {
+      const n = new Set(p);
+      if (n.has(photoId)) n.delete(photoId); else n.add(photoId);
+      return n;
+    });
+  };
+  const deletePhoto = async (rowId, photoId) => {
     if (locked && !lockedReasonOk) { toast.error("This report is submitted — enter the edit reason at the top first."); return; }
     try {
       await api.delete(`/photo-tags/${photoId}`);
       toast.success("Photo removed.");
+      touch(rowId);
       reload();
     } catch (e) { toast.error(fmtErr(e, "Remove photo")); }
   };
@@ -647,7 +703,14 @@ export default function DrGuidedDesktop({
       setReviews(Array.isArray(r.data) ? r.data : []);
     } catch (e) { /* silent */ }
   }, [id]);
+  // Mockup parity: the AI button TOGGLES the box. First open (no review
+  // yet) runs the analysis; after that, clicking just shows/hides it.
   const runAI = async (m) => {
+    if (aiOpen.has(m.row.id)) {
+      setAiOpen((p) => { const n = new Set(p); n.delete(m.row.id); return n; });
+      return;
+    }
+    if (reviews.length) { setAiOpen((p) => new Set(p).add(m.row.id)); return; }
     const ids = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id);
     if (!ids.length) { toast.error("Pin at least one photo to analyze."); return; }
     setAiBusy(true);
@@ -655,7 +718,7 @@ export default function DrGuidedDesktop({
       await api.post(`/photo-tray/review`, { tray_ids: ids, lens: "combined", daily_report_id: id });
       await loadReviews();
       setAiOpen((p) => new Set(p).add(m.row.id));
-      toast.success("AI analysis complete.");
+      touch(m.row.id);
     } catch (e) { toast.error(fmtErr(e, "AI analysis")); }
     finally { setAiBusy(false); }
   };
@@ -737,7 +800,7 @@ export default function DrGuidedDesktop({
             <div className="sumrow"><span className="sl">Weather</span>
               <span className="sv">{report?.weather_conditions
                 ? `${report.weather_conditions}${report.weather_temp_high_f != null ? `, high ${Math.round(report.weather_temp_high_f)}°F` : ""}`
-                : "Not set"}</span></div>
+                : "Not set."}</span></div>
             {model.map((mm) => (
               <div className="sumrow" key={mm.row.id}>
                 <span className="sl">{mm.row.activity_description}</span>
@@ -758,7 +821,6 @@ export default function DrGuidedDesktop({
                   <b>{mm.row.activity_description}</b>{" "}
                   <button className="sedit" onClick={() => {
                     setDlg(null);
-                    setOpenActId(mm.row.id);
                     setTimeout(() => {
                       const el = document.getElementById(`drgx-act-${mm.row.id}`);
                       if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); el.classList.add("hilite"); setTimeout(() => el.classList.remove("hilite"), 1800); }
@@ -783,14 +845,18 @@ export default function DrGuidedDesktop({
     });
   };
 
-  /* close export/notes popovers on outside click */
+  /* close export/notes popovers on outside click + Escape (mockup parity) */
   useEffect(() => {
     const onDoc = (e) => {
       if (!e.target.closest(".exportmenu") && !e.target.closest("[data-export-toggle]")) setExportOpen(false);
       if (!e.target.closest(".notespop") && !e.target.closest("[data-notes-toggle]")) setNotesOpen(false);
     };
+    const onKey = (e) => {
+      if (e.key === "Escape") { setExportOpen(false); setNotesOpen(false); }
+    };
     document.addEventListener("click", onDoc);
-    return () => document.removeEventListener("click", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("click", onDoc); document.removeEventListener("keydown", onKey); };
   }, []);
 
   const greenLabel = report.status === "approved" ? "Export PDF"
@@ -865,6 +931,7 @@ export default function DrGuidedDesktop({
                     <button className="btn small accent" disabled={(ovDraft[r.id] || "").trim().length < 8}
                       onClick={() => {
                         setOverrides((p) => ({ ...p, [r.id]: (ovDraft[r.id] || "").trim() }));
+                        touch(r.id);
                         toast.success("Noted for the office — progress unlocked.");
                       }}>Unlock progress</button>
                   </div>
@@ -901,11 +968,11 @@ export default function DrGuidedDesktop({
                 <div className="chiprow">
                   {m.crew.map((c) => (
                     <span className="crewchip" key={c.id}>
-                      {[c.company_name, c.trade].filter(Boolean).join(" · ")} · {c.headcount} × {c.hours_per_person}h
+                      {[c.company_name || "(company not named)", c.trade].filter(Boolean).join(" · ")} · {c.headcount} × {c.hours_per_person}h
                       {c.notes ? ` · “${trunc(c.notes, 22)}”` : ""}
                       <button className="cx" title="Remove" onClick={async () => {
                         if (needReason()) return;
-                        try { await api.delete(`/daily-presence/${c.id}`); toast.success("Crew removed"); reload(); }
+                        try { await api.delete(`/daily-presence/${c.id}`); touch(m.row.id); reload(); }
                         catch (e2) { toast.error(fmtErr(e2, "Remove crew")); }
                       }}>&times;</button>
                     </span>
@@ -925,7 +992,7 @@ export default function DrGuidedDesktop({
               {m.issues.length === 0 ? <span className="none">Nothing logged on this activity yet.</span> : (
                 <div className="chiprow">
                   {m.issues.map((p) => (
-                    <span key={p.key} className={`lchip ${p.cls}`}>{p.kind}: {trunc(p.text, 60)}</span>
+                    <span key={p.key} className={`lchip ${p.cls}`}>{p.kind}: {p.text}</span>
                   ))}
                 </div>
               )}
@@ -945,9 +1012,9 @@ export default function DrGuidedDesktop({
                     <AuthThumb photoId={p.id} />
                     <span className="pins">
                       <button type="button" className={`iconbtn${pinned.has(p.id) ? " on" : ""}`}
-                        title={pinned.has(p.id) ? "Unpin" : "Pin"} onClick={() => togglePin(p.id)}>&#128204;</button>
+                        title={pinned.has(p.id) ? "Unpin" : "Pin"} onClick={() => togglePin(r.id, p.id)}>&#128204;</button>
                       <button type="button" className="iconbtn del" title="Remove photo"
-                        onClick={() => deletePhoto(p.id)}>&#128465;</button>
+                        onClick={() => deletePhoto(r.id, p.id)}>&#128465;</button>
                     </span>
                     {p.caption ? <span className="pcap">{p.caption}</span> : <span />}
                     {pinned.has(p.id) && <span className="pintag">Pinned</span>}
@@ -1077,7 +1144,7 @@ export default function DrGuidedDesktop({
               : unplannedRows.map((u) => (
                 <div className="urow" key={u.id}>
                   <span style={{ flex: 1 }}>{u.activity_description}</span>
-                  {u.location_name ? <span className="utag">{u.location_name}</span> : null}
+                  {(u.trade_code || u.location_name) ? <span className="utag">{u.trade_code || u.location_name}</span> : null}
                 </div>
               ))}
           </div>

@@ -192,7 +192,7 @@ function FieldInput({ fd, value, showDone, onSet, onToggleDone, solo }) {
   }
 }
 
-function FlowRunner({ flow, fromChooser, onClose }) {
+function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
   const [answers, setAnswers] = useState(() => {
     const a = {};
     flow.steps.forEach((s) => s.fields.forEach((fd) => { if (fd.def !== undefined) a[fd.k] = fd.def; }));
@@ -244,6 +244,13 @@ function FlowRunner({ flow, fromChooser, onClose }) {
     if (dirtyRef.current && !confirm) { setConfirm(true); return; }
     onClose();
   };
+
+  // Backdrop clicks (mockup parity): a clean flow closes, a dirty flow
+  // shows the in-page confirm strip. The overlay bumps closeReq.
+  useEffect(() => {
+    if (closeReq > 0) requestClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeReq]);
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
@@ -372,6 +379,8 @@ function FlowRunner({ flow, fromChooser, onClose }) {
 }
 
 export default function GuidedDialog({ session, onClose }) {
+  const [closeReq, setCloseReq] = useState(0);
+  useEffect(() => { setCloseReq(0); }, [session]);
   useEffect(() => {
     if (!session || session.kind === "flow") return undefined;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -381,10 +390,14 @@ export default function GuidedDialog({ session, onClose }) {
 
   if (!session) return null;
   return (
-    <div className="goverlay show" onClick={(e) => { if (e.target === e.currentTarget && session.kind !== "flow") onClose(); }}>
+    <div className="goverlay show" onClick={(e) => {
+      if (e.target !== e.currentTarget) return;
+      if (session.kind === "flow") setCloseReq((c) => c + 1);
+      else onClose();
+    }}>
       {session.kind === "flow" ? (
         <FlowRunner key={session.flowKey || session.flow.title} flow={session.flow}
-          fromChooser={session.fromChooser} onClose={onClose} />
+          fromChooser={session.fromChooser} onClose={onClose} closeReq={closeReq} />
       ) : (
         <div className="gdlg" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
           <div className="ghead">

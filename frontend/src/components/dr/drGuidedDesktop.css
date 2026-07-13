@@ -61,7 +61,7 @@ html[data-theme="dark"] .drgx, html.dark .drgx{
   display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap}
 .drgx .kicker{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
   color:var(--brand-primary-strong);margin-bottom:4px}
-.drgx .proj h1{font-size:25px;line-height:1.3}
+.drgx .proj h1{font-size:25px}
 .drgx .proj .addr{color:var(--muted);font-size:16px;margin-top:3px}
 .drgx .saved{margin-left:auto;color:var(--brand-primary-strong);font-size:14px;font-weight:600;
   padding-bottom:4px;white-space:nowrap}
