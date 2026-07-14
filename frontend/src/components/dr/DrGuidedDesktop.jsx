@@ -9,6 +9,7 @@
 // inside an activity card. Every form fills through the guided prompt
 // dialog (GuidedDialog.jsx) one question at a time.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Sparkles, Loader2, Pencil, Copy as CopyIcon, RefreshCw, Trash2 } from "lucide-react";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 import { getUser } from "../../lib/auth";
@@ -186,13 +187,13 @@ export default function DrGuidedDesktop({
   const crewDelBusy = useRef(new Set());
   const [notesText, setNotesText] = useState(report?.notes || "");
   const [pinned, setPinned] = useState(() => new Set());
-  const [aiOpen, setAiOpen] = useState(() => new Set());
+  // Photo AI reviews — same model + endpoints + UI as the mobile flow's
+  // FlowPhotos. `reviews` is a flat list of {id,lens,severity,label,text,n,
+  // ids,time}; each card renders the reviews whose photos it owns.
   const [reviews, setReviews] = useState([]);
-  const [aiBusy, setAiBusy] = useState(false);
-  // rowId -> {review, ids} — the review THIS card's pinned set produced, so
-  // an open box never swaps to another card's analysis, and toggling the
-  // box open/closed never re-bills a fresh AI run for the same pinned set.
-  const [aiByRow, setAiByRow] = useState({});
+  const [runningRowId, setRunningRowId] = useState(null); // card whose analysis is in flight
+  const [collapsedIds, setCollapsedIds] = useState(() => new Set()); // review ids collapsed to one line
+  const [dialogId, setDialogId] = useState(null);        // review id open in the edit dialog
   const [touched, setTouched] = useState(() => new Set()); // rowIds interacted with this session (mockup's touch())
   const [coordEvents, setCoordEvents] = useState([]);
   const [overrides, setOverrides] = useState({});   // rowId -> reason (gate unlocked this session)
@@ -852,7 +853,7 @@ export default function DrGuidedDesktop({
     });
   };
 
-  /* ---------- photos: pin / delete / AI ---------- */
+  /* ---------- photos: pin / delete ---------- */
   const togglePin = (rowId, photoId) => {
     touch(rowId);
     setPinned((p) => {
@@ -866,96 +867,96 @@ export default function DrGuidedDesktop({
     try {
       await api.delete(`/photo-tags/${photoId}`);
       toast.success("Photo removed.");
-      // A deleted photo can't stay pinned, and an analysis that included it
-      // is stale — drop this card's cached review so the next run is fresh.
-      setPinned((p) => {
-        if (!p.has(photoId)) return p;
-        const n = new Set(p); n.delete(photoId); return n;
-      });
-      setAiByRow((p) => {
-        if (!p[rowId] || !p[rowId].ids.split(",").includes(photoId)) return p;
-        const n = { ...p }; delete n[rowId]; return n;
-      });
-      setAiOpen((p) => {
-        if (!p.has(rowId)) return p;
-        const n = new Set(p); n.delete(rowId); return n;
-      });
       touch(rowId);
       reload();
     } catch (e) { toast.error(fmtErr(e, "Remove photo")); }
   };
-  const loadReviews = useCallback(async () => {
-    try {
-      const r = await api.get(`/daily-reports/${id}/photo-reviews`);
-      setReviews(Array.isArray(r.data) ? r.data : []);
-    } catch (e) { /* silent */ }
-  }, [id]);
-  // The AI button TOGGLES the box. A fresh analysis runs only when THIS
-  // card's pinned set changed since its last run — reopening the box is
-  // free, and each card's box always shows the review ITS photos produced.
-  const runAI = async (m) => {
-    if (aiOpen.has(m.row.id)) {
-      setAiOpen((p) => { const n = new Set(p); n.delete(m.row.id); return n; });
-      return;
-    }
-    const ids = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id).sort().join(",");
-    const prior = aiByRow[m.row.id];
-    if (!ids) {
-      if (prior) { setAiOpen((p) => new Set(p).add(m.row.id)); return; }
-      toast.error("Pin at least one photo to analyze.");
-      return;
-    }
-    if (prior && prior.ids === ids && prior.review) {
-      setAiOpen((p) => new Set(p).add(m.row.id));
-      return;
-    }
-    setAiBusy(true);
-    try {
-      // The POST response IS the review — never depend on a follow-up read
-      // (a billed run must not become unreachable because a later GET blips).
-      const res = await api.post(`/photo-tray/review`, { tray_ids: ids.split(","), lens: "combined", daily_report_id: id });
-      const review = res?.data && (res.data.text || res.data.label) ? res.data : null;
-      if (!review) { toast.error("AI analysis ran but returned nothing readable — try again."); return; }
-      setReviews((p) => [review, ...p]);
-      setAiByRow((p) => ({ ...p, [m.row.id]: { review, ids } }));
-      setAiOpen((p) => new Set(p).add(m.row.id));
-      touch(m.row.id);
-    } catch (e) { toast.error(fmtErr(e, "AI analysis")); }
-    finally { setAiBusy(false); }
-  };
-  useEffect(() => { loadReviews(); }, [loadReviews]);
-
-  // Rehydrate billed AI reviews the server already persisted, so a refresh or
-  // next-day reopen shows the analysis instead of an empty box that tempts the
-  // super into re-running (and re-billing) the identical pinned set. A review
-  // is DR-scoped with photo_ids (the same ids runAI keys on); map each to the
-  // card that owns those photos. Seed ONCE — never on later reloads — so it
-  // can't resurrect a review the super invalidated by deleting a photo, and so
-  // a fresh in-session run always wins over the persisted one.
-  const reviewsRehydrated = useRef(false);
+  // Prune pins to the live gallery whenever photos change (a deleted photo must
+  // not linger pinned and get sent to the next review). Mirrors mobile.
   useEffect(() => {
-    if (reviewsRehydrated.current) return;
-    if (!reviews.length || !(photos || []).length) return;
-    reviewsRehydrated.current = true;
-    const rowOfPhoto = {};
-    (photos || []).forEach((p) => { if (p.daily_report_activity_id) rowOfPhoto[p.id] = p.daily_report_activity_id; });
-    setAiByRow((prev) => {
-      const next = { ...prev };
-      // reviews arrive newest-first; walk oldest-first so the newest per card wins.
-      for (let i = reviews.length - 1; i >= 0; i--) {
-        const rev = reviews[i];
-        const pids = Array.isArray(rev.photo_ids) ? rev.photo_ids : [];
-        if (!pids.length) continue;
-        const rows = new Set(pids.map((pid) => rowOfPhoto[pid]).filter(Boolean));
-        if (rows.size !== 1) continue;        // ambiguous or cross-row — don't guess
-        const rowId = [...rows][0];
-        if (prev[rowId]) continue;            // an in-session run already owns this card
-        next[rowId] = { review: rev, ids: pids.slice().sort().join(",") };
-      }
-      return next;
+    setPinned((prev) => {
+      if (!prev.size) return prev;
+      const live = new Set((photos || []).map((p) => p.id));
+      const next = new Set([...prev].filter((pid) => live.has(pid)));
+      return next.size === prev.size ? prev : next;
     });
+  }, [photos]);
+
+  /* ---------- photo AI reviews (same model + endpoints + UI as the mobile flow) ---------- */
+  // Server review doc -> display shape. Identical to the mobile FlowPhotos.
+  const toReview = (d) => ({
+    id: d.id, lens: d.lens, severity: d.severity, label: d.label, text: d.text,
+    n: d.photo_count ?? (d.photo_ids || []).length, ids: d.photo_ids || [],
+    time: (() => {
+      try { return new Date(d.created_at || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+      catch { return ""; }
+    })(),
+  });
+  const sevCls = (s) => "rev-sev " + (s === "clear" ? "rev-sev--clear"
+    : (s === "critical" || s === "major") ? "rev-sev--crit" : "rev-sev--warn");
+  // The review that owns a photo -> the activity card that owns that photo.
+  const rowOfReview = useCallback((rev) => {
+    const pid = (rev.ids || [])[0];
+    const ph = (photos || []).find((p) => p.id === pid);
+    return ph?.daily_report_activity_id || null;
+  }, [photos]);
+  // Load persisted reviews on open so an analysis survives a refresh / re-open
+  // days later — never re-spend tokens to regenerate. Consumed directly.
+  useEffect(() => {
+    if (!id) return undefined;
+    let cancelled = false;
+    api.get(`/daily-reports/${id}/photo-reviews`)
+      .then(({ data }) => { if (!cancelled) setReviews((data || []).map(toReview)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviews, photos]);
+  }, [id]);
+  const runReview = async (m) => {
+    if (runningRowId) return;
+    const ids = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id);
+    if (!ids.length) { toast.error("Pin at least one photo to analyze."); return; }
+    setRunningRowId(m.row.id);
+    try {
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: ids, lens: "combined", daily_report_id: id });
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || ids }), ...r]);
+      touch(m.row.id);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || fmtErr(e, "AI analysis"));
+    } finally { setRunningRowId(null); }
+  };
+  const setReviewText = (rid, text) => setReviews((r) => r.map((x) => x.id === rid ? { ...x, text } : x));
+  // Copy the review text; only claim success if the clipboard actually took it
+  // (writeText rejects when the document isn't focused — handle it, don't leak
+  // an unhandled rejection or a lying "copied" toast).
+  const copyReview = (text) => {
+    const p = navigator.clipboard?.writeText(text);
+    if (p && typeof p.then === "function") {
+      p.then(() => toast.success("Review copied"))
+        .catch(() => toast.error("Couldn't copy automatically — select the text and copy it."));
+    } else {
+      toast.success("Review copied");
+    }
+  };
+  const deleteReview = async (rev) => {
+    try { await api.delete(`/photo-reviews/${rev.id}`); } catch { /* drop locally regardless */ }
+    setReviews((r) => r.filter((x) => x.id !== rev.id));
+    if (dialogId === rev.id) setDialogId(null);
+  };
+  // Retry re-runs the SAME photos and REPLACES the review (delete-first so a
+  // failed delete can't leave two persisted copies on the next mount).
+  const retryReview = async (rev, rowId) => {
+    if (runningRowId) return;
+    setRunningRowId(rowId || rowOfReview(rev) || rev.id);
+    try {
+      await api.delete(`/photo-reviews/${rev.id}`);
+      const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens || "combined", daily_report_id: id });
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
+      if (dialogId === rev.id) setDialogId(null);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || fmtErr(e, "Re-run"));
+    } finally { setRunningRowId(null); }
+  };
+  const dialogReview = reviews.find((r) => r.id === dialogId) || null;
 
   // The app shell's <main> is overflow-x:hidden, which (per spec) turns it
   // into the containing block for position:sticky while the real scroller
@@ -1155,9 +1156,11 @@ export default function DrGuidedDesktop({
     const rowErrs = (Array.isArray(rowErrRaw) ? rowErrRaw : rowErrRaw ? [rowErrRaw] : [])
       .map((e) => (typeof e === "string" ? e : e?.message || "Fix this row and resubmit."));
     const gateLockedUi = m.gateBlocked;
-    const pinnedCount = m.rowPhotos.filter((p) => pinned.has(p.id)).length;
-    // Show the review THIS card's run produced — never another card's.
-    const latestReview = aiByRow[r.id]?.review || null;
+    // This card owns the photos in m.rowPhotos; it shows the reviews whose
+    // photos are all its own, and its own pinned subset.
+    const rowPhotoIds = new Set(m.rowPhotos.map((p) => p.id));
+    const cardPinned = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id);
+    const cardReviews = reviews.filter((rev) => (rev.ids || []).length && (rev.ids || []).every((pid) => rowPhotoIds.has(pid)));
     return (
       <section key={r.id} id={`drgx-act-${r.id}`} data-testid={`drgx-act-${r.id}`}
         className={`card act${isOpen ? " open" : ""}`} onClick={(e) => cardClick(e, r.id)}>
@@ -1317,17 +1320,94 @@ export default function DrGuidedDesktop({
                 <button type="button" className="addphoto" onClick={() => openFlow(FLOW_photo(m))}>+ Add</button>
               </div>
               {m.rowPhotos.length > 0 && (
-                <>
-                  <button className="btn small aibtn" disabled={aiBusy} onClick={() => runAI(m)}>
-                    &#10024; {aiBusy ? "Analyzing…" : `AI analysis · ${pinnedCount} pinned`}
-                  </button>
-                  {aiOpen.has(r.id) && latestReview && (
-                    <div className="ai">
-                      <div className="h">&#10024; AI analysis</div>
-                      <div className="hint" style={{ marginTop: 6 }}>{latestReview.summary_text || latestReview.text || latestReview.label || "Analysis complete."}</div>
+                <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--v4-border)" }}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: "var(--v4-fg-primary)" }}>
+                      <span className="h-2 w-2 rounded-full" style={{ background: cardPinned.length ? "#10b981" : "var(--v4-fg-faint)" }} />
+                      {cardPinned.length} pinned
+                    </span>
+                    <button type="button" className="text-[11px] px-2 py-1 rounded border"
+                      style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
+                      onClick={() => setPinned((s) => { const n = new Set(s); m.rowPhotos.forEach((p) => n.add(p.id)); return n; })}>Pin all</button>
+                    <button type="button" className="text-[11px] px-2 py-1 rounded border"
+                      style={{ color: "var(--v4-fg-muted)", borderColor: "var(--v4-border)" }}
+                      onClick={() => setPinned((s) => { const n = new Set(s); m.rowPhotos.forEach((p) => n.delete(p.id)); return n; })}>Clear</button>
+                    <span className="flex-1" />
+                    <button type="button" data-testid="photo-review-run" disabled={runningRowId === r.id}
+                      title={cardPinned.length
+                        ? `Run AI safety + QC analysis on ${cardPinned.length} pinned photo${cardPinned.length !== 1 ? "s" : ""}`
+                        : "Pin one or more photos, then run AI safety + QC analysis"}
+                      onClick={() => runReview(m)} className="rev-analyze">
+                      {runningRowId === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      {runningRowId === r.id ? "Analyzing…" : "AI analysis"}
+                    </button>
+                  </div>
+
+                  {(cardReviews.length > 0 || runningRowId === r.id) && (
+                    <div className="mt-3 space-y-2">
+                      {runningRowId === r.id && (
+                        <div className="flex items-center gap-2 text-xs px-3 py-2 rounded"
+                          style={{ color: "var(--v4-fg-muted)", background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)" }}>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Foreman is analyzing {cardPinned.length} photo{cardPinned.length !== 1 ? "s" : ""} for safety &amp; QC…
+                        </div>
+                      )}
+                      {cardReviews.map((rev, idx) => {
+                        const full = idx === 0 && !collapsedIds.has(rev.id);
+                        if (!full) {
+                          return (
+                            <button key={rev.id} type="button" onClick={() => setDialogId(rev.id)}
+                              data-testid={`photo-review-mini-${rev.id}`}
+                              className="w-full flex items-center gap-2 text-left px-3 py-2 rounded text-xs"
+                              style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)" }}>
+                              <span className="inline-flex items-center gap-1 font-semibold shrink-0 rev-lens--ai">
+                                <Sparkles className="h-3.5 w-3.5" />AI
+                              </span>
+                              <span className={`shrink-0 ${sevCls(rev.severity)}`}>{rev.label}</span>
+                              <span className="flex-1 truncate" style={{ color: "var(--v4-fg-muted)" }}>{rev.text}</span>
+                              <span className="shrink-0" style={{ color: "var(--v4-fg-faint)" }}>{rev.n} photo{rev.n !== 1 ? "s" : ""} · {rev.time}</span>
+                              <span className="rev-open font-semibold shrink-0">Open ›</span>
+                            </button>
+                          );
+                        }
+                        return (
+                          <div key={rev.id} className="rounded overflow-hidden"
+                            style={{ background: "var(--v4-bg-surface-2)", border: "1px solid var(--v4-border)", borderLeft: "3px solid #6366f1" }}>
+                            <div className="flex items-center gap-2 px-3 py-2 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold rev-lens--ai">
+                                <Sparkles className="h-4 w-4" />AI analysis
+                              </span>
+                              <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {rev.n} photo{rev.n !== 1 ? "s" : ""}</span>
+                              <span className={sevCls(rev.severity)}>{rev.label}</span>
+                              <span className="ml-auto text-[11px]" style={{ color: "var(--v4-fg-faint)" }}>{rev.time}</span>
+                              <button type="button" title="Collapse" onClick={() => setCollapsedIds((s) => new Set(s).add(rev.id))}
+                                className="text-sm leading-none px-1" style={{ color: "var(--v4-fg-faint)" }}>▴</button>
+                            </div>
+                            <div className="px-3 py-2">
+                              <p className="text-[13px] leading-relaxed" style={{ color: "var(--v4-fg-primary)", whiteSpace: "pre-wrap" }}>{rev.text}</p>
+                              <div className="flex items-center gap-2 flex-wrap mt-3 pt-2" style={{ borderTop: "1px solid var(--v4-border)" }}>
+                                <button type="button" onClick={() => setDialogId(rev.id)} className="rev-btn rev-ghost">
+                                  <Pencil className="h-3.5 w-3.5" /> Edit
+                                </button>
+                                <button type="button" onClick={() => copyReview(rev.text)}
+                                  className="rev-btn rev-ghost">
+                                  <CopyIcon className="h-3.5 w-3.5" /> Copy
+                                </button>
+                                <button type="button" onClick={() => retryReview(rev, r.id)} disabled={!!runningRowId}
+                                  title="Re-run this review (replaces it)" className="rev-btn rev-ghost">
+                                  <RefreshCw className="h-3.5 w-3.5" /> Retry
+                                </button>
+                                <button type="button" onClick={() => deleteReview(rev)}
+                                  title="Delete this review" className="rev-btn rev-danger ml-auto">
+                                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
-                </>
+                </div>
               )}
             </div>
             <div className="ra">
@@ -1504,6 +1584,48 @@ export default function DrGuidedDesktop({
       </div>
 
       <GuidedDialog session={dlg} onClose={() => setDlg(null)} />
+
+      {/* Photo-review edit dialog — same edit/copy/retry/delete UI as mobile. */}
+      {dialogReview && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-6"
+          style={{ background: "rgba(0,0,0,.6)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setDialogId(null); }}>
+          <div className="w-full max-w-[560px] rounded-xl overflow-hidden"
+            style={{ background: "var(--v4-bg-surface)", border: "1px solid var(--v4-border)", boxShadow: "0 8px 28px rgba(0,0,0,.45)" }}>
+            <div className="flex items-center gap-2 px-4 py-3 flex-wrap" style={{ borderBottom: "1px solid var(--v4-border)" }}>
+              <span className="inline-flex items-center gap-1.5 text-sm font-bold rev-lens--ai">
+                <Sparkles className="h-4 w-4" />AI analysis
+              </span>
+              <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>· Foreman · {dialogReview.n} photo{dialogReview.n !== 1 ? "s" : ""}</span>
+              <span className={sevCls(dialogReview.severity)}>{dialogReview.label}</span>
+              <button type="button" onClick={() => setDialogId(null)} className="ml-auto text-base leading-none px-1"
+                style={{ color: "var(--v4-fg-faint)" }}>✕</button>
+            </div>
+            <div className="px-4 py-3">
+              <textarea value={dialogReview.text} data-testid="photo-review-edit"
+                onChange={(e) => setReviewText(dialogReview.id, e.target.value)}
+                rows={6} className="w-full rounded p-3 text-[13px] leading-relaxed dr-mp-input" />
+              <p className="text-[11px] mt-2" style={{ color: "var(--v4-fg-faint)" }}>
+                Edit the analysis here, then copy it — the “{dialogReview.label}” severity is kept with this review.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 px-4 py-3" style={{ borderTop: "1px solid var(--v4-border)" }}>
+              <button type="button" onClick={() => copyReview(dialogReview.text)}
+                className="rev-btn rev-ghost">
+                <CopyIcon className="h-3.5 w-3.5" /> Copy
+              </button>
+              <button type="button" onClick={() => retryReview(dialogReview)} disabled={!!runningRowId}
+                title="Re-run this review (replaces it)" className="rev-btn rev-ghost">
+                <RefreshCw className="h-3.5 w-3.5" /> Retry
+              </button>
+              <button type="button" onClick={() => deleteReview(dialogReview)}
+                title="Delete this review" className="rev-btn rev-danger ml-auto">
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
