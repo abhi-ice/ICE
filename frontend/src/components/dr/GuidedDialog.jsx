@@ -90,7 +90,7 @@ function FieldInput({ fd, value, showDone, onSet, onToggleDone, solo }) {
             const label = o.label || o;
             const val = o.value !== undefined ? o.value : o;
             return (
-              <button type="button" key={label} className={`${bcls}${value === val ? " sel" : ""}`}
+              <button type="button" key={`${label}::${String(val)}`} className={`${bcls}${value === val ? " sel" : ""}`}
                 onClick={() => onSet(fd.k, val)}>{label}</button>
             );
           })}
@@ -114,7 +114,7 @@ function FieldInput({ fd, value, showDone, onSet, onToggleDone, solo }) {
               if (q && !label.toLowerCase().includes(q)) return null;
               const sel = multi ? Array.isArray(value) && value.includes(val) : value === val;
               return (
-                <button type="button" key={label} className={`gchip${sel ? " sel" : ""}`}
+                <button type="button" key={`${label}::${String(val)}`} className={`gchip${sel ? " sel" : ""}`}
                   onClick={() => {
                     if (!multi) return onSet(fd.k, val);
                     let arr = Array.isArray(value) ? value.slice() : [];
@@ -202,8 +202,19 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
   const [confirm, setConfirm] = useState(false);
   const [showDone, setShowDone] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false); // guards Enter double-save (state is stale in the keydown closure)
   const dirtyRef = useRef(false);
   const bodyRef = useRef(null);
+  // If this runner unmounts while onSave is in flight (user closed it, or a
+  // new dialog replaced it), the late resolution must NOT call onClose —
+  // that would close whatever dialog the user has open NOW.
+  // Set true in the effect BODY (not just init) — StrictMode's simulated
+  // unmount runs the cleanup once on mount, and the ref must recover.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
 
   const vs = useMemo(() => flow.steps.filter((s) => !s.when || s.when(answers)), [flow, answers]);
   const idx = Math.min(i, vs.length);
@@ -217,11 +228,24 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
   const set = (k, v) => { dirtyRef.current = true; setAnswers((p) => ({ ...p, [k]: v })); };
 
   const next = async () => {
-    if (busy) return;
+    if (busy || busyRef.current) return;
     if (onSum) {
+      // A required step may have slid into view (or emptied) since the
+      // user last passed it — never save past an invalid visible step.
+      const firstInvalid = vs.findIndex((st) => !stepValid(st));
+      if (firstInvalid >= 0) { setI(firstInvalid); return; }
+      busyRef.current = true;
       setBusy(true);
-      try { await flow.onSave(answers); onClose(); }
-      catch (e) { setBusy(false); }
+      try {
+        // Submit only the answers belonging to VISIBLE steps — a value
+        // entered on a step whose when() later turned false must not leak.
+        const visKeys = new Set(vs.flatMap((st) => st.fields.map((fd) => fd.k)));
+        const cleaned = Object.fromEntries(Object.entries(answers).filter(([k]) => visKeys.has(k)));
+        await flow.onSave(cleaned);
+        if (aliveRef.current) onClose();
+      } catch (e) {
+        if (aliveRef.current) { busyRef.current = false; setBusy(false); }
+      }
       return;
     }
     if (!stepValid(s)) return;
@@ -241,14 +265,26 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
     setI(idx + 1);
   };
   const requestClose = () => {
-    if (dirtyRef.current && !confirm) { setConfirm(true); return; }
+    if (dirtyRef.current) {
+      // First request shows the confirm strip; further backdrop clicks /
+      // Escapes while it's showing do nothing — only the strip's explicit
+      // "Close" button discards (a double-click must not nuke answers).
+      if (!confirm) setConfirm(true);
+      return;
+    }
     onClose();
   };
 
   // Backdrop clicks (mockup parity): a clean flow closes, a dirty flow
-  // shows the in-page confirm strip. The overlay bumps closeReq.
+  // shows the in-page confirm strip. The overlay bumps closeReq; a ref of
+  // the last-seen value keeps a stale count from closing a NEW flow that
+  // mounts while closeReq > 0.
+  const seenCloseReq = useRef(closeReq);
   useEffect(() => {
-    if (closeReq > 0) requestClose();
+    if (closeReq !== seenCloseReq.current) {
+      seenCloseReq.current = closeReq;
+      requestClose();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closeReq]);
 
@@ -265,14 +301,19 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
     const onKey = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); requestClose(); return; }
       if (e.key === "Enter" && !confirm) {
-        if (e.target && e.target.tagName === "TEXTAREA") return;
-        if (canNext) { e.preventDefault(); next(); }
+        const t = e.target;
+        // Let focused controls act natively: buttons activate, the file
+        // picker opens, the chip filter keeps typing focus. Text inputs
+        // keep Enter-advances (the intended fast path).
+        if (t && (t.tagName === "TEXTAREA" || t.tagName === "BUTTON"
+          || (t.tagName === "INPUT" && t.type === "file") || t.closest(".gsearch"))) return;
+        if (canNext && !busyRef.current) { e.preventDefault(); next(); }
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canNext, confirm, onSum, idx, answers]);
+  }, [canNext, confirm, onSum, idx, answers, busy]);
 
   const summaryRows = () => {
     const rows = [];
@@ -283,7 +324,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
           <div className="sumrow" key={`s${si}`}>
             <span className="sl">{st.optional ? st.q : st.fields[0].label}</span>
             <span className="sv"><span className="none">{st.optional ? "Skipped" : "—"}</span></span>
-            <button className="sedit" onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
+            <button className="sedit" disabled={busy} onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
           </div>
         );
       } else {
@@ -297,7 +338,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
             <div className="sumrow" key={`s${si}-${fd.k}`}>
               <span className="sl">{fd.label}</span>
               <span className="sv">{dispVal(v)}</span>
-              <button className="sedit" onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
+              <button className="sedit" disabled={busy} onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
             </div>
           );
         });
@@ -362,7 +403,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
         )}
       </div>
       <div className="gfoot">
-        <button className="btn" disabled={idx === 0 && !fromChooser} onClick={back}>Back</button>
+        <button className="btn" disabled={busy || (idx === 0 && !fromChooser)} onClick={back}>Back</button>
         <div className="gprog">
           {idx + 1} of {total}
           <span className="dots">
@@ -381,6 +422,11 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
 export default function GuidedDialog({ session, onClose }) {
   const [closeReq, setCloseReq] = useState(0);
   useEffect(() => { setCloseReq(0); }, [session]);
+  // Every new session gets a fresh remount key even if the caller forgot
+  // flowKey — two same-titled flows must never share FlowRunner state.
+  const autoKey = useMemo(() => `gd-${Math.random().toString(36).slice(2)}`,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session]);
   useEffect(() => {
     if (!session || session.kind === "flow") return undefined;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -396,7 +442,7 @@ export default function GuidedDialog({ session, onClose }) {
       else onClose();
     }}>
       {session.kind === "flow" ? (
-        <FlowRunner key={session.flowKey || session.flow.title} flow={session.flow}
+        <FlowRunner key={session.flowKey || autoKey} flow={session.flow}
           fromChooser={session.fromChooser} onClose={onClose} closeReq={closeReq} />
       ) : (
         <div className="gdlg" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
