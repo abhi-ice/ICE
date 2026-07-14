@@ -1130,30 +1130,30 @@ export default function DrGuidedDesktop({
             Everything for each activity lives on its card — progress, crew, issues &amp; deliveries, photos.
           </div>
         </div>
-        {model.length === 0 && (
-          <div className="card"><span className="none">No activities scheduled today. Log unplanned work below, or file a no-work day.</span></div>
-        )}
-        {model.map(renderCard)}
+        <div className="actsgrid">
+          {model.length === 0
+            ? <div className="card emptyday"><span className="none">No activities scheduled today. Log unplanned work below, or file a no-work day.</span></div>
+            : model.map(renderCard)}
+        </div>
 
-        {/* ============ Unplanned work (site-wide) ============ */}
-        <div className="card" data-testid="drgx-unplanned">
-          <div className="sec-title">Unplanned work</div>
-          <div className="sec-sub">Did the crew do something that wasn't on the schedule? Log it here. The office will review it.</div>
-          {unplannedModel.length === 0 && (
-            <div className="none" style={{ padding: "4px 0 14px" }}>Nothing logged yet.</div>
-          )}
-          <button className="btn ghost" onClick={() => openFlow(FLOW_unplanned())}>Add unplanned activity</button>
+        {/* ============ Unplanned work + Voice notes (site-wide, paired) ============ */}
+        <div className="sitegrid">
+          <div className="card" data-testid="drgx-unplanned">
+            <div className="sec-title">Unplanned work</div>
+            <div className="sec-sub">Did the crew do something that wasn't on the schedule? Log it here. The office will review it.</div>
+            <button className="btn ghost" onClick={() => openFlow(FLOW_unplanned())}>Add unplanned activity</button>
+          </div>
+          <div className="card" data-testid="drgx-voice">
+            <div className="sec-title">Voice notes</div>
+            <div className="sec-sub">Prefer to talk instead of type? Record a short voice note.</div>
+            <DrVoiceNotes reportId={id} notes={voiceNotes} reload={reload} allowRecord />
+          </div>
         </div>
         {/* Each unplanned item is a FULL activity card (progress, crew,
             issues & deliveries, photos) — same as the mobile flow. */}
-        {unplannedModel.map(renderCard)}
-
-        {/* ============ Voice notes (site-wide) ============ */}
-        <div className="card" data-testid="drgx-voice">
-          <div className="sec-title">Voice notes</div>
-          <div className="sec-sub">Prefer to talk instead of type? Record a short voice note.</div>
-          <DrVoiceNotes reportId={id} notes={voiceNotes} reload={reload} allowRecord />
-        </div>
+        {unplannedModel.length > 0 && (
+          <div className="actsgrid">{unplannedModel.map(renderCard)}</div>
+        )}
       </div>
 
       {/* ============ sticky submit bar ============ */}

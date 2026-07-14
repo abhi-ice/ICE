@@ -15,6 +15,7 @@
   --blocker-bg:#fde8e8; --blocker-fg:#a3261a;
   --radius-card:6px; --radius-btn:4px; --radius-pill:999px;
   --shadow-card:0 1px 2px rgba(0,0,0,0.04); --shadow-hover:0 4px 14px rgba(0,0,0,0.06);
+  --shadow-lift:0 6px 22px rgba(0,0,0,0.10);
   --input-bg:#ffffff; --hover:#e0e4e8;
   --done-line:#c9e8d0; --open-line:#f0dcb8; --submitted-line:#c9def7;
   --blocker-line:#f2cfcb; --danger-line:#eccac6;
@@ -38,6 +39,7 @@ html[data-theme="dark"] .drgx, html.dark .drgx{
   --blocker-bg:rgba(163,38,26,.22); --blocker-fg:#f06a5d;
   --shadow-card:0 1px 0 rgba(255,255,255,0.02) inset;
   --shadow-hover:0 0 0 1px rgba(52,211,153,.18),0 6px 18px rgba(0,0,0,.35);
+  --shadow-lift:0 0 0 1px rgba(255,255,255,.06),0 10px 28px rgba(0,0,0,.45);
   --input-bg:#2a2a30; --hover:#3d3d45;
   --done-line:rgba(79,201,96,.35); --open-line:rgba(245,181,74,.35);
   --submitted-line:rgba(107,162,240,.35); --blocker-line:rgba(240,106,93,.35);
@@ -50,7 +52,27 @@ html[data-theme="dark"] .drgx, html.dark .drgx{
 .drgx *{box-sizing:border-box}
 .drgx h1,.drgx h2,.drgx h3{margin:0;font-weight:700}
 .drgx button{font:inherit;cursor:pointer}
-.drgx .wrap{max-width:980px;margin:0 auto;padding:0 24px 40px}
+.drgx .wrap{max-width:1720px;margin:0 auto;padding:0 32px 40px}
+/* Smart grid: collapsed cards flow 1 / 2 / 3 across by screen width; the
+   OPEN card always spans the full row and lifts. Cards in a row share a
+   height — the summary line sits at the card bottom so pills and titles
+   line up across the row. Unplanned intro + Voice notes pair side by side. */
+.drgx .actsgrid{display:grid;grid-template-columns:1fr;gap:20px;margin-top:24px}
+.drgx .actsgrid .card{margin-top:0}
+.drgx .actsgrid .act{display:flex;flex-direction:column}
+.drgx .actsgrid .act .asum{margin-top:auto}
+.drgx .actsgrid .act.open{grid-column:1/-1;box-shadow:var(--shadow-lift)}
+/* A lone card (or the empty-day notice) takes the full row — no
+   half-empty grid rows on light days. */
+.drgx .actsgrid .act:only-child,.drgx .actsgrid .emptyday{grid-column:1/-1}
+.drgx .sitegrid{display:grid;grid-template-columns:1fr;gap:20px;margin-top:24px}
+.drgx .sitegrid .card{margin-top:0}
+@media(min-width:1200px){
+  .drgx .actsgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .drgx .sitegrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(min-width:2000px){.drgx .actsgrid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:1400px){.drgx .arow{grid-template-columns:220px minmax(0,1fr) auto;gap:24px}}
 .drgx .req{color:var(--blocker-fg)}
 .drgx .none{color:var(--muted);font-size:16px}
 .drgx .hint{color:var(--muted);font-size:14px;margin-top:6px}
@@ -217,7 +239,7 @@ html[data-theme="dark"] .drgx .photo .pcap,html.dark .drgx .photo .pcap{backgrou
 main.drgx-host{overflow:visible!important}
 .drgx .submitbar{position:sticky;left:0;right:0;bottom:0;background:var(--surface);
   border-top:1px solid var(--border);box-shadow:0 -4px 16px rgba(0,0,0,.06);z-index:50;margin-top:26px}
-.drgx .submitbar .in{max-width:980px;margin:0 auto;padding:14px 24px;display:flex;
+.drgx .submitbar .in{max-width:1720px;margin:0 auto;padding:14px 32px;display:flex;
   align-items:center;gap:8px;flex-wrap:wrap}
 .drgx .submitbar .status{font-size:16px;color:var(--muted);margin-right:8px}
 .drgx .submitbar .status b{color:var(--fg)}
