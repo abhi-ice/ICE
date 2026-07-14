@@ -92,6 +92,13 @@ function gridSectionOf(cat) {
   return 2;
 }
 function trunc(s, n) { s = String(s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+// "YYYY-MM-DDTHH:mm" in LOCAL time for datetime-local inputs (mobile parity:
+// coordination defaults to when it's being logged, not a canned time).
+function nowLocalISO() {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
 function fmtErr(e, what) {
   const d = e?.response?.data?.detail;
   if (typeof d === "string") return `${what} failed: ${d}`;
@@ -207,11 +214,12 @@ export default function DrGuidedDesktop({
   // Coordination events aren't in the /context bundle — fetch them so a
   // logged Coord shows up as a chip on its activity (mockup parity).
   const loadCoords = useCallback(async () => {
+    if (!project?.id) return;
     try {
-      const r = await api.get(`/coordination-events`, { params: { project_id: project?.id } });
+      const r = await api.get(`/projects/${project.id}/coordination-events`);
       const rows = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
       setCoordEvents(rows.filter((x) => x.linked_daily_report_id === id));
-    } catch (e) { /* endpoint variant — chips simply stay absent */ }
+    } catch (e) { /* offline / older backend — chips simply stay absent */ }
   }, [id, project?.id]);
   useEffect(() => { loadCoords(); }, [loadCoords]);
 
@@ -233,6 +241,10 @@ export default function DrGuidedDesktop({
     const issues = listIssuesForTask(r.schedule_activity_id, issueBags);
     const gate = r.slider_gate;
     const overridden = !!overrides[r.id];
+    // A gate can be a hard predecessor lock (locked:true, cap <= SOD) or a
+    // soft FF/SF cap (locked may be false, max_pct < 100). Both clamp the
+    // slider; only the hard lock dims the whole progress row.
+    const capped = !!(gate && typeof gate.max_pct === "number" && gate.max_pct < 100 && !overridden);
     const gateBlocked = !!(gate && gate.locked && !overridden && (gate.max_pct ?? 0) <= sod);
     const planned = r.planned_pct_complete ?? r.planned_pct ?? null;
     // Mockup's touch(): ANY interaction this session counts as updated,
@@ -240,7 +252,7 @@ export default function DrGuidedDesktop({
     const updated = touched.has(r.id)
       || (r.pct_complete_end_of_day != null && r.pct_complete_end_of_day !== sod)
       || crew.length > 0 || issues.length > 0 || rowPhotos.length > 0;
-    return { row: r, sod, pct, crew, rowPhotos, issues, gate, overridden, gateBlocked, planned, updated,
+    return { row: r, sod, pct, crew, rowPhotos, issues, gate, overridden, capped, gateBlocked, planned, updated,
       status: gateBlocked ? { cls: "blocker", word: "Blocked" } : statusOf(r, pct) };
     };
     // Unplanned (AF) rows get the SAME full card model — the backend gives
@@ -291,7 +303,9 @@ export default function DrGuidedDesktop({
     const n = Math.round(Number(v));
     const fields = { pct_complete_end_of_day: n, task_last_modified_at: m.row.task_updated_at };
     const gate = m.row.slider_gate;
-    if (gate && gate.locked && n > Math.max(gate.max_pct ?? 0, m.sod) && overrides[m.row.id]) {
+    // Send the override reason on ANY increase past the gate cap — soft
+    // FF/SF caps are not `locked` but the server still enforces max_pct.
+    if (gate && typeof gate.max_pct === "number" && n > Math.max(gate.max_pct, m.sod) && overrides[m.row.id]) {
       fields.slider_gate_override_reason = overrides[m.row.id];
     }
     if (locked) {
@@ -310,7 +324,8 @@ export default function DrGuidedDesktop({
 
   const setProg = (m, v, immediate) => {
     const gate = m.row.slider_gate;
-    const effMax = m.overridden ? 100 : (gate && gate.locked ? Math.max(gate.max_pct ?? 100, m.sod) : 100);
+    const effMax = m.overridden ? 100
+      : (gate && typeof gate.max_pct === "number" && gate.max_pct < 100 ? Math.max(gate.max_pct, m.sod) : 100);
     let n = Math.round(Number(v));
     if (n > effMax) {
       n = effMax;
@@ -535,7 +550,7 @@ export default function DrGuidedDesktop({
       { q: "More details (for the office) — optional", optional: 1,
         gloss: "Skip this if you're not sure — the office can fill it in later.",
         fields: [{ k: "when", label: "When", mini: "(when the conversation happened)", t: "datetime",
-                   def: `${reportDate}T14:35` },
+                   def: nowLocalISO() },
                  { k: "ctrade", label: "Trade", t: "chips", opts: OPT.coordTrade },
                  { k: "detail", label: "Detail", t: "textarea", ph: "A longer narrative — what was discussed, what was agreed, next steps." },
                  { k: "ltasks", label: "Linked tasks (optional)", t: "multichips",
@@ -548,7 +563,7 @@ export default function DrGuidedDesktop({
         : (m.row.schedule_activity_id ? [m.row.schedule_activity_id] : []);
       const res = await api.post(`/coordination-events`, {
         project_id: project.id, linked_daily_report_id: id,
-        occurred_at: a.when || `${reportDate}T14:35`,
+        occurred_at: a.when || nowLocalISO(),
         channel: a.chan, direction: a.dir,
         other_party_name: a.party.trim(), other_party_org: (a.org || "").trim() || null,
         other_party_role: null, other_party_email: null, other_party_phone: null,
@@ -604,7 +619,8 @@ export default function DrGuidedDesktop({
           await queuePhoto({
             blob, mimeType: blob.type || file.type || "image/jpeg",
             dailyReportId: id, projectId: project.id,
-            activityRowId: m.row.id, taskId: m.row.schedule_activity_id, photoClass,
+            activityRowId: m.row.id, taskId: m.row.schedule_activity_id,
+            caption: (a.cap || "").trim() || null, photoClass,
           });
           toast.success("Photo saved offline — it will upload when you reconnect.");
           touch(m.row.id);
@@ -650,12 +666,21 @@ export default function DrGuidedDesktop({
   });
 
   // No-work flow hands its answers to the parent's state, then the parent's
-  // submitNoWorkDay (which reads that state) fires exactly once.
+  // submitNoWorkDay (which reads that state) fires exactly once. When the
+  // PARENT sets noWorkModal without __auto (submit of an empty DR 422s with
+  // empty_dr_requires_no_work_day), open the guided no-work flow so the
+  // super isn't dead-ended with just a toast.
+  const noworkBusy = useRef(false);
   useEffect(() => {
-    if (noWorkModal && noWorkModal.__auto) {
+    if (!noWorkModal) { noworkBusy.current = false; return; }
+    if (noWorkModal.__auto) {
+      noworkBusy.current = true;
       setNoWorkModal({ reason: noWorkModal.reason, note: noWorkModal.note });
       submitNoWorkDay(() => setNoWorkModal(null));
+      return;
     }
+    if (noworkBusy.current) return;
+    setDlg((cur) => cur || { kind: "flow", flow: FLOW_nowork(), flowKey: `nowork-${Date.now()}` });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noWorkModal]);
 
@@ -710,16 +735,21 @@ export default function DrGuidedDesktop({
       setReviews(Array.isArray(r.data) ? r.data : []);
     } catch (e) { /* silent */ }
   }, [id]);
-  // Mockup parity: the AI button TOGGLES the box. First open (no review
-  // yet) runs the analysis; after that, clicking just shows/hides it.
+  // The AI button TOGGLES the box. With photos pinned on THIS card it runs
+  // a fresh analysis of them; with nothing pinned it falls back to showing
+  // the report's latest review (never silently reuses another card's run
+  // when the user has pinned photos here).
   const runAI = async (m) => {
     if (aiOpen.has(m.row.id)) {
       setAiOpen((p) => { const n = new Set(p); n.delete(m.row.id); return n; });
       return;
     }
-    if (reviews.length) { setAiOpen((p) => new Set(p).add(m.row.id)); return; }
     const ids = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id);
-    if (!ids.length) { toast.error("Pin at least one photo to analyze."); return; }
+    if (!ids.length) {
+      if (reviews.length) { setAiOpen((p) => new Set(p).add(m.row.id)); return; }
+      toast.error("Pin at least one photo to analyze.");
+      return;
+    }
     setAiBusy(true);
     try {
       await api.post(`/photo-tray/review`, { tray_ids: ids, lens: "combined", daily_report_id: id });
@@ -895,7 +925,11 @@ export default function DrGuidedDesktop({
   const renderCard = (m) => {
     const r = m.row;
     const isOpen = openActId === r.id;
-    const rowErr = submitRowErrors && submitRowErrors[r.id];
+    // submitRowErrors[row.id] is an ARRAY of {row_id, message} objects —
+    // render the messages, never the raw objects (React child crash).
+    const rowErrRaw = submitRowErrors && submitRowErrors[r.id];
+    const rowErrs = (Array.isArray(rowErrRaw) ? rowErrRaw : rowErrRaw ? [rowErrRaw] : [])
+      .map((e) => (typeof e === "string" ? e : e?.message || "Fix this row and resubmit."));
     const gateLockedUi = m.gateBlocked;
     const pinnedCount = m.rowPhotos.filter((p) => pinned.has(p.id)).length;
     const latestReview = reviews.length ? reviews[0] : null;
@@ -912,7 +946,11 @@ export default function DrGuidedDesktop({
         </div>
         <div className="asum">{actSummary(m)}</div>
         <div className="abody">
-          {rowErr && <div className="waitplain"><span className="wdot" /><div>{rowErr}</div></div>}
+          {rowErrs.length > 0 && (
+            <div className="waitplain"><span className="wdot" />
+              <div>{rowErrs.map((msg, i) => <div key={i}>{msg}</div>)}</div>
+            </div>
+          )}
           {gateLockedUi && (
             <>
               <div className="waitplain">
@@ -945,6 +983,30 @@ export default function DrGuidedDesktop({
                 </div>
               )}
             </>
+          )}
+          {/* Soft FF/SF cap (not a hard lock): slider stays live but clamps
+              at the cap — give PM/admin the same in-page override path. */}
+          {!gateLockedUi && m.capped && canOverride && !ovOpen[r.id] && (
+            <button className="btn link" onClick={() => setOvOpen((p) => ({ ...p, [r.id]: true }))}>
+              Went past {Math.max(m.gate?.max_pct ?? 0, m.sod)}%? Unlock it &#9662;
+            </button>
+          )}
+          {!gateLockedUi && m.capped && canOverride && ovOpen[r.id] && (
+            <div className="ovbox">
+              <label className="f">Why is it okay to go past the cap? <span className="mini">(for the office)</span></label>
+              <input className="gi" placeholder="A few words so the office knows"
+                value={ovDraft[r.id] || ""}
+                onChange={(e) => setOvDraft((p) => ({ ...p, [r.id]: e.target.value }))} />
+              <div className="hint">At least 8 characters — one line is fine.</div>
+              <div style={{ marginTop: 12 }}>
+                <button className="btn small accent" disabled={(ovDraft[r.id] || "").trim().length < 8}
+                  onClick={() => {
+                    setOverrides((p) => ({ ...p, [r.id]: (ovDraft[r.id] || "").trim() }));
+                    touch(r.id);
+                    toast.success("Noted for the office — progress unlocked.");
+                  }}>Unlock progress</button>
+              </div>
+            </div>
           )}
           {m.overridden && (
             <div className="ovnote">Started early — noted for the office: &ldquo;{overrides[r.id]}&rdquo;</div>
