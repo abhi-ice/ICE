@@ -182,6 +182,8 @@ export default function DrGuidedDesktop({
   const [wx, setWx] = useState({});
   const [exportOpen, setExportOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [notesDirty, setNotesDirty] = useState(false);
+  const crewDelBusy = useRef(new Set());
   const [notesText, setNotesText] = useState(report?.notes || "");
   const [pinned, setPinned] = useState(() => new Set());
   const [aiOpen, setAiOpen] = useState(() => new Set());
@@ -217,10 +219,13 @@ export default function DrGuidedDesktop({
 
   // Coordination events aren't in the /context bundle — fetch them so a
   // logged Coord shows up as a chip on its activity (mockup parity).
+  const coordSeq = useRef(0);
   const loadCoords = useCallback(async () => {
     if (!project?.id) return;
+    const seq = ++coordSeq.current;
     try {
       const r = await api.get(`/projects/${project.id}/coordination-events`);
+      if (seq !== coordSeq.current) return; // a newer fetch superseded this one
       const rows = Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.items) ? r.data.items : []);
       setCoordEvents(rows.filter((x) => x.linked_daily_report_id === id));
     } catch (e) { /* offline / older backend — chips simply stay absent */ }
@@ -303,18 +308,46 @@ export default function DrGuidedDesktop({
   };
 
   /* ---------- progress ---------- */
-  // Optimistic-lock stamps: a successful PATCH bumps task_updated_at
-  // server-side; a second slide before reload() lands would carry a stale
-  // stamp and 409 against the user's own edit. Track the freshest known
-  // stamp per row and serialize commits per row behind reload().
+  // Draft lifecycle: a slider draft is the visible truth until the SERVER
+  // confirms the same value back through the grid (reload or 15s poll) —
+  // then it dissolves. This makes the display immune to stale poll
+  // responses, offline cache reads, and commits finishing out of order.
+  // Failures clear the draft only if it still belongs to that commit.
   const gridStamps = useRef({});
   useEffect(() => {
-    (grid || []).forEach((r) => { gridStamps.current[r.id] = r.task_updated_at; });
+    (grid || []).forEach((r) => {
+      // Stamps only move FORWARD (ISO strings compare lexically) — a stale
+      // poll response must never regress a fresher stamp.
+      const cur = gridStamps.current[r.id];
+      if (!cur || String(r.task_updated_at || "") > String(cur)) {
+        gridStamps.current[r.id] = r.task_updated_at;
+      }
+    });
+    // Dissolve drafts the server has confirmed.
+    setPctDraft((p) => {
+      let changed = false;
+      const nextP = { ...p };
+      (grid || []).forEach((r) => {
+        if (r.id in nextP && r.pct_complete_end_of_day === nextP[r.id]) {
+          delete nextP[r.id]; changed = true;
+        }
+      });
+      return changed ? nextP : p;
+    });
   }, [grid]);
   const commitChain = useRef({});
-  const clearDraft = useCallback((rowId) => {
+  // Set true in the effect BODY (not just init) — StrictMode's simulated
+  // unmount runs the cleanup once on mount, and the ref must recover.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  // Clear a draft only if it still holds the value this commit owned.
+  const clearDraftIf = useCallback((rowId, expected) => {
+    if (!mountedRef.current) return;
     setPctDraft((p) => {
-      if (!(rowId in p)) return p;
+      if (p[rowId] !== expected) return p;
       const n = { ...p }; delete n[rowId]; return n;
     });
   }, []);
@@ -332,29 +365,40 @@ export default function DrGuidedDesktop({
       if (gate && typeof gate.max_pct === "number" && n > Math.max(gate.max_pct, m.sod) && overrides[m.row.id]) {
         fields.slider_gate_override_reason = overrides[m.row.id];
       }
-      if (locked) {
-        if (!lockedReasonOk) {
-          toast.error("This report is submitted — enter the edit reason at the top first.");
-          clearDraft(m.row.id); // revert the unsaved local value to server truth
-          return;
-        }
-        fields.edit_reason = lockedReason.trim();
-      }
+      if (locked) fields.edit_reason = lockedReason.trim();
       try {
         const res = await api.patch(`/daily-report-activities/${m.row.id}`, fields);
-        if (res?.data?._offline) toast.success("Progress saved offline — will sync when you reconnect.");
-        await reload();          // grid now carries the fresh stamp + value
-        clearDraft(m.row.id);    // let server truth render (identical value, no flicker)
+        if (res?.data?._offline) {
+          // Offline: the queue holds the mutation; the cached bundle still
+          // has the old value, so KEEP the draft — it dissolves after the
+          // queue drains and a fresh grid confirms it.
+          toast.success("Progress saved offline — will sync when you reconnect.");
+          return;
+        }
+        // The PATCH handler stamps the task and the row with the SAME
+        // clock value; use it so a chained commit never self-409s.
+        const fresh = res?.data?.task_updated_at || res?.data?.last_sync_at;
+        if (fresh) gridStamps.current[m.row.id] = fresh;
+        await reload(); // the [grid] effect dissolves the draft on confirm
       } catch (e) {
-        clearDraft(m.row.id);    // never keep showing a value that didn't save
+        clearDraftIf(m.row.id, n); // revert only if this commit still owns the draft
+        if (!mountedRef.current) return;
         if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
         else toast.error(fmtErr(e, "Save progress"));
       }
     };
     commitChain.current[m.row.id] = (commitChain.current[m.row.id] || Promise.resolve()).then(run, run);
-  }, [locked, lockedReason, lockedReasonOk, overrides, reload, clearDraft]);
+  }, [locked, lockedReason, overrides, reload, clearDraftIf]);
 
+  const clampToastAt = useRef({});
   const setProg = (m, v, immediate) => {
+    // A submitted report needs the edit reason BEFORE the slider moves —
+    // never show a value that is already refused, and never mark the row
+    // as "updated" for a refused attempt.
+    if (locked && !lockedReasonOk) {
+      toast.error("This report is submitted — enter the edit reason at the top first.");
+      return;
+    }
     const gate = m.row.slider_gate;
     // The cap never pulls a row BELOW what's already persisted — a PM may
     // have overridden past the cap in an earlier session.
@@ -365,8 +409,13 @@ export default function DrGuidedDesktop({
     let n = Math.round(Number(v));
     if (n > effMax) {
       n = effMax;
-      // Toast once per clamp episode, not on every drag tick past the cap.
-      if (m.pct !== effMax) toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
+      // Feedback on every clamp EPISODE (even when already sitting at the
+      // cap), but not on every drag tick — throttle by time.
+      const last = clampToastAt.current[m.row.id] || 0;
+      if (Date.now() - last > 2500) {
+        clampToastAt.current[m.row.id] = Date.now();
+        toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
+      }
     }
     if (n < 0) n = 0;
     touch(m.row.id);
@@ -376,10 +425,14 @@ export default function DrGuidedDesktop({
   };
 
   /* ---------- flows (real payloads — same endpoints as the mobile flow) ---------- */
-  const openFlow = (flow, fromChooserAct) => setDlg({
-    kind: "flow", flow, flowKey: `${flow.title}-${Date.now()}`,
-    fromChooser: fromChooserAct ? () => openChooser(fromChooserAct) : undefined,
-  });
+  // Refuse at the door on a locked report, not after five answered questions.
+  const openFlow = (flow, fromChooserAct) => {
+    if (needReason()) return;
+    setDlg({
+      kind: "flow", flow, flowKey: `${flow.title}-${Date.now()}`,
+      fromChooser: fromChooserAct ? () => openChooser(fromChooserAct) : undefined,
+    });
+  };
 
   const FLOW_crew = (m) => ({
     title: "Add crew", sub: m.row.activity_description, save: "Add crew", saving: "Adding…",
@@ -623,7 +676,13 @@ export default function DrGuidedDesktop({
     },
   });
 
-  const FLOW_photo = (m) => ({
+  const FLOW_photo = (m) => {
+    // Tray upload is idempotent PER DIALOG: if the tag step fails and the
+    // super hits Save again, we must not upload the same bytes twice.
+    // Keyed to the picked file so going Back and choosing another photo
+    // invalidates the cached id.
+    let trayId = null, trayFor = null;
+    return {
     title: "Photos", sub: m.row.activity_description, save: "Add photo", saving: "Uploading…",
     steps: [
       { q: "Add a photo", gloss: "Photos are usually added from your phone. You can also pick a file from this computer. Pick one to continue.",
@@ -641,15 +700,25 @@ export default function DrGuidedDesktop({
       let blob = file;
       try { blob = await compressImage(file); } catch (e) { blob = file; }
       try {
-        const fd = new FormData();
-        fd.append("file", blob, file.name || "photo.jpg");
-        fd.append("project_id", project.id);
-        fd.append("capture_source", "manual_upload");
-        const up = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+        if (trayId && trayFor !== file) { trayId = null; trayFor = null; }
+        if (!trayId) {
+          const fd = new FormData();
+          fd.append("file", blob, file.name || "photo.jpg");
+          fd.append("project_id", project.id);
+          fd.append("capture_source", "manual_upload");
+          const up = await api.post(`/photo-tray`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+          trayId = up.data.id; trayFor = file;
+        }
         const tag = await api.post(`/photo-tags`, {
-          tray_photo_id: up.data.id, daily_report_id: id,
+          tray_photo_id: trayId, daily_report_id: id,
           daily_report_activity_id: m.row.id, photo_class: photoClass, ...addReasonPatch,
         });
+        if (tag?.data?._offline) {
+          toast.success("Photo uploaded — it will appear on the report when you reconnect.");
+          touch(m.row.id);
+          reload();
+          return;
+        }
         const cap = (a.cap || "").trim();
         if (cap && tag?.data?.id) {
           await api.patch(`/photos/${tag.data.id}`, { caption: cap }).catch(() => {});
@@ -658,7 +727,10 @@ export default function DrGuidedDesktop({
         touch(m.row.id);
         reload();
       } catch (e) {
-        if (!e?.response) {
+        // Full offline queue ONLY when the tray upload itself never landed —
+        // if the tray already has the bytes, queueing the blob again would
+        // produce a duplicate photo on reconnect.
+        if (!e?.response && !trayId) {
           await queuePhoto({
             blob, mimeType: blob.type || file.type || "image/jpeg",
             dailyReportId: id, projectId: project.id,
@@ -674,7 +746,8 @@ export default function DrGuidedDesktop({
         throw e;
       }
     },
-  });
+    };
+  };
 
   const FLOW_unplanned = () => ({
     title: "Unplanned work", sub: dateSub, save: "Add", saving: "Adding…",
@@ -704,7 +777,17 @@ export default function DrGuidedDesktop({
         fields: [{ k: "nnote", label: "Note", t: "textarea", req: 1, ph: "Add any detail" }] },
     ],
     onSave: async (a) => {
+      // Hold the dialog open until the parent's submit REALLY settles — resolve
+      // on success (dialog closes), reject on failure (dialog stays with the
+      // answers, parent already toasted why). The outcome comes from the actual
+      // submit, never a wall clock: a slow-but-successful submit must not be
+      // misread as a failure and leave the report submitted while the dialog
+      // still looks open and re-submittable.
+      const done = new Promise((resolve, reject) => {
+        noWorkResolver.current = { resolve, reject };
+      });
       setNoWorkModal({ reason: a.reason, note: a.nnote || "", __auto: true });
+      await done;
     },
   });
 
@@ -717,13 +800,21 @@ export default function DrGuidedDesktop({
   // for that object (a latch would stick if submitNoWorkDay fails — the
   // parent sets a brand-new object on the next 422, which must reopen).
   const strippedNoWork = useRef(null);
+  const noWorkResolver = useRef(null);
   useEffect(() => {
     if (!noWorkModal) { strippedNoWork.current = null; return; }
     if (noWorkModal.__auto) {
       const stripped = { reason: noWorkModal.reason, note: noWorkModal.note };
       strippedNoWork.current = stripped;
       setNoWorkModal(stripped);
-      submitNoWorkDay(() => setNoWorkModal(null));
+      // submitNoWorkDay resolves to true only on a real server success; settle
+      // the guided dialog's promise on THAT, whenever it arrives.
+      submitNoWorkDay(() => setNoWorkModal(null)).then((ok) => {
+        const r = noWorkResolver.current;
+        if (!r) return;
+        noWorkResolver.current = null;
+        if (ok) r.resolve(); else r.reject(new Error("nowork-submit-failed"));
+      });
       return;
     }
     if (noWorkModal === strippedNoWork.current) return;
@@ -740,7 +831,9 @@ export default function DrGuidedDesktop({
     ["Delivery", "Materials or equipment that arrived", FLOW_delivery],
     ["Coord", "Log an important conversation", FLOW_coord],
   ];
-  const openChooser = (m) => setDlg({
+  const openChooser = (m) => {
+    if (needReason()) return;
+    setDlg({
     kind: "chooser", title: "Issues & deliveries", sub: `Attached to ${m.row.activity_description}`,
     body: (
       <>
@@ -756,7 +849,8 @@ export default function DrGuidedDesktop({
       </>
     ),
     foot: <button className="btn" onClick={() => setDlg(null)}>Cancel</button>,
-  });
+    });
+  };
 
   /* ---------- photos: pin / delete / AI ---------- */
   const togglePin = (rowId, photoId) => {
@@ -772,6 +866,20 @@ export default function DrGuidedDesktop({
     try {
       await api.delete(`/photo-tags/${photoId}`);
       toast.success("Photo removed.");
+      // A deleted photo can't stay pinned, and an analysis that included it
+      // is stale — drop this card's cached review so the next run is fresh.
+      setPinned((p) => {
+        if (!p.has(photoId)) return p;
+        const n = new Set(p); n.delete(photoId); return n;
+      });
+      setAiByRow((p) => {
+        if (!p[rowId] || !p[rowId].ids.split(",").includes(photoId)) return p;
+        const n = { ...p }; delete n[rowId]; return n;
+      });
+      setAiOpen((p) => {
+        if (!p.has(rowId)) return p;
+        const n = new Set(p); n.delete(rowId); return n;
+      });
       touch(rowId);
       reload();
     } catch (e) { toast.error(fmtErr(e, "Remove photo")); }
@@ -797,23 +905,57 @@ export default function DrGuidedDesktop({
       toast.error("Pin at least one photo to analyze.");
       return;
     }
-    if (prior && prior.ids === ids) {
+    if (prior && prior.ids === ids && prior.review) {
       setAiOpen((p) => new Set(p).add(m.row.id));
       return;
     }
     setAiBusy(true);
     try {
-      await api.post(`/photo-tray/review`, { tray_ids: ids.split(","), lens: "combined", daily_report_id: id });
-      const r = await api.get(`/daily-reports/${id}/photo-reviews`).catch(() => null);
-      const list = Array.isArray(r?.data) ? r.data : [];
-      setReviews(list);
-      setAiByRow((p) => ({ ...p, [m.row.id]: { review: list[0] || null, ids } }));
+      // The POST response IS the review — never depend on a follow-up read
+      // (a billed run must not become unreachable because a later GET blips).
+      const res = await api.post(`/photo-tray/review`, { tray_ids: ids.split(","), lens: "combined", daily_report_id: id });
+      const review = res?.data && (res.data.text || res.data.label) ? res.data : null;
+      if (!review) { toast.error("AI analysis ran but returned nothing readable — try again."); return; }
+      setReviews((p) => [review, ...p]);
+      setAiByRow((p) => ({ ...p, [m.row.id]: { review, ids } }));
       setAiOpen((p) => new Set(p).add(m.row.id));
       touch(m.row.id);
     } catch (e) { toast.error(fmtErr(e, "AI analysis")); }
     finally { setAiBusy(false); }
   };
   useEffect(() => { loadReviews(); }, [loadReviews]);
+
+  // Rehydrate billed AI reviews the server already persisted, so a refresh or
+  // next-day reopen shows the analysis instead of an empty box that tempts the
+  // super into re-running (and re-billing) the identical pinned set. A review
+  // is DR-scoped with photo_ids (the same ids runAI keys on); map each to the
+  // card that owns those photos. Seed ONCE — never on later reloads — so it
+  // can't resurrect a review the super invalidated by deleting a photo, and so
+  // a fresh in-session run always wins over the persisted one.
+  const reviewsRehydrated = useRef(false);
+  useEffect(() => {
+    if (reviewsRehydrated.current) return;
+    if (!reviews.length || !(photos || []).length) return;
+    reviewsRehydrated.current = true;
+    const rowOfPhoto = {};
+    (photos || []).forEach((p) => { if (p.daily_report_activity_id) rowOfPhoto[p.id] = p.daily_report_activity_id; });
+    setAiByRow((prev) => {
+      const next = { ...prev };
+      // reviews arrive newest-first; walk oldest-first so the newest per card wins.
+      for (let i = reviews.length - 1; i >= 0; i--) {
+        const rev = reviews[i];
+        const pids = Array.isArray(rev.photo_ids) ? rev.photo_ids : [];
+        if (!pids.length) continue;
+        const rows = new Set(pids.map((pid) => rowOfPhoto[pid]).filter(Boolean));
+        if (rows.size !== 1) continue;        // ambiguous or cross-row — don't guess
+        const rowId = [...rows][0];
+        if (prev[rowId]) continue;            // an in-session run already owns this card
+        next[rowId] = { review: rev, ids: pids.slice().sort().join(",") };
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviews, photos]);
 
   // The app shell's <main> is overflow-x:hidden, which (per spec) turns it
   // into the containing block for position:sticky while the real scroller
@@ -857,6 +999,11 @@ export default function DrGuidedDesktop({
     } catch (e) { toast.error(fmtErr(e, "Save weather")); }
   };
   const refreshWx = async () => {
+    // Autofill overwrites the report's recorded weather. On a submitted report
+    // that is an edit — gate it behind the edit reason like saveWx and every
+    // other mutating action (the endpoint takes no body, so the reason is
+    // enforced here rather than sent).
+    if (needReason()) return;
     try {
       await api.post(`/daily-reports/${id}/weather-autofill`);
       toast.success("Weather refreshed from the local station.");
@@ -873,6 +1020,15 @@ export default function DrGuidedDesktop({
       });
       savedToast(res, "Note saved to the report.");
       setNotesOpen(false);
+      if (res?.data?._offline) {
+        // Queued, not yet on the server. Keep notesDirty TRUE so reopening
+        // can't reseed the stale cached notes over what the super just saved
+        // (reload() would return the pre-edit cache while offline). The flag
+        // dissolves once a synced report confirms the value (freshness effect).
+        // Same optimistic treatment the slider draft gets.
+        return;
+      }
+      setNotesDirty(false);
       reload();
     } catch (e) { toast.error(fmtErr(e, "Save notes")); }
   };
@@ -935,6 +1091,20 @@ export default function DrGuidedDesktop({
       ),
     });
   };
+
+  /* When a reload brings fresher notes (edited on another device, or an
+     offline draft that just synced): a CLEAN open popover adopts them; a DIRTY
+     one keeps the super's unsaved/queued draft — but once the server catches up
+     to that exact text, the dirty flag dissolves so future edits aren't frozen
+     out. Never reseed over an unsaved draft. */
+  useEffect(() => {
+    if (notesDirty) {
+      if ((report?.notes || "") === notesText) setNotesDirty(false);
+      return;
+    }
+    if (notesOpen) setNotesText(report?.notes || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report?.notes]);
 
   /* close export/notes popovers on outside click + Escape (mockup parity) */
   useEffect(() => {
@@ -1091,8 +1261,13 @@ export default function DrGuidedDesktop({
                       {c.notes ? ` · “${trunc(c.notes, 22)}”` : ""}
                       <button className="cx" title="Remove" onClick={async () => {
                         if (needReason()) return;
-                        try { await api.delete(`/daily-presence/${c.id}`); touch(m.row.id); reload(); }
+                        // One DELETE per chip — a double-click's second call
+                        // would 404 and toast an error over a clean removal.
+                        if (crewDelBusy.current.has(c.id)) return;
+                        crewDelBusy.current.add(c.id);
+                        try { await api.delete(`/daily-presence/${c.id}`); touch(m.row.id); await reload(); }
                         catch (e2) { toast.error(fmtErr(e2, "Remove crew")); }
+                        finally { crewDelBusy.current.delete(c.id); }
                       }}>&times;</button>
                     </span>
                   ))}
@@ -1286,16 +1461,24 @@ export default function DrGuidedDesktop({
               <div className="hint" style={{ margin: "0 0 10px" }}>Write anything worth remembering about today. This goes on the printed report.</div>
               <textarea className="i" style={{ minHeight: 120 }} value={notesText}
                 placeholder="Visitors, weather effects, crew changes, anything notable..."
-                onChange={(e) => setNotesText(e.target.value)} />
+                onChange={(e) => { setNotesText(e.target.value); setNotesDirty(true); }} />
               <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
-                <button className="btn small" onClick={() => setNotesOpen(false)}>Cancel</button>
+                <button className="btn small" onClick={() => {
+                  // Cancel is the explicit discard — click-away keeps the draft.
+                  setNotesOpen(false); setNotesDirty(false); setNotesText(report?.notes || "");
+                }}>Cancel</button>
                 <button className="btn small accent" onClick={saveNotes}>Save note</button>
               </div>
             </div>
             <button className="btn link" data-notes-toggle onClick={() => {
-              // Re-seed from the freshest report on OPEN so an all-day-old
-              // tab can't silently clobber notes written on another device.
-              setNotesOpen((v) => { if (!v) setNotesText(report?.notes || ""); return !v; });
+              if (!notesOpen) {
+                // Re-seed from the freshest report on OPEN so an all-day-old
+                // tab can't silently clobber notes written on another device —
+                // but never over a draft the super typed and hasn't saved yet.
+                if (!notesDirty) setNotesText(report?.notes || "");
+                reload();
+              }
+              setNotesOpen(!notesOpen);
               setExportOpen(false);
             }}>Daily notes</button>
           </div>

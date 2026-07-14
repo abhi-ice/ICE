@@ -1035,14 +1035,17 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
 
   // Addition 3 -- modal confirm: resubmit with is_no_work_day=true.
   const submitNoWorkDay = async (onSuccess) => {
-    if (!noWorkModal) return;
+    // Returns true only on a real server success (false otherwise) so callers
+    // — e.g. the desktop guided no-work dialog — can settle their own UI on the
+    // actual outcome rather than a timer.
+    if (!noWorkModal) return false;
     if (!noWorkModal.reason) {
       toast.error("Pick a reason.");
-      return;
+      return false;
     }
     if (noWorkModal.reason === "other" && !(noWorkModal.note || "").trim()) {
       toast.error("Note is required when reason is 'other'.");
-      return;
+      return false;
     }
     const okSubmit = await _submitWith({
       is_no_work_day: true,
@@ -1050,6 +1053,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       no_work_note: (noWorkModal.note || "").trim() || null,
     });
     if (okSubmit && typeof onSuccess === "function") onSuccess();
+    return okSubmit;
   };
 
   const approve = async () => {

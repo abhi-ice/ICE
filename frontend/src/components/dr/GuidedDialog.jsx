@@ -205,6 +205,16 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
   const busyRef = useRef(false); // guards Enter double-save (state is stale in the keydown closure)
   const dirtyRef = useRef(false);
   const bodyRef = useRef(null);
+  // If this runner unmounts while onSave is in flight (user closed it, or a
+  // new dialog replaced it), the late resolution must NOT call onClose —
+  // that would close whatever dialog the user has open NOW.
+  // Set true in the effect BODY (not just init) — StrictMode's simulated
+  // unmount runs the cleanup once on mount, and the ref must recover.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
 
   const vs = useMemo(() => flow.steps.filter((s) => !s.when || s.when(answers)), [flow, answers]);
   const idx = Math.min(i, vs.length);
@@ -232,8 +242,10 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
         const visKeys = new Set(vs.flatMap((st) => st.fields.map((fd) => fd.k)));
         const cleaned = Object.fromEntries(Object.entries(answers).filter(([k]) => visKeys.has(k)));
         await flow.onSave(cleaned);
-        onClose();
-      } catch (e) { busyRef.current = false; setBusy(false); }
+        if (aliveRef.current) onClose();
+      } catch (e) {
+        if (aliveRef.current) { busyRef.current = false; setBusy(false); }
+      }
       return;
     }
     if (!stepValid(s)) return;
@@ -312,7 +324,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
           <div className="sumrow" key={`s${si}`}>
             <span className="sl">{st.optional ? st.q : st.fields[0].label}</span>
             <span className="sv"><span className="none">{st.optional ? "Skipped" : "—"}</span></span>
-            <button className="sedit" onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
+            <button className="sedit" disabled={busy} onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
           </div>
         );
       } else {
@@ -326,7 +338,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
             <div className="sumrow" key={`s${si}-${fd.k}`}>
               <span className="sl">{fd.label}</span>
               <span className="sv">{dispVal(v)}</span>
-              <button className="sedit" onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
+              <button className="sedit" disabled={busy} onClick={() => { setI(si); setConfirm(false); }}>Edit</button>
             </div>
           );
         });
@@ -391,7 +403,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
         )}
       </div>
       <div className="gfoot">
-        <button className="btn" disabled={idx === 0 && !fromChooser} onClick={back}>Back</button>
+        <button className="btn" disabled={busy || (idx === 0 && !fromChooser)} onClick={back}>Back</button>
         <div className="gprog">
           {idx + 1} of {total}
           <span className="dots">
