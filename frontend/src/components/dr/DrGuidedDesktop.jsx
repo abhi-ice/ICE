@@ -187,6 +187,10 @@ export default function DrGuidedDesktop({
   const [aiOpen, setAiOpen] = useState(() => new Set());
   const [reviews, setReviews] = useState([]);
   const [aiBusy, setAiBusy] = useState(false);
+  // rowId -> {review, ids} — the review THIS card's pinned set produced, so
+  // an open box never swaps to another card's analysis, and toggling the
+  // box open/closed never re-bills a fresh AI run for the same pinned set.
+  const [aiByRow, setAiByRow] = useState({});
   const [touched, setTouched] = useState(() => new Set()); // rowIds interacted with this session (mockup's touch())
   const [coordEvents, setCoordEvents] = useState([]);
   const [overrides, setOverrides] = useState({});   // rowId -> reason (gate unlocked this session)
@@ -299,37 +303,70 @@ export default function DrGuidedDesktop({
   };
 
   /* ---------- progress ---------- */
-  const commitPct = useCallback(async (m, v) => {
-    const n = Math.round(Number(v));
-    const fields = { pct_complete_end_of_day: n, task_last_modified_at: m.row.task_updated_at };
-    const gate = m.row.slider_gate;
-    // Send the override reason on ANY increase past the gate cap — soft
-    // FF/SF caps are not `locked` but the server still enforces max_pct.
-    if (gate && typeof gate.max_pct === "number" && n > Math.max(gate.max_pct, m.sod) && overrides[m.row.id]) {
-      fields.slider_gate_override_reason = overrides[m.row.id];
-    }
-    if (locked) {
-      if (!lockedReasonOk) { toast.error("This report is submitted — enter the edit reason at the top first."); return; }
-      fields.edit_reason = lockedReason.trim();
-    }
-    try {
-      const res = await api.patch(`/daily-report-activities/${m.row.id}`, fields);
-      if (res?.data?._offline) toast.success("Progress saved offline — will sync when you reconnect.");
-      reload();
-    } catch (e) {
-      if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
-      else toast.error(fmtErr(e, "Save progress"));
-    }
-  }, [locked, lockedReason, lockedReasonOk, overrides, reload]);
+  // Optimistic-lock stamps: a successful PATCH bumps task_updated_at
+  // server-side; a second slide before reload() lands would carry a stale
+  // stamp and 409 against the user's own edit. Track the freshest known
+  // stamp per row and serialize commits per row behind reload().
+  const gridStamps = useRef({});
+  useEffect(() => {
+    (grid || []).forEach((r) => { gridStamps.current[r.id] = r.task_updated_at; });
+  }, [grid]);
+  const commitChain = useRef({});
+  const clearDraft = useCallback((rowId) => {
+    setPctDraft((p) => {
+      if (!(rowId in p)) return p;
+      const n = { ...p }; delete n[rowId]; return n;
+    });
+  }, []);
+
+  const commitPct = useCallback((m, v) => {
+    const run = async () => {
+      const n = Math.round(Number(v));
+      const fields = {
+        pct_complete_end_of_day: n,
+        task_last_modified_at: gridStamps.current[m.row.id] ?? m.row.task_updated_at,
+      };
+      const gate = m.row.slider_gate;
+      // Send the override reason on ANY increase past the gate cap — soft
+      // FF/SF caps are not `locked` but the server still enforces max_pct.
+      if (gate && typeof gate.max_pct === "number" && n > Math.max(gate.max_pct, m.sod) && overrides[m.row.id]) {
+        fields.slider_gate_override_reason = overrides[m.row.id];
+      }
+      if (locked) {
+        if (!lockedReasonOk) {
+          toast.error("This report is submitted — enter the edit reason at the top first.");
+          clearDraft(m.row.id); // revert the unsaved local value to server truth
+          return;
+        }
+        fields.edit_reason = lockedReason.trim();
+      }
+      try {
+        const res = await api.patch(`/daily-report-activities/${m.row.id}`, fields);
+        if (res?.data?._offline) toast.success("Progress saved offline — will sync when you reconnect.");
+        await reload();          // grid now carries the fresh stamp + value
+        clearDraft(m.row.id);    // let server truth render (identical value, no flicker)
+      } catch (e) {
+        clearDraft(m.row.id);    // never keep showing a value that didn't save
+        if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
+        else toast.error(fmtErr(e, "Save progress"));
+      }
+    };
+    commitChain.current[m.row.id] = (commitChain.current[m.row.id] || Promise.resolve()).then(run, run);
+  }, [locked, lockedReason, lockedReasonOk, overrides, reload, clearDraft]);
 
   const setProg = (m, v, immediate) => {
     const gate = m.row.slider_gate;
+    // The cap never pulls a row BELOW what's already persisted — a PM may
+    // have overridden past the cap in an earlier session.
+    const persisted = m.row.pct_complete_end_of_day ?? 0;
     const effMax = m.overridden ? 100
-      : (gate && typeof gate.max_pct === "number" && gate.max_pct < 100 ? Math.max(gate.max_pct, m.sod) : 100);
+      : (gate && typeof gate.max_pct === "number" && gate.max_pct < 100
+        ? Math.max(gate.max_pct, m.sod, persisted) : 100);
     let n = Math.round(Number(v));
     if (n > effMax) {
       n = effMax;
-      toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
+      // Toast once per clamp episode, not on every drag tick past the cap.
+      if (m.pct !== effMax) toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
     }
     if (n < 0) n = 0;
     touch(m.row.id);
@@ -359,6 +396,9 @@ export default function DrGuidedDesktop({
     ],
     onSave: async (a) => {
       if (needReason()) throw new Error("reason");
+      // Crew rows attach to the activity via its schedule task — without
+      // one the save would succeed but never display (invisible dupes).
+      if (!m.row.schedule_activity_id) { toast.error("This activity has no linked schedule task"); throw new Error("no-task"); }
       const res = await api.post(`/daily-reports/${id}/presence`, {
         trade: a.trade, company_name: (a.co || "").trim(), headcount: Number(a.hc) || 1,
         hours_per_person: Number(a.hr) || 8, notes: (a.cnotes || "").trim(),
@@ -461,6 +501,7 @@ export default function DrGuidedDesktop({
     ],
     onSave: async (a) => {
       if (needReason()) throw new Error("reason");
+      if (!m.row.schedule_activity_id) { toast.error("This activity has no linked schedule task"); throw new Error("no-task"); }
       const res = await api.post(`/safety-events`, {
         project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
         description: a.sdesc.trim(), severity: a.ssev, event_type: a.stype,
@@ -561,6 +602,8 @@ export default function DrGuidedDesktop({
       const linked = Array.isArray(a.ltasks) && a.ltasks.length
         ? a.ltasks
         : (m.row.schedule_activity_id ? [m.row.schedule_activity_id] : []);
+      // A coord with no task link would never display as a chip.
+      if (!linked.length) { toast.error("This activity has no linked schedule task"); throw new Error("no-task"); }
       const res = await api.post(`/coordination-events`, {
         project_id: project.id, linked_daily_report_id: id,
         occurred_at: a.when || nowLocalISO(),
@@ -670,16 +713,20 @@ export default function DrGuidedDesktop({
   // PARENT sets noWorkModal without __auto (submit of an empty DR 422s with
   // empty_dr_requires_no_work_day), open the guided no-work flow so the
   // super isn't dead-ended with just a toast.
-  const noworkBusy = useRef(false);
+  // Track the exact object we stripped __auto from: skip auto-opening ONLY
+  // for that object (a latch would stick if submitNoWorkDay fails — the
+  // parent sets a brand-new object on the next 422, which must reopen).
+  const strippedNoWork = useRef(null);
   useEffect(() => {
-    if (!noWorkModal) { noworkBusy.current = false; return; }
+    if (!noWorkModal) { strippedNoWork.current = null; return; }
     if (noWorkModal.__auto) {
-      noworkBusy.current = true;
-      setNoWorkModal({ reason: noWorkModal.reason, note: noWorkModal.note });
+      const stripped = { reason: noWorkModal.reason, note: noWorkModal.note };
+      strippedNoWork.current = stripped;
+      setNoWorkModal(stripped);
       submitNoWorkDay(() => setNoWorkModal(null));
       return;
     }
-    if (noworkBusy.current) return;
+    if (noWorkModal === strippedNoWork.current) return;
     setDlg((cur) => cur || { kind: "flow", flow: FLOW_nowork(), flowKey: `nowork-${Date.now()}` });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noWorkModal]);
@@ -735,25 +782,32 @@ export default function DrGuidedDesktop({
       setReviews(Array.isArray(r.data) ? r.data : []);
     } catch (e) { /* silent */ }
   }, [id]);
-  // The AI button TOGGLES the box. With photos pinned on THIS card it runs
-  // a fresh analysis of them; with nothing pinned it falls back to showing
-  // the report's latest review (never silently reuses another card's run
-  // when the user has pinned photos here).
+  // The AI button TOGGLES the box. A fresh analysis runs only when THIS
+  // card's pinned set changed since its last run — reopening the box is
+  // free, and each card's box always shows the review ITS photos produced.
   const runAI = async (m) => {
     if (aiOpen.has(m.row.id)) {
       setAiOpen((p) => { const n = new Set(p); n.delete(m.row.id); return n; });
       return;
     }
-    const ids = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id);
-    if (!ids.length) {
-      if (reviews.length) { setAiOpen((p) => new Set(p).add(m.row.id)); return; }
+    const ids = m.rowPhotos.filter((p) => pinned.has(p.id)).map((p) => p.id).sort().join(",");
+    const prior = aiByRow[m.row.id];
+    if (!ids) {
+      if (prior) { setAiOpen((p) => new Set(p).add(m.row.id)); return; }
       toast.error("Pin at least one photo to analyze.");
+      return;
+    }
+    if (prior && prior.ids === ids) {
+      setAiOpen((p) => new Set(p).add(m.row.id));
       return;
     }
     setAiBusy(true);
     try {
-      await api.post(`/photo-tray/review`, { tray_ids: ids, lens: "combined", daily_report_id: id });
-      await loadReviews();
+      await api.post(`/photo-tray/review`, { tray_ids: ids.split(","), lens: "combined", daily_report_id: id });
+      const r = await api.get(`/daily-reports/${id}/photo-reviews`).catch(() => null);
+      const list = Array.isArray(r?.data) ? r.data : [];
+      setReviews(list);
+      setAiByRow((p) => ({ ...p, [m.row.id]: { review: list[0] || null, ids } }));
       setAiOpen((p) => new Set(p).add(m.row.id));
       touch(m.row.id);
     } catch (e) { toast.error(fmtErr(e, "AI analysis")); }
@@ -932,7 +986,8 @@ export default function DrGuidedDesktop({
       .map((e) => (typeof e === "string" ? e : e?.message || "Fix this row and resubmit."));
     const gateLockedUi = m.gateBlocked;
     const pinnedCount = m.rowPhotos.filter((p) => pinned.has(p.id)).length;
-    const latestReview = reviews.length ? reviews[0] : null;
+    // Show the review THIS card's run produced — never another card's.
+    const latestReview = aiByRow[r.id]?.review || null;
     return (
       <section key={r.id} id={`drgx-act-${r.id}`} data-testid={`drgx-act-${r.id}`}
         className={`card act${isOpen ? " open" : ""}`} onClick={(e) => cardClick(e, r.id)}>
@@ -1237,7 +1292,12 @@ export default function DrGuidedDesktop({
                 <button className="btn small accent" onClick={saveNotes}>Save note</button>
               </div>
             </div>
-            <button className="btn link" data-notes-toggle onClick={() => { setNotesOpen((v) => !v); setExportOpen(false); }}>Daily notes</button>
+            <button className="btn link" data-notes-toggle onClick={() => {
+              // Re-seed from the freshest report on OPEN so an all-day-old
+              // tab can't silently clobber notes written on another device.
+              setNotesOpen((v) => { if (!v) setNotesText(report?.notes || ""); return !v; });
+              setExportOpen(false);
+            }}>Daily notes</button>
           </div>
           {!locked && (
             <button className="btn link" onClick={() => openFlow(FLOW_nowork())}>File as no-work day</button>
