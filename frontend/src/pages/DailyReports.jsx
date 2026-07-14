@@ -304,6 +304,19 @@ export default function DailyReports() {
     window.history.replaceState(null, "", newUrl);
   }, [openId]);
 
+  // Switching the active project (top-bar dropdown) while a report is open
+  // drops back to the listing — which reloads for the newly selected project
+  // (that project's reports, not the old one's). Only a genuine A->B switch
+  // closes the open report; the initial mount and the useProjects
+  // reconciliation (null / stale -> first project) leave a deep-linked openId
+  // untouched, so refreshing straight into ?openId=<dr> still works.
+  const prevActiveRef = useRef(activeId);
+  useEffect(() => {
+    const prev = prevActiveRef.current;
+    prevActiveRef.current = activeId;
+    if (prev && activeId && prev !== activeId && openId) setOpenId(null);
+  }, [activeId, openId]);
+
   const load = useCallback(() => {
     if (!activeId) return;
     api.get(`/projects/${activeId}/daily-reports`).then(({ data }) => {
