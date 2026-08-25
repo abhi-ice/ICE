@@ -101,10 +101,24 @@ function nowLocalISO() {
   return d.toISOString().slice(0, 16);
 }
 function fmtErr(e, what) {
+  // 2026-08-XX (prod-bug-fix) -- when the backend event loop is blocked
+  // and Cloudflare returns a 520/522 HTML error page, axios stores the
+  // response body as an HTML string. Trying `e.response.data.detail`
+  // then returns undefined (falls to e.message, which is fine), but if
+  // the caller ever formatted `e.response.data` directly the HTML would
+  // leak into the toast. Explicit sanitization: only accept short JSON
+  // `detail` strings (< 200 chars, no HTML), otherwise use e.message,
+  // otherwise "unknown error". Bug seen live on the Weather Refresh
+  // button on the deployed field-ops-hub-21.emergent.host site.
   const d = e?.response?.data?.detail;
-  if (typeof d === "string") return `${what} failed: ${d}`;
-  if (d?.message) return `${what} failed: ${d.message}`;
-  return `${what} failed: ${e?.message || "unknown error"}`;
+  const looksLikeShortText = (s) => typeof s === "string"
+    && s.length > 0 && s.length < 200
+    && !/</.test(s); // no HTML tags
+  if (looksLikeShortText(d)) return `${what} failed: ${d}`;
+  if (d?.message && looksLikeShortText(d.message)) return `${what} failed: ${d.message}`;
+  const msg = e?.message;
+  if (looksLikeShortText(msg)) return `${what} failed: ${msg}`;
+  return `${what} failed — please retry in a moment`;
 }
 function savedToast(res, msg) {
   if (res?.data?._offline) toast.success(`${msg} — saved offline, will sync when you reconnect.`);

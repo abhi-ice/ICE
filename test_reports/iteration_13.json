@@ -1,0 +1,27 @@
+{
+  "summary": "Verified the weather-autofill Cloudflare-HTML-in-toast prod-bug fix end-to-end. Backend endpoint POST /api/daily-reports/{id}/weather-autofill returns JSON in every observed path (200 success, 404 unknown DR, 422 no address) — confirmed content-type application/json and short `detail` strings <200 chars. Frontend auto-trigger (DailyReports.jsx line 740) sanitization was proven by mocking the endpoint to return a real Cloudflare 520 HTML body: the toast displayed exactly the friendly fallback message (\"Weather: Couldn't fetch weather right now — tap Refresh in the Weather card to retry, or type values manually.\") — no HTML, no 'Cloudflare', no 'origin web server' text leaked.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_weather_autofill_bug.py",
+    "/app/test_reports/pytest/iter13_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DailyReports.jsx WeatherPanel (lines 2134-2260) — including its `refresh` handler at lines 2154-2178 and its `[data-testid=weather-refresh-btn]` — is DEAD CODE in the current build. DailyReportDetail short-circuits to <DrGuidedDesktop> when USE_GUIDED_DESKTOP=true (line 1254), which is hard-coded to true. So the Refresh-button sanitization the review request highlighted is never rendered. The ACTIVE weather-refresh path is `refreshWx` in /app/frontend/src/components/dr/DrGuidedDesktop.jsx line 1002-1013, which uses `fmtErr` (line 103). `fmtErr` reads `e.response.data.detail`; when the response body is an HTML string (Cloudflare case), `.detail` is undefined and it falls through to `e.message` (e.g. 'Request failed with status code 520'), so HTML doesn't leak — but this is INCIDENTAL, not a real sanitization. Recommend: (a) delete the dead WeatherPanel code to avoid future confusion, OR (b) explicitly apply the same 200-char JSON-only detail sanitization to `fmtErr` so the guarantee is explicit for every error toast on the DR page, not just weather.",
+    "Backend weather_autofill (routers/daily_reports_router.py lines 1609-1663) is correctly offloaded to run_in_threadpool + wrapped in asyncio.wait_for(timeout=6.0). Timeouts on the underlying requests.get calls are 5s (see _geocode / _fetch_weather). Total worst-case: ~12s across two upstream calls, safely under Cloudflare's 100s origin timeout. Fix is sound.",
+    "The auto-trigger useEffect (DailyReports.jsx line 727-764) correctly guards on `raw.detail.length < 200` and swallows anything else — matches the spec exactly. Verified live."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Registered ephemeral orgs weatherqa-<timestamp>@example.com / TestPass123! and deleted after run (3 tenants + all their data wiped).",
+  "seed_data_creation": "None persisted — created 3 short-lived tenants for pytest + Playwright verification and cleaned all their docs (tenants, users, projects, daily_reports, audit_log, project_calendar_days, cost_rate_categories) at end of run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Prod-bug (Cloudflare HTML in toast) fix verified. Backend POST /api/daily-reports/{id}/weather-autofill always returns JSON body (test: /app/backend/tests/test_weather_autofill_bug.py). Frontend auto-trigger sanitizes correctly. Note: the [data-testid=weather-refresh-btn] Refresh button referenced in the review request at DailyReports.jsx line 2199-2200 is inside the dead WeatherPanel — the live DR uses DrGuidedDesktop (USE_GUIDED_DESKTOP=true), which has its own refreshWx using fmtErr (line 103) that happens to not leak HTML by luck (accessing .detail on an HTML string returns undefined → falls to e.message). Consider hardening fmtErr with the same <200-char JSON-only guard for defense-in-depth.",
+  "rca of the issue": "Original: sync requests.get in _geocode/_fetch_weather blocked the FastAPI event loop for up to 18s under concurrency, causing Cloudflare to return its 520 origin-timeout HTML page, which axios stored as e.response.data (an HTML string). The old auto-trigger .catch simply did `toast.error(e.response?.data?.detail || fallback)` — but since `data` was a string, `data.detail` was undefined, so it should have fallen through. The actual leak happened in a code path (per the git blame comments in DailyReports.jsx lines 746-753) where the raw string was displayed via a different formatter. Mitigation applied: (a) backend now runs blocking calls in threadpool with 6s asyncio timeouts, returning HTTP 504 JSON on timeout; (b) frontend now strictly validates the detail is a string of length<200 before displaying, otherwise shows friendly fallback. Both paths verified live."
+}

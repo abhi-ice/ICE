@@ -1533,7 +1533,7 @@ def _geocode(city: Optional[str], state: Optional[str], postal: Optional[str] = 
     def _try(name: str, admin1: Optional[str] = None):
         try:
             params = {"name": name[:80], "count": 5, "language": "en", "format": "json"}
-            r = requests.get("https://geocoding-api.open-meteo.com/v1/search", params=params, timeout=8)
+            r = requests.get("https://geocoding-api.open-meteo.com/v1/search", params=params, timeout=5)
             r.raise_for_status()
             results = (r.json() or {}).get("results") or []
             if admin1:
@@ -1580,7 +1580,7 @@ def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
                 "precipitation_unit": "inch",
                 "timezone": "auto",
             },
-            timeout=10,
+            timeout=5,
         )
         r.raise_for_status()
         data = r.json()
@@ -1609,7 +1609,21 @@ def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
 @router.post("/daily-reports/{daily_report_id}/weather-autofill", response_model=DailyReport)
 async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Geocode the project's city/state, fetch Open-Meteo forecast for the
-    report_date, save into the DR doc. Idempotent — re-runs overwrite."""
+    report_date, save into the DR doc. Idempotent — re-runs overwrite.
+
+    2026-08-XX (prod-bug-fix) -- _geocode + _fetch_weather use synchronous
+    `requests.get`. Running them inline blocked the event loop for up to
+    18s per call and, under concurrent DR opens on production, stacked up
+    long enough for Cloudflare's origin-timeout to fire (520/522 HTML
+    error page that leaked into the frontend toast). Fix:
+      1. Offload both calls onto the FastAPI thread-pool so the event
+         loop stays responsive.
+      2. Cap the whole autofill at 12s via asyncio.wait_for -- Open-Meteo
+         is usually <500ms, so anything longer is a lost cause; return
+         a clean 504 the frontend can toast cleanly.
+    """
+    from starlette.concurrency import run_in_threadpool
+    import asyncio as _asyncio
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
@@ -1620,11 +1634,25 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
     if not proj:
         raise HTTPException(404, "Project not found")
     addr_parts = [proj.get("city"), proj.get("state"), proj.get("postal_code")]
-    coords = _geocode(proj.get("city"), proj.get("state"), proj.get("postal_code"))
+    try:
+        coords = await _asyncio.wait_for(
+            run_in_threadpool(
+                _geocode, proj.get("city"), proj.get("state"), proj.get("postal_code"),
+            ),
+            timeout=6.0,
+        )
+    except _asyncio.TimeoutError:
+        raise HTTPException(504, "Geocoding provider slow to answer — try Refresh in a moment")
     if not coords:
         addr = ", ".join([p for p in addr_parts if p]).strip(", ")
         raise HTTPException(422, f"Could not geocode project address ({addr or 'no city/state on project'})")
-    weather = _fetch_weather(coords[0], coords[1], dr["report_date"])
+    try:
+        weather = await _asyncio.wait_for(
+            run_in_threadpool(_fetch_weather, coords[0], coords[1], dr["report_date"]),
+            timeout=6.0,
+        )
+    except _asyncio.TimeoutError:
+        raise HTTPException(504, "Weather provider slow to answer — try Refresh in a moment")
     if not weather:
         raise HTTPException(502, "Weather provider unreachable")
     weather["weather_fetched_at"] = utc_now().isoformat()

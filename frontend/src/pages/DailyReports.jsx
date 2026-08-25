@@ -743,8 +743,22 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         // 2026-02-XX -- surface a toast when autofill fails so the
         // super knows why the weather card stayed blank (most common:
         // project missing city/state, so geocode returned 422).
-        const msg = e?.response?.data?.detail
-          || "Weather autofill failed — fill in the project city/state on the Project page, or type values manually.";
+        // 2026-08-XX (prod-bug-fix) -- when the backend times out on
+        // Open-Meteo, Cloudflare intercepts with a 520/522 HTML error
+        // page. `response.data.detail` was undefined so this fell to
+        // the fallback message on some paths but on others the raw
+        // HTML string leaked into the toast (unreadable text about
+        // Cloudflare origin errors). Sanitize: only accept short
+        // JSON `detail` strings and swallow everything else silently
+        // (the super can always tap "Refresh" in the Weather card).
+        const raw = e?.response?.data;
+        let msg = null;
+        if (raw && typeof raw === "object" && typeof raw.detail === "string" && raw.detail.length > 0 && raw.detail.length < 200) {
+          msg = raw.detail;
+        }
+        if (!msg) {
+          msg = "Couldn't fetch weather right now — tap Refresh in the Weather card to retry, or type values manually.";
+        }
         toast.error(`Weather: ${msg}`);
       });
   }, [bundle, id, reload]);
@@ -2144,7 +2158,18 @@ function WeatherPanel({ report, dailyReportId, locked, reload }) {
       toast.success("Weather refreshed from project location");
       reload();
     } catch (e) {
-      toast.error(`Weather: ${e?.response?.data?.detail || "Refresh failed — check project city/state"}`);
+      // 2026-08-XX (prod-bug-fix) -- sanitize the toast so Cloudflare
+      // origin-error HTML never leaks in (see auto-trigger effect
+      // upstream). Only accept short JSON `detail` strings.
+      const raw = e?.response?.data;
+      let msg = null;
+      if (raw && typeof raw === "object" && typeof raw.detail === "string" && raw.detail.length > 0 && raw.detail.length < 200) {
+        msg = raw.detail;
+      }
+      if (!msg) {
+        msg = "Refresh failed — check the project city/state, or try again in a moment.";
+      }
+      toast.error(`Weather: ${msg}`);
     } finally {
       setRefreshing(false);
     }
