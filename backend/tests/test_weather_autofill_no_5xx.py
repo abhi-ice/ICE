@@ -221,11 +221,40 @@ async def asgi_client():
     cli.close()
 
 
+async def _clear_dr_weather(dr_id: str):
+    """Iter15 addition — the new 5-min freshness cache would return the DR
+    from a previous happy-path test w/o calling monkeypatched _geocode. Clear
+    weather_fetched_at so the monkeypatched failure path actually runs."""
+    from motor.motor_asyncio import AsyncIOMotorClient
+    cli = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    db = cli[os.environ["DB_NAME"]]
+    await db.daily_reports.update_many(
+        {"id": dr_id},
+        {"$unset": {"weather_fetched_at": "", "weather_conditions": "",
+                    "weather_temp_high_f": "", "weather_temp_low_f": "",
+                    "weather_precipitation_in": "", "weather_wind_mph": ""}},
+    )
+    cli.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_wx_caches():
+    """Iter15 addition — clear module-level TTL caches between tests."""
+    try:
+        from routers import daily_reports_router as drr
+        drr._GEOCODE_CACHE.clear()
+        drr._WEATHER_CACHE.clear()
+    except Exception:
+        pass
+    yield
+
+
 @pytest.mark.asyncio
 async def test_geocode_returns_none_simulated_unreachable(monkeypatch, asgi_client, ctx):
     """Simulate Open-Meteo unreachable via _geocode returning None -> 422
     'Could not geocode ...' (NOT 5xx)."""
     from routers import daily_reports_router as drr
+    await _clear_dr_weather(ctx["dr_id"])
     monkeypatch.setattr(drr, "_geocode", lambda city, state, postal=None: None)
     r = await asgi_client.post(
         f"/api/daily-reports/{ctx['dr_id']}/weather-autofill",
@@ -241,6 +270,7 @@ async def test_fetch_weather_returns_none_simulated_unreachable(monkeypatch, asg
     """Simulate weather provider unreachable via _fetch_weather returning
     None -> 422 'Weather provider unreachable' (NOT 5xx)."""
     from routers import daily_reports_router as drr
+    await _clear_dr_weather(ctx["dr_id"])
     monkeypatch.setattr(drr, "_geocode", lambda c, s, p=None: (39.1, -94.6))
     monkeypatch.setattr(drr, "_fetch_weather", lambda lat, lng, d: None)
     r = await asgi_client.post(
@@ -260,6 +290,7 @@ async def test_geocode_timeout_simulated(monkeypatch, asgi_client, ctx):
         time.sleep(10)  # exceeds 6s wait_for
         return (39.1, -94.6)
     from routers import daily_reports_router as drr
+    await _clear_dr_weather(ctx["dr_id"])
     monkeypatch.setattr(drr, "_geocode", _hang)
     r = await asgi_client.post(
         f"/api/daily-reports/{ctx['dr_id']}/weather-autofill",
@@ -275,6 +306,7 @@ async def test_geocode_timeout_simulated(monkeypatch, asgi_client, ctx):
 async def test_fetch_weather_timeout_simulated(monkeypatch, asgi_client, ctx):
     """Simulate weather-fetch hang > 6s -> 422 'Weather provider slow'."""
     from routers import daily_reports_router as drr
+    await _clear_dr_weather(ctx["dr_id"])
     monkeypatch.setattr(drr, "_geocode", lambda c, s, p=None: (39.1, -94.6))
     def _hang(*a, **kw):
         time.sleep(10)

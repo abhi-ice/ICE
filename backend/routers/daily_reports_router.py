@@ -1,8 +1,9 @@
 """Daily-report router. Master prompt §10: pre-populate from 2WLA at 7am."""
+import logging
 import re
 import requests
 from fastapi import APIRouter, Depends, HTTPException
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from pydantic import Field
 from database import get_db, tenant_filter
@@ -17,6 +18,8 @@ from models import (
 )
 from auth import require_tenant
 from audit import write_audit
+
+logger = logging.getLogger("ice_schedule_ops.dr")
 
 router = APIRouter(tags=["daily-reports"])
 
@@ -1507,12 +1510,69 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
 # ============================================================
 # Weather auto-fill (Open-Meteo geocoding + forecast)
 # ============================================================
+# 2026-08-26 (concurrency hardening + observability) --
+#   * Structured logging inside every requests-exception path so ops
+#     can distinguish DNS failure, provider 5xx, and timeout during
+#     an outage (previously bare `except Exception: return None`
+#     swallowed the reason entirely).
+#   * In-process TTL cache for geocode (24h) and weather (30min).
+#     100+ concurrent DR opens for the same project on the same day
+#     collapse to a SINGLE outbound Open-Meteo call after the first
+#     one lands. Zero external cache dependency.
+#   * Thundering-herd coalescing via a per-key asyncio.Lock, so
+#     N concurrent misses on the same key share one in-flight fetch
+#     instead of hitting Open-Meteo N times.
+#   * Global semaphore capping concurrent outbound calls at 20 so
+#     a big DR-open burst can never DDoS the provider.
+import time as _wx_time
+from threading import Lock as _WxLock
+
+_GEOCODE_CACHE: dict = {}       # (city, state, postal) -> ((lat, lng) | None, expires_at)
+_GEOCODE_TTL = 24 * 3600        # 24h — city coords never change
+_WEATHER_CACHE: dict = {}       # (lat_r, lng_r, date) -> (weather_dict | None, expires_at)
+_WEATHER_TTL = 30 * 60          # 30min — forecast refresh cadence
+_WX_CACHE_MAX = 500             # LRU-ish cap to keep memory bounded
+
+# Sync locks (helpers run in threadpool workers, one lock per cache is enough)
+_geocode_cache_lock = _WxLock()
+_weather_cache_lock = _WxLock()
+
+# Async coalescing + concurrency guard (used ONLY from the async endpoint)
+_wx_coalesce_locks: dict = {}   # key -> asyncio.Lock, created lazily
+_wx_coalesce_locks_mutex: Optional[object] = None  # asyncio.Lock, lazy
+_wx_outbound_sem: Optional[object] = None          # asyncio.Semaphore(20), lazy
+
+
+def _wx_cache_evict_locked(cache: dict) -> None:
+    """Best-effort cap so a long-running pod can't grow the caches
+    without bound. Called under the corresponding lock."""
+    if len(cache) <= _WX_CACHE_MAX:
+        return
+    # Drop oldest 25% by expiry (approximate LRU without heap overhead)
+    items = sorted(cache.items(), key=lambda kv: kv[1][1])
+    for k, _v in items[: max(1, _WX_CACHE_MAX // 4)]:
+        cache.pop(k, None)
+
+
 def _geocode(city: Optional[str], state: Optional[str], postal: Optional[str] = None) -> Optional[tuple]:
     """Open-Meteo geocoding API — free, no key. Strategy:
        - Primary: search by city name, prefer the result whose admin1 matches state.
        - Fallback: search 'city, state' as one string.
     Returns (lat, lng) or None.
+
+    Uses a 24h in-process TTL cache: city/state coords never change,
+    so a repeat call within 24h is a dict lookup (no outbound HTTP).
     """
+    # ---- Cache lookup (fast path) ---------------------------------
+    cache_key = ((city or "").strip().lower(), (state or "").strip().lower(), (postal or "").strip().lower())
+    now = _wx_time.time()
+    with _geocode_cache_lock:
+        hit = _GEOCODE_CACHE.get(cache_key)
+        if hit is not None:
+            value, expires_at = hit
+            if now < expires_at:
+                return value
+
     state_aliases = {
         "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
         "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
@@ -1545,28 +1605,57 @@ def _geocode(city: Optional[str], state: Optional[str], postal: Optional[str] = 
                     return float(res["latitude"]), float(res["longitude"])
             if results:
                 return float(results[0]["latitude"]), float(results[0]["longitude"])
-        except Exception:
+        except requests.exceptions.Timeout as exc:
+            logger.warning("geocode: TIMEOUT name=%r admin1=%r: %s", name, admin1, exc)
+            return None
+        except requests.exceptions.ConnectionError as exc:
+            # DNS failure, egress blocked, TCP reset -- the "pod can't reach the internet" case
+            logger.warning("geocode: CONNECTION_ERROR name=%r admin1=%r: %s", name, admin1, exc)
+            return None
+        except requests.exceptions.HTTPError as exc:
+            # provider returned 5xx (or 4xx like 429 rate limit)
+            status = getattr(exc.response, "status_code", "?")
+            logger.warning("geocode: HTTP_%s name=%r admin1=%r: %s", status, name, admin1, exc)
+            return None
+        except Exception as exc:
+            logger.warning("geocode: OTHER name=%r admin1=%r: %s", name, admin1, exc)
             return None
         return None
 
+    result: Optional[tuple] = None
     if city:
-        coords = _try(city, state_full)
-        if coords:
-            return coords
-    if city and state_full:
-        coords = _try(f"{city}, {state_full}")
-        if coords:
-            return coords
-    if postal:
-        coords = _try(postal)
-        if coords:
-            return coords
-    return None
+        result = _try(city, state_full)
+    if not result and city and state_full:
+        result = _try(f"{city}, {state_full}")
+    if not result and postal:
+        result = _try(postal)
+
+    # ---- Cache store (always cache, incl. misses -- prevents storm) --
+    with _geocode_cache_lock:
+        # Cache misses shorter (5min) so a transient outage recovers fast
+        ttl = _GEOCODE_TTL if result else 300
+        _GEOCODE_CACHE[cache_key] = (result, now + ttl)
+        _wx_cache_evict_locked(_GEOCODE_CACHE)
+    return result
 
 
 def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
     """Open-Meteo forecast for a specific date (today or near-future).
-    Falls back to today's snapshot if target_date is out-of-range."""
+    Falls back to today's snapshot if target_date is out-of-range.
+
+    Uses a 30-min TTL cache keyed on rounded lat/lng + date, so 100+
+    concurrent DR opens for the same project/date collapse to 1
+    outbound call.
+    """
+    cache_key = (round(lat, 2), round(lng, 2), target_date)
+    now = _wx_time.time()
+    with _weather_cache_lock:
+        hit = _WEATHER_CACHE.get(cache_key)
+        if hit is not None:
+            value, expires_at = hit
+            if now < expires_at:
+                return value
+
     try:
         r = requests.get(
             "https://api.open-meteo.com/v1/forecast",
@@ -1584,7 +1673,26 @@ def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
         )
         r.raise_for_status()
         data = r.json()
-    except Exception:
+    except requests.exceptions.Timeout as exc:
+        logger.warning("fetch_weather: TIMEOUT lat=%s lng=%s date=%s: %s", lat, lng, target_date, exc)
+        with _weather_cache_lock:
+            _WEATHER_CACHE[cache_key] = (None, now + 60)  # 60s negative cache
+        return None
+    except requests.exceptions.ConnectionError as exc:
+        logger.warning("fetch_weather: CONNECTION_ERROR lat=%s lng=%s date=%s: %s", lat, lng, target_date, exc)
+        with _weather_cache_lock:
+            _WEATHER_CACHE[cache_key] = (None, now + 60)
+        return None
+    except requests.exceptions.HTTPError as exc:
+        status = getattr(exc.response, "status_code", "?")
+        logger.warning("fetch_weather: HTTP_%s lat=%s lng=%s date=%s: %s", status, lat, lng, target_date, exc)
+        with _weather_cache_lock:
+            _WEATHER_CACHE[cache_key] = (None, now + 60)
+        return None
+    except Exception as exc:
+        logger.warning("fetch_weather: OTHER lat=%s lng=%s date=%s: %s", lat, lng, target_date, exc)
+        with _weather_cache_lock:
+            _WEATHER_CACHE[cache_key] = (None, now + 60)
         return None
     cur = data.get("current", {}) or {}
     daily = data.get("daily", {}) or {}
@@ -1597,13 +1705,17 @@ def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
         95: "thunderstorm", 96: "thunderstorm", 99: "thunderstorm",
     }
     code = (daily.get("weather_code") or [cur.get("weather_code", 0)])[0]
-    return {
+    result = {
         "weather_temp_high_f": (daily.get("temperature_2m_max") or [None])[0],
         "weather_temp_low_f": (daily.get("temperature_2m_min") or [None])[0],
         "weather_conditions": code_map.get(code, "unknown"),
         "weather_precipitation_in": (daily.get("precipitation_sum") or [0])[0] or 0,
         "weather_wind_mph": (daily.get("wind_speed_10m_max") or [cur.get("wind_speed_10m")])[0],
     }
+    with _weather_cache_lock:
+        _WEATHER_CACHE[cache_key] = (result, now + _WEATHER_TTL)
+        _wx_cache_evict_locked(_WEATHER_CACHE)
+    return result
 
 
 @router.post("/daily-reports/{daily_report_id}/weather-autofill", response_model=DailyReport)
@@ -1627,6 +1739,17 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
     """
     from starlette.concurrency import run_in_threadpool
     import asyncio as _asyncio
+    # 2026-08-26 (concurrency hardening) -- lazy-init the async
+    # coalescing lock table + outbound semaphore, once per process.
+    # Cap to 20 concurrent outbound Open-Meteo calls so a big burst
+    # of DR opens can never stampede the provider. The cache in
+    # _geocode/_fetch_weather absorbs most of the load anyway; the
+    # semaphore is a safety belt for the cold-cache case.
+    global _wx_coalesce_locks_mutex, _wx_outbound_sem
+    if _wx_coalesce_locks_mutex is None:
+        _wx_coalesce_locks_mutex = _asyncio.Lock()
+    if _wx_outbound_sem is None:
+        _wx_outbound_sem = _asyncio.Semaphore(20)
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
@@ -1644,33 +1767,75 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
     # provider-unreachable, so the axios catch on the frontend still
     # gets `{detail: "..."}` and renders our friendly toast. (Was 504
     # for timeout / 502 for unreachable before this comment.)
-    try:
-        coords = await _asyncio.wait_for(
-            run_in_threadpool(
-                _geocode, proj.get("city"), proj.get("state"), proj.get("postal_code"),
-            ),
-            timeout=6.0,
+    #
+    # 2026-08-26 (concurrency hardening) -- serialise concurrent hits
+    # for the same project (coalesce key = tenant_id + project_id +
+    # report_date). N simultaneous DR opens now block behind a single
+    # in-flight lookup; the FIRST landing fills the cache, all others
+    # read the cache and return in ~0ms.
+    coalesce_key = f"{ctx['tenant_id']}:{dr['project_id']}:{dr['report_date']}"
+    async with _wx_coalesce_locks_mutex:
+        lock = _wx_coalesce_locks.get(coalesce_key)
+        if lock is None:
+            lock = _asyncio.Lock()
+            _wx_coalesce_locks[coalesce_key] = lock
+        # Prevent unbounded growth of the lock table
+        if len(_wx_coalesce_locks) > 512:
+            for stale_key in list(_wx_coalesce_locks.keys())[:128]:
+                if stale_key != coalesce_key and not _wx_coalesce_locks[stale_key].locked():
+                    _wx_coalesce_locks.pop(stale_key, None)
+
+    async with lock:
+        # Cache-first fast path: if a previous request in this coalesce
+        # window already populated the DR (or a peer request that just
+        # finished before us did), re-read and return it -- no outbound.
+        dr_fresh = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0},
         )
-    except _asyncio.TimeoutError:
-        raise HTTPException(422, "Geocoding provider slow to answer — try Refresh in a moment")
-    if not coords:
-        addr = ", ".join([p for p in addr_parts if p]).strip(", ")
-        raise HTTPException(422, f"Could not geocode project address ({addr or 'no city/state on project'})")
-    try:
-        weather = await _asyncio.wait_for(
-            run_in_threadpool(_fetch_weather, coords[0], coords[1], dr["report_date"]),
-            timeout=6.0,
+        if dr_fresh and dr_fresh.get("weather_fetched_at"):
+            _fetched_at_raw = dr_fresh["weather_fetched_at"]
+            try:
+                _fetched_at = _fetched_at_raw if isinstance(_fetched_at_raw, datetime) else datetime.fromisoformat(
+                    str(_fetched_at_raw).replace("Z", "+00:00"),
+                )
+                if _fetched_at.tzinfo is None:
+                    _fetched_at = _fetched_at.replace(tzinfo=timezone.utc)
+                # Consider fresh if <5min old (matches the 30-min weather
+                # cache but with a smaller re-read window so refresh
+                # button still feels responsive)
+                if (utc_now() - _fetched_at).total_seconds() < 300:
+                    return DailyReport(**dr_fresh)
+            except Exception:
+                pass
+
+        async with _wx_outbound_sem:
+            try:
+                coords = await _asyncio.wait_for(
+                    run_in_threadpool(
+                        _geocode, proj.get("city"), proj.get("state"), proj.get("postal_code"),
+                    ),
+                    timeout=6.0,
+                )
+            except _asyncio.TimeoutError:
+                raise HTTPException(422, "Geocoding provider slow to answer — try Refresh in a moment")
+            if not coords:
+                addr = ", ".join([p for p in addr_parts if p]).strip(", ")
+                raise HTTPException(422, f"Could not geocode project address ({addr or 'no city/state on project'})")
+            try:
+                weather = await _asyncio.wait_for(
+                    run_in_threadpool(_fetch_weather, coords[0], coords[1], dr["report_date"]),
+                    timeout=6.0,
+                )
+            except _asyncio.TimeoutError:
+                raise HTTPException(422, "Weather provider slow to answer — try Refresh in a moment")
+            if not weather:
+                raise HTTPException(422, "Weather provider unreachable — try Refresh in a moment")
+        weather["weather_fetched_at"] = utc_now().isoformat()
+        await db.daily_reports.update_one(
+            tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": weather},
         )
-    except _asyncio.TimeoutError:
-        raise HTTPException(422, "Weather provider slow to answer — try Refresh in a moment")
-    if not weather:
-        raise HTTPException(422, "Weather provider unreachable — try Refresh in a moment")
-    weather["weather_fetched_at"] = utc_now().isoformat()
-    await db.daily_reports.update_one(
-        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": weather},
-    )
-    after = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
-    return DailyReport(**after)
+        after = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+        return DailyReport(**after)
 
 
 # ============================================================
