@@ -1620,7 +1620,10 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
          loop stays responsive.
       2. Cap the whole autofill at 12s via asyncio.wait_for -- Open-Meteo
          is usually <500ms, so anything longer is a lost cause; return
-         a clean 504 the frontend can toast cleanly.
+         a clean 422 the frontend can toast cleanly. (Was 504/502 before
+         2026-08-26; Cloudflare intercepts ANY origin 5xx and substitutes
+         its own 520 HTML page, defeating the frontend sanitizer, so all
+         provider failures now use 422 to pass through Cloudflare cleanly.)
     """
     from starlette.concurrency import run_in_threadpool
     import asyncio as _asyncio
@@ -1634,6 +1637,13 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
     if not proj:
         raise HTTPException(404, "Project not found")
     addr_parts = [proj.get("city"), proj.get("state"), proj.get("postal_code")]
+    # 2026-08-XX (prod-bug-fix) -- Cloudflare intercepts ANY origin 5xx
+    # and substitutes its own 520 HTML error page before the browser
+    # sees the JSON, defeating the frontend toast sanitizer. Return
+    # 422 (a 4xx that Cloudflare passes through) for both timeout and
+    # provider-unreachable, so the axios catch on the frontend still
+    # gets `{detail: "..."}` and renders our friendly toast. (Was 504
+    # for timeout / 502 for unreachable before this comment.)
     try:
         coords = await _asyncio.wait_for(
             run_in_threadpool(
@@ -1642,7 +1652,7 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
             timeout=6.0,
         )
     except _asyncio.TimeoutError:
-        raise HTTPException(504, "Geocoding provider slow to answer — try Refresh in a moment")
+        raise HTTPException(422, "Geocoding provider slow to answer — try Refresh in a moment")
     if not coords:
         addr = ", ".join([p for p in addr_parts if p]).strip(", ")
         raise HTTPException(422, f"Could not geocode project address ({addr or 'no city/state on project'})")
@@ -1652,9 +1662,9 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
             timeout=6.0,
         )
     except _asyncio.TimeoutError:
-        raise HTTPException(504, "Weather provider slow to answer — try Refresh in a moment")
+        raise HTTPException(422, "Weather provider slow to answer — try Refresh in a moment")
     if not weather:
-        raise HTTPException(502, "Weather provider unreachable")
+        raise HTTPException(422, "Weather provider unreachable — try Refresh in a moment")
     weather["weather_fetched_at"] = utc_now().isoformat()
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": weather},
