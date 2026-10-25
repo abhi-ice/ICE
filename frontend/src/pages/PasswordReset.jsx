@@ -106,7 +106,7 @@ export function ForgotPassword() {
       </form>
       <div className="mt-4 flex justify-between text-xs text-slate-400">
         <Link to="/login" className="hover:text-slate-200">← Back to sign in</Link>
-        <Link to="/signup" className="hover:text-slate-200">Create account →</Link>
+        <span className="text-right">New here? Ask your company admin to send you an invite.</span>
       </div>
     </CardShell>
   );

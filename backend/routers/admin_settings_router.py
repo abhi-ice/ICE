@@ -5,7 +5,9 @@ env-var-only switches. Powers two Settings cards:
   Microsoft Project connector  POST .../msp-token/rotate  (token shown ONCE)
                                GET  /api/admin/msp-worker/download (zip)
 
-Admin-only (role_required). The GET never returns the worker token value --
+GET is admin-only (role_required). PATCH / rotate / download are limited to
+PLATFORM_ADMIN_EMAILS when that env var is set (else admin-only), because the
+settings are global across every company. The GET never returns the worker token value --
 only whether one is set and when the worker last checked in.
 """
 from __future__ import annotations
@@ -50,6 +52,31 @@ FLAG_META = [
 _ALLOWED = {m["key"] for m in FLAG_META}
 
 
+def _platform_admin_emails() -> set[str]:
+    raw = os.environ.get("PLATFORM_ADMIN_EMAILS") or ""
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def require_platform_admin(ctx: dict) -> None:
+    """Day-1 fix (2026-10-25, audit findings 2/15). The runtime settings and
+    the MS Project worker token are ONE global record shared by every
+    company on this server, so being an admin of some company is not enough
+    (anyone could sign up and become admin of their own company). When
+    PLATFORM_ADMIN_EMAILS is set (comma-separated, any case), only those
+    emails may change settings, rotate the worker token or download the
+    worker. When it is not set, fall back to the company admin check."""
+    allowed = _platform_admin_emails()
+    if not allowed:
+        role_required(ctx, ["admin"])
+        return
+    email = ((ctx.get("user") or {}).get("email") or "").strip().lower()
+    if email not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the platform owner can change these settings. Ask ICE support if something here needs to change.",
+        )
+
+
 def _state() -> dict:
     from services import feature_flags
 
@@ -75,7 +102,7 @@ async def get_settings(ctx: dict = Depends(require_tenant)):
 
 @router.patch("/admin/runtime-settings")
 async def patch_settings(payload: dict = Body(...), ctx: dict = Depends(require_tenant)):
-    role_required(ctx, ["admin"])
+    require_platform_admin(ctx)
     flags = payload.get("flags") or {}
     bad = [k for k in flags if k not in _ALLOWED]
     if bad:
@@ -87,7 +114,7 @@ async def patch_settings(payload: dict = Body(...), ctx: dict = Depends(require_
 
 @router.post("/admin/runtime-settings/msp-token/rotate")
 async def rotate_msp_token(ctx: dict = Depends(require_tenant)):
-    role_required(ctx, ["admin"])
+    require_platform_admin(ctx)
     updated_by = (ctx.get("user") or {}).get("email") or ""
     token = await runtime_settings.rotate_worker_token(updated_by=updated_by)
     # The ONLY place the token value ever crosses the wire. The UI shows it
@@ -97,7 +124,7 @@ async def rotate_msp_token(ctx: dict = Depends(require_tenant)):
 
 @router.get("/admin/msp-worker/download")
 async def download_worker(ctx: dict = Depends(require_tenant)):
-    role_required(ctx, ["admin"])
+    require_platform_admin(ctx)
     worker_dir = Path(__file__).resolve().parents[2] / "worker"
     if not worker_dir.is_dir():
         raise HTTPException(status_code=404, detail="Worker package not found on this deployment")

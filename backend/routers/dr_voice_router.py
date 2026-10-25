@@ -901,7 +901,22 @@ async def voice_live_token(
     SECURITY NOTE: This endpoint is auth-gated (require_tenant) so an
     anonymous user can't lift the key from the browser. The key only
     reaches authenticated session users.
+
+    Day-1 fix (2026-10-25, audit finding 16): this hands the platform's
+    MASTER Gemini key (no expiry, no per-user scope) to the browser, where
+    it shows in devtools and the WebSocket URL. It is therefore OFF unless
+    LIVE_VOICE_ENABLED is 1/true/yes. Voice memo keeps the key on the
+    server and is unaffected. RISK when enabled: any logged-in user can
+    copy the key. Proper fix = Gemini ephemeral tokens
+    (client.auth_tokens.create, v1alpha) plus a frontend change to connect
+    with access_token= instead of key=; not done here because the frontend
+    still builds the WebSocket URL with key=.
     """
+    if not _live_voice_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Live voice is turned off. Use the voice memo button instead.",
+        )
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(
@@ -927,8 +942,14 @@ async def voice_config(ctx: dict = Depends(require_tenant)):
     return {
         "gemini_configured": gemini_present,
         "voice_memo_enabled": gemini_present,
-        "live_voice_enabled": gemini_present,
+        # Day-1 fix: live voice is off unless LIVE_VOICE_ENABLED is on, so
+        # the UI greys out the button instead of the user hitting a 503.
+        "live_voice_enabled": gemini_present and _live_voice_enabled(),
     }
+
+
+def _live_voice_enabled() -> bool:
+    return (os.environ.get("LIVE_VOICE_ENABLED") or "").strip().lower() in {"1", "true", "yes"}
 
 
 def _new_id() -> str:

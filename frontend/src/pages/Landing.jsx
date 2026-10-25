@@ -53,7 +53,7 @@ const COMPLIANCE = [
 ];
 
 const STEPS = [
-  { n: "01", icon: Building2,      title: "Spin up a tenant",     tag: "Sign up. Invite your team." },
+  { n: "01", icon: Building2,      title: "Spin up a tenant",     tag: "Your admin invites your team." },
   { n: "02", icon: Calendar,       title: "Import your schedule", tag: "P6 XER or MSP XML in minutes." },
   { n: "03", icon: ClipboardCheck, title: "Log from the field",   tag: "DRs auto-populate. Voice dictation." },
   { n: "04", icon: Bot,            title: "Let the Copilot work", tag: "TIAs, recovery, all human-gated." },
@@ -82,19 +82,14 @@ export default function Landing() {
             <a href="#workflow"  className="hover:text-white transition">How it works</a>
           </nav>
           <div className="flex items-center gap-2">
-            <Link
-              data-testid="landing-signin"
-              to="/login"
-              className="hidden sm:inline-flex h-9 px-4 items-center rounded-md text-sm font-medium text-white/90 hover:text-white hover:bg-white/10 transition"
-            >
-              Sign in
-            </Link>
+            {/* Sign-up is invite-only (day-1 audit finding 2): the header
+                call-to-action is now Sign in, visible on phones too. */}
             <button
-              data-testid="landing-cta-create"
-              onClick={() => nav("/signup")}
+              data-testid="landing-signin"
+              onClick={() => nav("/login")}
               className="h-9 px-4 rounded-md text-sm font-medium bg-[#10b981] hover:bg-[#059669] text-white inline-flex items-center gap-1.5 shadow-[0_0_18px_-4px_rgba(16,185,129,0.55)] transition"
             >
-              Get started
+              Sign in
               <ArrowRight className="h-4 w-4" strokeWidth={2} />
             </button>
           </div>
@@ -295,7 +290,7 @@ export default function Landing() {
           <div className="max-w-2xl mb-10">
             <div className="text-[11px] uppercase tracking-[0.18em] text-[#34D399] mb-3">How it works</div>
             <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
-              Signup to first daily report in under an hour.
+              Invite to first daily report in under an hour.
             </h2>
           </div>
 
@@ -326,22 +321,25 @@ export default function Landing() {
             <span className="text-[#34D399]">one platform.</span>
           </h2>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-            <button
-              data-testid="landing-final-create"
-              onClick={() => nav("/signup")}
-              className="h-12 px-7 rounded-md text-sm font-semibold bg-[#10b981] hover:bg-[#059669] text-white inline-flex items-center gap-2 shadow-[0_0_32px_-4px_rgba(16,185,129,0.55)] transition"
-            >
-              Create your organization
-              <ArrowRight className="h-4 w-4" strokeWidth={2} />
-            </button>
             <Link
               data-testid="landing-final-signin"
               to="/login"
-              className="h-12 px-7 rounded-md text-sm font-semibold border border-white/20 bg-white/5 hover:bg-white/10 text-white inline-flex items-center transition"
+              className="h-12 px-7 rounded-md text-sm font-semibold bg-[#10b981] hover:bg-[#059669] text-white inline-flex items-center gap-2 shadow-[0_0_32px_-4px_rgba(16,185,129,0.55)] transition"
             >
               Sign in
+              <ArrowRight className="h-4 w-4" strokeWidth={2} />
+            </Link>
+            <Link
+              data-testid="landing-final-accept-invite"
+              to="/accept-invite"
+              className="h-12 px-7 rounded-md text-sm font-semibold border border-white/20 bg-white/5 hover:bg-white/10 text-white inline-flex items-center transition"
+            >
+              Accept an invite
             </Link>
           </div>
+          <p data-testid="landing-invite-only-note" className="text-sm text-white/60">
+            New here? Ask your company admin to send you an invite.
+          </p>
         </div>
       </section>
 
@@ -378,7 +376,6 @@ export default function Landing() {
               <div className="text-[11px] uppercase tracking-[0.16em] text-white/50 mb-3">Get started</div>
               <ul className="space-y-2 text-sm text-white/70">
                 <li><Link to="/login"          className="hover:text-white transition">Sign in</Link></li>
-                <li><Link to="/signup"         className="hover:text-white transition">Create your org</Link></li>
                 <li><Link to="/accept-invite"  className="hover:text-white transition">Accept an invite</Link></li>
               </ul>
             </div>

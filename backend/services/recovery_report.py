@@ -716,7 +716,8 @@ def _render_pdf_bytes(report: dict) -> bytes:
     """WeasyPrint render. Minimal styling consistent with TIA."""
     import html as _html
     try:
-        from weasyprint import HTML
+        from weasyprint import HTML  # noqa: F401 -- availability probe
+        from services.pdf_safety import render_pdf
     except Exception as exc:
         log.warning("weasyprint unavailable; falling back to text PDF: %s", exc)
         # Fallback: text bytes wrapped as application/pdf MIME; not a
@@ -787,7 +788,7 @@ def _render_pdf_bytes(report: dict) -> bytes:
       </table>
     </body></html>
     """
-    return HTML(string=body).write_pdf()
+    return render_pdf(body)
 
 
 async def render_format(

@@ -830,7 +830,12 @@ async def check_escrow_releases(project_id: str, ctx: dict = Depends(require_ten
 async def seed_recovery(ctx: dict = Depends(require_tenant)):
     """Insert a synthetic unapplied recovery suggestion against the first
     in-progress task. Useful for exercising the apply flow in regression
-    tests."""
+    tests.
+
+    Day-1 fix (2026-10-25, audit finding 65): admin only, so a field user
+    cannot plant fake recovery suggestions on a real activity."""
+    from auth import role_required
+    role_required(ctx, ["admin"])
     db = get_db()
     task = await db.tasks.find_one(
         tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]}}),

@@ -56,7 +56,7 @@ export default function TopBar({ navOpen = false, onToggleNav }) {
 
       {/* pt.59 (2026-05-28): the tenant "switcher" was a no-op dropdown
           (one user = one tenant; switching was never wired). Replaced with
-          a static org label — new orgs are created via /signup, not here. */}
+          a static org label — new orgs are not created here (sign-up is invite-only). */}
       <div data-testid="tenant-label" title={tenant?.display_name || ""}
         className="v4-topbar-tenant max-md:hidden flex items-center gap-1.5 h-8 px-2 text-xs font-medium"
         style={{ color: "rgba(255,255,255,0.82)" }}>
@@ -167,7 +167,7 @@ export default function TopBar({ navOpen = false, onToggleNav }) {
                     onClick={async () => {
                       const tenantName = tenant?.display_name || "this organization";
                       const ack = window.prompt(
-                        `This will PERMANENTLY close "${tenantName}" and wipe every project, daily report, photo, RFI, delay, team member, audit row, and the tenant itself.\n\nYour email becomes free to sign up a brand-new organization afterwards.\n\nType DELETE to confirm:`,
+                        `This will PERMANENTLY close "${tenantName}" and wipe every project, daily report, photo, RFI, delay, team member, audit row, and the tenant itself.\n\nType DELETE to confirm:`,
                         "",
                       );
                       if (ack == null) return;
@@ -179,7 +179,8 @@ export default function TopBar({ navOpen = false, onToggleNav }) {
                         await api.post("/auth/close-account");
                         toast.success("Account closed. Goodbye!");
                         clearAuth();
-                        window.location.href = "/signup";
+                        // Sign-up is invite-only now; send them to sign in.
+                        window.location.href = "/login";
                       } catch (e) {
                         toast.error(e.response?.data?.detail || "Close failed");
                       }

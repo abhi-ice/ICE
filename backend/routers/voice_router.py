@@ -6,7 +6,7 @@ from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel
 from auth import require_tenant
 from services.voice_pipeline import process_voice_annotation
-from services.storage import get_object, put_object, make_path, record_file
+from services.storage import get_object, put_object, aget_object, aput_object, make_path, record_file
 
 router = APIRouter(tags=["voice"])
 
@@ -44,7 +44,9 @@ async def voice_annotate(
         audio_url = None
         err = None
         try:
-            put_object(storage_path, audio_bytes, content_type)
+            # Worker thread: a slow storage upload must not freeze the
+            # server for everyone else (day-1 audit findings 39/42).
+            await aput_object(storage_path, audio_bytes, content_type)
             audio_url = storage_path
             await record_file(
                 tenant_id=ctx["tenant_id"], storage_path=storage_path,
@@ -106,7 +108,7 @@ async def get_audio(annotation_id: str, ctx: dict = Depends(require_tenant)):
     if not row or not row.get("audio_url"):
         raise HTTPException(404, "Audio not found")
     try:
-        data, ct = get_object(row["audio_url"])
+        data, ct = await aget_object(row["audio_url"])
     except Exception as e:
         raise HTTPException(500, f"Storage error: {e}")
     return Response(content=data, media_type=ct)

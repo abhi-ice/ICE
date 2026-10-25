@@ -19,7 +19,7 @@
  * api.js <-> component import cycle). MUTEX-guarded so the component drain,
  * the reconnect drain, and the heartbeat can't double-post a note.
  */
-import { resolveOfflineId, isUnresolvedOfflineId } from "./drOfflineSync";
+import { resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection } from "./drOfflineSync";
 
 const DB_NAME = "ice-dr-voice-notes";
 const STORE = "pendingNotes";
@@ -221,10 +221,12 @@ async function _drainAll(api) {
     } catch (e) {
       // Network error: still offline — stop (rest will retry). A definitive
       // 4xx (the DR was deleted) drops the note so it can't loop forever;
-      // 401/403 keep it (auth returns after re-login).
-      const status = e?.response?.status;
+      // 401/403 keep it (auth returns after re-login). Day-1 fix
+      // (2026-10-25, finding 35): only a genuine JSON rejection from the app
+      // drops; 408/425/429 and non-JSON replies (the HTML 404 of a sleeping
+      // backend) are kept for the next drain.
       if (!e?.response) break;
-      if (status >= 400 && status < 500 && status !== 401 && status !== 403) {
+      if (isPermanentRejection(e)) {
         await removePendingNote(n.id).catch(() => {});
       }
     }

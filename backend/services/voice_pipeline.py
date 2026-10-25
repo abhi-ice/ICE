@@ -23,7 +23,7 @@ from typing import Optional
 # from emergentintegrations.llm.chat import LlmChat, UserMessage    # moved inside call sites
 from database import get_db
 from models import gen_id, utc_now
-from services.storage import put_object, make_path, record_file
+from services.storage import put_object, aput_object, make_path, record_file
 
 WHISPER_MODEL = "whisper-1"
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
@@ -178,7 +178,7 @@ async def process_voice_annotation(
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "webm"
     storage_path = make_path(tenant_id, "audio/voice", ext)
     try:
-        put_object(storage_path, audio_bytes, "audio/webm")
+        await aput_object(storage_path, audio_bytes, "audio/webm")
         audio_url = storage_path
         await record_file(
             tenant_id=tenant_id, storage_path=storage_path,

@@ -252,8 +252,8 @@ async def schedule_diff_pdf(diff_id: str, ctx: dict = Depends(require_tenant)):
     """
 
     try:
-        from weasyprint import HTML
-        pdf = HTML(string=html_doc).write_pdf()
+        from services.pdf_safety import arender_pdf
+        pdf = await arender_pdf(html_doc)
     except Exception as e:
         raise HTTPException(500, f"PDF render failed: {str(e)[:200]}")
 

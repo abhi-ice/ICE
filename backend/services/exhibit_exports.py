@@ -504,7 +504,8 @@ def render_photo_pack_pdf(payload: dict) -> bytes:
     """Same shape as DOCX but rendered via WeasyPrint. Lawyer-
     readable per-photo cards."""
     try:
-        from weasyprint import HTML
+        from weasyprint import HTML  # noqa: F401 -- availability probe
+        from services.pdf_safety import render_pdf
     except Exception as exc:
         log.warning("weasyprint unavailable; PDF falls back to docx bytes: %s", exc)
         return render_photo_pack_docx(payload)
@@ -570,7 +571,7 @@ def render_photo_pack_pdf(payload: dict) -> bytes:
       {rows_html or '<div>No photos match the filters.</div>'}
     </body></html>
     """
-    return HTML(string=body).write_pdf()
+    return render_pdf(body)
 
 
 def render_photo_pack_zip(payload: dict) -> bytes:

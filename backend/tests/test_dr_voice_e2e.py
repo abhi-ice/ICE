@@ -38,7 +38,13 @@ import time
 import pytest
 import requests
 
-API = os.environ.get("REACT_APP_BACKEND_URL") or "https://field-ops-hub-21.preview.emergentagent.com"
+if not (os.environ.get("REACT_APP_BACKEND_URL") or "").strip():
+    pytest.skip(
+        "REACT_APP_BACKEND_URL is not set. These tests call a running ICE backend and no "
+        "longer fall back to a remote preview host; set it to the server you mean to test.",
+        allow_module_level=True,
+    )
+API = os.environ["REACT_APP_BACKEND_URL"].strip()
 EMAIL = "abhi@ice-aec.com"
 PASSWORD = "Ice@24608733"
 

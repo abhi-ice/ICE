@@ -14,22 +14,27 @@ import FieldLabel from "../components/forms/FieldLabel";
 // while the form posts the canonical role value.
 //
 // Kept in sync with InviteCreate.role Literal in backend/models.py.
+//
+// Day-1 audit findings 24/30 (2026-10-25): the form now defaults to
+// "super" (the least-surprising role for a field hire), Superintendent is
+// listed first, and labels say what each role can do. Values unchanged.
+const DEFAULT_INVITE_ROLE = "super";
 const ROLES = [
-  { value: "admin",                label: "Admin" },
-  { value: "pm",                   label: "PM (Project Manager)" },
-  { value: "super",                label: "Super (Superintendent)" },
-  { value: "foreman",              label: "Foreman" },
+  { value: "super",                label: "Superintendent (field)" },
+  { value: "foreman",              label: "Foreman (field)" },
+  { value: "pm",                   label: "Project manager (can approve)" },
+  { value: "admin",                label: "Admin (full control)" },
   { value: "viewer",               label: "Viewer (read-only)" },
-  { value: "pe",                   label: "PE (Professional Engineer)" },
-  { value: "submittal_tech",       label: "Submittal Tech" },
-  { value: "scheduling_engineer",  label: "Scheduling Engineer" },
+  { value: "pe",                   label: "Professional engineer" },
+  { value: "submittal_tech",       label: "Submittal technician" },
+  { value: "scheduling_engineer",  label: "Scheduling engineer" },
 ];
 
 export default function Team() {
   const [me, setMe] = useState(null);
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
-  const [draft, setDraft] = useState({ email: "", role: "pm" });
+  const [draft, setDraft] = useState({ email: "", role: DEFAULT_INVITE_ROLE });
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -58,7 +63,26 @@ export default function Team() {
       const code = data.invite?.code;
       const invitee = data.invite?.email || draft.email;
       if (data.already_existed) {
-        toast.info(`Pending invite re-used (code ${code}).`);
+        // Findings 24/26/30: re-sending to an address with a pending invite
+        // now applies the role just picked and re-sends the email (same
+        // code). Say which role the invite carries and whether it went out.
+        const keptRole = data.invite?.role;
+        const keptLabel = ROLES.find((r) => r.value === keptRole)?.label || keptRole;
+        if (keptRole && keptRole !== draft.role) {
+          // Older server that kept the original role.
+          toast.info(
+            `This person already has a pending invite as ${keptLabel} (code ${code}). To change the role, revoke that invite below, then send a new one.`,
+          );
+        } else if (data.email_sent) {
+          toast.success(`Invite sent again to ${invitee}${keptLabel ? ` as ${keptLabel}` : ""} (same code ${code}).`);
+        } else if (data.email_sent === false) {
+          const reason = data.email_error ? ` (${data.email_error})` : "";
+          toast.error(
+            `Invite updated${keptLabel ? ` to ${keptLabel}` : ""} but the email did not go out${reason}. Copy the link from the table below to share it yourself.`,
+          );
+        } else {
+          toast.info(`Pending invite re-used (code ${code}).`);
+        }
       } else if (data.email_sent) {
         // Bug #47 (2026-05-14): SendGrid delivery succeeded.
         toast.success(`Invite emailed to ${invitee}.`);
@@ -74,10 +98,17 @@ export default function Team() {
           `Invite created but email failed${reason}. Copy the link from the table below to share manually.`,
         );
       }
-      setDraft({ email: "", role: "pm" });
+      setDraft({ email: "", role: DEFAULT_INVITE_ROLE });
       reload();
     } catch (ex) {
-      toast.error(ex.response?.data?.detail || "Invite failed");
+      // A 422 detail is a list of objects; rendering it raw would crash
+      // the toast, so only show plain strings.
+      const detail = ex.response?.data?.detail;
+      toast.error(
+        typeof detail === "string" && detail
+          ? detail
+          : "Invite did not go through. Check the email address and try again.",
+      );
     } finally { setBusy(false); }
   };
 

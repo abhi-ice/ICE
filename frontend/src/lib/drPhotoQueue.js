@@ -33,15 +33,15 @@
  *            createdAt, retryCount, lastError }
  */
 
+// Offline-created DRs (2026-07-06): a photo queued against a provisional
+// "offline-dr-*" id can only upload after the request queue's drain has
+// created the real report and recorded the id mapping.
+import { resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection } from "./drOfflineSync";
+
 const DB_NAME = "ice-dr-photos";
 const DB_VERSION = 1;
 const STORE = "pendingPhotos";
 const MAX_BLOB_BYTES = 25 * 1024 * 1024; // matches backend /photo-tray 25MB cap
-
-// Offline-created DRs (2026-07-06): a photo queued against a provisional
-// "offline-dr-*" id can only upload after the request queue's drain has
-// created the real report and recorded the id mapping.
-import { resolveOfflineId, isUnresolvedOfflineId } from "./drOfflineSync";
 
 // Queue/remove dispatch this event so the flow landing's "N items will
 // sync" chip can live-update without polling.
@@ -405,8 +405,10 @@ async function uploadOne(api, photo) {
         await api.post("/photo-tags", tagPayload);
         tagged = true;
       } catch (e) {
-        const status = e?.response?.status;
-        const transient = !e?.response || status >= 500;
+        // Transient = anything but a genuine JSON rejection from the app
+        // (finding 35): an HTML 404 from a sleeping backend must not
+        // downgrade the photo to a plain attach and lose its activity link.
+        const transient = !isPermanentRejection(e);
         if (transient && attempt === 0) {
           await new Promise((res) => setTimeout(res, 700));
           continue;
@@ -441,10 +443,12 @@ async function uploadOne(api, photo) {
  *   - network error (no response): keep it AND stop draining (we're still
  *     offline; hammering the rest of the queue is pointless).
  *   - 401/403: keep it (auth comes back after re-login) and keep going.
- *   - other 4xx (validation / 404 / 413) or a structurally-broken row
- *     (missing projectId): permanent — drop so it can't wedge the queue.
- *   - 5xx: keep it with an incremented retryCount ("server waking up" is a
- *     known transient in this deployment).
+ *   - a genuine JSON 4xx rejection from the app (validation / 404 / 413,
+ *     see isPermanentRejection) or a structurally-broken row (missing
+ *     projectId): permanent — drop so it can't wedge the queue.
+ *   - 5xx, 408/425/429, or any non-JSON reply (e.g. the HTML 404 of a
+ *     sleeping backend): keep it with an incremented retryCount ("server
+ *     waking up" is a known transient in this deployment).
  *
  * MUTEX-GUARDED: the global 'online' listener and any page-level "sync now"
  * call share one in-flight drain, so a photo can never upload twice
@@ -478,15 +482,15 @@ async function _drainAll(api) {
       synced += 1;
     } catch (e) {
       failed += 1;
-      const status = e?.response?.status;
       await markFailed(photo.id, e?.response?.data?.detail || e?.message).catch(() => {});
       if (!e?.response && !e?.permanent) {
         // Network-only failure: still offline — keep everything, bail out.
         break;
       }
-      const permanent =
-        e?.permanent
-        || (status >= 400 && status < 500 && status !== 401 && status !== 403);
+      // Day-1 fix (2026-10-25, finding 35): only a genuine JSON rejection
+      // from the app drops the photo. 5xx, 401/403, 408/425/429 and non-JSON
+      // replies (the HTML 404 of a sleeping backend) keep it for a retry.
+      const permanent = e?.permanent || isPermanentRejection(e);
       if (permanent) {
         await removePhoto(photo.id).catch(() => {});
       }

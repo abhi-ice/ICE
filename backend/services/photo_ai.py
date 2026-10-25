@@ -2162,9 +2162,12 @@ async def reject_analysis(
         return {"ok": False, "reason": "tray_not_found"}
     # Calibration write -- mirror the override path. user_correction
     # is None to distinguish "rejected everything" from "overrode field X".
+    # Day-1 round 2 (2026-10-25): this used an undefined _gen_id, so the
+    # NameError was swallowed below and no rejection was ever recorded.
+    from models import gen_id
     try:
         await db.photo_ai_calibration.insert_one({
-            "id": _gen_id(),
+            "id": gen_id(),
             "tenant_id": tenant_id,
             "tray_id": tray_id,
             "project_id": (tray or {}).get("project_id"),
@@ -2183,9 +2186,12 @@ async def reject_analysis(
             "actor_id": actor_id,
             "created_at": now_iso,
         })
-    except Exception:
+    except Exception as exc:
         # Calibration is best-effort; reject still succeeds.
-        pass
+        log.warning(
+            "photo_ai reject_analysis: calibration record not saved "
+            "(tenant=%s tray=%s): %s", tenant_id, tray_id, exc,
+        )
     return {"ok": True, "tray_id": tray_id, "reason": reason.strip()}
 
 

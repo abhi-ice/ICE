@@ -288,7 +288,7 @@ async function _drainAll(api) {
   // Offline-created DRs (2026-07-06): clips recorded against a provisional
   // "offline-dr-*" id can only upload after the request queue's drain has
   // created the real report and recorded the id mapping.
-  const { resolveOfflineId, isUnresolvedOfflineId } = await import("./drOfflineSync");
+  const { resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection } = await import("./drOfflineSync");
   const pending = await listPending();
   let synced = 0, failed = 0;
   for (const clip of pending) {
@@ -323,7 +323,6 @@ async function _drainAll(api) {
     } catch (e) {
       failed += 1;
       await markClipFailed(clip.id, e?.response?.data?.detail || e?.message);
-      const status = e?.response?.status;
       if (!e?.response) {
         // Network-only: still offline — keep everything, stop draining
         // (hammering the rest of the queue is pointless). Mirrors the
@@ -333,9 +332,10 @@ async function _drainAll(api) {
       // Deterministic server rejection (404/413/422 — e.g. the target DR
       // was deleted): drop the clip so the 60s heartbeat doesn't re-upload
       // a multi-megabyte blob every minute forever. 401/403 are kept —
-      // auth comes back after re-login.
-      const permanent = status >= 400 && status < 500
-        && status !== 401 && status !== 403;
+      // auth comes back after re-login. Day-1 fix (2026-10-25, finding 35):
+      // only a genuine JSON rejection from the app counts; 408/425/429 and
+      // non-JSON replies (the HTML 404 of a sleeping backend) are kept.
+      const permanent = isPermanentRejection(e);
       if (permanent) {
         await removeClip(clip.id).catch(() => {});
       }

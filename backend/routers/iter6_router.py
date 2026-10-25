@@ -13,6 +13,7 @@ All endpoints respect tenant isolation via tenant_filter().
 import io
 import re
 import math
+import asyncio
 from datetime import datetime, timezone, timedelta, date
 from services.site_time import project_today
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
@@ -53,7 +54,7 @@ async def export_daily_report_pdf(
         and the rolled-forward Open delay reminders banner. The day's
         Delays section itself stays — only the reminder banner is hidden.
     """
-    from weasyprint import HTML
+    from services.pdf_safety import arender_pdf
     db = get_db()
     dr = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0},
@@ -191,8 +192,8 @@ async def export_daily_report_pdf(
         f"<tr><td class='code'>{_html_escape(r.get('activity_code'))}</td>"
         f"<td>{_html_escape((r.get('activity_description') or '')[:80])}</td>"
         f"<td>{_html_escape(r.get('location_name') or '—')}</td>"
-        f"<td class='num'>{r.get('pct_complete_start_of_day') or 0}%</td>"
-        f"<td class='num'>{r.get('pct_complete_end_of_day') or 0}%</td>"
+        f"<td class='num'>{_html_escape(r.get('pct_complete_start_of_day') or 0)}%</td>"
+        f"<td class='num'>{_html_escape(r.get('pct_complete_end_of_day') or 0)}%</td>"
         f"<td>{_html_escape(r.get('status_at_end_of_day') or 'not_started')}</td></tr>"
         for r in grid_field_only
     ) or "<tr><td colspan='6' class='muted'>No activities reported.</td></tr>"
@@ -206,8 +207,8 @@ async def export_daily_report_pdf(
         f"<tr><td>{_html_escape(p.get('trade'))}</td>"
         f"<td>{_html_escape(p.get('company_name') or '—')}</td>"
         f"<td>{_html_escape(_task_label(p.get('schedule_activity_id')) if p.get('schedule_activity_id') else '—')}</td>"
-        f"<td class='num'>{p.get('headcount') or 0}</td>"
-        f"<td class='num'>{p.get('hours_per_person') or 0}</td>"
+        f"<td class='num'>{_html_escape(p.get('headcount') or 0)}</td>"
+        f"<td class='num'>{_html_escape(p.get('hours_per_person') or 0)}</td>"
         f"<td class='num'>{(p.get('headcount') or 0) * (p.get('hours_per_person') or 0):.1f}</td>"
         f"<td>{_html_escape(p.get('notes') or '')}</td></tr>"
         for p in presence
@@ -243,19 +244,25 @@ async def export_daily_report_pdf(
     # as base64 and inlines as a data URI. Failures (storage hiccup,
     # corrupt file) are skipped silently — a missing thumbnail is much
     # better than a 500.
+    # Day-1 audit finding 45: the storage download and the PIL resize
+    # both run off the event loop (worker threads) so an export with
+    # photos no longer freezes the server for every other user.
     from io import BytesIO
     import base64 as _b64
     from PIL import Image
-    from services.storage import get_object
+    from services.storage import aget_object
 
-    def _photo_data_uri(p: dict) -> Optional[str]:
+    async def _photo_data_uri(p: dict) -> Optional[str]:
         path = p.get("thumbnail_path") or p.get("storage_path")
         if not path:
             return None
         try:
-            data, ct = get_object(path)
+            data, ct = await aget_object(path)
         except Exception:
             return None
+        return await asyncio.to_thread(_thumb_data_uri, data)
+
+    def _thumb_data_uri(data: bytes) -> Optional[str]:
         try:
             img = Image.open(BytesIO(data))
             img.thumbnail((320, 320))  # in-place; keeps aspect ratio
@@ -272,7 +279,7 @@ async def export_daily_report_pdf(
 
     photo_cards: list[str] = []
     for p in photos:
-        uri = _photo_data_uri(p)
+        uri = await _photo_data_uri(p)
         caption = _html_escape(p.get("caption") or "No caption")
         captured = _html_escape(p.get("captured_at") or "—")
         if uri:
@@ -295,7 +302,7 @@ async def export_daily_report_pdf(
         cards = "".join(
             f"<div class='reminder'>"
             f"<b>{_html_escape(d.get('severity'))}</b> · "
-            f"{(d.get('description') or '')[:140]} · "
+            f"{_html_escape((d.get('description') or '')[:140])} · "
             f"{len(d.get('linked_task_ids') or [])} tasks linked"
             f"</div>"
             for d in reminders
@@ -304,6 +311,9 @@ async def export_daily_report_pdf(
 
     # External-mode flag in the page title so reviewers can tell at a glance
     title_suffix = ""
+    # `(proj or {{}})` inside the f-string below evaluated to a SET holding
+    # a dict (TypeError -> 500) whenever the project row was missing.
+    _proj_d = proj or {}
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset='utf-8'><style>
@@ -342,24 +352,24 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
      header in the UI. Same for internal and external exports. -->
 <table class='header-meta'>
   <tr>
-    <th>Client</th><td>{_html_escape((proj or {{}}).get('client_name') or '')}</td>
-    <th>Contract number</th><td>{_html_escape((proj or {{}}).get('contract_number') or '')}</td>
+    <th>Client</th><td>{_html_escape(_proj_d.get('client_name') or '')}</td>
+    <th>Contract number</th><td>{_html_escape(_proj_d.get('contract_number') or '')}</td>
   </tr>
   <tr>
-    <th>Station</th><td>{_html_escape((proj or {{}}).get('station_id') or '')}</td>
-    <th>Contractor</th><td>{_html_escape((proj or {{}}).get('contractor_name') or '')}</td>
+    <th>Station</th><td>{_html_escape(_proj_d.get('station_id') or '')}</td>
+    <th>Contractor</th><td>{_html_escape(_proj_d.get('contractor_name') or '')}</td>
   </tr>
   <tr>
-    <th>Project title</th><td>{_html_escape((proj or {{}}).get('name') or dr['project_id'])}</td>
+    <th>Project title</th><td>{_html_escape(_proj_d.get('name') or dr['project_id'])}</td>
     <th>Signature</th><td>{_html_escape(signer_name)}</td>
   </tr>
 </table>
-<div class='meta'>Date: <b>{dr['report_date']}</b> · Status: <span class='pill'>{dr['status']}</span></div>
+<div class='meta'>Date: <b>{_html_escape(dr['report_date'])}</b> · Status: <span class='pill'>{_html_escape(dr['status'])}</span></div>
 <div class='banner'>
   <b>Weather:</b> {_html_escape(dr.get('weather_conditions') or 'n/a')} ·
-  high {dr.get('weather_temp_high_f') or '—'}°F / low {dr.get('weather_temp_low_f') or '—'}°F ·
-  precip {dr.get('weather_precipitation_in') or 0}in ·
-  wind {dr.get('weather_wind_mph') or '—'}mph
+  high {_html_escape(dr.get('weather_temp_high_f') or '—')}°F / low {_html_escape(dr.get('weather_temp_low_f') or '—')}°F ·
+  precip {_html_escape(dr.get('weather_precipitation_in') or 0)}in ·
+  wind {_html_escape(dr.get('weather_wind_mph') or '—')}mph
 </div>
 
 {reminder_html}
@@ -405,7 +415,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 
 {("<h2>Audit trail (" + str(len(audit_log)) + ")</h2><table><thead><tr><th>Op</th><th>Actor</th><th>When</th></tr></thead><tbody>" + audit_html + "</tbody></table>") if is_internal else ""}
 </body></html>"""
-    pdf = HTML(string=html).write_pdf()
+    pdf = await arender_pdf(html)
     suffix = "internal" if is_internal else "external"
     return Response(
         content=pdf,
@@ -417,7 +427,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 @router.get("/projects/{project_id}/weekly-rollup/pdf")
 async def weekly_rollup_pdf(project_id: str, week_starting: date, ctx: dict = Depends(require_tenant)):
     """PDF of the weekly rollup. Master prompt §10.4."""
-    from weasyprint import HTML
+    from services.pdf_safety import arender_pdf
     from routers.daily_reports_router import weekly_rollup as _rollup
     rollup = await _rollup(project_id, week_starting, ctx)  # type: ignore
     db = get_db()
@@ -439,7 +449,7 @@ td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; }}
 .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 </style></head><body>
 <h1>Weekly Rollup — {_html_escape(proj['name'] if proj else project_id)}</h1>
-<div>Week: <b>{rollup['week_starting']} → {rollup['week_ending']}</b></div>
+<div>Week: <b>{_html_escape(rollup['week_starting'])} → {_html_escape(rollup['week_ending'])}</b></div>
 <div style='margin-top: 12px'>
 <div class='kv'><b>{rollup['daily_report_count']}</b><span>Reports</span></div>
 <div class='kv'><b>{rollup['ppc']}%</b><span>PPC</span></div>
@@ -451,7 +461,7 @@ td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; }}
 <h2>Hours by trade</h2>
 <table><thead><tr><th>Trade</th><th>Hours</th></tr></thead><tbody>{trade_html}</tbody></table>
 </body></html>"""
-    pdf = HTML(string=html).write_pdf()
+    pdf = await arender_pdf(html)
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -468,13 +478,13 @@ async def extract_photo_exif(photo_id: str, ctx: dict = Depends(require_tenant))
     fingerprinting (substitution for DINOv2 — pHash is deterministic and free)."""
     from PIL import Image, ExifTags
     import imagehash
-    from services.storage import get_object
+    from services.storage import aget_object
     db = get_db()
     p = await db.photos.find_one(tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0})
     if not p or not p.get("storage_path"):
         raise HTTPException(404, "Photo not found")
     try:
-        data, _ct = get_object(p["storage_path"])
+        data, _ct = await aget_object(p["storage_path"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
 

@@ -17,12 +17,16 @@ export default function Signup() {
   const [form, setForm] = useState({ organization_name: "", full_name: "", email: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // Day-1 audit finding 2: the server refuses public sign-up (403) unless
+  // ALLOW_PUBLIC_SIGNUP is set. Show that as a clear "invite only" note,
+  // not as a broken form.
+  const [inviteOnly, setInviteOnly] = useState("");
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   const submit = async (e) => {
     e.preventDefault();
-    setBusy(true); setErr("");
+    setBusy(true); setErr(""); setInviteOnly("");
     try {
       const { data } = await api.post("/auth/register", form);
       setAuth(data);
@@ -30,7 +34,15 @@ export default function Signup() {
       nav("/");
     } catch (ex) {
       const msg = ex.response?.data?.detail;
-      setErr(typeof msg === "string" ? msg : (Array.isArray(msg) ? msg.map((m) => m.msg).join(", ") : "Signup failed"));
+      if (ex.response?.status === 403) {
+        setInviteOnly(
+          typeof msg === "string" && msg.trim()
+            ? msg
+            : "New accounts are by invitation only.",
+        );
+        return;
+      }
+      setErr(typeof msg === "string" ? msg : (Array.isArray(msg) ? msg.map((m) => m.msg).join(", ") : "Sign-up did not go through. Check your connection and try again."));
     } finally { setBusy(false); }
   };
 
@@ -72,6 +84,23 @@ export default function Signup() {
             {err && (
               <div data-testid="signup-error" className="text-sm text-red-600">
                 {err}
+              </div>
+            )}
+            {inviteOnly && (
+              <div
+                data-testid="signup-invite-only"
+                role="status"
+                className="text-sm rounded-md border border-amber-300 bg-amber-50 text-amber-900 p-3 space-y-1"
+              >
+                <div className="font-medium">{inviteOnly}</div>
+                <div>
+                  Ask your company admin to send you an invite. When it arrives,
+                  open the link in the email, or{" "}
+                  <Link to="/accept-invite" className="text-blue-700 underline">
+                    enter your invite code here
+                  </Link>
+                  .
+                </div>
               </div>
             )}
             <Button

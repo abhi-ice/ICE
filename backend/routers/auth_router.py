@@ -37,12 +37,26 @@ async def _unique_slug(db, base: str) -> str:
     return slug
 
 
+def _public_signup_allowed() -> bool:
+    return (os.environ.get("ALLOW_PUBLIC_SIGNUP") or "").strip().lower() in {"1", "true", "yes"}
+
+
 @router.post("/register", response_model=TokenResponse)
 async def register(payload: UserRegister):
     """Public signup. Creates a fresh tenant + makes the registrant its admin.
 
     For team-member onboarding into an existing tenant use POST /auth/accept-invite.
+
+    Day-1 fix (2026-10-25, audit finding 2): public sign-up is OFF unless
+    ALLOW_PUBLIC_SIGNUP is 1/true/yes. Anyone who signs up becomes admin of
+    a new company on this shared server, and a new super who taps
+    "Create account" by mistake ends up in an empty company.
     """
+    if not _public_signup_allowed():
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Sign-up is by invitation only. Ask your company admin to invite you.",
+        )
     db = get_db()
     if await db.users.find_one({"email": payload.email.lower()}, {"_id": 0, "id": 1}):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
@@ -156,7 +170,7 @@ async def accept_invite(payload: InviteAccept):
         "email": payload.email.lower(),
         "full_name": payload.full_name,
         "tenant_id": tenant["id"],
-        "role": invite.get("role", "pm"),
+        "role": invite.get("role") or "super",
         "password_hash": hash_password(payload.password),
         "created_at": utc_now().isoformat(),
     }
@@ -165,7 +179,7 @@ async def accept_invite(payload: InviteAccept):
         "id": gen_id(),
         "user_id": user_id,
         "tenant_id": tenant["id"],
-        "role": invite.get("role", "pm"),
+        "role": invite.get("role") or "super",
         "status": "active",
         "created_at": utc_now().isoformat(),
     })
@@ -181,6 +195,120 @@ async def accept_invite(payload: InviteAccept):
 
 
 # ----- Authenticated team management -----
+def _invite_is_expired(invite: dict) -> bool:
+    expires = invite.get("expires_at")
+    if not expires:
+        return False
+    try:
+        exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return exp < datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
+def _invite_base_url(request: Request) -> str:
+    """Base URL for invite links. Day-1 fix (audit findings 31/54/68): use
+    the same allowlisted resolver as password reset (_frontend_base_url:
+    the request Origin only if it is in INVITE_BASE_URL / ALLOWED_FRONTEND_
+    HOSTS / REACT_APP_BACKEND_URL / PRODUCTION_URL, else INVITE_BASE_URL)
+    instead of trusting the raw Origin header.
+
+    Safety net: when NONE of those env vars is set, the resolver returns ""
+    and the emailed link would be a dead relative path. Only in that case do
+    we fall back to the request's own Origin/Referer (the old behavior), and
+    log a warning telling the operator to set INVITE_BASE_URL."""
+    base_url = _frontend_base_url(request)
+    if base_url:
+        return base_url
+    # Review fix: _frontend_base_url only falls back to INVITE_BASE_URL /
+    # REACT_APP_BACKEND_URL. If the operator set only PRODUCTION_URL or
+    # ALLOWED_FRONTEND_HOSTS, use the first of those (operator-configured,
+    # so safe) rather than emailing a dead relative link.
+    for raw in [os.environ.get("PRODUCTION_URL") or ""] + (
+        os.environ.get("ALLOWED_FRONTEND_HOSTS") or ""
+    ).split(","):
+        v = (raw or "").strip().rstrip("/")
+        if v.endswith("/api"):
+            v = v[:-4]
+        if v.startswith(("https://", "http://")):
+            return v
+    configured = any(
+        (os.environ.get(k) or "").strip()
+        for k in ("INVITE_BASE_URL", "REACT_APP_BACKEND_URL",
+                  "PRODUCTION_URL", "ALLOWED_FRONTEND_HOSTS")
+    )
+    if configured:
+        return ""
+    from urllib.parse import urlparse
+    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    try:
+        u = urlparse(origin)
+        if u.scheme and u.netloc:
+            import logging
+            logging.getLogger("auth").warning(
+                "Invite link host taken from the browser address (%s://%s) because "
+                "INVITE_BASE_URL is not set. Set INVITE_BASE_URL to the production "
+                "address so invite links never point at a preview copy.",
+                u.scheme, u.netloc,
+            )
+            return f"{u.scheme}://{u.netloc}"
+    except Exception:
+        pass
+    return ""
+
+
+async def _send_invite_email_and_audit(db, ctx: dict, request: Request, invite: dict):
+    """Build the invite link, send the invite email and write the
+    INVITE_EMAIL_SENT / INVITE_EMAIL_FAILED audit row. Shared by a new
+    invite and a re-send of a pending one. Never raises on email failure.
+    Returns (email_result, invite_link)."""
+    from services.invite_email import send_invite_email
+    tenant_row = await db.tenants.find_one(
+        {"id": ctx["tenant_id"]}, {"_id": 0, "name": 1},
+    )
+    tenant_name = (tenant_row or {}).get("name") or "your team"
+    base_url = _invite_base_url(request)
+    code = invite["code"]
+    invite_link = f"{base_url}/accept-invite?code={code}" if base_url else f"/accept-invite?code={code}"
+
+    email_result = send_invite_email(
+        tenant_name=tenant_name,
+        invitee_email=invite["email"],
+        role=invite.get("role"),
+        invite_code=code,
+        invite_link=invite_link,
+    )
+
+    # Audit either INVITE_EMAIL_SENT or INVITE_EMAIL_FAILED so legal
+    # can trace delivery attempts alongside the invite INSERT op.
+    # Reasons for both ops to exist (vs one with a status field):
+    # the audit log dropdown filters by op string, so distinct ops
+    # let counsel grep "INVITE_EMAIL_FAILED" to find delivery issues
+    # without scanning all invite ops.
+    try:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="team_invites",
+            op=("INVITE_EMAIL_SENT" if email_result.get("sent")
+                else "INVITE_EMAIL_FAILED"),
+            record_id=invite["id"], before=None,
+            after={
+                "email": invite["email"],
+                "role": invite.get("role"),
+                "provider_message_id": email_result.get("provider_message_id"),
+                "error": email_result.get("error"),
+            },
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    except Exception:
+        # Audit failure is non-fatal here. The INSERT op already
+        # captured the invite creation; this second op is supplementary
+        # delivery-tracking metadata.
+        pass
+    return email_result, invite_link
+
+
 @team_router.post("/invites")
 async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Depends(require_tenant)):
     if (ctx["user"].get("role") or "").lower() != "admin":
@@ -191,8 +319,28 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
     pending = await db.team_invites.find_one({
         "email": payload.email.lower(), "tenant_id": ctx["tenant_id"], "status": "pending",
     }, {"_id": 0})
+    if pending and _invite_is_expired(pending):
+        # Day-1 fix (audit finding 26): an expired code used to be handed
+        # back as-is, so the super hit "Invite expired" on the jobsite.
+        # Mark it expired and fall through to issue a fresh code + email.
+        await db.team_invites.update_one(
+            {"id": pending["id"], "tenant_id": ctx["tenant_id"], "status": "pending"},
+            {"$set": {"status": "expired"}},
+        )
+        pending = None
     if pending:
-        return {"invite": pending, "already_existed": True}
+        # Day-1 fix (audit finding 26): "Send invite" again for the same
+        # address now actually re-sends the email. The stored role is kept
+        # (to change it, revoke and invite again) -- the role is returned so
+        # the page can show it.
+        email_result, invite_link = await _send_invite_email_and_audit(db, ctx, request, pending)
+        return {
+            "invite": pending,
+            "already_existed": True,
+            "invite_link": invite_link,
+            "email_sent": bool(email_result.get("sent")),
+            "email_error": email_result.get("error"),
+        }
 
     code = secrets.token_urlsafe(9)[:12]
     expires_at = (utc_now() + timedelta(days=14)).isoformat()
@@ -221,89 +369,12 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
     # op -> email send -> response. Email failure NEVER blocks the
     # response -- the invite_code is already persisted and the admin
     # can fall back to copy-paste the invite link from the UI.
-    from services.invite_email import send_invite_email
-    tenant_row = await db.tenants.find_one(
-        {"id": ctx["tenant_id"]}, {"_id": 0, "name": 1},
-    )
-    tenant_name = (tenant_row or {}).get("name") or "your team"
-    # 2026-05-18 -- derive the invite link host from the INCOMING REQUEST
-    # so an invite sent from production lands on production, and an
-    # invite sent from preview lands on preview. Prevents the deployed
-    # app from sending preview-URL links (and vice versa) without
-    # juggling per-environment env vars.
-    #
-    # Precedence:
-    #   1. Origin header (set by the browser; trustworthy for CORS-clean
-    #      first-party calls; carries scheme + host + port)
-    #   2. Referer header host (fallback if Origin missing on
-    #      same-origin POSTs that some browsers omit Origin for)
-    #   3. INVITE_BASE_URL env var (explicit override, e.g. when admins
-    #      run a back-fill script that has no request context)
-    #   4. REACT_APP_BACKEND_URL env var (legacy fallback)
-    base_url = ""
-    origin = request.headers.get("origin") or ""
-    if origin:
-        base_url = origin.rstrip("/")
-    else:
-        referer = request.headers.get("referer") or ""
-        if referer:
-            try:
-                from urllib.parse import urlparse
-                u = urlparse(referer)
-                if u.scheme and u.netloc:
-                    base_url = f"{u.scheme}://{u.netloc}"
-            except Exception:
-                base_url = ""
-    if not base_url:
-        base_url = (
-            os.environ.get("INVITE_BASE_URL")
-            or os.environ.get("REACT_APP_BACKEND_URL")
-            or ""
-        ).rstrip("/")
-    # Strip a trailing /api so the base for the user-facing accept-
-    # invite page is the frontend origin. If the resolved URL points
-    # at the frontend directly (no /api), this is a no-op.
-    if base_url.endswith("/api"):
-        base_url = base_url[:-4]
-    invite_link = f"{base_url}/accept-invite?code={code}" if base_url else f"/accept-invite?code={code}"
-
-    email_result = send_invite_email(
-        tenant_name=tenant_name,
-        invitee_email=payload.email,
-        role=payload.role,
-        invite_code=code,
-        invite_link=invite_link,
-    )
-
-    # Audit either INVITE_EMAIL_SENT or INVITE_EMAIL_FAILED so legal
-    # can trace delivery attempts alongside the invite INSERT op.
-    # Reasons for both ops to exist (vs one with a status field):
-    # the audit log dropdown filters by op string, so distinct ops
-    # let counsel grep "INVITE_EMAIL_FAILED" to find delivery issues
-    # without scanning all invite ops.
-    try:
-        await write_audit(
-            tenant_id=ctx["tenant_id"], table_name="team_invites",
-            op=("INVITE_EMAIL_SENT" if email_result.get("sent")
-                else "INVITE_EMAIL_FAILED"),
-            record_id=invite["id"], before=None,
-            after={
-                "email": payload.email,
-                "role": payload.role,
-                "provider_message_id": email_result.get("provider_message_id"),
-                "error": email_result.get("error"),
-            },
-            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
-        )
-    except Exception:
-        # Audit failure is non-fatal here. The INSERT op already
-        # captured the invite creation; this second op is supplementary
-        # delivery-tracking metadata.
-        pass
+    email_result, invite_link = await _send_invite_email_and_audit(db, ctx, request, invite)
 
     return {
         "invite": invite,
         "already_existed": False,
+        "invite_link": invite_link,
         # Bug #47: surface email-send status to the frontend so the
         # Team page can toast "Invite sent" vs "Invite created -- copy
         # the link manually". The invite link itself remains visible
@@ -315,10 +386,26 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
 
 @team_router.get("/invites")
 async def list_invites(ctx: dict = Depends(require_tenant)):
+    """Day-1 fix (audit findings 13/17): only admins and PMs see invites,
+    and only admins see the redeemable invite code (anyone holding a code
+    plus the invited email could claim that invite, including an admin
+    one). Other roles get an empty list rather than a 403, because the
+    Team page loads members and invites together and a 403 would blank
+    the whole page (members list included) for the super."""
+    role = (ctx["user"].get("role") or "").strip().lower()
+    if role not in ("admin", "pm"):
+        return []
     db = get_db()
     docs = await db.team_invites.find(
         {"tenant_id": ctx["tenant_id"]}, {"_id": 0},
     ).sort("invited_at", -1).to_list(200)
+    for d in docs:
+        # Audit finding 26: a pending invite past its expiry used to show
+        # as "pending" with a dead code until someone tried it.
+        if d.get("status") == "pending" and _invite_is_expired(d):
+            d["status"] = "expired"
+        if role != "admin":
+            d.pop("code", None)
     return docs
 
 

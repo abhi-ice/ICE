@@ -3,6 +3,7 @@ import logging
 import re
 import requests
 from fastapi import APIRouter, Depends, HTTPException
+from pymongo.errors import DuplicateKeyError
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from pydantic import Field
@@ -22,6 +23,26 @@ from audit import write_audit
 logger = logging.getLogger("ice_schedule_ops.dr")
 
 router = APIRouter(tags=["daily-reports"])
+
+
+# Day-1 audit #49/#51 (2026-10-25): a report is locked once it is
+# submitted AND once it is approved. Before this, the plain lock checks
+# below only tested == "submitted", so an approved report re-opened for
+# edits. Matches services/edit_permissions.py, which already treats both
+# as locked for the edit-with-reason / add-with-reason paths.
+_LOCKED_DR_STATUSES = ("submitted", "approved")
+
+
+def _dr_locked_detail(status: Optional[str]) -> str:
+    """Plain-English 409 message for a locked report."""
+    if status == "approved":
+        return ("This daily report was already approved, so it is locked and can't be changed. "
+                "Ask your project manager if something needs fixing.")
+    return ("This daily report was already submitted, so it is locked and can't be changed here. "
+            "Ask your project manager if something needs fixing.")
+
+
+_SUBMIT_APPROVED_DETAIL = "This report was already approved and can't be submitted again."
 
 
 # Bucket D Phase 4 -- supplements appendix. Returns every event with
@@ -230,7 +251,25 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
         "approved_at": None,
         "created_at": utc_now().isoformat(),
     })
-    await db.daily_reports.insert_one(doc.copy())
+    try:
+        await db.daily_reports.insert_one(doc.copy())
+    except DuplicateKeyError:
+        # Day-1 audit #67 (2026-10-25): two "open today's report" requests
+        # (a double tap, or a phone and a desktop at the same moment) can
+        # both miss the find_one above. The unique index on (tenant_id,
+        # project_id, report_date) makes the loser fail here; hand it the
+        # report the winner just created instead of a 500. The winner
+        # already pre-populated the grid and wrote the audit row.
+        existing = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {
+                "project_id": payload.project_id,
+                "report_date": payload.report_date.isoformat(),
+            }),
+            {"_id": 0},
+        )
+        if existing:
+            return DailyReport(**existing)
+        raise
     # pre-populate grid
     await _prepopulate_grid(ctx["tenant_id"], payload.project_id, doc["id"], payload.report_date)
     await write_audit(
@@ -250,8 +289,8 @@ async def refresh_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
-    if dr.get("status") == "submitted":
-        raise HTTPException(409, "Daily report locked")
+    if dr.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, _dr_locked_detail(dr.get("status")))
     inserted = await _prepopulate_grid(
         tenant_id=ctx["tenant_id"], project_id=dr["project_id"],
         daily_report_id=daily_report_id, report_date=date.fromisoformat(dr["report_date"]),
@@ -389,7 +428,9 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
       open_blocker_count -- F3 blocker badge (the persisted count the
                             Tasks page already shows -- task_status.py).
       auto_status        -- F4 automatic status.
-      task_updated_at    -- optimistic-lock token (pre-existing).
+      task_updated_at    -- optimistic-lock token (pre-existing); since
+                            2026-10-25 the task's progress_lock_at
+                            (human-edit stamp), else updated_at.
 
     METADATA / VIEW ONLY -- none of these are persisted back to the
     daily_report_activities collection or read by the CPM engine.
@@ -405,7 +446,7 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
         # original lean projection otherwise. Additive: the existing view
         # fields are unchanged either way.
         gating = slider_gating_enabled()
-        projection = {"_id": 0, "id": 1, "updated_at": 1, "work_category": 1,
+        projection = {"_id": 0, "id": 1, "updated_at": 1, "progress_lock_at": 1, "work_category": 1,
                       "open_blocker_count": 1, "open_blocker_summary": 1}
         if gating:
             projection.update({"predecessors": 1, "pct_complete": 1,
@@ -693,13 +734,22 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         tenant_filter(ctx["tenant_id"], {"id": before["schedule_activity_id"]}),
         {"_id": 0},
     )
-    if client_task_lmt and task_before and task_before.get("updated_at"):
-        # Both ISO strings — string compare works because ISO is sortable.
-        # Also tolerates client sending a datetime object that Pydantic
-        # serialised to ISO via model_dump(mode="json").
+    # Day-1 round 2 (2026-10-25) -- compare against the task's HUMAN-edit
+    # stamp (progress_lock_at), never updated_at. Schedule recomputes
+    # (enterprise CPM, MS Project sync, status derivation) restamp
+    # updated_at on every task, so after a super saved activity X the next
+    # save on a DIFFERENT activity Y answered a false "Schedule changed"
+    # 409 and the edit was lost. progress_lock_at only moves when a person
+    # changes the task's progress/schedule data (this PATCH, the Tasks
+    # page, a schedule re-import), and is always written together with the
+    # same updated_at value -- so any token a client got from updated_at is
+    # >= the progress_lock_at that existed when it got it, and an old
+    # updated_at-based token never 409s unless a person edited since. A task
+    # no person has edited (no progress_lock_at) has nothing to conflict
+    # with, so the check is skipped.
+    if client_task_lmt and task_before and task_before.get("progress_lock_at"):
         try:
-            server_lmt = str(task_before["updated_at"])
-            if server_lmt > str(client_task_lmt):
+            if _stamp_is_newer(task_before["progress_lock_at"], client_task_lmt):
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -815,7 +865,10 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     # 3. Sync write-back to the linked task. Builds a single $set so the
     #    task gets one stamp, one audit entry, one task_sync_events row.
     task_id = before["schedule_activity_id"]
-    task_set: dict = {"updated_at": now_iso, "external_modified_after_sync": False}
+    # progress_lock_at (2026-10-25) -- a person changed this task through
+    # the grid; stamped with the SAME value as updated_at (see stale check).
+    task_set: dict = {"updated_at": now_iso, "progress_lock_at": now_iso,
+                      "external_modified_after_sync": False}
     history_push: Optional[dict] = None
 
     if "pct_complete_end_of_day" in updates:
@@ -883,7 +936,7 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         # 5. task_sync_events — diagnostic-grade record per write-back.
         fields_updated = {
             k: {"before": task_before.get(k), "after": task_set.get(k)}
-            for k in task_set if k != "updated_at"
+            for k in task_set if k not in ("updated_at", "progress_lock_at")
         }
         await db.task_sync_events.insert_one({
             "id": gen_id(),
@@ -1024,7 +1077,67 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             audit_op="ACTIVITY_GRID_EDITED_POST_SUBMIT",
         )
 
+    # Day-1 audit #4/#34 (2026-10-25) -- hand back the linked task's
+    # FINAL optimistic-lock stamp. This handler wrote updated_at above,
+    # and compute_and_persist_status / the cascade recompute can bump it
+    # again afterwards, so last_sync_at alone is not the latest value.
+    # Re-reading it here lets the phone and desktop clients send this
+    # stamp on the next edit of the same row without a self-inflicted
+    # "Schedule changed externally" 409.
+    # Best-effort: the save is already done, so a hiccup here must never
+    # turn it into an error -- fall back to the plain row.
+    # Round 2 (2026-10-25): the stale check now compares progress_lock_at,
+    # which this handler just stamped. Hand back the LATER of the re-read
+    # progress_lock_at and updated_at: both were read after this write, so
+    # either one covers this save (no self-409), and a person's edit that
+    # lands after this re-read stamps a newer progress_lock_at and is still
+    # caught. updated_at is normally the later one (the recompute bumps it).
+    if task_before:
+        try:
+            task_now = await db.tasks.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": task_id}),
+                {"_id": 0, "updated_at": 1, "progress_lock_at": 1},
+            )
+            stamp = None
+            for cand in ((task_now or {}).get("progress_lock_at"), (task_now or {}).get("updated_at")):
+                if cand and (stamp is None or _stamp_is_newer(cand, stamp)):
+                    stamp = cand
+            if stamp:
+                return DailyReportActivity(**{**after, "task_updated_at": stamp})
+        except Exception:
+            logger.warning("grid PATCH: could not read back task stamp for task %s", task_id, exc_info=True)
     return DailyReportActivity(**after)
+
+
+def _parse_stamp(v):
+    """ISO string / datetime -> timezone-aware UTC datetime, or None.
+    Naive values are stored UTC across the codebase (utcnow/utc_now), and
+    Pydantic serialises UTC as a trailing 'Z'."""
+    if isinstance(v, datetime):
+        dt = v
+    else:
+        s = str(v).strip()
+        if s.endswith("Z") or s.endswith("z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _stamp_is_newer(server_stamp, client_stamp) -> bool:
+    """True when server_stamp is strictly later than client_stamp.
+
+    Compares real instants, so '...+00:00', '...Z' and naive UTC forms of
+    the same moment are equal. Falls back to the original plain string
+    compare (ISO sorts lexically) when either side will not parse."""
+    s_dt, c_dt = _parse_stamp(server_stamp), _parse_stamp(client_stamp)
+    if s_dt is not None and c_dt is not None:
+        return s_dt > c_dt
+    return str(server_stamp) > str(client_stamp)
 
 
 def _task_for_409(t: dict) -> dict:
@@ -1095,6 +1208,16 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Daily report not found")
+    # Day-1 audit #49/#51 (2026-10-25) -- status state machine.
+    #  - approved: refuse. A late replay (offline queue, lost response,
+    #    stale tab) must never flip an approved report back to submitted.
+    #  - submitted: harmless no-op. Return the current report without
+    #    re-stamping submitted_at or re-running any side effect, so a
+    #    retry after a lost response reads as the success it was.
+    if before.get("status") == "approved":
+        raise HTTPException(409, _SUBMIT_APPROVED_DETAIL)
+    if before.get("status") == "submitted":
+        return DailyReport(**before)
 
     # Addition 3 + Test 2G follow-up (2026-05-12) -- empty DR requires
     # explicit no-work-day ack. Returns BOTH the legacy `error` key
@@ -1183,9 +1306,26 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
         updates["is_no_work_day"] = True
         updates["no_work_reason"] = payload.no_work_reason
         updates["no_work_note"] = (payload.no_work_note or "").strip() or None
-    await db.daily_reports.update_one(
-        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates}
+    # Conditional write: only a report that is not yet locked moves to
+    # submitted. If a concurrent submit or an approve landed between the
+    # read above and this write, nothing is overwritten and we answer
+    # from the report's current state (same rules as the check above).
+    res = await db.daily_reports.update_one(
+        tenant_filter(ctx["tenant_id"], {
+            "id": daily_report_id,
+            "status": {"$nin": list(_LOCKED_DR_STATUSES)},
+        }),
+        {"$set": updates},
     )
+    if res.matched_count == 0:
+        cur = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0},
+        )
+        if not cur:
+            raise HTTPException(404, "Daily report not found")
+        if cur.get("status") == "approved":
+            raise HTTPException(409, _SUBMIT_APPROVED_DETAIL)
+        return DailyReport(**cur)
 
     # Bucket H Phase 5 -- lock presence-actualized capacity rows for
     # this DR's date so future leveling recomputes don't overwrite
@@ -1454,7 +1594,11 @@ async def export_dr_via_client_template(
         inject_dr_into_template,
         DrTemplateExportError,
     )
-    template_bytes, _ct = get_object(proj["dr_template_file_url"])
+    # Day-1 audit (2026-10-25): get_object is a blocking network call to
+    # object storage -- run it on the thread pool so a slow storage
+    # answer cannot freeze the event loop for every other user.
+    from starlette.concurrency import run_in_threadpool
+    template_bytes, _ct = await run_in_threadpool(get_object, proj["dr_template_file_url"])
     try:
         filled_bytes = await inject_dr_into_template(
             template_bytes,
@@ -1484,15 +1628,31 @@ async def export_dr_via_client_template(
 # ============================================================
 # PATCH daily report (weather, renovation flags, notes)
 # ============================================================
+_CLEARABLE_WEATHER_FIELDS = (
+    "weather_conditions", "weather_temp_high_f", "weather_temp_low_f",
+    "weather_precipitation_in", "weather_wind_mph",
+)
+
+
 @router.patch("/daily-reports/{daily_report_id}", response_model=DailyReport)
 async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Daily report not found")
-    if before.get("status") == "submitted":
-        raise HTTPException(409, "Daily report is locked (submitted). Cannot edit.")
-    updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
+    if before.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, _dr_locked_detail(before.get("status")))
+    raw = payload.model_dump(mode="json")
+    updates = {k: v for k, v in raw.items() if v is not None}
+    # Day-1 round 2 (2026-10-25) -- the phone weather sheet clears a field
+    # by sending it as null. Dropping nulls meant the old value stayed
+    # while the sheet said "Weather saved". Honor an explicit null for the
+    # weather fields only, and only when the client actually sent that key
+    # (model_fields_set) -- an omitted field is still left alone, and every
+    # other field keeps the old "null = do not change" behavior.
+    for k in _CLEARABLE_WEATHER_FIELDS:
+        if k in payload.model_fields_set and raw.get(k) is None:
+            updates[k] = None
     if not updates:
         return DailyReport(**before)
     await db.daily_reports.update_one(
@@ -1589,6 +1749,11 @@ def _geocode(city: Optional[str], state: Optional[str], postal: Optional[str] = 
         "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
     }
     state_full = state_aliases.get((state or "").upper(), state or "")
+    # Day-1 audit #21 (2026-10-25): remember whether any lookup failed
+    # because the provider could not be reached (vs. answered "no match"),
+    # so an outage is only negative-cached briefly (60s, same as
+    # _fetch_weather) and a Refresh soon after can recover.
+    unreachable = {"hit": False}
 
     def _try(name: str, admin1: Optional[str] = None):
         try:
@@ -1607,18 +1772,22 @@ def _geocode(city: Optional[str], state: Optional[str], postal: Optional[str] = 
                 return float(results[0]["latitude"]), float(results[0]["longitude"])
         except requests.exceptions.Timeout as exc:
             logger.warning("geocode: TIMEOUT name=%r admin1=%r: %s", name, admin1, exc)
+            unreachable["hit"] = True
             return None
         except requests.exceptions.ConnectionError as exc:
             # DNS failure, egress blocked, TCP reset -- the "pod can't reach the internet" case
             logger.warning("geocode: CONNECTION_ERROR name=%r admin1=%r: %s", name, admin1, exc)
+            unreachable["hit"] = True
             return None
         except requests.exceptions.HTTPError as exc:
             # provider returned 5xx (or 4xx like 429 rate limit)
             status = getattr(exc.response, "status_code", "?")
             logger.warning("geocode: HTTP_%s name=%r admin1=%r: %s", status, name, admin1, exc)
+            unreachable["hit"] = True
             return None
         except Exception as exc:
             logger.warning("geocode: OTHER name=%r admin1=%r: %s", name, admin1, exc)
+            unreachable["hit"] = True
             return None
         return None
 
@@ -1632,8 +1801,9 @@ def _geocode(city: Optional[str], state: Optional[str], postal: Optional[str] = 
 
     # ---- Cache store (always cache, incl. misses -- prevents storm) --
     with _geocode_cache_lock:
-        # Cache misses shorter (5min) so a transient outage recovers fast
-        ttl = _GEOCODE_TTL if result else 300
+        # Cache misses shorter (5min) so a transient outage recovers fast;
+        # a miss caused by an unreachable provider only 60s.
+        ttl = _GEOCODE_TTL if result else (60 if unreachable["hit"] else 300)
         _GEOCODE_CACHE[cache_key] = (result, now + ttl)
         _wx_cache_evict_locked(_GEOCODE_CACHE)
     return result
@@ -1754,8 +1924,8 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
-    if dr.get("status") == "submitted":
-        raise HTTPException(409, "Daily report locked")
+    if dr.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, _dr_locked_detail(dr.get("status")))
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0})
     if not proj:
         raise HTTPException(404, "Project not found")
@@ -1808,7 +1978,29 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
             except Exception:
                 pass
 
+        # Day-1 audit #21/#62 (2026-10-25): every provider failure below
+        # is a 422 with a plain message saying what to do next -- never a
+        # 5xx (Cloudflare swaps any 5xx for its own HTML error page). The
+        # broad `except Exception` arms catch anything unexpected from the
+        # helper threads (bad provider data, a bug) for the same reason.
+        # (Wording keeps the words "slow" / "unreachable" / "provider" that
+        # the existing live-server tests in test_weather_autofill_no_5xx.py
+        # look for.)
+        _wx_slow_msg = (
+            "The weather service is slow to answer right now. "
+            "Try again in a few minutes, or type the weather in by hand."
+        )
+        _wx_retry_msg = (
+            "The weather service is unreachable right now. "
+            "Try again in a few minutes, or type the weather in by hand."
+        )
         async with _wx_outbound_sem:
+            if not any(addr_parts):
+                raise HTTPException(
+                    422,
+                    "This project has no city or state, so weather can't be filled in "
+                    "automatically. Add them to the project, or type the weather in by hand.",
+                )
             try:
                 coords = await _asyncio.wait_for(
                     run_in_threadpool(
@@ -1817,19 +2009,32 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
                     timeout=6.0,
                 )
             except _asyncio.TimeoutError:
-                raise HTTPException(422, "Geocoding provider slow to answer — try Refresh in a moment")
+                raise HTTPException(422, _wx_slow_msg)
+            except Exception:
+                logger.warning("weather_autofill: geocode crashed dr=%s", daily_report_id, exc_info=True)
+                raise HTTPException(422, _wx_retry_msg)
             if not coords:
-                addr = ", ".join([p for p in addr_parts if p]).strip(", ")
-                raise HTTPException(422, f"Could not geocode project address ({addr or 'no city/state on project'})")
+                # Either the location lookup service is unreachable or it
+                # did not recognise the project's city/state -- the
+                # message covers both without blaming the address.
+                raise HTTPException(
+                    422,
+                    "The weather provider couldn't find this project's location right now. Try again "
+                    "in a few minutes, or type the weather in by hand. If it keeps happening, check "
+                    "the project's city and state.",
+                )
             try:
                 weather = await _asyncio.wait_for(
                     run_in_threadpool(_fetch_weather, coords[0], coords[1], dr["report_date"]),
                     timeout=6.0,
                 )
             except _asyncio.TimeoutError:
-                raise HTTPException(422, "Weather provider slow to answer — try Refresh in a moment")
+                raise HTTPException(422, _wx_slow_msg)
+            except Exception:
+                logger.warning("weather_autofill: fetch crashed dr=%s", daily_report_id, exc_info=True)
+                raise HTTPException(422, _wx_retry_msg)
             if not weather:
-                raise HTTPException(422, "Weather provider unreachable — try Refresh in a moment")
+                raise HTTPException(422, _wx_retry_msg)
         weather["weather_fetched_at"] = utc_now().isoformat()
         await db.daily_reports.update_one(
             tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": weather},
@@ -1874,8 +2079,8 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
-    if dr.get("status") == "submitted":
-        raise HTTPException(409, "Daily report locked")
+    if dr.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, _dr_locked_detail(dr.get("status")))
     if payload.daily_report_id != daily_report_id:
         raise HTTPException(400, "daily_report_id mismatch")
     doc = payload.model_dump(mode="json")
@@ -1973,8 +2178,8 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     if not doc:
         raise HTTPException(404, "Presence row not found")
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1})
-    if dr and dr.get("status") == "submitted":
-        raise HTTPException(409, "Daily report locked")
+    if dr and dr.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, _dr_locked_detail(dr.get("status")))
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
     if updates:
@@ -2011,8 +2216,8 @@ async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant))
     if not doc:
         raise HTTPException(404, "Presence row not found")
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1})
-    if dr and dr.get("status") == "submitted":
-        raise HTTPException(409, "Daily report locked")
+    if dr and dr.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, _dr_locked_detail(dr.get("status")))
     await db.daily_presence.delete_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}))
     # Bucket C3b Phase 5 — audit the hard-delete (presence has no soft
     # delete; deletion erases the row, so the audit is the only trail).

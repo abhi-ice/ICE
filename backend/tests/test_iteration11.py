@@ -1,7 +1,8 @@
 """Iteration 11 — Auth/Tenant/Team/DailyReports validation per review_request.
 
-Runs against the live REACT_APP_BACKEND_URL and DROPS all collections at the
-end so the user's real signup remains the first-ever tenant.
+Runs against the live REACT_APP_BACKEND_URL. The final cleanup test, which
+DROPS all collections, only runs when ICE_ALLOW_DESTRUCTIVE_TEST_CLEANUP=1 is
+set AND DB_NAME starts with test_ or ice_test; otherwise it is skipped.
 """
 import os
 import time
@@ -10,8 +11,13 @@ import pytest
 import requests
 from datetime import date, timedelta
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
-assert BASE, "REACT_APP_BACKEND_URL not set"
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
+if not BASE:
+    pytest.skip(
+        "REACT_APP_BACKEND_URL is not set. These tests call a running ICE backend; "
+        "set it to the server you mean to test.",
+        allow_module_level=True,
+    )
 
 TS = int(time.time())
 ADMIN_EMAIL = f"qa+{TS}@gtest.example"
@@ -290,11 +296,22 @@ def test_approve_dr():
 
 
 # ---------- Cleanup: drop all collections ----------
+def _refuse_unless_destructive_cleanup_allowed():
+    """Skip unless the wipe was explicitly switched on for a throwaway test DB."""
+    db_name = (os.environ.get("DB_NAME") or "").strip()
+    if os.environ.get("ICE_ALLOW_DESTRUCTIVE_TEST_CLEANUP") != "1":
+        pytest.skip("Not wiping the database: set ICE_ALLOW_DESTRUCTIVE_TEST_CLEANUP=1 "
+                    "to allow this cleanup (test databases only).")
+    if not db_name.startswith(("test_", "ice_test")):
+        pytest.skip(f"Not wiping the database: DB_NAME '{db_name}' does not start with "
+                    "test_ or ice_test, so it may hold real data.")
+
+
+@pytest.mark.destructive
 def test_zzz_cleanup_drop_all():
     """Wipe DB so the user's real signup at /signup is the first-ever tenant."""
+    _refuse_unless_destructive_cleanup_allowed()
     import asyncio
-    import sys
-    sys.path.insert(0, "/app/backend")
     from motor.motor_asyncio import AsyncIOMotorClient
 
     async def _wipe():

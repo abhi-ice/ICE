@@ -7,7 +7,13 @@ import json
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://field-ops-hub-21.preview.emergentagent.com").rstrip("/")
+if not (os.environ.get("REACT_APP_BACKEND_URL") or "").strip():
+    pytest.skip(
+        "REACT_APP_BACKEND_URL is not set. These tests call a running ICE backend and no "
+        "longer fall back to a remote preview host; set it to the server you mean to test.",
+        allow_module_level=True,
+    )
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].strip().rstrip("/")
 ADMIN_EMAIL = "admin@iceops.com"
 ADMIN_PASS = "Demo123!"
 TENANT_SLUG = "ice"

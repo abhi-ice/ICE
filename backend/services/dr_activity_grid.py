@@ -115,7 +115,15 @@ def enrich_grid_row(row: dict, task: dict | None) -> dict:
     daily_report_activities."""
     task = task or {}
     row["work_category"] = task.get("work_category")
-    row["task_updated_at"] = task.get("updated_at")
+    # Day-1 round 2 (2026-10-25) -- the optimistic-lock token is the
+    # task's HUMAN-edit stamp (progress_lock_at), not updated_at: schedule
+    # recomputes (enterprise CPM, MS Project sync, status derivation)
+    # restamp updated_at on every task, which made a save on one activity
+    # 409 the next save on a different one. When no person has edited the
+    # task yet, hand back updated_at instead of None so the client still
+    # carries "what I saw as of this read" -- a person's first edit after
+    # this read stamps a later progress_lock_at and is still caught.
+    row["task_updated_at"] = task.get("progress_lock_at") or task.get("updated_at")
     count = task.get("open_blocker_count") or 0
     row["open_blocker_count"] = count
     # 2026-05-19 -- also surface open_blocker_summary so the DR Activity

@@ -14,7 +14,7 @@ from typing import Optional, List, Literal
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel, Photo, PhotoCreate
 from auth import require_tenant
-from services.storage import put_object, get_object, make_path, record_file
+from services.storage import aput_object, aget_object, make_path, record_file
 from services.spec_search import (
     fit_spec_index, search_spec, search_all_specs_in_project,
 )
@@ -160,7 +160,7 @@ async def upload_photo(
         ext = "jpg"
     storage_path = make_path(ctx["tenant_id"], "photos", ext)
     try:
-        put_object(storage_path, body, ct)
+        await aput_object(storage_path, body, ct)
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
     await record_file(
@@ -274,7 +274,7 @@ async def stream_photo(photo_id: str, ctx: dict = Depends(require_tenant)):
     if not p or not p.get("storage_path"):
         raise HTTPException(404, "Photo not found")
     try:
-        data, ct = get_object(p["storage_path"])
+        data, ct = await aget_object(p["storage_path"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
     return Response(content=data, media_type=ct)

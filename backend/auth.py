@@ -21,6 +21,7 @@ silently locking everyone out.
 """
 import logging
 import os
+import secrets
 import bcrypt
 import jwt as pyjwt
 from datetime import datetime, timedelta, timezone
@@ -30,14 +31,48 @@ from typing import Optional
 from database import get_db
 from models import gen_id
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret")
+log = logging.getLogger("auth")
+
+
+def _resolve_jwt_secret(raw: Optional[str]) -> str:
+    """Day-1 hardening (2026-10-25, audit findings 6/18/48).
+
+    The old code fell back to the well-known string "dev-secret" when
+    JWT_SECRET was missing, so anyone could sign a login token for any
+    user. Now:
+      * missing / empty / "dev-secret" -> CRITICAL log + a random
+        per-process secret. Forged tokens become impossible; the cost is
+        that everyone is signed out whenever the server restarts (and a
+        multi-worker deployment would not share the secret), so the
+        operator MUST set a real JWT_SECRET.
+      * the old committed placeholder (contains "change-in-prod") -> keep
+        using it so tonight's production logins keep working, but log
+        CRITICAL telling the operator to rotate it.
+    """
+    value = raw or ""
+    if not value.strip() or value.strip() == "dev-secret":
+        log.critical(
+            "JWT_SECRET is missing or set to the known default. Using a random "
+            "secret for this process only: everyone will be signed out on every "
+            "restart. Set JWT_SECRET to a long random value in the deployment "
+            "environment (python -c \"import secrets;print(secrets.token_urlsafe(64))\")."
+        )
+        return secrets.token_urlsafe(64)
+    if "change-in-prod" in value:
+        log.critical(
+            "JWT_SECRET is still the placeholder value that was committed to git. "
+            "Anyone who has seen the repository can forge login tokens. Rotate it "
+            "now to a long random value in the deployment environment."
+        )
+    return value
+
+
+JWT_SECRET = _resolve_jwt_secret(os.environ.get("JWT_SECRET"))
 JWT_ALG = os.environ.get("JWT_ALG", "HS256")
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))
 BCRYPT_ROUNDS = int(os.environ.get("BCRYPT_ROUNDS", "12"))
 
 bearer = HTTPBearer(auto_error=False)
-
-log = logging.getLogger("auth")
 
 # bcrypt 4.x dropped __about__; tolerate either layout.
 try:
@@ -143,11 +178,15 @@ def create_access_token(user: dict) -> str:
 
 
 def role_required(ctx: dict, roles: list[str]) -> None:
-    user_role = (ctx.get("user") or {}).get("role")
-    if user_role not in roles and "admin" not in roles:
-        # admin always has access
-        if user_role != "admin":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, f"Role {user_role} not in {roles}")
+    """Refuse (403) unless the caller is an admin or their role is in
+    `roles`. Day-1 fix (2026-10-25, audit findings 1/14): the old check
+    `user_role not in roles and "admin" not in roles` was always False
+    for every caller (they all pass "admin"), so it never refused anyone."""
+    user_role = ((ctx.get("user") or {}).get("role") or "").strip().lower()
+    allowed = {(r or "").strip().lower() for r in (roles or [])}
+    if user_role == "admin" or (user_role and user_role in allowed):
+        return
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Your role can't do this.")
 
 
 # Bucket H Phase 3 (2026-05-08) -- per-project RBAC helper.

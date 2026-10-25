@@ -33,6 +33,14 @@ from services.cpm import compute_cpm
 
 router = APIRouter(tags=["schedule-proposals"])
 
+# Day-1 round 2 (2026-10-25) -- task fields whose change on an approved
+# re-import moves the human-edit lock (tasks.progress_lock_at) that the
+# daily-report activity grid checks. Same idea as tasks_router.
+_REIMPORT_LOCK_FIELDS = (
+    "pct_complete", "status", "actual_start", "actual_finish",
+    "planned_start", "planned_finish", "duration_days", "predecessors",
+)
+
 
 def _is_pm_or_admin(role: Optional[str]) -> bool:
     return (role or "").lower() in ("admin", "pm")
@@ -321,6 +329,19 @@ async def approve_proposal(
                     "prev_pct_complete": mig_pct,
                     "actual_start": imp_as, "actual_finish": imp_af,
                 })
+            # Day-1 round 2 (2026-10-25) -- an approved re-import is a
+            # person changing this task's schedule data: stamp updated_at and
+            # the human-edit lock (same value) so a daily-report grid save
+            # made against the pre-import task is caught as a real conflict.
+            # The lock only moves when the import actually CHANGES this
+            # task's progress/schedule values -- a full re-import rewrites
+            # every row, and an unchanged row is no conflict for a super
+            # who has it open in the daily report.
+            _reimport_at = utc_now().isoformat()
+            updates["updated_at"] = _reimport_at
+            if any(k in updates and updates[k] != existing.get(k)
+                   for k in _REIMPORT_LOCK_FIELDS):
+                updates["progress_lock_at"] = _reimport_at
             await db.tasks.update_one(
                 tenant_filter(ctx["tenant_id"], {"id": existing["id"]}),
                 {"$set": updates,
