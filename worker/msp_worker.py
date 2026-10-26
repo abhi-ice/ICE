@@ -76,6 +76,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import logging.handlers
 import os
 import socket
 import sys
@@ -640,6 +641,30 @@ class MsProject:
             out.append(t)
         return out
 
+    def leaf_codes_under(self, summary, code_of) -> list:
+        """Codes of every real, active activity under a summary task, any
+        depth. Inactive tasks do not drive a summary's dates in Project, so
+        they must not become predecessors either."""
+        out = []
+        for child in summary.OutlineChildren:
+            if child is None:
+                continue
+            try:
+                if not child.Active:
+                    continue
+            except Exception:
+                pass  # Project versions without inactive tasks
+            if bool(child.Summary):
+                out.extend(self.leaf_codes_under(child, code_of))
+            else:
+                try:
+                    if child.ExternalTask:
+                        continue
+                except Exception:
+                    pass
+                out.append(code_of(child))
+        return out
+
     # -- read the network back (push read-back and pull use the same shape) --
     def serialize(self):
         """Return (tasks, dependencies, project_finish, critical_count) in the
@@ -678,7 +703,18 @@ class MsProject:
                     impact_applied = int(float(t.Number1 or 0))
                 except Exception:
                     impact_applied = 0
+                # Progress as the file holds it. ICE uses it only for tasks
+                # it has not seen yet (first import); after that ICE owns it.
+                try:
+                    progress = {
+                        "percent_complete": int(t.PercentComplete),
+                        "actual_start": com_date_str(t.ActualStart),
+                        "actual_finish": com_date_str(t.ActualFinish),
+                    }
+                except Exception:
+                    progress = {}
                 tasks.append({
+                    **progress,
                     "unique_id": uid,
                     "text1": text1,
                     "name": name,
@@ -702,19 +738,41 @@ class MsProject:
                 links = None
             if links is None:
                 continue
+            succ_code = code_of(t)
+            # One link per predecessor: a direct link from Project wins over
+            # the same pair reached through a summary row.
+            direct, via_summary = [], []
             for dep in links:
                 try:
                     if int(dep.To.UniqueID) != uid:
                         continue
-                    deps.append({
-                        "successor_code": code_of(t),
-                        "predecessor_code": code_of(dep.From),
-                        "type": PJ_LINK_TYPE.get(int(dep.Type), "FS"),
-                        "lag_days": round(float(dep.Lag) / mpd, 4),
-                    })
+                    link_type = PJ_LINK_TYPE.get(int(dep.Type), "FS")
+                    lag_days = round(float(dep.Lag) / mpd, 4)
+                    src = dep.From
+                    # ICE has no summary rows. A finish-to-start or
+                    # finish-to-finish link from a summary means "after
+                    # everything under it finishes", which is the same as one
+                    # link from each activity under it. (SS/SF from a summary
+                    # have no such equivalent and stay as they are.)
+                    if bool(src.Summary) and link_type in ("FS", "FF"):
+                        via_summary += [(pc, link_type, lag_days)
+                                        for pc in self.leaf_codes_under(src, code_of)]
+                    else:
+                        direct.append((code_of(src), link_type, lag_days))
                 except Exception as exc:
                     log.warning("skipping unreadable dependency on '%s': %s",
                                 name, exc)
+            linked = set()
+            for pc, link_type, lag_days in direct + via_summary:
+                if not pc or pc == succ_code or pc in linked:
+                    continue
+                linked.add(pc)
+                deps.append({
+                    "successor_code": succ_code,
+                    "predecessor_code": pc,
+                    "type": link_type,
+                    "lag_days": lag_days,
+                })
         project_finish = com_date_str(self.proj.ProjectFinish)
         critical_count = sum(1 for x in tasks if x["critical"])
         return tasks, deps, project_finish, critical_count
@@ -1324,7 +1382,21 @@ def execute_with_retry(job: dict, cfg: dict, api: Api) -> dict:
 # ---------------------------------------------------------------------------
 # Main loop.
 # ---------------------------------------------------------------------------
+def keep_computer_awake() -> None:
+    """Ask Windows not to sleep while the worker runs (the screen may still
+    turn off). A sleeping computer would leave every schedule job waiting."""
+    try:
+        import ctypes
+        es_continuous, es_system_required = 0x80000000, 0x00000001
+        if ctypes.windll.kernel32.SetThreadExecutionState(
+                es_continuous | es_system_required):
+            log.info("keeping this computer awake while the worker runs")
+    except Exception as exc:
+        log.warning("could not ask Windows to stay awake (%s)", exc)
+
+
 def run(cfg: dict) -> None:
+    keep_computer_awake()
     api = Api(cfg["base_url"], cfg["token"])
     wait_ms = min(cfg["poll_seconds"] * 1000, MAX_WAIT_MS)
     backoff = 5
@@ -1369,9 +1441,13 @@ def run(cfg: dict) -> None:
             result = execute_with_retry(job, cfg, api)
         finally:
             renewer.stop()
-        reply = api.post_result(result)
-        log.info("job %s done: status=%s, backend replied: %s",
-                 job["id"], result.get("status"), reply)
+        reply = api.post_result(result)  # retries itself; None = not delivered
+        if reply is None:
+            log.error("job %s: result NOT delivered to ICE; ICE hands the job "
+                      "out again once its lease runs out", job["id"])
+        else:
+            log.info("job %s done: status=%s, backend replied: %s",
+                     job["id"], result.get("status"), reply)
 
 
 # ---------------------------------------------------------------------------
@@ -1452,14 +1528,40 @@ def selftest() -> int:
 # ---------------------------------------------------------------------------
 # Entry point.
 # ---------------------------------------------------------------------------
-def setup_logging() -> None:
+_instance_lock = None  # held for the life of the process
+
+
+def claim_single_instance(env_file: str) -> bool:
+    """One worker per worker.env: a second copy (say run-worker.bat
+    double-clicked while the always-on one runs) would share the log file and
+    the cache folder. Returns False when another worker already holds it."""
+    global _instance_lock
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        key = hashlib.sha1(os.path.abspath(env_file).lower().encode()).hexdigest()[:16]
+        handle = kernel32.CreateMutexW(None, False, f"Local\\ICE_MSP_Worker_{key}")
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        _instance_lock = handle
+    except Exception:
+        pass  # not Windows: nothing to guard against here
+    return True
+
+
+def setup_logging(log_file: str = LOG_FILE) -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s")
     log.setLevel(logging.INFO)
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(fmt)
-    log.addHandler(console)
+    if sys.stdout is not None:  # None under pythonw (no console window)
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(fmt)
+        log.addHandler(console)
     try:
-        filelog = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        filelog = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
         filelog.setFormatter(fmt)
         log.addHandler(filelog)
     except OSError:
@@ -1479,7 +1581,14 @@ def main(argv=None) -> int:
     if args.selftest:
         return selftest()
 
-    setup_logging()
+    if not claim_single_instance(args.env_file):
+        print("The ICE Microsoft Project worker is already running on this "
+              "computer (it starts by itself). Nothing more to do.")
+        return 0
+    # A worker run with its own worker.env (a test setup) logs next to it.
+    env_dir = os.path.dirname(os.path.abspath(args.env_file))
+    setup_logging(LOG_FILE if os.path.normcase(env_dir) == os.path.normcase(SCRIPT_DIR)
+                  else os.path.join(env_dir, "worker.log"))
     cfg = load_config(args.env_file)
     problems = validate_config(cfg)
     if problems:

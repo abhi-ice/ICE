@@ -289,18 +289,28 @@ async def approve_proposal(
         has_progress = any(v is not None for v in (imp_pct, imp_status, imp_as, imp_af))
         # status=complete forces 100%; else use the given % (default 0).
         mig_pct = 100.0 if imp_status == "complete" else (float(imp_pct) if imp_pct is not None else 0.0)
+        # An actual start means the work began even at 0% (MS Project leaves
+        # % complete at 0 when only an actual start is entered).
         mig_status = imp_status or (
-            "complete" if mig_pct >= 100 else "in_progress" if mig_pct > 0 else "not_started"
+            "complete" if mig_pct >= 100
+            else "in_progress" if (mig_pct > 0 or imp_as) else "not_started"
         )
-        if has_progress:
-            migrated_progress += 1
-        if imp_status == "blocked":
-            blocked_imported += 1
 
         existing = await db.tasks.find_one(
             tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": tc.activity_code}),
             {"_id": 0},
         )
+        # MS Project pulls carry the file's progress only for tasks ICE had not
+        # seen when the pull ran. If the task exists by approval time, ICE's
+        # own progress wins -- never overwrite it with the file's.
+        if (has_progress and existing and existing.get("status") != "deleted"
+                and proposal.get("source") == "ms_project_pull"):
+            has_progress = False
+        if has_progress:
+            migrated_progress += 1
+        if imp_status == "blocked":
+            blocked_imported += 1
+
         if existing:
             updates = tc.model_dump(mode="json", exclude_unset=False)
             updates.pop("project_id", None)

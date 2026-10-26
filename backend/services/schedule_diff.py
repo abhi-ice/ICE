@@ -71,6 +71,7 @@ def compute_schedule_diff(current_tasks: Iterable[dict], parsed_rows: Iterable[d
                 "planned_finish": row.get("planned_finish"),
                 "duration_days": row.get("duration_days"),
                 "trade_code": row.get("trade_code"),
+                "pct_complete": row.get("pct_complete"),
             })
 
     # DROPPED activity codes
@@ -265,8 +266,13 @@ def compute_version_diff(
         _maybe("duration", old.get("duration_days"), new.get("duration_days"), "duration_change")
         _maybe("start", _to_iso(old.get("planned_start")), _to_iso(new.get("planned_start")), "start_change")
         _maybe("end", _to_iso(old.get("planned_finish")), _to_iso(new.get("planned_finish")), "end_change")
-        _maybe("status", old.get("status"), new.get("status"), "status_change")
-        _maybe("pct", old.get("pct_complete"), new.get("pct_complete"), "pct_change")
+        # Only compare progress when both versions carry it: an MS Project
+        # pull carries the file's progress on the first import only, so a
+        # later pull's rows have no progress keys at all (not "0%").
+        if "status" in old and "status" in new:
+            _maybe("status", old.get("status"), new.get("status"), "status_change")
+        if "pct_complete" in old and "pct_complete" in new:
+            _maybe("pct", old.get("pct_complete"), new.get("pct_complete"), "pct_change")
 
         if len(per_field) > 2:
             activities_modified.append(per_field)

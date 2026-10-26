@@ -501,6 +501,66 @@ def test_identical_reimport_does_not_move_the_lock(env):
     assert ei.value.status_code == 409
 
 
+def test_ms_project_pull_progress_lands_on_new_tasks_never_on_existing(env):
+    """A pull carries the file's % complete. A task ICE did not have yet
+    takes it; a task that already exists keeps ICE's own progress."""
+    db = env
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "MS Project (live)", "source": "ms_project_pull", "diff": {},
+        "parsed_rows": [
+            {"activity_code": "A100", "description": "Activity A100",
+             "planned_start": "2026-11-01", "planned_finish": "2026-11-05",
+             "duration_days": 5, "pct_complete": 100.0,
+             "actual_start": "2026-11-01", "actual_finish": "2026-11-05"},
+            {"activity_code": "N900", "description": "Install ICRA/ILSM",
+             "planned_start": "2026-09-29", "planned_finish": "2026-10-12",
+             "duration_days": 10, "pct_complete": 75.0,
+             "actual_start": "2026-09-29", "actual_finish": None},
+        ],
+    })
+    out = _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    assert out["applied"]["created"] == 1 and out["applied"]["migrated_progress"] == 1
+    a = _task_doc(db, "taskA")
+    assert a["pct_complete"] == 10.0 and a["status"] != "complete"
+    n = next(t for t in db.tasks.docs if t.get("activity_code") == "N900")
+    assert n["pct_complete"] == 75.0 and n["status"] == "in_progress"
+    assert n["actual_start"] == "2026-09-29" and n["actual_finish"] is None
+
+
+def test_file_upload_progress_still_updates_existing_tasks(env):
+    """The ICE-owns-progress rule is for MS Project pulls only: an imported
+    spreadsheet that carries % complete still updates an existing task."""
+    db = env
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "s.xlsx", "source": "file_upload", "diff": {},
+        "parsed_rows": [{"activity_code": "A100", "description": "Activity A100",
+                         "planned_start": "2026-11-01", "planned_finish": "2026-11-05",
+                         "duration_days": 5, "pct_complete": 60.0,
+                         "actual_start": "2026-11-01"}],
+    })
+    out = _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    assert out["applied"]["migrated_progress"] == 1
+    a = _task_doc(db, "taskA")
+    assert a["pct_complete"] == 60.0 and a["status"] == "in_progress"
+
+
+def test_actual_start_at_zero_percent_imports_as_in_progress(env):
+    db = env
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "MS Project (live)", "source": "ms_project_pull", "diff": {},
+        "parsed_rows": [{"activity_code": "N901", "description": "Started yesterday",
+                         "planned_start": "2026-10-24", "planned_finish": "2026-10-30",
+                         "duration_days": 5, "pct_complete": 0.0,
+                         "actual_start": "2026-10-24", "actual_finish": None}],
+    })
+    _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    n = next(t for t in db.tasks.docs if t.get("activity_code") == "N901")
+    assert n["status"] == "in_progress" and n["actual_start"] == "2026-10-24"
+
+
 # ------------------------------------------------------------------
 # 1c. Legacy tokens (clients loaded before this deploy)
 # ------------------------------------------------------------------

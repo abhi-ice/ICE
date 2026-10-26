@@ -82,6 +82,13 @@ class _Col:
             self.rows.append(doc)
             return types.SimpleNamespace(matched_count=0, modified_count=0, upserted_id=1)
         return types.SimpleNamespace(matched_count=0, modified_count=0)
+    async def update_many(self, q, ops):
+        n = 0
+        for r in self.rows:
+            if _match(r, q or {}):
+                r.update(ops.get("$set", {}))
+                n += 1
+        return types.SimpleNamespace(matched_count=n, modified_count=n)
     async def find_one_and_update(self, q, ops, upsert=False, return_document=False, sort=None):
         rows = [r for r in self.rows if _match(r, q or {})]
         if sort:
@@ -313,6 +320,88 @@ def test_pull_adapter_maps_text1_and_dependencies():
     by = {r["activity_code"]: r for r in rows}
     assert by["A"]["planned_start"] == "2026-01-05" and by["A"]["predecessors"] == []
     assert by["B"]["predecessors"] == [{"code": "A", "type": "SS", "lag_days": 2}]
+
+
+def test_pull_adapter_carries_file_progress_only_for_unseen_tasks():
+    from services.ms_project_ingest import worker_tasks_to_parsed_rows
+    rows = worker_tasks_to_parsed_rows(
+        [{"text1": "A", "name": "Demo", "start": "2026-06-25", "finish": "2026-09-03",
+          "percent_complete": 100, "actual_start": "2026-06-25",
+          "actual_finish": "2026-09-03"},
+         {"text1": "B", "name": "ICRA", "start": "2026-09-29", "finish": "2026-10-12",
+          "percent_complete": 75, "actual_start": "2026-09-29", "actual_finish": None},
+         {"text1": "C", "name": "Paint", "start": "2026-12-01", "finish": "2026-12-05",
+          "percent_complete": 0, "actual_start": None, "actual_finish": None}],
+        [], live_codes={"A"})
+    by = {r["activity_code"]: r for r in rows}
+    # A already exists in ICE: ICE owns its progress, the file's is not carried.
+    assert "pct_complete" not in by["A"] and "actual_start" not in by["A"]
+    assert by["B"]["pct_complete"] == 75.0 and by["B"]["actual_start"] == "2026-09-29"
+    assert by["B"]["actual_finish"] is None
+    # Not started: imports exactly like a baseline row (no progress keys).
+    assert not ({"pct_complete", "actual_start", "actual_finish"} & set(by["C"]))
+
+
+def test_pull_adapter_older_worker_without_progress_keys_is_unchanged():
+    from services.ms_project_ingest import worker_tasks_to_parsed_rows
+    rows = worker_tasks_to_parsed_rows(
+        [{"text1": "A", "name": "Pour", "start": "2026-01-05", "finish": "2026-01-09"}], [])
+    assert not ({"pct_complete", "actual_start", "actual_finish"} & set(rows[0]))
+
+
+def test_first_pull_proposal_carries_file_progress():
+    _reset()
+    asyncio.run(mps.enqueue_pull_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["pull"]))
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "project_rowversion": "rv1", "project_finish": "2027-12-28", "critical_count": 1,
+        "tasks": [
+            {"text1": "VA6B-0010", "unique_id": 2, "name": "Project NTP",
+             "start": "2026-05-06", "finish": "2026-05-06", "milestone": False,
+             "percent_complete": 100, "actual_start": "2026-05-06",
+             "actual_finish": "2026-05-06"},
+            {"text1": "VA6B-1750", "unique_id": 246, "name": "Install ICRA/ILSM",
+             "start": "2026-09-29", "finish": "2026-10-12",
+             "percent_complete": 75, "actual_start": "2026-09-29", "actual_finish": None},
+        ],
+        "dependencies": [],
+    }))
+    assert out["ok"]
+    prop = next(p for p in _STUB.schedule_proposals.rows if p["source"] == "ms_project_pull")
+    by = {r["activity_code"]: r for r in prop["parsed_rows"]}
+    assert by["VA6B-0010"]["pct_complete"] == 100.0
+    assert by["VA6B-0010"]["actual_finish"] == "2026-05-06"
+    assert by["VA6B-1750"]["pct_complete"] == 75.0
+
+
+def test_newer_pull_replaces_an_older_pull_still_waiting_for_review():
+    from services.ms_project_ingest import build_pull_proposal
+    _reset()
+    row = lambda pct: [{"text1": "X", "name": "Fireproofing", "start": "2026-11-30",
+                        "finish": "2026-12-08", "percent_complete": pct,
+                        "actual_start": "2026-11-30" if pct else None,
+                        "actual_finish": "2026-12-08" if pct == 100 else None}]
+    p1 = asyncio.run(build_pull_proposal(_STUB, T, P, row(75), []))
+    p2 = asyncio.run(build_pull_proposal(_STUB, T, P, row(100), []))
+    by = {p["id"]: p for p in _STUB.schedule_proposals.rows}
+    assert by[p1]["status"] == "superseded" and by[p1]["superseded_by"] == p2
+    assert by[p2]["status"] == "pending_review"
+    assert by[p2]["parsed_rows"][0]["pct_complete"] == 100.0
+
+
+def test_version_diff_ignores_progress_missing_from_a_later_pull():
+    from services.schedule_diff import compute_version_diff
+    first = [{"activity_code": "A", "description": "Demo", "planned_start": "2026-06-25",
+              "planned_finish": "2026-09-03", "duration_days": 50, "pct_complete": 100.0}]
+    later = [{"activity_code": "A", "description": "Demo", "planned_start": "2026-06-25",
+              "planned_finish": "2026-09-03", "duration_days": 50}]
+    d = compute_version_diff(first, later)
+    assert d["activities_modified_count"] == 0
+    # Both versions carrying progress still report a real change.
+    later[0]["pct_complete"] = 50.0
+    d = compute_version_diff(first, later)
+    assert d["activities_modified"][0]["pct_change"] == {"prior": 100.0, "new": 50.0}
 
 
 def test_pull_ingests_dates_and_builds_proposal():

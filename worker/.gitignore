@@ -1,4 +1,6 @@
 # Never commit the real token, logs, or local Project files.
 worker.env
 worker.log
+worker.log.*
 projects/
+cache/
