@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ChevronLeft, Sparkles, FileDown, GitPullRequest } from "lucide-react";
 import api from "../lib/api";
+import BackButton from "../components/BackButton";
 import { toast } from "../components/ui/sonner";
 
 const TABS = [

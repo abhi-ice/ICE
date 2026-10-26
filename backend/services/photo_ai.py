@@ -52,6 +52,7 @@ import os
 import asyncio
 import re
 from datetime import datetime, timezone, timedelta
+from models import gen_id as _gen_id
 from typing import Optional
 
 from database import get_db, tenant_filter

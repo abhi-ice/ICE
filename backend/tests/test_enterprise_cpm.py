@@ -161,7 +161,7 @@ _ent.tenant_filter = lambda tid, q=None: {**(q or {}), "tenant_id": tid}
 from services.schedule_engine import (  # noqa: E402
     get_engine_for, EnterpriseCpmEngine, InternalCpmEngine, MsProjectEngine,
 )
-from services.working_days import add_working_days as W, working_days_between as B  # noqa: E402
+from services.working_days import add_working_days as W, working_days_between as WDB  # noqa: E402
 
 
 def _run(coro):
