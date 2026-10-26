@@ -751,3 +751,4 @@ See `/app/memory/test_credentials.md`.
 - .env files untracked by platform auto-commit c902cbb (secrets now platform-managed) — intentionally left as is.
 - Verified: /api/health 200, 171 day1 + 42 weather/CPM tests pass, landing/login render.
 - Repo abhi-ice/ICE was private; user made it public temporarily for the pull.
+- 2026-10-26: Temporary public sign-up enabled for owner: ALLOW_PUBLIC_SIGNUP (live=true; preview/test slot still holds a wrong sentence value so preview signup stays blocked) + PLATFORM_ADMIN_EMAILS set. Owner must delete ALLOW_PUBLIC_SIGNUP and redeploy after creating their account.
