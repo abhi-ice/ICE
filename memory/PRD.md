@@ -743,3 +743,11 @@ See `/app/memory/test_credentials.md`.
   and `?mode=external` both 200 with the new section labels +
   "Task worked" header rendered, INTERNAL/external audience badge
   behaviour preserved.
+
+## 2026-10-26 — Pulled ice/main 4234106 (Day-1 hardening) + redeploy
+- Merged upstream cleanly (no conflicts): auth hardening, signup is now INVITE-ONLY unless ALLOW_PUBLIC_SIGNUP=1, DR field-flow fixes, pdf_safety, storage, ErrorBoundary, 6 new day1 test suites.
+- Fixed lint blockers: ScheduleDiffDetail missing BackButton import, test_enterprise_cpm `B` alias clash (photo_ai _gen_id fixed upstream).
+- Preserved: lazy ML imports, background _ensure_indexes, ALLOWED_FRONTEND_HOSTS, weather 422 hardening, .dockerignore for worker/.
+- .env files untracked by platform auto-commit c902cbb (secrets now platform-managed) — intentionally left as is.
+- Verified: /api/health 200, 171 day1 + 42 weather/CPM tests pass, landing/login render.
+- Repo abhi-ice/ICE was private; user made it public temporarily for the pull.
