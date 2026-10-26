@@ -23,8 +23,10 @@ client.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       // Avoid redirect loops on the login page itself.
+      // Never yank a visitor off a public page (signup, invite, reset...).
       const path = window.location.pathname;
-      if (path !== "/login") {
+      const PUBLIC = ["/login", "/landing", "/signup", "/forgot-password", "/reset-password", "/accept-invite"];
+      if (!PUBLIC.includes(path)) {
         clearAuth();
         window.location.href = "/login";
       }

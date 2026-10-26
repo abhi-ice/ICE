@@ -19,6 +19,7 @@
  * 10 minutes per tenant session (sessionStorage stamp).
  */
 import { localTodayISO, localISODate } from "./dateUtil";
+import { getToken } from "./auth";
 
 const THROTTLE_MS = 10 * 60 * 1000;
 const STAMP_KEY = "ice-offline-warm-at";
@@ -39,6 +40,8 @@ function nearDates() {
 export async function warmOfflineCache(api, { force = false } = {}) {
   try {
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    // Signed-out visitor: the 401 would bounce public pages to /login.
+    if (!getToken()) return;
     if (!force) {
       const last = Number(sessionStorage.getItem(STAMP_KEY) || 0);
       if (Date.now() - last < THROTTLE_MS) return;
