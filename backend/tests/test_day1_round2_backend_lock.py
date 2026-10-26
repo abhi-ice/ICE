@@ -546,6 +546,80 @@ def test_file_upload_progress_still_updates_existing_tasks(env):
     assert a["pct_complete"] == 60.0 and a["status"] == "in_progress"
 
 
+def test_later_pull_keeps_labels_and_trade_already_on_tasks(env):
+    db = env
+    ta = next(t for t in db.tasks.docs if t["id"] == "taskA")
+    ta.update(work_category="construction_paperwork", trade_code="MECH")
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "MS Project (live)", "source": "ms_project_pull", "diff": {},
+        "parsed_rows": [{"activity_code": "A100", "description": "Activity A100",
+                         "planned_start": "2026-11-02", "planned_finish": "2026-11-06",
+                         "duration_days": 5}],
+    })
+    _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    a = _task_doc(db, "taskA")
+    assert a["planned_start"] == "2026-11-02"
+    assert a["work_category"] == "construction_paperwork" and a["trade_code"] == "MECH"
+
+
+def test_approve_waits_for_labelling_but_not_forever(env):
+    from datetime import datetime, timedelta, timezone
+    db = env
+    now = datetime.now(timezone.utc)
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "MS Project (live)", "source": "ms_project_pull", "diff": {},
+        "work_category_tagging": {"status": "running", "started_at": now.isoformat()},
+        "parsed_rows": [{"activity_code": "N902", "description": "New",
+                         "planned_start": "2026-11-02", "planned_finish": "2026-11-06",
+                         "duration_days": 5}],
+    })
+    with pytest.raises(HTTPException) as ei:
+        _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    assert ei.value.status_code == 409 and "field work" in ei.value.detail
+    db.schedule_proposals.docs[-1]["work_category_tagging"]["started_at"] = \
+        (now - timedelta(minutes=6)).isoformat()
+    out = _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    assert out["applied"]["created"] == 1
+
+
+def test_edits_wait_for_labelling_too(env):
+    from datetime import datetime, timezone
+    db = env
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "MS Project (live)", "source": "ms_project_pull", "diff": {},
+        "work_category_tagging": {"status": "running",
+                                  "started_at": datetime.now(timezone.utc).isoformat()},
+        "parsed_rows": [{"activity_code": "N903", "description": "New",
+                         "planned_start": "2026-11-02", "planned_finish": "2026-11-06",
+                         "duration_days": 5}],
+    })
+    with pytest.raises(HTTPException) as ei:
+        _run(spr.set_work_category(
+            "prop1", spr.WorkCategoryOverride(activity_code="N903", work_category="field_work"), PM))
+    assert ei.value.status_code == 409
+
+
+def test_pull_never_blanks_fields_ms_project_does_not_send(env):
+    db = env
+    ta = next(t for t in db.tasks.docs if t["id"] == "taskA")
+    ta.update(constraint_type="snet", constraint_date="2026-11-01", calendar_id="cal-6day",
+              required_trade="Electrician")
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "MS Project (live)", "source": "ms_project_pull", "diff": {},
+        "parsed_rows": [{"activity_code": "A100", "description": "Activity A100",
+                         "planned_start": "2026-11-03", "planned_finish": "2026-11-07",
+                         "duration_days": 5}],
+    })
+    _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    a = _task_doc(db, "taskA")
+    assert a["planned_start"] == "2026-11-03"
+    assert (a["constraint_type"], a["calendar_id"], a["required_trade"]) == ("snet", "cal-6day", "Electrician")
+
+
 def test_actual_start_at_zero_percent_imports_as_in_progress(env):
     db = env
     db.schedule_proposals.docs.append({

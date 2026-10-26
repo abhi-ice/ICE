@@ -665,6 +665,21 @@ class MsProject:
                 out.append(code_of(child))
         return out
 
+    def section_path_of(self, task, cache: dict) -> list:
+        """Names of the summary tasks above `task`, outermost first (the
+        project's own summary row, outline level 0, is left out). `cache`
+        maps a summary's UniqueID to its path so each is walked once."""
+        try:
+            parent = task.OutlineParent
+            if parent is None or int(parent.OutlineLevel) < 1:
+                return []
+            uid = int(parent.UniqueID)
+        except Exception:
+            return []
+        if uid not in cache:
+            cache[uid] = self.section_path_of(parent, cache) + [str(parent.Name or "").strip()]
+        return list(cache[uid])
+
     # -- read the network back (push read-back and pull use the same shape) --
     def serialize(self):
         """Return (tasks, dependencies, project_finish, critical_count) in the
@@ -672,6 +687,7 @@ class MsProject:
         services/ms_project_ingest.worker_tasks_to_parsed_rows consume."""
         mpd = self.minutes_per_day()
         tasks, deps = [], []
+        sections: dict = {}  # summary UniqueID -> its heading path
 
         def code_of(task):
             try:
@@ -703,6 +719,7 @@ class MsProject:
                     impact_applied = int(float(t.Number1 or 0))
                 except Exception:
                     impact_applied = 0
+                section_path = self.section_path_of(t, sections)
                 # Progress as the file holds it. ICE uses it only for tasks
                 # it has not seen yet (first import); after that ICE owns it.
                 try:
@@ -726,6 +743,10 @@ class MsProject:
                     "milestone": bool(t.Milestone),
                     "wbs": wbs,
                     "ice_impact_days_applied": impact_applied,
+                    # Headings above the task, outermost first. ICE uses
+                    # them to tell a submittal "Air Handling Unit" from the
+                    # installation of one.
+                    "section_path": section_path,
                 })
             except Exception as exc:
                 log.warning("skipping unreadable task row: %s", exc)

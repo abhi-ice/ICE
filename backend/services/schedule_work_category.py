@@ -79,13 +79,27 @@ of the three non-field buckets, chosen by WHEN the work occurs.
 
 CLASSIFY BY THE NATURE OF THE WORK, NOT BY ITS PHASE
 ----------------------------------------------------
-Do NOT decide field vs non-field from a section header, a phase
-label, or the task's position in the file. A commissioning, testing,
-or inspection task scheduled in the middle of the construction phase
-is STILL non-field work -- it is construction_paperwork, never
-field_work. The NATURE of a task decides field vs non-field; its
-TIMING only decides which non-field bucket it lands in. Treat section
-headers and task ordering as, at most, a weak tie-breaking hint.
+Do NOT decide field vs non-field from a phase label or the task's
+position in the file. A commissioning, testing, or inspection task
+scheduled in the middle of the construction phase is STILL non-field
+work -- it is construction_paperwork, never field_work. The NATURE of
+a task decides field vs non-field; its TIMING only decides which
+non-field bucket it lands in. Task ordering is, at most, a weak
+tie-breaking hint.
+
+THE "section" FIELD -- WHAT A BARE NAME MEANS
+---------------------------------------------
+A task may carry "section": the schedule's own headings above it,
+outermost first (e.g. "Prepare Critical Submittals > Mechanical
+Equipment"). Many schedules repeat a bare equipment or material name
+("Air Handling Unit", "Controls", "Lighting") once under a submittals
+heading, again under a fabrication/delivery heading, and again under
+an installation heading. A bare name like that says WHAT, not what is
+being DONE -- the section says what is being done. Under a submittal,
+approval, procurement, fabrication or delivery heading it is non-field
+work; under an installation/construction heading it is field work.
+The section never turns commissioning, testing or inspection into
+field work.
 
 THE FOUR CATEGORIES -- assign EXACTLY ONE to every task
 -------------------------------------------------------
@@ -165,9 +179,85 @@ Return one JSON object, with one entry for every task you classify:
 - Output JSON only -- no markdown, no code fences, no commentary."""
 
 
+def drop_shared_root(rows: list) -> list:
+    """When every task sits under the same outermost heading, that heading is
+    the project's own title row ("6B Renovate Outpatient Mental Health"),
+    not a section: remove it from every section_path so a word in the
+    project's name can never label the whole schedule. Mutates and returns
+    `rows`."""
+    paths = [r["section_path"] for r in rows if r.get("section_path")]
+    real = [r for r in rows if not r.get("excluded_as_summary")]
+    if len(paths) < 2 or len(paths) < len(real):
+        return rows
+    root = paths[0][0]
+    if all(p[0] == root for p in paths):
+        for r in rows:
+            if r.get("section_path"):
+                r["section_path"] = r["section_path"][1:]
+                if not r["section_path"]:
+                    del r["section_path"]
+    return rows
+
+
+def attach_section_paths(rows: list) -> list:
+    """Give each real task the names of the heading rows above it
+    (outermost first) as `section_path`, matched by WBS: a heading whose WBS
+    is a dotted prefix of the task's WBS. Rows that already carry a
+    section_path (an MS Project pull reads it from the file's outline) are
+    left alone. Mutates and returns `rows`."""
+    headings = {}
+    for r in rows:
+        if r.get("excluded_as_summary") and r.get("wbs"):
+            headings[str(r["wbs"])] = str(r.get("description") or "").strip()
+    if not headings:
+        return rows
+    for r in rows:
+        if r.get("excluded_as_summary") or r.get("section_path"):
+            continue
+        parts = str(r.get("wbs") or "").split(".")
+        path = [headings[w] for w in (".".join(parts[:i]) for i in range(1, len(parts)))
+                if headings.get(w)]
+        if path:
+            r["section_path"] = path
+    return drop_shared_root(rows)
+
+
+# Section headings that say what the work under them is, read from the
+# innermost heading outward. A heading that names field work stops the
+# search (an "Erection" or "Installation" heading beats an outer
+# "Fabricate & Erect"); a heading naming both ("Furnish, Deliver & Install")
+# decides nothing, and the AI judges those tasks.
+_FIELD_HEADING = re.compile(
+    r"\binstall|\berect|(?<!pre-)(?<!pre )\bconstruct|\bdemoli|\bdemo\b|\babatement\b"
+    r"|\brough[\s-]?in\b|\bfinishes\b|\bframing\b|\bpaving\b|\bsite\s*work\b"
+    r"|\bmobiliz|\bchange\s+orders?\b",
+    re.IGNORECASE)
+_CLOSEOUT_HEADING = re.compile(r"\bclose[\s-]?out\b", re.IGNORECASE)
+_PAPERWORK_HEADING = re.compile(
+    r"\bsubmittals?\b|\bshop\s*drawings?\b|\bprocure(?:ment)?\b|\bfabricat(?:e|es|ed|ion)\b"
+    r"|\bdeliver(?:y|ies)?\b|\blong[\s-]?lead\b|\bapprovals?\b",
+    re.IGNORECASE)
+
+
+def section_category(section_path) -> Optional[str]:
+    """The non-field category a task's headings put it in, or None when the
+    headings do not say. Used so a bare name ("Air Handling Unit") under
+    "Prepare Critical Submittals" or "Fabricate/Delivery" is not left as
+    field work on a superintendent's daily report."""
+    for heading in reversed(list(section_path or [])):
+        h = str(heading or "")
+        if _FIELD_HEADING.search(h):
+            return None
+        if _CLOSEOUT_HEADING.search(h):
+            return "closeout_paperwork"
+        if _PAPERWORK_HEADING.search(h):
+            return "construction_paperwork"
+    return None
+
+
 def _build_user_payload(rows: list, project_name: str, context_note: str) -> dict:
     """Compact the ordered task list for the model: sequence index,
-    activity_code, name, duration, and predecessor codes."""
+    activity_code, name, section headings, duration, and predecessor codes."""
     tasks = []
     for i, r in enumerate(rows):
         preds = []
@@ -175,13 +265,16 @@ def _build_user_payload(rows: list, project_name: str, context_note: str) -> dic
             code = p.get("code") if isinstance(p, dict) else p
             if code:
                 preds.append(str(code))
-        tasks.append({
+        task = {
             "seq": i,
             "activity_code": str(r.get("activity_code")),
             "name": str(r.get("description") or ""),
             "duration_days": r.get("duration_days"),
             "predecessors": preds,
-        })
+        }
+        if r.get("section_path"):
+            task["section"] = " > ".join(str(s) for s in r["section_path"])
+        tasks.append(task)
     payload: dict = {"project_name": project_name, "tasks": tasks}
     if context_note:
         # Reviewer-supplied context for an AI re-review pass.
@@ -236,19 +329,36 @@ def _apply_classification(
       'ai', needs_review False.
     - A task missing from tag_map or with an invalid category ->
       field_work, source 'ai', needs_review True.
+    - A task whose section headings say submittals / procurement /
+      fabrication / delivery / closeout (section_category): when the AI
+      also calls it non-field, the AI's bucket wins (source 'ai'); when the
+      AI says field work or skips it, the heading's category stands but is
+      flagged for review so a person settles the disagreement; when the AI
+      is unavailable, the heading's category stands (source 'section').
     - skip_user_overrides=True leaves rows whose work_category_source is
-      'user' untouched (an AI re-review that preserves manual overrides).
+      'user' or 'existing' untouched (an AI re-review that preserves manual
+      overrides and labels already on the project's tasks).
 
     Mutates rows in place. Returns {tagged_count, needs_review_count,
     skipped_override_count}."""
+    ai_answered = bool(tag_map)
     tag_map = tag_map or {}
     tagged = needs_review = skipped = 0
     for r in rows:
-        if skip_user_overrides and r.get("work_category_source") == "user":
+        if skip_user_overrides and r.get("work_category_source") in ("user", "existing"):
             skipped += 1
             continue
         cat = tag_map.get(str(r.get("activity_code")))
-        if cat in WORK_CATEGORIES:
+        by_section = section_category(r.get("section_path"))
+        if by_section and cat not in WORK_CATEGORIES - {DEFAULT_CATEGORY}:
+            r["work_category"] = by_section
+            r["work_category_source"] = "section"
+            r["work_category_needs_review"] = ai_answered
+            if ai_answered:
+                needs_review += 1
+            else:
+                tagged += 1
+        elif cat in WORK_CATEGORIES:
             r["work_category"] = cat
             r["work_category_source"] = "ai"
             r["work_category_needs_review"] = False
@@ -322,9 +432,14 @@ async def tag_work_categories(
     if not rows:
         return {"model": "n/a", "ai_error": None, "tagged_count": 0,
                 "needs_review_count": 0, "skipped_override_count": 0}
-    tag_map, model_label, ai_error = await _classify_via_llm(
-        rows, project_name, context_note,
-    )
+    if skip_user_overrides and all(
+            r.get("work_category_source") in ("user", "existing") for r in rows):
+        # Every task keeps a label a person set or the project already has.
+        tag_map, model_label, ai_error = {}, "kept labels", None
+    else:
+        tag_map, model_label, ai_error = await _classify_via_llm(
+            rows, project_name, context_note,
+        )
     counts = _apply_classification(rows, tag_map, skip_user_overrides)
     return {"model": model_label, "ai_error": ai_error, **counts}
 

@@ -14,7 +14,7 @@ Endpoints:
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from typing import Optional
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from database import get_db, tenant_filter
 from models import (
     ScheduleProposal, ScheduleProposalDecision, StrictModel, gen_id, utc_now,
@@ -27,7 +27,7 @@ from services.schedule_ai_review import review_schedule_diff
 from services.schedule_proposal import parsed_to_task_create_payload, validate_payload
 from services.schedule_summary_filter import detect_summary_rows, visible_rows
 from services.schedule_work_category import (
-    tag_work_categories, set_row_work_category, WORK_CATEGORIES,
+    tag_work_categories, set_row_work_category, WORK_CATEGORIES, attach_section_paths,
 )
 from services.cpm import compute_cpm
 
@@ -121,6 +121,7 @@ async def upload_schedule_proposal(
     # the tags land on parsed_rows and persist with the proposal.
     # tag_work_categories never raises -- on any AI failure every task
     # defaults to field_work and is flagged for review.
+    attach_section_paths(parsed_rows)
     work_category_tagging = await tag_work_categories(
         visible, project_name=proj.get("name", ""),
     )
@@ -240,6 +241,45 @@ async def _bg_diff_and_audit(tenant_id: str, project_id: str, proposal_id: str,
         pass
 
 
+_LABELLING_TIMEOUT_SECONDS = 300
+
+# What an MS Project pull may write onto a task ICE already has: the schedule
+# itself, plus the progress fields the approve step decides on separately.
+_PULL_FIELDS = {
+    "description", "wbs", "planned_start", "planned_finish", "duration_days",
+    "predecessors", "is_milestone", "sequence", "work_category",
+    "pct_complete", "actual_start", "actual_finish", "status",
+}
+
+
+async def _labelling_guard(db, tenant_id: str, proposal: dict) -> None:
+    """An MS Project pull's AI labelling pass runs after the proposal is
+    saved and rewrites the proposal's rows when it finishes. Until then,
+    approving (which would create unlabelled activities as field work) and
+    editing (which the pass would overwrite) are held with a 409. A run
+    older than 5 minutes is declared timed out -- a restart mid-run must
+    never block the proposal for good -- and the pass's late write is then
+    ignored (it only lands while the status is 'running')."""
+    t = proposal.get("work_category_tagging") or {}
+    if t.get("status") != "running":
+        return
+    try:
+        started = datetime.fromisoformat(str(t.get("started_at")))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        fresh = (utc_now() - started).total_seconds() < _LABELLING_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        fresh = False
+    if fresh:
+        raise HTTPException(
+            409, "ICE is still sorting these activities into field work and "
+                 "paperwork. Try again in a minute.")
+    await db.schedule_proposals.update_one(
+        tenant_filter(tenant_id, {"id": proposal["id"], "work_category_tagging.status": "running"}),
+        {"$set": {"work_category_tagging.status": "timed_out"}})
+    t["status"] = "timed_out"
+
+
 @router.post("/schedule-proposals/{proposal_id}/approve")
 async def approve_proposal(
     proposal_id: str,
@@ -258,6 +298,7 @@ async def approve_proposal(
         raise HTTPException(404, "Proposal not found")
     if proposal["status"] != "pending_review":
         raise HTTPException(409, f"Proposal already {proposal['status']}")
+    await _labelling_guard(db, ctx["tenant_id"], proposal)
 
     project_id = proposal["project_id"]
     parsed_rows = proposal.get("parsed_rows") or []
@@ -314,6 +355,16 @@ async def approve_proposal(
         if existing:
             updates = tc.model_dump(mode="json", exclude_unset=False)
             updates.pop("project_id", None)
+            # A row that carries no label must not blank the task's label.
+            # An MS Project pull only knows the schedule itself, so it writes
+            # only those fields -- trade, resources, constraints, calendars
+            # and everything else set in ICE stay as they are.
+            if proposal.get("source") == "ms_project_pull":
+                updates = {k: v for k, v in updates.items() if k in _PULL_FIELDS}
+            if not row.get("work_category"):
+                updates.pop("work_category", None)
+            else:
+                updates["work_category_source"] = row.get("work_category_source")
             # pt.76 -- NEVER let a baseline-only re-import (no progress columns)
             # wipe a task's existing execution state: drop the (None) progress
             # keys first, then re-apply only when the import actually carried
@@ -370,6 +421,8 @@ async def approve_proposal(
                 "lookahead_status": "not_in_window",
                 "created_at": utc_now().isoformat(),
             })
+            if row.get("work_category"):
+                doc["work_category_source"] = row.get("work_category_source")
             await db.tasks.insert_one(doc.copy())
             created += 1
 
@@ -643,6 +696,7 @@ async def toggle_rows(
         raise HTTPException(404, "Proposal not found")
     if proposal["status"] != "pending_review":
         raise HTTPException(409, f"Proposal already {proposal['status']}")
+    await _labelling_guard(db, ctx["tenant_id"], proposal)
 
     codes = set(str(c) for c in payload.activity_codes)
     flagged = 0
@@ -687,6 +741,7 @@ async def set_work_category(
         raise HTTPException(404, "Proposal not found")
     if proposal["status"] != "pending_review":
         raise HTTPException(409, f"Proposal already {proposal['status']}")
+    await _labelling_guard(db, ctx["tenant_id"], proposal)
     rows = proposal.get("parsed_rows") or []
     found = set_row_work_category(
         rows, payload.activity_code, payload.work_category,
@@ -729,11 +784,13 @@ async def retag_work_categories(
         raise HTTPException(404, "Proposal not found")
     if proposal["status"] != "pending_review":
         raise HTTPException(409, f"Proposal already {proposal['status']}")
+    await _labelling_guard(db, ctx["tenant_id"], proposal)
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": proposal["project_id"]}),
         {"_id": 0, "name": 1},
     ) or {}
     rows = proposal.get("parsed_rows") or []
+    attach_section_paths(rows)
     # Tag only the real (non-summary) tasks -- the same set the diff +
     # applier use. tag_work_categories mutates the row dicts in place.
     tagging = await tag_work_categories(
@@ -772,6 +829,7 @@ async def chat_with_proposal(
         raise HTTPException(404, "Proposal not found")
     if proposal["status"] != "pending_review":
         raise HTTPException(409, f"Proposal already {proposal['status']}")
+    await _labelling_guard(db, ctx["tenant_id"], proposal)
 
     # Build a compact view of the rows for the LLM
     rows_view = [

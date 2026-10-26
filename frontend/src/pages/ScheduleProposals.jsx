@@ -488,7 +488,20 @@ function ParsedRowsPanel({ doc, reload }) {
       </div>
       {/* Feature F1 -- AI work-category tagging status + re-review */}
       <div className="px-2 pb-3" data-testid="work-category-tagging">
-        {tagging.ai_error ? (
+        {tagging.status === "running" ? (
+          <div data-testid="work-category-running"
+            className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+            Sorting these activities into field work and paperwork… Refresh
+            in a minute. Approve is held until it finishes.
+          </div>
+        ) : tagging.status === "timed_out" ? (
+          <div data-testid="work-category-timed-out"
+            className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            Automatic sorting into field work and paperwork did not finish.
+            Check the work category column below, or click &quot;Ask AI to
+            re-review tags&quot;.
+          </div>
+        ) : tagging.ai_error ? (
           <div data-testid="work-category-ai-error"
             className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
             AI work-category tagging was unavailable — every task defaulted to
@@ -503,6 +516,14 @@ function ParsedRowsPanel({ doc, reload }) {
               : ""}.
             {tagging.model && tagging.model !== "fallback"
               ? ` (${tagging.model})` : ""}
+          </div>
+        )}
+        {tagging.labelled_without_ai > 0 && (
+          <div className="text-xs text-slate-500" data-testid="work-category-from-sections">
+            {tagging.labelled_without_ai} kept from the project or from your
+            earlier choices. Rows under submittal, fabrication or delivery
+            headings are labelled paperwork; a &quot;review&quot; tag means the
+            AI disagreed with the heading.
           </div>
         )}
         <div className="mt-1.5 flex items-center gap-2 flex-wrap">

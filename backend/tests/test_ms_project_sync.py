@@ -28,6 +28,10 @@ def _match(row, q):
                 return False
             continue
         rv = row.get(k)
+        if "." in k:  # dotted path into a sub-document
+            rv = row
+            for part in k.split("."):
+                rv = rv.get(part) if isinstance(rv, dict) else None
         if isinstance(v, dict):
             if "$ne" in v and rv == v["$ne"]:
                 return False
@@ -388,6 +392,117 @@ def test_newer_pull_replaces_an_older_pull_still_waiting_for_review():
     assert by[p1]["status"] == "superseded" and by[p1]["superseded_by"] == p2
     assert by[p2]["status"] == "pending_review"
     assert by[p2]["parsed_rows"][0]["pct_complete"] == 100.0
+
+
+def _sectioned_pull_tasks():
+    return [
+        {"text1": "S1", "name": "Air Handling Unit", "start": "2026-05-07", "finish": "2026-06-17",
+         "section_path": ["6B Renovate", "Prepare Critical Submittals", "Mechanical Equipment"]},
+        {"text1": "F1", "name": "Air Handling Unit", "start": "2026-06-18", "finish": "2026-09-01",
+         "section_path": ["6B Renovate", "Fabricate/Delivery ", "Mechanical Equipment"]},
+        {"text1": "I1", "name": "Install Air Handling Unit", "start": "2026-12-01", "finish": "2026-12-20",
+         "section_path": ["6B Renovate", "Construction Activities", "Installation"]},
+        {"text1": "K1", "name": "Relocate Furniture", "start": "2026-05-07", "finish": "2026-07-01",
+         "section_path": ["6B Renovate", "Construction Activities"]},
+    ]
+
+
+def test_pull_labels_by_section_keeps_existing_labels_and_ai_labels_the_rest(monkeypatch):
+    from services.ms_project_ingest import build_pull_proposal
+    monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    _reset()
+    # K1 already exists in ICE and someone labelled it closeout paperwork.
+    _seed_task("K1", "2026-05-07", "2026-07-01")
+    next(t for t in _STUB.tasks.rows if t["activity_code"] == "K1")["work_category"] = "closeout_paperwork"
+
+    async def go():
+        pid = await build_pull_proposal(_STUB, T, P, _sectioned_pull_tasks(), [])
+        first = dict(next(p for p in _STUB.schedule_proposals.rows if p["id"] == pid))
+        first_rows = [dict(r) for r in first["parsed_rows"]]
+        for _ in range(5):
+            await asyncio.sleep(0)  # let the background labelling finish
+        return pid, first, first_rows
+    pid, first, first_rows = asyncio.run(go())
+    by0 = {r["activity_code"]: r for r in first_rows}
+    assert first["work_category_tagging"]["status"] == "running"
+    assert by0["S1"]["work_category"] == "construction_paperwork" and by0["S1"]["work_category_source"] == "section"
+    assert by0["F1"]["work_category"] == "construction_paperwork"
+    assert by0["K1"]["work_category"] == "closeout_paperwork" and by0["K1"]["work_category_source"] == "existing"
+    assert not by0["I1"].get("work_category")
+    done = next(p for p in _STUB.schedule_proposals.rows if p["id"] == pid)
+    by = {r["activity_code"]: r for r in done["parsed_rows"]}
+    assert done["work_category_tagging"]["status"] == "done"
+    assert by["I1"]["work_category"] == "field_work"          # AI unavailable -> default
+    assert by["S1"]["work_category"] == "construction_paperwork"  # untouched by the AI pass
+
+
+def test_background_labelling_never_overwrites_a_reviewer_choice(monkeypatch):
+    from services import ms_project_ingest as mpi
+    monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    _reset()
+    rows = mpi.worker_tasks_to_parsed_rows(_sectioned_pull_tasks(), [])
+    for r in rows:
+        if r["activity_code"] == "S1":
+            r.update(work_category="construction_paperwork", work_category_source="section")
+        if r["activity_code"] == "I1":
+            r.update(work_category="field_work", work_category_source="user")
+    _STUB.schedule_proposals.rows.append({
+        "id": "pp1", "tenant_id": T, "project_id": P, "status": "pending_review",
+        "source": "ms_project_pull", "parsed_rows": rows,
+        "work_category_tagging": {"status": "running"}})
+    asyncio.run(mpi.label_pull_proposal(T, "pp1"))
+    by = {r["activity_code"]: r for r in _STUB.schedule_proposals.rows[0]["parsed_rows"]}
+    assert by["I1"]["work_category_source"] == "user"
+    assert by["K1"]["work_category"] == "field_work" and by["K1"]["work_category_needs_review"]
+    assert _STUB.schedule_proposals.rows[0]["work_category_tagging"]["status"] == "done"
+
+
+def test_pull_where_every_row_keeps_its_label_needs_no_ai():
+    from services.ms_project_ingest import build_pull_proposal
+    _reset()
+    for code in ("S1", "F1"):
+        _seed_task(code, "2026-01-05", "2026-01-09")
+        next(t for t in _STUB.tasks.rows if t["activity_code"] == code)["work_category"] = "construction_paperwork"
+    pid = asyncio.run(build_pull_proposal(_STUB, T, P, _sectioned_pull_tasks()[:2], []))
+    p = next(p for p in _STUB.schedule_proposals.rows if p["id"] == pid)
+    assert p["work_category_tagging"]["status"] == "done"
+    assert all(r["work_category_source"] == "existing" for r in p["parsed_rows"])
+
+
+def test_project_title_heading_is_dropped_from_pulled_rows():
+    from services.ms_project_ingest import worker_tasks_to_parsed_rows
+    rows = worker_tasks_to_parsed_rows(_sectioned_pull_tasks(), [])
+    by = {r["activity_code"]: r for r in rows}
+    assert by["S1"]["section_path"] == ["Prepare Critical Submittals", "Mechanical Equipment"]
+    assert by["K1"]["section_path"] == ["Construction Activities"]
+
+
+def test_pull_label_carry_over_rules():
+    from services.ms_project_ingest import build_pull_proposal
+    _reset()
+    # A reviewer relabelled F1 on an older pull that is still waiting.
+    _STUB.schedule_proposals.rows.append({
+        "id": "old", "tenant_id": T, "project_id": P, "status": "pending_review",
+        "source": "ms_project_pull",
+        "parsed_rows": [{"activity_code": "F1", "work_category": "field_work",
+                         "work_category_source": "user"}]})
+    # S1 was imported before headings were read and wrongly left as field work.
+    _seed_task("S1", "2026-05-07", "2026-06-17")
+    next(t for t in _STUB.tasks.rows if t["activity_code"] == "S1")["work_category"] = "field_work"
+    # K1 was deleted from the schedule earlier, with a label someone chose.
+    _seed_task("K1", "2026-05-07", "2026-07-01")
+    k1 = next(t for t in _STUB.tasks.rows if t["activity_code"] == "K1")
+    k1.update(status="deleted", work_category="closeout_paperwork", work_category_source="user")
+
+    async def go():
+        return await build_pull_proposal(_STUB, T, P, _sectioned_pull_tasks(), [])
+    pid = asyncio.run(go())
+    by = {r["activity_code"]: r for r in next(p for p in _STUB.schedule_proposals.rows
+                                                if p["id"] == pid)["parsed_rows"]}
+    assert by["F1"]["work_category"] == "field_work" and by["F1"]["work_category_source"] == "user"
+    assert by["S1"]["work_category"] == "construction_paperwork"   # heading fixes the old label
+    assert by["K1"]["work_category"] == "closeout_paperwork"        # soft-deleted task keeps its label
+    assert next(p for p in _STUB.schedule_proposals.rows if p["id"] == "old")["status"] == "superseded"
 
 
 def test_version_diff_ignores_progress_missing_from_a_later_pull():
