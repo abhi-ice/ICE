@@ -22,12 +22,16 @@ import requests as _requests
 
 sys.path.insert(0, "/app/backend")
 
-# Load backend .env so JWT_SECRET / MONGO_URL / DB_NAME match the running backend.
-try:
-    from dotenv import load_dotenv
-    load_dotenv("/app/backend/.env")
-except Exception:
-    pass
+# Settings come from the environment only. No .env file is loaded here, so the
+# tests can never pick up production credentials by accident.
+_MISSING_ENV = [k for k in ("REACT_APP_BACKEND_URL", "MONGO_URL", "DB_NAME")
+                if not (os.environ.get(k) or "").strip()]
+if _MISSING_ENV:
+    pytest.skip(
+        "Set " + ", ".join(_MISSING_ENV) + " in the environment to run these tests "
+        "(they no longer read a .env file).",
+        allow_module_level=True,
+    )
 
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE_URL}/api"

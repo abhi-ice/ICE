@@ -130,10 +130,12 @@ class InviteCreate(StrictModel):
     # original 5 continue to work -- this is a backward-compatible
     # widening. UserRole's `px` role is intentionally NOT exposed
     # via invites; if needed, add separately.
+    # Day-1 fix (2026-10-25, audit findings 24/30): default is the least-
+    # privileged field role "super", not "pm" (a pm can approve reports).
     role: Literal[
         "admin", "pm", "super", "foreman", "viewer",
         "pe", "submittal_tech", "scheduling_engineer",
-    ] = "pm"
+    ] = "super"
 
 
 class InviteAccept(StrictModel):
@@ -1026,6 +1028,13 @@ class Task(ReadModel):
     # Bucket C1 Phase 1 — sync layer state. Optional / default-None so
     # records persisted before the sync layer landed continue to deserialize.
     updated_at: Optional[datetime] = None
+    # Day-1 round 2 (2026-10-25) -- human-edit lock. Stamped (with the same
+    # value as updated_at) only when a PERSON changes the task's progress or
+    # schedule data (daily-report grid PATCH, Tasks page edit, approved
+    # schedule re-import) -- never by recompute/sync/status derivation. The
+    # daily-report grid's stale-write check compares against this, so
+    # schedule recomputes no longer cause false "Schedule changed" 409s.
+    progress_lock_at: Optional[datetime] = None
     actual_hours_to_date: float = 0
     current_crew_id: Optional[str] = None
     crew_assignment_history: List[CrewAssignmentEntry] = Field(default_factory=list)
@@ -1296,7 +1305,8 @@ class DailyReportActivity(ReadModel):
     task_external_modified_warning: bool = False
     # Denormalized at /context read time (NOT persisted to mongo) — gives
     # the frontend the optimistic-lock token for the linked task without
-    # forcing a second round-trip to /tasks.
+    # forcing a second round-trip to /tasks. Since 2026-10-25 this is the
+    # task's progress_lock_at (human-edit stamp), else its updated_at.
     task_updated_at: Optional[datetime] = None
     # Features F2/F3/F4 (2026-05-18) -- DR Activity Grid view fields.
     # Read-time injected (NOT persisted to mongo) by /grid + /context

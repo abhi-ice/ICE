@@ -21,6 +21,16 @@ class BulkDeletePayload(StrictModel):
     task_ids: list[str]
 
 
+# Day-1 round 2 (2026-10-25) -- task fields whose manual change moves the
+# human-edit lock (tasks.progress_lock_at) that the daily-report activity
+# grid uses to detect a real "someone else changed this activity" conflict.
+_PROGRESS_LOCK_FIELDS = (
+    "pct_complete", "status", "actual_start", "actual_finish",
+    "planned_start", "planned_finish", "duration_days", "predecessors",
+    "actual_hours", "actual_quantity", "crew_id",
+)
+
+
 # Bucket H Phase 4 hook -- helper that triggers a resource-leveling
 # demand recompute for the date span of one task. Idempotent + best-
 # effort; failures don't propagate to the calling handler.
@@ -246,7 +256,8 @@ async def set_paperwork_blocker(task_id: str, payload: PaperworkBlockerPayload, 
     }
     await db.delays.insert_one(doc.copy())
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}),
-                              {"$set": {"status": "blocked", "updated_at": now}})
+                              {"$set": {"status": "blocked", "updated_at": now,
+                                        "progress_lock_at": now}})
     try:
         await write_audit(tenant_id=ctx["tenant_id"], table_name="delays", op="PAPERWORK_BLOCK",
                           record_id=doc["id"], before=None,
@@ -272,8 +283,10 @@ async def clear_paperwork_blocker(task_id: str, payload: ClearPaperworkBlockerPa
     await _resolve_open_paperwork_blockers(db, ctx["tenant_id"], task_id, actor,
                                            "cleared from Paperwork progress", project_id=project_id)
     new_status = payload.status if payload.status in ("in_progress", "not_started") else "in_progress"
+    _now = utc_now().isoformat()
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}),
-                              {"$set": {"status": new_status, "updated_at": utc_now().isoformat()}})
+                              {"$set": {"status": new_status, "updated_at": _now,
+                                        "progress_lock_at": _now}})
     await auto_recompute_after_event(ctx["tenant_id"], project_id, actor_id=actor, request_id=ctx.get("request_id"))
     return {"ok": True, "status": new_status}
 
@@ -302,6 +315,11 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks = N
     # Bucket C1 Phase 1 — stamp updated_at so the daily-report sync layer
     # can detect stale writes against this task.
     updates["updated_at"] = utc_now().isoformat()
+    # Day-1 round 2 (2026-10-25) -- a person changed this task's progress
+    # or schedule data: move the human-edit lock the daily-report grid
+    # checks (same value as updated_at). Schedule recomputes never touch it.
+    if any(k in updates and updates[k] != before.get(k) for k in _PROGRESS_LOCK_FIELDS):
+        updates["progress_lock_at"] = updates["updated_at"]
 
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"$set": updates})
     after = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
@@ -395,6 +413,11 @@ async def _auto_release_for_task(tenant_id: str, task_id: str, actor_id: str):
 @router.post("/projects/{project_id}/tasks/bulk-delete")
 async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: BackgroundTasks = None,
                        ctx: dict = Depends(require_tenant)):
+    # Day-1 fix (2026-10-25, audit finding 47): admin or pm only (this
+    # route had no role check at all).
+    if (ctx["user"].get("role") or "").strip().lower() not in ("admin", "pm"):
+        raise HTTPException(
+            403, "Only an admin or project manager can delete activities. Ask your project manager.")
     db = get_db()
     # Bucket H Phase 4 -- collect affected dates before the soft-delete
     # so the demand recompute hook can clean up cleared rows.
@@ -408,6 +431,17 @@ async def bulk_delete(project_id: str, payload: BulkDeletePayload, bg: Backgroun
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "id": {"$in": payload.task_ids}}),
         {"$set": {"status": "deleted"}},
     )
+    try:
+        from audit import write_audit
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="tasks", op="BULK_DELETE",
+            record_id=project_id,
+            before={"task_ids": [t["id"] for t in before_tasks]},
+            after={"status": "deleted", "modified": res.modified_count},
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    except Exception:
+        pass
     union_dates: set = set()
     for t in before_tasks:
         if t.get("required_trade") and int(t.get("required_headcount") or 0) > 0:

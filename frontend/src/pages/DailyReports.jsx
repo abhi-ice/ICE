@@ -304,6 +304,16 @@ export default function DailyReports() {
     window.history.replaceState(null, "", newUrl);
   }, [openId]);
 
+  // Day-1 round 2 (2026-10-25): on phones the floating Copilot button sat on
+  // top of the right end of Save / Add crew / Submit in the report sheets.
+  // While a report is open this body class hides it below 768px only (the
+  // rule lives on the button in AppLayout); desktop and every other page
+  // keep it.
+  useEffect(() => {
+    document.body.classList.toggle("dr-detail-open", !!openId);
+    return () => document.body.classList.remove("dr-detail-open");
+  }, [openId]);
+
   // Switching the active project (top-bar dropdown) while a report is open
   // drops back to the listing — which reloads for the newly selected project
   // (that project's reports, not the old one's). Only a genuine A->B switch
@@ -739,29 +749,20 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     if (!isBlank) return;
     api.post(`/daily-reports/${id}/weather-autofill`)
       .then(() => reload())
-      .catch((e) => {
-        // 2026-02-XX -- surface a toast when autofill fails so the
-        // super knows why the weather card stayed blank (most common:
-        // project missing city/state, so geocode returned 422).
-        // 2026-08-XX (prod-bug-fix) -- when the backend times out on
-        // Open-Meteo, Cloudflare intercepts with a 520/522 HTML error
-        // page. `response.data.detail` was undefined so this fell to
-        // the fallback message on some paths but on others the raw
-        // HTML string leaked into the toast (unreadable text about
-        // Cloudflare origin errors). Sanitize: only accept short
-        // JSON `detail` strings and swallow everything else silently
-        // (the super can always tap "Refresh" in the Weather card).
-        const raw = e?.response?.data;
-        let msg = null;
-        if (raw && typeof raw === "object" && typeof raw.detail === "string" && raw.detail.length > 0 && raw.detail.length < 200) {
-          msg = raw.detail;
-        }
-        if (!msg) {
-          msg = "Couldn't fetch weather right now — tap Refresh in the Weather card to retry, or type values manually.";
-        }
-        toast.error(`Weather: ${msg}`);
+      .catch(() => {
+        // Day-1 audit #21 (2026-10-25): the automatic fill fails often in
+        // production (weather service unreachable), and a red error on every
+        // open with no way forward hurt trust. No red toast any more:
+        //  - phone: stay silent — the Weather card reads "Not set — tap to
+        //    add" and Review shows an amber nudge, both open the weather sheet.
+        //  - desktop: one neutral line pointing at the control that exists
+        //    there ("Change" on the Weather card).
+        if (isPhone) return;
+        toast.info("Weather wasn't filled in automatically. Use \"Change\" on the Weather card to type it in.");
       });
-  }, [bundle, id, reload]);
+    // (A rotate that flips isPhone re-runs this effect, but the ref guard
+    // above stops a second autofill.)
+  }, [bundle, id, reload, isPhone]);
 
   // Bucket D Fix F -- gallery click-through highlight. After the bundle
   // renders, find the matching event row by data-testid, scroll into
@@ -995,8 +996,17 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
   const _submitWith = async (payload) => {
     setBusy(true);
     setSubmitRowErrors({});
+    // Day-1 audit #10/#11 (2026-10-25): a submit is only real when the
+    // server answers. Offline (queued, `_offline`) or no response at all
+    // must NOT say "submitted", go back to the list, or flag the card as
+    // just-submitted — the report is saved but still a draft.
+    const OFFLINE_SUBMIT_MSG = "You're offline — your report is saved but NOT submitted. Tap Submit again when you have signal.";
     try {
-      await api.post(`/daily-reports/${id}/submit`, payload);
+      const res = await api.post(`/daily-reports/${id}/submit`, payload);
+      if (res?.data?._offline) {
+        toast.error(OFFLINE_SUBMIT_MSG);
+        return false;
+      }
       toast.success(payload.is_no_work_day
         ? "Daily report submitted as a no-work day."
         : "Daily report submitted and locked.");
@@ -1004,6 +1014,10 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
       reload();
       return true;
     } catch (e) {
+      if (!e?.response) {
+        toast.error(OFFLINE_SUBMIT_MSG);
+        return false;
+      }
       const detail = e.response?.data?.detail;
       // Addition 3 + Test 2G follow-up -- empty DR opens the no-work-
       // day modal. We accept both the legacy `error` key and the new
@@ -3071,7 +3085,28 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
     finally { setRefreshing(false); }
   };
 
-  const updateRow = async (rowId, fields) => {
+  // Day-1 round 2 (2026-10-25): the slider now saves a quick move back
+  // (40 -> 60 -> 40), so two saves on one row can be close together. Run
+  // them one after another per row, and send the fresh lock stamp the
+  // previous save handed back, so the second save never 409s against the
+  // first (same pattern as the phone flow's updateRow).
+  const deskStamps = useRef({});
+  const deskChain = useRef({});
+  useEffect(() => {
+    (grid || []).forEach((r) => {
+      const cur = deskStamps.current[r.id];
+      if (!cur || String(r.task_updated_at || "") > String(cur)) {
+        deskStamps.current[r.id] = r.task_updated_at;
+      }
+    });
+  }, [grid]);
+  const updateRow = (rowId, fields) => {
+    const run = () => updateRowNow(rowId, fields);
+    const p = (deskChain.current[rowId] || Promise.resolve()).then(run, run);
+    deskChain.current[rowId] = p;
+    return p;
+  };
+  const updateRowNow = async (rowId, fields) => {
     // Bucket C1 Phase 1 — attach the optimistic-lock token captured
     // from /context. If the linked task has moved underneath us, the
     // backend rejects with 409 and we mark the row stale so the user
@@ -3086,14 +3121,21 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
     // table-row `locked && <button>edit</button>` chunk further down).
     const row = grid.find((r) => r.id === rowId) || {};
     const payload = { ...fields };
-    if (row.task_updated_at) payload.task_last_modified_at = row.task_updated_at;
+    const stamp = deskStamps.current[rowId] ?? row.task_updated_at;
+    if (stamp) payload.task_last_modified_at = stamp;
     try {
-      await api.patch(`/daily-report-activities/${rowId}`, payload);
+      const res = await api.patch(`/daily-report-activities/${rowId}`, payload);
+      // The PATCH re-stamps the task; keep the stamp it handed back for the
+      // next save on this row (nothing reached the server when queued offline).
+      if (!res?.data?._offline && res?.data?.task_updated_at) {
+        deskStamps.current[rowId] = res.data.task_updated_at;
+      }
       // Successful write; clear any stale flag and pull fresh data.
       if (staleRows.has(rowId)) {
         const next = new Set(staleRows); next.delete(rowId); setStaleRows(next);
       }
       reload();
+      return true;
     } catch (e) {
       if (e.response?.status === 409) {
         const next = new Set(staleRows); next.add(rowId); setStaleRows(next);
@@ -3101,6 +3143,8 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
       } else {
         toast.error(formatErr(e, "Update row"));
       }
+      // Tells EodSlider the value did not save, so the same value can be retried.
+      return false;
     }
   };
   const refreshStaleRow = () => {
@@ -5582,6 +5626,14 @@ function GuidedDrFlow({
   const [returnToReview, setReturnToReview] = useState(false);
   // Which bottom sheet is open on the current activity screen.
   const [sheet, setSheet] = useState(null); // {kind, activity} | null
+  // Day-1 audit #21: phone weather editor (draft reports only).
+  const [weatherOpen, setWeatherOpen] = useState(false);
+  const weatherBlank = !report.weather_conditions
+    && report.weather_temp_high_f == null && report.weather_temp_low_f == null
+    && report.weather_precipitation_in == null && report.weather_wind_mph == null;
+  // Day-1 audit #57: only admin / pm can approve (the server refuses
+  // everyone else), so nobody else is shown the Approve button.
+  const canApprove = ["admin", "pm"].includes((getUser()?.role || "").toLowerCase());
   const [queueCount, setQueueCount] = useState(0);
   // Locked-DR (spec B / v7 spec #5): ONE reason, entered once on any
   // activity screen, unlocks EVERYTHING on that activity — it feeds
@@ -5692,35 +5744,53 @@ function GuidedDrFlow({
           .filter((r) => r.id !== id && r.report_date < report.report_date)
           .sort((a, b) => (a.report_date < b.report_date ? 1 : -1))[0];
         if (!prior) { localStorage.setItem(guardKey, "none"); return; }
+        // Day-1 audit #7 (2026-10-25): only carry crew from a report at most
+        // 3 calendar days older than this one — an older crew list is not
+        // today's crew. Dates are YYYY-MM-DD; compare as UTC midnights so
+        // daylight-saving shifts can't skew the day count.
+        const dayNum = (iso) => {
+          const [y, m, d] = String(iso || "").slice(0, 10).split("-").map(Number);
+          return (y && m && d) ? Date.UTC(y, m - 1, d) / 86400000 : NaN;
+        };
+        const ageDays = dayNum(report.report_date) - dayNum(prior.report_date);
+        if (!(ageDays >= 1 && ageDays <= 3)) { localStorage.setItem(guardKey, "none"); return; }
         const { data: prevPresence } = await api.get(`/daily-reports/${prior.id}/presence`)
           .catch(() => ({ data: [] }));
-        if (cancelled || !Array.isArray(prevPresence) || !prevPresence.length) {
+        // Day-1 audit #7: never create a crew row the phone can't show. Every
+        // phone screen lists crew by task, so a row with no task (or a task
+        // that isn't on TODAY's grid) would be invisible and impossible to
+        // remove here — yet still submitted as today's manpower. Skip them.
+        // Phone crew lists are per Field Work activity (`activities`), so only
+        // those task ids count — paperwork rows have no crew screen here.
+        const todaysTaskIds = new Set(activities.map((g) => g.schedule_activity_id).filter(Boolean));
+        const carryRows = (Array.isArray(prevPresence) ? prevPresence : [])
+          .filter((p) => p.schedule_activity_id && todaysTaskIds.has(p.schedule_activity_id));
+        if (cancelled || !carryRows.length) {
           localStorage.setItem(guardKey, "none"); return;
         }
         // Mark the guard BEFORE the writes so a mid-flight remount can't
         // double-carry; if a write fails the super can add crew manually.
         localStorage.setItem(guardKey, "done");
-        // Only keep a task link if that task is on TODAY's grid — a stale
-        // link would make the row invisible on every activity screen.
-        const todaysTaskIds = new Set((grid || []).map((g) => g.schedule_activity_id).filter(Boolean));
-        for (const p of prevPresence) {
+        for (const p of carryRows) {
           await api.post(`/daily-reports/${id}/presence`, {
             trade: p.trade || "",
             company_name: p.company_name || "",
             headcount: Number(p.headcount) || 0,
             hours_per_person: Number(p.hours_per_person) || 0,
             notes: p.notes || "",
-            schedule_activity_id: todaysTaskIds.has(p.schedule_activity_id) ? p.schedule_activity_id : null,
+            schedule_activity_id: p.schedule_activity_id,
             shift: p.shift || "first",
             daily_report_id: id,
           }).catch(() => { /* skip a bad row, keep going */ });
         }
         if (cancelled) return;
-        let weekday = "";
-        try { weekday = new Date(`${prior.report_date}T00:00:00`).toLocaleDateString(undefined, { weekday: "long" }); } catch { /* ignore */ }
-        setCarriedWeekday(weekday || "the prior report");
+        // Show the actual date carried from (e.g. "Tue, Oct 7"), not just a
+        // weekday — a weekday alone can't tell the super how old it is.
+        let fromDate = "";
+        try { fromDate = new Date(`${prior.report_date}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); } catch { /* ignore */ }
+        setCarriedWeekday(fromDate || "the prior report");
         reload();
-        toast.success(`Crew carried forward from ${weekday || "the prior report"}. Tap a chip to remove anyone who's off.`);
+        toast.success(`Crew carried forward from ${fromDate || "the prior report"}. Tap a chip to remove anyone who's off.`);
       } catch {
         // Non-fatal: leave presence empty, super adds crew by hand.
         try { localStorage.setItem(guardKey, "error"); } catch { /* ignore */ }
@@ -5731,44 +5801,92 @@ function GuidedDrFlow({
   }, [id, project?.id, locked]);
 
   // ---- shared write handlers (SAME endpoints as desktop) ----------
-  const updateRow = async (rowId, fields) => {
-    const row = (grid || []).find((r) => r.id === rowId) || {};
-    const payload = { ...fields };
-    if (row.task_updated_at) payload.task_last_modified_at = row.task_updated_at;
+  // Day-1 audit #4/#8/#34 (2026-10-25): ported from DrGuidedDesktop's
+  // commitPct. A second slider move before the reload came back used to
+  // send the OLD grid stamp as task_last_modified_at, so the server
+  // answered 409 "Schedule changed externally" against the super's OWN
+  // earlier save and the newer value was lost. Now:
+  //  - gridStamps: per-row stamp that only moves FORWARD (ISO strings
+  //    compare lexically), refreshed from grid data — a late 15s poll or
+  //    reload can never regress it;
+  //  - commitChain: commits for the same row run one after another;
+  //  - after a successful PATCH the stamp advances from the response
+  //    (task_updated_at, else last_sync_at), so a chained commit never
+  //    self-409s;
+  //  - a real 409 reloads and remounts the slider on the server's value.
+  const gridStamps = useRef({});
+  useEffect(() => {
+    (grid || []).forEach((r) => {
+      const cur = gridStamps.current[r.id];
+      if (!cur || String(r.task_updated_at || "") > String(cur)) {
+        gridStamps.current[r.id] = r.task_updated_at;
+      }
+    });
+  }, [grid]);
+  const commitChain = useRef({});
+  // Bumped per row after a refused save so that row's EodSlider remounts on
+  // the server value (its own effect only fires when the value CHANGES, so a
+  // reload that returns the same earlier value would leave the refused
+  // number on screen).
+  const [sliderResync, setSliderResync] = useState({});
+  const updateRow = (rowId, fields) => {
     // Spec B — on a locked DR the grid PATCH requires an edit_reason; the
     // activity screen's reason card supplies it (same field the desktop
     // LockedEventEditModal sends).
-    if (locked) {
-      if (!lockedReasonOk) {
-        toast.error("Enter the edit reason at the top of the screen first.");
-        return;
-      }
-      payload.edit_reason = lockedReason.trim();
+    if (locked && !lockedReasonOk) {
+      toast.error("Enter the edit reason at the top of the screen first.");
+      // Resolves false so EodSlider lets the same value be sent again.
+      return Promise.resolve(false);
     }
-    try {
-      const res = await api.patch(`/daily-report-activities/${rowId}`, payload);
-      if (res?.data?._offline) {
-        // Offline: the PATCH queued, but reload() reads the CACHED bundle —
-        // which would snap the slider back to its old value. Write the edit
-        // into the cached copies so the offline view keeps what was entered
-        // (the queued PATCH makes it real on reconnect).
-        try {
-          const ctx = await readCachedGet(`/daily-reports/${id}/context`);
-          if (ctx && Array.isArray(ctx.grid)) {
-            const mergedGrid = ctx.grid.map((r) => (r.id === rowId ? { ...r, ...fields } : r));
-            primeOfflineGet(`/daily-reports/${id}/context`, { ...ctx, grid: mergedGrid });
-            primeOfflineGet(`/daily-reports/${id}/grid`, mergedGrid);
-          }
-        } catch { /* best-effort */ }
+    const editReason = locked ? lockedReason.trim() : null;
+    let saved = false;
+    const run = async () => {
+      const row = (grid || []).find((r) => r.id === rowId) || {};
+      const payload = { ...fields };
+      const stamp = gridStamps.current[rowId] ?? row.task_updated_at;
+      if (stamp) payload.task_last_modified_at = stamp;
+      if (editReason) payload.edit_reason = editReason;
+      try {
+        const res = await api.patch(`/daily-report-activities/${rowId}`, payload);
+        if (res?.data?._offline) {
+          // Offline: the PATCH queued, but reload() reads the CACHED bundle —
+          // which would snap the slider back to its old value. Write the edit
+          // into the cached copies so the offline view keeps what was entered
+          // (the queued PATCH makes it real on reconnect). The stamp is left
+          // as-is: nothing reached the server.
+          try {
+            const ctx = await readCachedGet(`/daily-reports/${id}/context`);
+            if (ctx && Array.isArray(ctx.grid)) {
+              const mergedGrid = ctx.grid.map((r) => (r.id === rowId ? { ...r, ...fields } : r));
+              primeOfflineGet(`/daily-reports/${id}/context`, { ...ctx, grid: mergedGrid });
+              primeOfflineGet(`/daily-reports/${id}/grid`, mergedGrid);
+            }
+          } catch { /* best-effort */ }
+        } else {
+          // The PATCH handler stamps the task; use the fresh value so the
+          // next chained commit on this row never 409s against itself.
+          const fresh = res?.data?.task_updated_at || res?.data?.last_sync_at;
+          if (fresh) gridStamps.current[rowId] = fresh;
+        }
+        // Saved (or safely queued offline). Set before reload() so a failed
+        // refresh never makes EodSlider think the save itself failed.
+        saved = true;
+        await reload();
+      } catch (e) {
+        if (e.response?.status === 409) {
+          toast.error("This activity was just changed somewhere else, so that change was not saved. The latest progress is now showing — move the slider again if it needs changing.");
+          await reload();
+          setSliderResync((s) => ({ ...s, [rowId]: (s[rowId] || 0) + 1 }));
+        } else {
+          toast.error(formatErr(e, "Update activity"));
+        }
       }
-      reload();
-    } catch (e) {
-      if (e.response?.status === 409) {
-        toast.error("Schedule changed externally — reopen the report to pull the latest.");
-      } else {
-        toast.error(formatErr(e, "Update activity"));
-      }
-    }
+      return saved;
+    };
+    const p = (commitChain.current[rowId] || Promise.resolve()).then(run, run);
+    commitChain.current[rowId] = p;
+    // Resolves true/false for EodSlider (true = saved or queued offline).
+    return p;
   };
   const deletePresence = (rid) => {
     if (pendingOffIds.has(rid)) return; // delete already queued
@@ -5931,6 +6049,14 @@ function GuidedDrFlow({
     </span>
   );
 
+  // Day-1 audit #21: the weather card / row is a button on a draft (opens
+  // the weather sheet) and plain display on a submitted/approved report.
+  const WeatherCardTag = locked ? "div" : "button";
+  const weatherSheet = (
+    <FlowWeatherSheet open={weatherOpen && !locked} id={id} report={report}
+      onClose={() => setWeatherOpen(false)} reload={reload} />
+  );
+
   // ============ LANDING ============
   if (screen === "landing") {
     return (
@@ -6007,7 +6133,13 @@ function GuidedDrFlow({
         )}
 
         <div className="dr-flow-rowlbl">Site-wide</div>
-        <div className="dr-flow-bigcard" style={{ cursor: "default" }}>
+        {/* Day-1 audit #21: on a draft the Weather card opens the phone
+            weather editor; on a submitted/approved report it stays
+            display-only (the server refuses weather edits once locked). */}
+        <WeatherCardTag className="dr-flow-bigcard" data-testid="dr-flow-weather-card"
+          {...(locked
+            ? { style: { cursor: "default" } }
+            : { type: "button", onClick: () => setWeatherOpen(true) })}>
           <Cloud className="h-6 w-6" style={{ color: "#34d399" }} />
           <div className="dr-flow-big-body">
             <div className="dr-flow-big-t">Weather</div>
@@ -6020,11 +6152,12 @@ function GuidedDrFlow({
                   ? `${report.weather_temp_high_f != null ? Math.round(report.weather_temp_high_f) : "—"}° / ${report.weather_temp_low_f != null ? Math.round(report.weather_temp_low_f) : "—"}°`
                   : null,
                 report.weather_fetched_at ? "auto-added" : null,
-              ].filter(Boolean).join(" · ") || "Not set"}
+              ].filter(Boolean).join(" · ") || (locked ? "Not set" : "Not set — tap to add")}
             </div>
           </div>
           {report.weather_conditions && <CheckCircle2 className="h-4 w-4" style={{ color: "#34d399" }} />}
-        </div>
+          {!locked && <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />}
+        </WeatherCardTag>
         {/* Round 4 (2026-07-06): on a NO-activity day the empty-state's big
             green "Add unplanned activity" button already covers this — two
             unplanned entry points on one screen read as a mistake. The
@@ -6056,6 +6189,7 @@ function GuidedDrFlow({
           id={id} project={project} report={report} grid={grid}
           locked={locked} reload={reload} lockedReason={lockedReason}
         />
+        {weatherSheet}
         {/* No-work-day dialog (reuses the parent's state + handler) */}
         <FlowNoWorkDialog noWorkModal={noWorkModal} setNoWorkModal={setNoWorkModal}
           submitNoWorkDay={submitNoWorkAndReturn} busy={busy} />
@@ -6118,7 +6252,8 @@ function GuidedDrFlow({
                 {/* Locked DR: the slider unlocks once the reason card is
                     valid — updateRow then PATCHes with edit_reason (the
                     exact desktop locked-edit plumbing). */}
-                <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
+                <EodSlider key={`${r.id}-${sliderResync[r.id] || 0}`}
+                  rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
                   locked={locked && !lockedReasonOk} updateRow={updateRow}
                   activityCode={r.activity_code}
                   gate={r.slider_gate} />
@@ -6332,7 +6467,23 @@ function GuidedDrFlow({
         {/* spec #9 — Weather is its own clearly-separated, labeled section,
             visually distinct from the unplanned rows above. */}
         <div className="dr-flow-rowlbl">Weather</div>
-        <div className="dr-flow-rev dr-flow-rev-weather" style={{ cursor: "default" }} data-testid="dr-flow-rev-weather">
+        {/* Day-1 audit #21: on a draft the row opens the weather sheet, and
+            blank weather shows an amber nudge (submit is NOT blocked). */}
+        {!locked && weatherBlank && (
+          <button type="button" className="dr-flow-instr" data-testid="dr-flow-weather-nudge"
+            onClick={() => setWeatherOpen(true)}
+            style={{ width: "100%", textAlign: "left", cursor: "pointer", color: "#f59e0b", font: "inherit", fontSize: 13,
+              background: "rgba(245, 158, 11, 0.10)", border: "1px solid rgba(245, 158, 11, 0.45)" }}>
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Weather not set — tap to add
+          </button>
+        )}
+        <WeatherCardTag className="dr-flow-rev dr-flow-rev-weather" data-testid="dr-flow-rev-weather"
+          {...(locked
+            ? { style: { cursor: "default" } }
+            : { type: "button", onClick: () => setWeatherOpen(true),
+              style: { cursor: "pointer", width: "100%", textAlign: "left", display: "block",
+                color: "inherit", font: "inherit" } })}>
           <div className="dr-flow-rev-top">
             <Cloud className="h-4 w-4" style={{ color: "#6cb0f2" }} />
             <span className="dr-flow-rev-name">Weather</span>
@@ -6342,8 +6493,9 @@ function GuidedDrFlow({
                   ? `${report.weather_temp_high_f != null ? Math.round(report.weather_temp_high_f) : "—"}°/${report.weather_temp_low_f != null ? Math.round(report.weather_temp_low_f) : "—"}°`
                   : null].filter(Boolean).join(" ") || "not set"}
             </span>
+            {!locked && <Pencil className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />}
           </div>
-        </div>
+        </WeatherCardTag>
 
         {/* spec D — record + playable list on the Review step. */}
         <div className="dr-flow-rowlbl">Voice notes</div>
@@ -6358,9 +6510,17 @@ function GuidedDrFlow({
             <Download className="h-4 w-4" /> Export PDF
           </button>
         ) : report.status === "submitted" ? (
-          <button className="dr-flow-next" data-testid="dr-flow-approve" disabled={busy} onClick={approveAndReturn}>
-            <CheckCircle2 className="h-4 w-4" /> {busy ? "Approving…" : "Approve report"}
-          </button>
+          canApprove ? (
+            <button className="dr-flow-next" data-testid="dr-flow-approve" disabled={busy} onClick={approveAndReturn}>
+              <CheckCircle2 className="h-4 w-4" /> {busy ? "Approving…" : "Approve report"}
+            </button>
+          ) : (
+            // Day-1 audit #57: non-approvers see a plain status, not a
+            // button the server would refuse.
+            <button className="dr-flow-next" data-testid="dr-flow-awaiting-approval" disabled>
+              <CheckCircle2 className="h-4 w-4" /> Submitted — waiting for approval
+            </button>
+          )
         ) : (
           <button className="dr-flow-next" data-testid="dr-flow-submit" disabled={busy} onClick={submitAndReturn}>
             <CheckCircle2 className="h-4 w-4" /> {busy ? "Submitting…" : "Submit report"}
@@ -6370,6 +6530,7 @@ function GuidedDrFlow({
 
       <FlowNoWorkDialog noWorkModal={noWorkModal} setNoWorkModal={setNoWorkModal}
         submitNoWorkDay={submitNoWorkAndReturn} busy={busy} />
+      {weatherSheet}
     </div>
   );
 }
@@ -7437,6 +7598,156 @@ function FlowUnplannedForm({ id, locked, lockedReason, onSaved, onCancel }) {
         </button>
       </div>
     </div>
+  );
+}
+
+// Day-1 audit #21 (2026-10-25): the phone flow had no way to fill in
+// weather (the automatic fill often fails in production). This sheet is
+// the phone's weather editor: quick condition chips + free text, high/low
+// temperature, rain and wind, a "Try auto-fill again" button, and Save
+// through the SAME PATCH /daily-reports/{id} the desktop "Change" form uses
+// (empty field → null). Only opened on a draft — the flow never offers it
+// on a submitted/approved report.
+const FLOW_WEATHER_CHIPS = ["Sunny", "Partly cloudy", "Cloudy", "Rain", "Snow", "Windy", "Fog"];
+function FlowWeatherSheet({ open, id, report, onClose, reload }) {
+  const fromReport = () => ({
+    cond: report?.weather_conditions || "",
+    hi: report?.weather_temp_high_f ?? "",
+    lo: report?.weather_temp_low_f ?? "",
+    pr: report?.weather_precipitation_in ?? "",
+    wi: report?.weather_wind_mph ?? "",
+  });
+  const [wx, setWx] = useState(fromReport);
+  const [busy, setBusy] = useState(null); // null | "save" | "auto"
+  // Re-seed from the report each time the sheet opens (and after an
+  // auto-fill reload lands while it is open).
+  useEffect(() => {
+    if (open) setWx(fromReport());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, report?.weather_conditions, report?.weather_temp_high_f, report?.weather_temp_low_f,
+    report?.weather_precipitation_in, report?.weather_wind_mph]);
+  if (!open) return null;
+  const num = (v) => {
+    if (v === "" || v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const set = (k) => (e) => { const v = e.target.value; setWx((p) => ({ ...p, [k]: v })); };
+  // The flow's stylesheet only styles text inputs; give the number fields
+  // the same look.
+  const numStyle = {
+    width: "100%", background: "var(--v4-bg-input)", border: "1px solid var(--v4-border)",
+    color: "var(--v4-fg-primary)", borderRadius: 11, padding: 11, fontSize: 16, fontFamily: "inherit",
+  };
+  const save = async () => {
+    setBusy("save");
+    const fields = {
+      weather_conditions: (wx.cond || "").trim() || null,
+      weather_temp_high_f: num(wx.hi),
+      weather_temp_low_f: num(wx.lo),
+      weather_precipitation_in: num(wx.pr),
+      weather_wind_mph: num(wx.wi),
+    };
+    try {
+      const res = await api.patch(`/daily-reports/${id}`, fields);
+      if (res?.data?._offline) {
+        // Queued offline: reload() would read the cached bundle and show the
+        // old (blank) weather. Write the values into the cached copy so what
+        // the super typed stays on screen until the queue syncs.
+        try {
+          const ctx = await readCachedGet(`/daily-reports/${id}/context`);
+          if (ctx && ctx.report) {
+            // Mirror the server: an explicit null on these five weather
+            // fields clears the stored value (day-1 round 2), so a box the
+            // super emptied shows empty in the offline copy too.
+            primeOfflineGet(`/daily-reports/${id}/context`, { ...ctx, report: { ...ctx.report, ...fields } });
+          }
+        } catch { /* best-effort */ }
+      }
+      flowSavedToast(res, "Weather saved.");
+      await reload();
+      onClose();
+    } catch (e) {
+      toast.error(formatErr(e, "Save weather"));
+    } finally { setBusy(null); }
+  };
+  const autoFill = async () => {
+    setBusy("auto");
+    try {
+      // Never park this in the offline queue: a queued auto-fill would replay
+      // later and silently overwrite weather the super typed in by hand. The
+      // drain-replay header is the offline interceptor's existing "do not
+      // queue" marker, so no signal fails straight to the message below.
+      const res = await api.post(`/daily-reports/${id}/weather-autofill`, null,
+        { headers: { "X-Drain-Replay": "1" } });
+      if (res?.data?._offline) {
+        toast.error("No signal right now. Type the weather in below and tap Save.");
+        return;
+      }
+      await reload();
+      toast.success("Weather filled in automatically. Check it and tap Save, or just close.");
+    } catch (e) {
+      // The server explains every refusal in plain words (for example "this
+      // project has no city or state" on a 422) — show that when it sent one,
+      // instead of always blaming the weather service.
+      const detail = e?.response?.data?.detail;
+      // Same sanitizer as the desktop Refresh: only a short JSON detail
+      // string, so a proxy's HTML error page never lands in the toast.
+      const serverMsg = typeof detail === "string" && detail.trim() && detail.length < 200
+        && !/<[a-z!/]/i.test(detail) ? detail.trim() : null;
+      toast.error(!e?.response
+        ? "No signal right now. Type the weather in below and tap Save."
+        : serverMsg || "The weather service isn't answering right now. Type the weather in below and tap Save.");
+    } finally { setBusy(null); }
+  };
+  return (
+    <FlowSheet open onClose={onClose} title="Weather" subtitle="Today's weather on site" testid="dr-flow-sheet-weather">
+      <div className="dr-flow-form">
+        <div className="dr-flow-fld">
+          <label>Conditions</label>
+          <div className="dr-flow-chipset" data-testid="dr-flow-weather-chips">
+            {FLOW_WEATHER_CHIPS.map((c) => (
+              <button key={c} type="button"
+                className={`dr-flow-chip${(wx.cond || "").toLowerCase() === c.toLowerCase() ? " on" : ""}`}
+                onClick={() => setWx((p) => ({ ...p, cond: c }))}>{c}</button>
+            ))}
+          </div>
+          <input type="text" value={wx.cond} data-testid="dr-flow-weather-cond"
+            placeholder="Or type it, for example: light rain in the morning"
+            onChange={set("cond")} style={{ marginTop: 8 }} />
+        </div>
+        <div className="dr-flow-row2">
+          <div className="dr-flow-fld">
+            <label>High (°F)</label>
+            <input type="number" inputMode="decimal" style={numStyle} value={wx.hi} data-testid="dr-flow-weather-high" onChange={set("hi")} />
+          </div>
+          <div className="dr-flow-fld">
+            <label>Low (°F)</label>
+            <input type="number" inputMode="decimal" style={numStyle} value={wx.lo} data-testid="dr-flow-weather-low" onChange={set("lo")} />
+          </div>
+        </div>
+        <div className="dr-flow-row2">
+          <div className="dr-flow-fld">
+            <label>Rain or snow (inches)</label>
+            <input type="number" inputMode="decimal" step="0.01" min="0" style={numStyle} value={wx.pr} data-testid="dr-flow-weather-precip" onChange={set("pr")} />
+          </div>
+          <div className="dr-flow-fld">
+            <label>Wind (mph)</label>
+            <input type="number" inputMode="decimal" min="0" style={numStyle} value={wx.wi} data-testid="dr-flow-weather-wind" onChange={set("wi")} />
+          </div>
+        </div>
+        <button type="button" className="dr-flow-alt" data-testid="dr-flow-weather-autofill"
+          disabled={!!busy} onClick={autoFill}>
+          {busy === "auto" ? "Trying…" : "Try auto-fill again"}
+        </button>
+        <div className="dr-flow-sheet-foot">
+          <button className="dr-flow-sheet-cancel" onClick={onClose}>Cancel</button>
+          <button className="dr-flow-sheet-save" data-testid="dr-flow-weather-save" disabled={!!busy} onClick={save}>
+            {busy === "save" ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </FlowSheet>
   );
 }
 

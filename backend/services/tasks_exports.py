@@ -723,7 +723,8 @@ def _render_pdf(
     Falls back to a minimal text bytes blob if WeasyPrint is
     unavailable so the endpoint still returns something usable."""
     try:
-        from weasyprint import HTML, CSS
+        from weasyprint import HTML, CSS  # noqa: F401 -- availability probe
+        from services.pdf_safety import render_pdf, safe_css
     except Exception as exc:
         log.warning(
             "weasyprint unavailable; PDF export falls back to plain text: %s",
@@ -886,7 +887,7 @@ def _render_pdf(
       }}
     """
 
-    return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css)])
+    return render_pdf(full_html, stylesheets=[safe_css(css)])
 
 
 # =====================================================================
@@ -1047,4 +1048,6 @@ def _format_cell_html(v: Any, key: str | None = None) -> str:
 
 def _css_escape(s: str) -> str:
     """Escape characters that would break a CSS content: string."""
-    return (s or "").replace("\\", "\\\\").replace('"', "'")
+    # Newlines end a CSS string early, so flatten them to spaces too.
+    return ((s or "").replace("\\", "\\\\").replace('"', "'")
+            .replace("\r", " ").replace("\n", " ").replace("\f", " "))

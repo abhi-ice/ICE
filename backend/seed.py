@@ -1,7 +1,13 @@
 """Demo-tenant seed: creates ICE Construction tenant + admin user + a federal
 project with realistic floors, locations, schedule activities, crews, RFIs,
 work items, photos, and one approval request. Idempotent — safe to call
-multiple times. Run via POST /api/dev/seed."""
+multiple times.
+
+Day-1 note (2026-10-25, audit finding 19): nothing calls seed_demo any more
+(the startup call and POST /api/dev/seed were removed in May). It creates a
+well-known admin login, so it now refuses to run unless ICE_DEMO_SEED=1 is
+set explicitly. Never set that on production."""
+import os
 from datetime import datetime, date, timedelta, timezone
 from database import get_db
 from models import gen_id, utc_now
@@ -14,6 +20,11 @@ SEED_USER_PASSWORD = "Demo123!"
 
 
 async def seed_demo() -> dict:
+    if (os.environ.get("ICE_DEMO_SEED") or "").strip() != "1":
+        raise RuntimeError(
+            "Demo seed is turned off. It creates a well-known admin login; "
+            "set ICE_DEMO_SEED=1 only on a throwaway test database."
+        )
     db = get_db()
 
     # 1. Tenant

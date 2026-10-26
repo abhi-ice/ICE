@@ -1053,7 +1053,7 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
     back to the platform record (using the deployed app's URL). Spec
     calls for navigable hyperlinks; we embed clickable a-tags that
     WeasyPrint preserves in PDF output."""
-    from weasyprint import HTML
+    from services.pdf_safety import render_pdf
 
     meta = data.get("_meta", {})
     proj = meta.get("project", {}) or {}
@@ -1281,7 +1281,7 @@ def _render_pdf(data: dict, generation_id: str) -> bytes:
       {suggestions_html}
     </body></html>
     """
-    return HTML(string=body).write_pdf()
+    return render_pdf(body)
 
 
 # ============================================================

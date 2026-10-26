@@ -84,6 +84,10 @@ async def _initialize_project_calendar(
 # --- projects ---
 @router.post("/projects", response_model=Project)
 async def create_project(payload: ProjectCreate, ctx: dict = Depends(require_tenant)):
+    # Day-1 fix (2026-10-25, audit findings 25/28): admin or pm only.
+    if not can_manage_project_members(ctx["user"].get("role")):
+        raise HTTPException(
+            403, "Only an admin or project manager can create projects. Ask your project manager.")
     db = get_db()
     doc = payload.model_dump(mode="json")
     # Engine pair rule (file pipeline, 2026-07-02): the Microsoft Project
@@ -172,6 +176,12 @@ async def get_project(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.patch("/projects/{project_id}", response_model=Project)
 async def update_project(project_id: str, payload: ProjectUpdate, bg: BackgroundTasks = None,
                           ctx: dict = Depends(require_tenant)):
+    # Day-1 fix (2026-10-25, audit findings 25/28): admin or pm only. A
+    # stray edit can permanently lock the schedule engine or shift the
+    # dates that drive delay math.
+    if not can_manage_project_members(ctx["user"].get("role")):
+        raise HTTPException(
+            403, "Only an admin or project manager can change project settings. Ask your project manager.")
     db = get_db()
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:
@@ -316,13 +326,13 @@ async def upload_dr_template(
     if not data:
         raise HTTPException(400, "Uploaded file is empty.")
 
-    from services.storage import put_object, make_path
+    from services.storage import aput_object, make_path
     path = make_path(ctx["tenant_id"], "dr_templates", ext)
     content_type = (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         if ext == "xlsx" else "application/pdf"
     )
-    put_object(path, data, content_type)
+    await aput_object(path, data, content_type)
 
     now = utc_now().isoformat()
     updates = {
@@ -363,9 +373,12 @@ async def delete_dr_template(
             "Only project admins or PMs can remove the DR template.",
         )
     db = get_db()
+    # Day-1 round 2: project "id" is in the projection so a project with
+    # no template returns {"id": ...} instead of {} (which read as "not
+    # found" and gave a misleading 404).
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "dr_template_file_name": 1},
+        {"_id": 0, "id": 1, "dr_template_file_name": 1},
     )
     if not proj:
         raise HTTPException(404, "Project not found")
@@ -401,8 +414,10 @@ async def get_dr_template_meta(
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "dr_template_file_name": 1, "dr_template_uploaded_at": 1,
-         "dr_template_uploaded_by": 1},
+        # Day-1 round 2: "id" keeps a template-less project from coming
+        # back as {} and being reported as "Project not found".
+        {"_id": 0, "id": 1, "dr_template_file_name": 1,
+         "dr_template_uploaded_at": 1, "dr_template_uploaded_by": 1},
     )
     if not proj:
         raise HTTPException(404, "Project not found")

@@ -91,79 +91,101 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ice_schedule_ops")
 
 
+async def _safe_create_index(coll, keys, **kwargs):
+    """Day-1 round 2 (2026-10-25): create ONE index, logging (not
+    raising) on failure. All indexes used to share one try block, so a
+    single failure silently skipped every index after it -- including
+    the daily_reports (tenant_id, project_id, report_date) unique index
+    that stops duplicate daily reports. Index definitions are unchanged."""
+    try:
+        await coll.create_index(keys, **kwargs)
+        return True
+    except Exception as exc:
+        if isinstance(keys, str):
+            auto_name = f"{keys}_1"
+        else:
+            auto_name = "_".join(f"{k}_{d}" for k, d in keys)
+        logger.error(
+            "Index creation FAILED: %s.%s (%s): %s",
+            getattr(coll, "name", "?"), kwargs.get("name") or auto_name,
+            "unique" if kwargs.get("unique") else "non-unique", exc,
+        )
+        return False
+
+
 async def _ensure_indexes():
     db = get_db()
     # tenant-scoped indexes for hot paths
-    await db.users.create_index("email", unique=True)
-    await db.tenants.create_index("slug", unique=True)
-    await db.tenant_users.create_index([("user_id", 1), ("tenant_id", 1)], unique=True)
-    await db.projects.create_index([("tenant_id", 1), ("status", 1)])
-    await db.tasks.create_index([("tenant_id", 1), ("project_id", 1), ("activity_code", 1)])
-    await db.tasks.create_index([("tenant_id", 1), ("project_id", 1), ("planned_start", 1)])
-    await db.daily_reports.create_index([("tenant_id", 1), ("project_id", 1), ("report_date", 1)], unique=True)
-    await db.daily_report_activities.create_index([("daily_report_id", 1), ("position", 1)])
-    await db.audit_log.create_index([("tenant_id", 1), ("created_at", -1)])
-    await db.approvals.create_index([("tenant_id", 1), ("status", 1)])
-    await db.locations.create_index([("tenant_id", 1), ("project_id", 1), ("floor_id", 1)])
-    await db.crews.create_index([("tenant_id", 1), ("crew_code", 1)], unique=True)
-    await db.equipment.create_index([("tenant_id", 1), ("asset_tag", 1)], unique=True)
-    await db.rfis.create_index([("tenant_id", 1), ("project_id", 1), ("rfi_number", 1)])
-    await db.work_items.create_index([("tenant_id", 1), ("project_id", 1), ("status", 1)])
-    await db.work_item_links.create_index([("entity_type", 1), ("entity_id", 1)])
-    await db.copilot_messages.create_index([("tenant_id", 1), ("user_id", 1), ("session_id", 1), ("created_at", 1)])
-    await db.team_invites.create_index([("code", 1)], unique=True)
-    await db.team_invites.create_index([("tenant_id", 1), ("status", 1)])
-    await db.daily_presence.create_index([("tenant_id", 1), ("daily_report_id", 1)])
+    await _safe_create_index(db.users, "email", unique=True)
+    await _safe_create_index(db.tenants, "slug", unique=True)
+    await _safe_create_index(db.tenant_users, [("user_id", 1), ("tenant_id", 1)], unique=True)
+    await _safe_create_index(db.projects, [("tenant_id", 1), ("status", 1)])
+    await _safe_create_index(db.tasks, [("tenant_id", 1), ("project_id", 1), ("activity_code", 1)])
+    await _safe_create_index(db.tasks, [("tenant_id", 1), ("project_id", 1), ("planned_start", 1)])
+    await _safe_create_index(db.daily_reports, [("tenant_id", 1), ("project_id", 1), ("report_date", 1)], unique=True)
+    await _safe_create_index(db.daily_report_activities, [("daily_report_id", 1), ("position", 1)])
+    await _safe_create_index(db.audit_log, [("tenant_id", 1), ("created_at", -1)])
+    await _safe_create_index(db.approvals, [("tenant_id", 1), ("status", 1)])
+    await _safe_create_index(db.locations, [("tenant_id", 1), ("project_id", 1), ("floor_id", 1)])
+    await _safe_create_index(db.crews, [("tenant_id", 1), ("crew_code", 1)], unique=True)
+    await _safe_create_index(db.equipment, [("tenant_id", 1), ("asset_tag", 1)], unique=True)
+    await _safe_create_index(db.rfis, [("tenant_id", 1), ("project_id", 1), ("rfi_number", 1)])
+    await _safe_create_index(db.work_items, [("tenant_id", 1), ("project_id", 1), ("status", 1)])
+    await _safe_create_index(db.work_item_links, [("entity_type", 1), ("entity_id", 1)])
+    await _safe_create_index(db.copilot_messages, [("tenant_id", 1), ("user_id", 1), ("session_id", 1), ("created_at", 1)])
+    await _safe_create_index(db.team_invites, [("code", 1)], unique=True)
+    await _safe_create_index(db.team_invites, [("tenant_id", 1), ("status", 1)])
+    await _safe_create_index(db.daily_presence, [("tenant_id", 1), ("daily_report_id", 1)])
     # Bucket C2 — mitigation calibration RAG queries by (tenant_id,
     # outcome_recorded_at desc); detail page queries by linked_delay_id.
-    await db.mitigations.create_index([("tenant_id", 1), ("outcome_recorded_at", -1)])
-    await db.mitigations.create_index([("tenant_id", 1), ("linked_delay_id", 1)])
+    await _safe_create_index(db.mitigations, [("tenant_id", 1), ("outcome_recorded_at", -1)])
+    await _safe_create_index(db.mitigations, [("tenant_id", 1), ("linked_delay_id", 1)])
     # Bucket C3a — gating entities (Phase 2 dropdown queries by gates_task_ids;
     # detail page by id; status/over-SLA dashboards by (tenant, project, status))
     # plus the entity-type back-pointer for sync_status lookups.
-    await db.gating_entities.create_index([("tenant_id", 1), ("project_id", 1), ("status", 1)])
-    await db.gating_entities.create_index([("tenant_id", 1), ("entity_type", 1), ("entity_id", 1)])
-    await db.gating_entities.create_index([("tenant_id", 1), ("gates_task_ids", 1)])
+    await _safe_create_index(db.gating_entities, [("tenant_id", 1), ("project_id", 1), ("status", 1)])
+    await _safe_create_index(db.gating_entities, [("tenant_id", 1), ("entity_type", 1), ("entity_id", 1)])
+    await _safe_create_index(db.gating_entities, [("tenant_id", 1), ("gates_task_ids", 1)])
     # Project working-day calendar — keyed by (tenant, project, date) for
     # working-day math walks.
-    await db.project_calendar_days.create_index(
+    await _safe_create_index(db.project_calendar_days,
         [("tenant_id", 1), ("project_id", 1), ("calendar_date", 1)],
         unique=True,
     )
     # Bucket C3b — coordination event log. List page sorts by occurred_at;
     # filters frequently by topic; backlinks to a daily report.
-    await db.coordination_events.create_index(
+    await _safe_create_index(db.coordination_events,
         [("tenant_id", 1), ("project_id", 1), ("occurred_at", -1)],
     )
-    await db.coordination_events.create_index(
+    await _safe_create_index(db.coordination_events,
         [("tenant_id", 1), ("project_id", 1), ("topic", 1)],
     )
-    await db.coordination_events.create_index(
+    await _safe_create_index(db.coordination_events,
         [("tenant_id", 1), ("project_id", 1), ("linked_daily_report_id", 1)],
     )
     # Bucket C3b Phase 3 — daily_presence granular layer.
     # Existing (tenant, daily_report_id) index is kept; these add the
     # project + zone/shift + trade indexes for cross-DR aggregations.
-    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("daily_report_id", 1)])
-    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("zone_id", 1), ("shift", 1)])
-    await db.daily_presence.create_index([("tenant_id", 1), ("project_id", 1), ("trade", 1)])
+    await _safe_create_index(db.daily_presence, [("tenant_id", 1), ("project_id", 1), ("daily_report_id", 1)])
+    await _safe_create_index(db.daily_presence, [("tenant_id", 1), ("project_id", 1), ("zone_id", 1), ("shift", 1)])
+    await _safe_create_index(db.daily_presence, [("tenant_id", 1), ("project_id", 1), ("trade", 1)])
     # Bucket C3b Phase 5 — photo evidentiary indexes.
     # sha256_hash uniqueness check on upload (sparse so legacy photos
     # without a hash don't collide with each other on null).
-    await db.photos.create_index(
+    await _safe_create_index(db.photos,
         [("tenant_id", 1), ("sha256_hash", 1)],
         partialFilterExpression={"sha256_hash": {"$type": "string"}},
     )
     # Evidentiary-only lookups + class filter on the Photos page.
-    await db.photos.create_index([("tenant_id", 1), ("project_id", 1), ("evidentiary_flag", 1)])
-    await db.photos.create_index([("tenant_id", 1), ("project_id", 1), ("photo_class", 1)])
+    await _safe_create_index(db.photos, [("tenant_id", 1), ("project_id", 1), ("evidentiary_flag", 1)])
+    await _safe_create_index(db.photos, [("tenant_id", 1), ("project_id", 1), ("photo_class", 1)])
     # Bucket C3c Phase 1 — schedule_update_diffs. List page sorts by
     # computed_at desc per project; idempotency check uses the version
     # pair index.
-    await db.schedule_update_diffs.create_index(
+    await _safe_create_index(db.schedule_update_diffs,
         [("tenant_id", 1), ("project_id", 1), ("computed_at", -1)],
     )
-    await db.schedule_update_diffs.create_index(
+    await _safe_create_index(db.schedule_update_diffs,
         [("tenant_id", 1), ("earlier_schedule_version_id", 1),
          ("later_schedule_version_id", 1)],
         unique=True,
@@ -171,25 +193,25 @@ async def _ensure_indexes():
     # Bucket C3c Phase 2 — cascade_snapshots. Dashboard query is "latest
     # snapshot per gating_entity in this project"; history endpoint
     # queries "all snapshots for one entity sorted by computed_at desc".
-    await db.cascade_snapshots.create_index(
+    await _safe_create_index(db.cascade_snapshots,
         [("tenant_id", 1), ("project_id", 1), ("gating_entity_id", 1),
          ("computed_at", -1)],
     )
-    await db.cascade_snapshots.create_index(
+    await _safe_create_index(db.cascade_snapshots,
         [("tenant_id", 1), ("gating_entity_id", 1), ("computed_at", -1)],
     )
     # Bucket C3c Phase 4 — tia_generations. List page query is by
     # (tenant, project, generated_at desc); detail by (tenant, id).
-    await db.tia_generations.create_index(
+    await _safe_create_index(db.tia_generations,
         [("tenant_id", 1), ("project_id", 1), ("generated_at", -1)],
     )
     # Bucket D Phase 1 — photo_tray (staging area). Tray page filters
     # by status; the dedup check on upload looks up phash within a
     # project; tagging-wizard reads by id.
-    await db.photo_tray.create_index(
+    await _safe_create_index(db.photo_tray,
         [("tenant_id", 1), ("project_id", 1), ("status", 1), ("uploaded_at", -1)],
     )
-    await db.photo_tray.create_index(
+    await _safe_create_index(db.photo_tray,
         [("tenant_id", 1), ("project_id", 1), ("phash", 1)],
         partialFilterExpression={"phash": {"$type": "string"}},
     )
@@ -198,11 +220,11 @@ async def _ensure_indexes():
     for ref in ("daily_report_activity_id", "delay_id", "rfi_id",
                  "qc_issue_id", "safety_event_id",
                  "coordination_event_id", "delivery_id"):
-        await db.photos.create_index(
+        await _safe_create_index(db.photos,
             [("tenant_id", 1), ("project_id", 1), (ref, 1)],
             partialFilterExpression={ref: {"$type": "string"}},
         )
-    await db.photos.create_index(
+    await _safe_create_index(db.photos,
         [("tenant_id", 1), ("tray_photo_id", 1)],
         partialFilterExpression={"tray_photo_id": {"$type": "string"}},
     )
@@ -210,13 +232,13 @@ async def _ensure_indexes():
     # DR detail view efficiently load its supplements.
     for coll in ("delays", "rfis", "qc_issues", "safety_events",
                   "coordination_events", "deliveries", "photos"):
-        await db[coll].create_index(
+        await _safe_create_index(db[coll],
             [("tenant_id", 1), ("parent_daily_report_id", 1)],
             partialFilterExpression={"parent_daily_report_id": {"$type": "string"}},
         )
     # daily_report_activities rows don't carry tenant_id (they're
     # scoped via daily_report_id). Index by parent_daily_report_id only.
-    await db.daily_report_activities.create_index(
+    await _safe_create_index(db.daily_report_activities,
         [("parent_daily_report_id", 1)],
         partialFilterExpression={"parent_daily_report_id": {"$type": "string"}},
     )
@@ -226,7 +248,7 @@ async def _ensure_indexes():
     # linked_dr_activity_ids are dropped by migration 007.
     for coll in ("delays", "rfis", "qc_issues", "safety_events",
                   "coordination_events", "deliveries"):
-        await db[coll].create_index(
+        await _safe_create_index(db[coll],
             [("tenant_id", 1), ("project_id", 1), ("linked_task_ids", 1)],
         )
 
@@ -241,19 +263,19 @@ async def _ensure_indexes():
     # re-running this on a deploy where indexes already exist is a
     # no-op. project_members indexes are created by migration 009
     # (kept there to keep "schema setup" with the table backfill).
-    await db.crew_capacity.create_index(
+    await _safe_create_index(db.crew_capacity,
         [("tenant_id", 1), ("trade", 1), ("date", 1)],
         name="cc_tenant_trade_date",
     )
-    await db.crew_capacity.create_index(
+    await _safe_create_index(db.crew_capacity,
         [("tenant_id", 1), ("crew_id", 1), ("date", 1)],
         name="cc_tenant_crew_date",
     )
-    await db.crew_demands.create_index(
+    await _safe_create_index(db.crew_demands,
         [("tenant_id", 1), ("trade", 1), ("date", 1)],
         name="cd_tenant_trade_date",
     )
-    await db.crew_demands.create_index(
+    await _safe_create_index(db.crew_demands,
         [("tenant_id", 1), ("project_id", 1), ("date", 1)],
         name="cd_tenant_project_date",
     )
@@ -270,19 +292,19 @@ async def _ensure_indexes():
     #   photos (tenant_id, created_via_ai_suggestion)
     #     -> tag-row queries "which tags came from AI suggestions"
     #        for TIA Section 8 + Calibration RAG.
-    await db.photo_tray.create_index(
+    await _safe_create_index(db.photo_tray,
         [("tenant_id", 1), ("ai_analysis_status", 1), ("uploaded_at", 1)],
         name="pt_tenant_aistatus_uploadedat",
     )
-    await db.photo_tray.create_index(
+    await _safe_create_index(db.photo_tray,
         [("tenant_id", 1), ("ai_suggested_class", 1)],
         name="pt_tenant_aisuggestedclass",
     )
-    await db.photo_tray.create_index(
+    await _safe_create_index(db.photo_tray,
         [("tenant_id", 1), ("phash", 1), ("ai_analysis_status", 1)],
         name="pt_tenant_phash_aistatus",
     )
-    await db.photos.create_index(
+    await _safe_create_index(db.photos,
         [("tenant_id", 1), ("created_via_ai_suggestion", 1)],
         name="ph_tenant_createdviaai",
     )
@@ -294,11 +316,11 @@ async def _ensure_indexes():
     # permanently block a pHash. expireAfterSeconds is applied to
     # locked_at via a separate single-field index per Mongo's rules
     # (TTL must be a single field).
-    await db.photo_ai_locks.create_index(
+    await _safe_create_index(db.photo_ai_locks,
         [("tenant_id", 1), ("phash", 1)],
         unique=True, name="pal_tenant_phash_unique",
     )
-    await db.photo_ai_locks.create_index(
+    await _safe_create_index(db.photo_ai_locks,
         [("locked_at", 1)],
         expireAfterSeconds=60,
         name="pal_locked_at_ttl",
@@ -308,11 +330,11 @@ async def _ensure_indexes():
     # indexes. Timing rows feed the P50/P95/P99 dashboard. TTL retains
     # 90 days; that's enough for trend lines but not so much that the
     # collection bloats.
-    await db.ai_call_timings.create_index(
+    await _safe_create_index(db.ai_call_timings,
         [("tenant_id", 1), ("recorded_at", -1)],
         name="act_tenant_recorded",
     )
-    await db.ai_call_timings.create_index(
+    await _safe_create_index(db.ai_call_timings,
         [("recorded_at", 1)],
         expireAfterSeconds=90 * 24 * 3600,  # 90 days
         name="act_recorded_ttl",
@@ -324,24 +346,24 @@ async def _ensure_indexes():
     # roll-up. NO TTL -- expiration is a status flip + audit op
     # (services.field_suggestions.expire_stale_pending), not a row
     # drop, so the audit chain has evidence of every suggestion.
-    await db.field_suggestions.create_index(
+    await _safe_create_index(db.field_suggestions,
         [("tenant_id", 1), ("entity_type", 1),
          ("entity_id", 1), ("status", 1)],
         name="fs_tenant_entity_status",
     )
-    await db.field_suggestions.create_index(
+    await _safe_create_index(db.field_suggestions,
         [("tenant_id", 1), ("status", 1), ("created_at", -1)],
         name="fs_tenant_status_created",
     )
-    await db.field_suggestions.create_index(
+    await _safe_create_index(db.field_suggestions,
         [("tenant_id", 1), ("suggested_by", 1)],
         name="fs_tenant_source",
     )
-    await db.field_suggestions.create_index(
+    await _safe_create_index(db.field_suggestions,
         [("tenant_id", 1), ("authorized_confirmer_roles", 1)],
         name="fs_tenant_roles",
     )
-    await db.field_suggestions.create_index(
+    await _safe_create_index(db.field_suggestions,
         [("created_at", -1)],
         name="fs_created_at",
     )
@@ -350,59 +372,77 @@ async def _ensure_indexes():
     # custody indexes. Same set as migration 013; declared here too
     # so fresh deploys (never run migrations) get them on lifespan
     # startup.
-    await db.submittals.create_index(
+    await _safe_create_index(db.submittals,
         [("tenant_id", 1), ("project_id", 1), ("status", 1)],
         name="sub_tenant_project_status",
     )
-    await db.submittals.create_index(
+    await _safe_create_index(db.submittals,
         [("tenant_id", 1), ("a_e_review_due_at", 1)],
         name="sub_tenant_sla_due",
     )
-    await db.submittals.create_index(
+    await _safe_create_index(db.submittals,
         [("tenant_id", 1), ("is_overdue", 1), ("project_id", 1)],
         name="sub_tenant_overdue",
     )
-    await db.submittals.create_index(
+    await _safe_create_index(db.submittals,
         [("tenant_id", 1), ("submitted_to_ae_at", -1)],
         name="sub_tenant_submitted_to_ae",
     )
-    await db.submittals.create_index(
+    await _safe_create_index(db.submittals,
         [("tenant_id", 1), ("project_id", 1), ("discipline", 1)],
         name="sub_tenant_discipline",
     )
     # Chain-of-custody event collection.
-    await db.submittal_review_events.create_index(
+    await _safe_create_index(db.submittal_review_events,
         [("tenant_id", 1), ("submittal_id", 1), ("performed_at", 1)],
         name="sre_tenant_submittal_performed",
     )
-    await db.submittal_review_events.create_index(
+    await _safe_create_index(db.submittal_review_events,
         [("tenant_id", 1), ("event_type", 1), ("performed_at", -1)],
         name="sre_tenant_event_performed",
     )
-    await db.submittal_review_events.create_index(
+    await _safe_create_index(db.submittal_review_events,
         [("tenant_id", 1), ("project_id", 1), ("event_type", 1)],
         name="sre_tenant_project_event",
     )
 
     # Bucket I (2026-05-11) -- recovery_reports indexes. Mirror
     # migration 014 so fresh deploys get them on lifespan startup.
-    await db.recovery_reports.create_index(
+    await _safe_create_index(db.recovery_reports,
         [("tenant_id", 1), ("project_id", 1), ("generated_at", -1)],
         name="rr_tenant_project_generated",
     )
-    await db.recovery_reports.create_index(
+    await _safe_create_index(db.recovery_reports,
         [("tenant_id", 1), ("report_type", 1), ("status", 1)],
         name="rr_tenant_type_status",
     )
-    await db.recovery_reports.create_index(
+    await _safe_create_index(db.recovery_reports,
         [("tenant_id", 1), ("project_id", 1),
          ("report_type", 1), ("idempotency_key", 1)],
         name="rr_tenant_project_type_idem",
     )
-    await db.recovery_reports.create_index(
+    await _safe_create_index(db.recovery_reports,
         [("tenant_id", 1), ("status", 1), ("generated_at", -1)],
         name="rr_tenant_status_generated",
     )
+
+
+def _warn_if_platform_admins_unset() -> bool:
+    """Log a WARNING when PLATFORM_ADMIN_EMAILS is not set. Returns True
+    when the warning was logged."""
+    try:
+        from routers.admin_settings_router import _platform_admin_emails
+        if _platform_admin_emails():
+            return False
+    except Exception:
+        if (os.environ.get("PLATFORM_ADMIN_EMAILS") or "").strip():
+            return False
+    logger.warning(
+        "PLATFORM_ADMIN_EMAILS is not set: any company admin can change "
+        "workspace-wide settings and rotate the MS Project worker token; "
+        "set PLATFORM_ADMIN_EMAILS",
+    )
+    return True
 
 
 @asynccontextmanager
@@ -451,6 +491,10 @@ async def lifespan(app: FastAPI):
         app.state.runtime_settings_refresh_task = _asyncio.create_task(_rt_refresh_loop())
     except Exception as e:
         logger.warning("Runtime settings cache load failed (env fallback active): %s", e)
+    # Day-1 round 2 (2026-10-25): settings and the worker token are global
+    # across every company; without PLATFORM_ADMIN_EMAILS the check falls
+    # back to "any company admin". Behavior unchanged -- just say so loudly.
+    _warn_if_platform_admins_unset()
     # Followup-fix (2026-05-08): bcrypt runtime self-test. Hashes + verifies
     # a known string at boot. If this fails, EVERY user is about to be
     # locked out -- the deploy log will scream about it instead of the
@@ -884,9 +928,35 @@ app = FastAPI(title="ICE Schedule Ops", lifespan=lifespan)
 # the user has no way to know WHICH field. Convert to a human-readable
 # string naming the offending field while keeping the structured list
 # alongside under `errors` for clients that want it.
+#
+# Day-1 round 2 (2026-10-25): when a validator raises ValueError, the error
+# dict carries the exception object under ctx["error"], which JSONResponse
+# cannot serialize -> 500 -> Cloudflare 520 page instead of the message.
+# Build a JSON-safe list by hand, and stop echoing the submitted "input"
+# and the "url" docs link back to clients.
+def _json_safe_validation_errors(errors) -> list[dict]:
+    from fastapi.encoders import jsonable_encoder
+
+    safe: list[dict] = []
+    for e in errors or ():
+        item = {k: v for k, v in dict(e).items() if k not in ("input", "url")}
+        try:
+            item = jsonable_encoder(
+                item, custom_encoder={Exception: lambda x: str(x)},
+            )
+        except Exception:
+            item = {
+                "loc": [str(p) for p in (e.get("loc") or ())],
+                "msg": str(e.get("msg") or "invalid"),
+                "type": str(e.get("type") or "value_error"),
+            }
+        safe.append(item)
+    return safe
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    errors = exc.errors()
+    errors = _json_safe_validation_errors(exc.errors())
     msgs: list[str] = []
     for e in errors:
         loc = e.get("loc") or ()

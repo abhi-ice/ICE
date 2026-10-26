@@ -941,7 +941,7 @@ async def export_delay_ai_report_pdf(delay_id: str, ctx: dict = Depends(require_
     """Stream a WeasyPrint PDF of the AI delay report. 422 if the report
     has not been generated yet — UI should generate first."""
     from fastapi import Response
-    from weasyprint import HTML
+    from services.pdf_safety import arender_pdf
     # CPM Part G (2026-05-15) -- logged_date rendered MM/DD/YYYY via
     # the shared backend chokepoint. The PDF letterhead pulls the
     # "Delay logged" date prominently; MM/DD/YYYY matches the
@@ -1051,7 +1051,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
   Generated {esc(delay.get('ai_report_generated_at'))} · ICE Schedule Ops
 </div>
 </body></html>"""
-    pdf = HTML(string=html).write_pdf()
+    pdf = await arender_pdf(html)
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -1553,9 +1553,9 @@ async def _hash_storage_object(storage_path: str) -> Optional[str]:
     if not storage_path:
         return None
     try:
-        from services.storage import get_object
+        from services.storage import aget_object
         import hashlib
-        data, _ct = get_object(storage_path)
+        data, _ct = await aget_object(storage_path)
         return hashlib.sha256(data).hexdigest()
     except Exception:
         return None

@@ -27,6 +27,7 @@ per Bucket C3b Phase 4 OR semantics.
 # can't resolve `BackgroundTasks` when every annotation is a string
 # ForwardRef, and crashes /openapi.json with 500. Python 3.10+
 # supports PEP 604 unions natively so removal is safe runtime-wise.
+import asyncio
 import hashlib
 import io
 import uuid
@@ -41,7 +42,7 @@ from audit import write_audit
 from models import (PhotoTray, PhotoTagCreate, EVIDENTIARY_CLASSES,
                      TenantAiBudgetUpdate,
                      gen_id, utc_now)
-from services.storage import put_object, get_object, make_path, record_file
+from services.storage import put_object, get_object, aput_object, aget_object, make_path, record_file
 
 
 router = APIRouter(tags=["photo-tray"])
@@ -174,7 +175,10 @@ async def upload_to_tray(
     if not body:
         raise HTTPException(400, "Empty file")
 
-    meta = _extract_image_meta(body)
+    # Day-1 audit findings 39/42: image decode + hashing and the storage
+    # upload run in worker threads so a photo upload never freezes the
+    # server for other users.
+    meta = await asyncio.to_thread(_extract_image_meta, body)
     dup = await _find_dedup(ctx["tenant_id"], project_id, meta["sha256"], meta["phash"])
     if dup:
         return PhotoTray(**dup)
@@ -185,7 +189,7 @@ async def upload_to_tray(
     storage_path = make_path(ctx["tenant_id"], "tray", ext)
     ct = file.content_type or "image/jpeg"
     try:
-        put_object(storage_path, body, ct)
+        await aput_object(storage_path, body, ct)
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
     await record_file(
@@ -337,7 +341,7 @@ async def stream_tray_image(tray_id: str, ctx: dict = Depends(require_tenant)):
     if not doc:
         raise HTTPException(404, "Tray entry not found")
     try:
-        data, ct = get_object(doc["storage_key"])
+        data, ct = await aget_object(doc["storage_key"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
     return Response(content=data, media_type=ct)

@@ -106,12 +106,67 @@ function writeQueue(arr) {
   } catch { /* non-window env */ }
 }
 
+// Day-1 fix (2026-10-25, findings 10/11): report STATE CHANGES are never
+// queued. A queued submit used to come back as a fake success, so the super
+// was told "submitted and locked" while the server still had a draft. With
+// this deny-list the request fails as a normal network error and the page
+// tells the super the report is NOT submitted yet. Checked on the URL
+// suffix because the allow-list matches "/daily-reports/" anywhere.
+const STATE_TRANSITION_RE =
+  /\/daily-reports\/[^/?#]+\/(submit|approve|reopen|unlock|reject)\/?(?:[?#]|$)/;
+
 export function isQueueable(method, url) {
   const m = (method || "").toUpperCase();
   if (!["PATCH", "POST", "DELETE", "PUT"].includes(m)) return false;
   if (!url) return false;
+  if (STATE_TRANSITION_RE.test(url)) return false;
   return QUEUEABLE_PREFIXES.some((p) => url.includes(p));
 }
+
+/**
+ * Day-1 fix (2026-10-25, finding 35): true ONLY for a genuine rejection from
+ * the app itself — a 4xx whose body is the app's JSON `{detail: ...}`.
+ * Everything else is TRANSIENT and must be kept for a later retry:
+ *  - no response (offline), any 5xx (Cloudflare 520 pages included)
+ *  - 401/403 (auth comes back after re-login)
+ *  - 408/425/429 (timeout / too early / rate limited)
+ *  - any non-JSON response, e.g. the HTML 404 a sleeping or restarting
+ *    backend answers with — that is NOT the app saying "no".
+ * Every app error carries `detail` (FastAPI HTTPException + the 422
+ * handler in server.py), so a 4xx without one did not come from the app.
+ */
+export function isPermanentRejection(err) {
+  const resp = err?.response;
+  if (!resp) return false;
+  const status = resp.status;
+  if (!(status >= 400 && status < 500)) return false;
+  if ([401, 403, 408, 425, 429].includes(status)) return false;
+  let ct = "";
+  try {
+    const h = resp.headers || {};
+    ct = String((typeof h.get === "function" ? h.get("content-type") : null)
+      || h["content-type"] || h["Content-Type"] || "");
+  } catch { ct = ""; }
+  if (ct && !/json/i.test(ct)) return false;
+  const d = resp.data;
+  if (!d || typeof d !== "object" || d.detail == null) return false;
+  // The framework's own route-miss replies ({"detail": "Not Found"} /
+  // "Method Not Allowed") mean the server we reached does not have the
+  // route right now — a half-started or mid-deploy backend — not that the
+  // app rejected this record. No app handler raises these exact texts on a
+  // queueable route, so keep the save and retry.
+  if ((status === 404 && d.detail === "Not Found")
+      || (status === 405 && d.detail === "Method Not Allowed")) return false;
+  return true;
+}
+
+// Progress PATCH on one activity row (EOD%, hours, notes...).
+const ACTIVITY_PATCH_RE = /^\/daily-report-activities\/[^/?#]+\/?$/;
+
+// Ids of the entries the drain currently in flight is replaying. Coalescing
+// must never merge into one of them (the drain works from its own snapshot,
+// so the merged fields would be lost when it finishes).
+let _drainingIds = null;
 
 export function enqueueRequest({ method, url, data, offlineCreate = null }) {
   const q = readQueue();
@@ -122,6 +177,32 @@ export function enqueueRequest({ method, url, data, offlineCreate = null }) {
   if (offlineCreate?.tempId) {
     const dup = q.find((r) => r.offlineCreate?.tempId === offlineCreate.tempId);
     if (dup) return dup.id;
+  }
+  // Day-1 fix (2026-10-25, finding 8): coalesce progress PATCHes to the same
+  // activity row. Every slider release sends a PATCH carrying the SAME
+  // stale-write token from the cached report; queued separately, the second
+  // one replayed into a 409 and was dropped, losing the super's final value.
+  // Merge into the latest queued entry for that URL instead (newest fields
+  // win, the OLD token is kept) — only when that entry is a PATCH (never
+  // across a later DELETE) and is not being replayed right now.
+  const m = (method || "").toUpperCase();
+  if (m === "PATCH" && !offlineCreate && ACTIVITY_PATCH_RE.test(url || "")
+      && data && typeof data === "object" && !Array.isArray(data)) {
+    let last = null;
+    for (let i = q.length - 1; i >= 0; i -= 1) {
+      if (q[i].url === url) { last = q[i]; break; }
+    }
+    if (last && last.method === "PATCH" && !last.offlineCreate
+        && !(_drainingIds && _drainingIds.has(last.id))
+        && last.data && typeof last.data === "object" && !Array.isArray(last.data)) {
+      const merged = { ...last.data, ...data };
+      if ("task_last_modified_at" in last.data) {
+        merged.task_last_modified_at = last.data.task_last_modified_at;
+      }
+      last.data = merged;
+      writeQueue(q);
+      return last.id;
+    }
   }
   const id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   q.push({
@@ -233,7 +314,10 @@ export function clearQueue() {
 let _drainInFlight = null;
 export function drainOfflineQueue(api) {
   if (_drainInFlight) return _drainInFlight;
-  _drainInFlight = _drainQueueOnce(api).finally(() => { _drainInFlight = null; });
+  _drainInFlight = _drainQueueOnce(api).finally(() => {
+    _drainInFlight = null;
+    _drainingIds = null;
+  });
   return _drainInFlight;
 }
 
@@ -243,6 +327,7 @@ async function _drainQueueOnce(api) {
   }
   const q = readQueue();
   if (!q.length) return { synced: 0, failed: 0, remaining: 0 };
+  _drainingIds = new Set(q.map((r) => r.id));
   let synced = 0;
   let failed = 0;
   // Offline-create remap (2026-07-06): start from any persisted mappings
@@ -359,18 +444,54 @@ async function _drainQueueOnce(api) {
         saveRemap(remap); // persist immediately — children may fail later
       }
       synced += 1;
-    } catch (e) {
+    } catch (e0) {
+      let e = e0;
+      let staleOverride = false;
+      // Day-1 fix (2026-10-25, finding 8): a progress PATCH recorded on site
+      // that hits the stale-write check (the schedule row was touched after
+      // the report was cached — often by our OWN earlier replay or a delay
+      // logged on the same activity) is resent ONCE without the token: the
+      // value the super entered in the field wins. Never dropped silently.
+      if (req.method === "PATCH"
+          && /\/daily-report-activities\//.test(req.url || "")
+          && e?.response?.status === 409
+          && e?.response?.data?.detail?.error === "stale_write") {
+        staleOverride = true;
+        const rest = { ...(req.data || {}) };
+        delete rest.task_last_modified_at;
+        req = { ...req, data: rest };
+        try {
+          // eslint-disable-next-line no-console
+          console.warn("[offline-sync] schedule changed while offline; saving the field value", req.url);
+          window.dispatchEvent(new CustomEvent("ice-offline-conflict", {
+            detail: { url: req.url, taskId: e.response.data.detail.task_id || null },
+          }));
+        } catch { /* non-window env */ }
+        try {
+          await api.request({
+            method: req.method,
+            url: req.url,
+            data: req.data,
+            headers: { "X-Drain-Replay": "1" },
+          });
+          synced += 1;
+          continue;
+        } catch (e2) {
+          e = e2; // fall through to the normal keep/drop policy below
+        }
+      }
       failed += 1;
       const status = e?.response?.status;
-      const networkOnly = !e.response;
-      // Retryable: network-only, 5xx ("server waking up" is a known
-      // transient), or 401/403 (auth comes back after re-login). A queued
-      // field record is NEVER dropped for these — with the 60s drain
+      // Retryable: anything that is not a genuine JSON rejection from the
+      // app — network-only, 5xx ("server waking up" is a known transient),
+      // 401/403 (auth comes back after re-login), 408/425/429, and non-JSON
+      // replies such as the HTML 404 of a sleeping backend (finding 35). A
+      // queued field record is NEVER dropped for these — with the 60s drain
       // heartbeat (round 4) a capped retry budget would burn through ~5
       // minutes of downtime or a logged-out tab and silently lose a day's
       // records. retryCount is informational only (mirrors drPhotoQueue's
-      // policy); only a DEFINITIVE server rejection (other 4xx) drops.
-      const retryable = networkOnly || status >= 500 || status === 401 || status === 403;
+      // policy); only a DEFINITIVE server rejection drops.
+      const retryable = !isPermanentRejection(e);
       // Auth failures don't even bump the informational counter — a tab
       // idling on /login must leave the queue byte-identical (no churn).
       const authWait = status === 401 || status === 403;
@@ -379,7 +500,9 @@ async function _drainQueueOnce(api) {
         id: raw.id,
         ...(raw.offlineCreate ? { offlineCreate: raw.offlineCreate } : {}),
         retryCount: authWait ? (raw.retryCount || 0) : (raw.retryCount || 0) + 1,
-        lastError: e?.response?.data?.detail || e.message || "unknown",
+        lastError: staleOverride
+          ? "The schedule changed while you were offline. Your field entry will be saved on the next sync."
+          : (e?.response?.data?.detail || e.message || "unknown"),
       };
       if (retryable) {
         keep.push(next);
@@ -395,7 +518,12 @@ async function _drainQueueOnce(api) {
   // entry deferred or auth-waited) — otherwise the 60s heartbeat would
   // dispatch ice-offline-queue-changed every minute and cycle the DR list
   // reload + chip recount for no reason.
-  const finalQueue = keep.map((r) => applyRemapToRequest(r, remap));
+  // Saves queued WHILE this drain was running (a request that failed offline
+  // mid-drain) are not in our snapshot — append them after the kept entries
+  // so writing the queue back can never wipe them out.
+  const snapshotIds = new Set(q.map((r) => r.id));
+  const addedDuringDrain = readQueue().filter((r) => !snapshotIds.has(r.id));
+  const finalQueue = [...keep, ...addedDuringDrain].map((r) => applyRemapToRequest(r, remap));
   try {
     if (JSON.stringify(finalQueue) !== JSON.stringify(q)) writeQueue(finalQueue);
   } catch {

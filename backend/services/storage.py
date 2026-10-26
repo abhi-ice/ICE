@@ -6,6 +6,7 @@ truth; soft-delete via is_deleted=True on the file record.
 """
 import os
 import uuid
+import asyncio
 import logging
 import requests
 from datetime import datetime, timezone
@@ -81,6 +82,20 @@ def get_object(path: str) -> tuple[bytes, str]:
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
+# Day-1 audit findings 39/42/45 -- put_object / get_object are blocking
+# `requests` calls (timeouts up to 180s). Called straight from an
+# `async def` route they freeze the single event loop for EVERY user
+# (same pattern as the weather 520 incident). Async routes must await
+# these wrappers instead; they run the unchanged sync functions in a
+# worker thread (same precedent as ms_project_internal_router).
+async def aput_object(path: str, data: bytes, content_type: str) -> dict:
+    return await asyncio.to_thread(put_object, path, data, content_type)
+
+
+async def aget_object(path: str) -> tuple[bytes, str]:
+    return await asyncio.to_thread(get_object, path)
+
+
 # pt.77 -- small in-process LRU cache for served blobs (PDFs). Range requests
 # from PDF.js issue many small GETs for the SAME object; without a cache each
 # would re-download the entire object from object storage. Bounded by total
@@ -103,6 +118,26 @@ def get_object_cached(path: str) -> tuple:
     data, ct = get_object(path)
     size = len(data)
     if size <= _BLOB_CACHE_MAX_BYTES:
+        _BLOB_CACHE[path] = (data, ct)
+        _blob_cache_bytes += size
+        while _blob_cache_bytes > _BLOB_CACHE_MAX_BYTES and len(_BLOB_CACHE) > 1:
+            _old_path, (old_data, _oct) = _BLOB_CACHE.popitem(last=False)
+            _blob_cache_bytes -= len(old_data)
+    return data, ct
+
+
+async def aget_object_cached(path: str) -> tuple:
+    """Async get_object_cached. Only the storage download runs in a
+    worker thread; the cache itself is read and updated on the event
+    loop thread, so it is never touched by two threads at once."""
+    global _blob_cache_bytes
+    hit = _BLOB_CACHE.get(path)
+    if hit is not None:
+        _BLOB_CACHE.move_to_end(path)
+        return hit
+    data, ct = await aget_object(path)
+    size = len(data)
+    if size <= _BLOB_CACHE_MAX_BYTES and path not in _BLOB_CACHE:
         _BLOB_CACHE[path] = (data, ct)
         _blob_cache_bytes += size
         while _blob_cache_bytes > _BLOB_CACHE_MAX_BYTES and len(_BLOB_CACHE) > 1:

@@ -105,15 +105,8 @@ export default function Login() {
           </form>
 
           <div className="mt-6 text-sm text-slate-600 border-t pt-5 space-y-2">
-            <div>
-              New here?{" "}
-              <Link
-                data-testid="signup-link"
-                to="/signup"
-                className="text-blue-600 hover:underline"
-              >
-                Create your organization
-              </Link>
+            <div data-testid="invite-only-note">
+              New here? Ask your company admin to send you an invite.
             </div>
             <div>
               Got an invite?{" "}

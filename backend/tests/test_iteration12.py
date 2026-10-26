@@ -3,7 +3,13 @@ import os, time, io, json, uuid, asyncio
 import pytest
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://field-ops-hub-21.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "").strip().rstrip("/")
+if not BASE:
+    pytest.skip(
+        "REACT_APP_BACKEND_URL is not set. These tests call a running ICE backend and no "
+        "longer fall back to a remote preview host; set it to the server you mean to test.",
+        allow_module_level=True,
+    )
 API = f"{BASE}/api"
 
 TS = int(time.time())
@@ -289,7 +295,17 @@ def test_audit_log_has_insert_and_update(admin, proposal):
 
 
 # ---------- Cleanup: wipe DB at the end -------------------------------------
+# Only runs when ICE_ALLOW_DESTRUCTIVE_TEST_CLEANUP=1 AND DB_NAME starts with
+# test_ or ice_test; otherwise it is skipped and nothing is dropped.
+@pytest.mark.destructive
 def test_zzz_cleanup_drop_all():
+    db_name = (os.environ.get("DB_NAME") or "").strip()
+    if os.environ.get("ICE_ALLOW_DESTRUCTIVE_TEST_CLEANUP") != "1":
+        pytest.skip("Not wiping the database: set ICE_ALLOW_DESTRUCTIVE_TEST_CLEANUP=1 "
+                    "to allow this cleanup (test databases only).")
+    if not db_name.startswith(("test_", "ice_test")):
+        pytest.skip(f"Not wiping the database: DB_NAME '{db_name}' does not start with "
+                    "test_ or ice_test, so it may hold real data.")
     from motor.motor_asyncio import AsyncIOMotorClient
     async def _wipe():
         cli = AsyncIOMotorClient(os.environ["MONGO_URL"])

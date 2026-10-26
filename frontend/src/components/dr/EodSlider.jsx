@@ -21,7 +21,17 @@ export default function EodSlider({ rowId, initialValue, locked, updateRow, acti
   const [val, setVal] = useState(Number(initialValue) || 0);
   const [override, setOverride] = useState(false);
   const overrideReasonRef = useRef("");
-  useEffect(() => { setVal(Number(initialValue) || 0); }, [initialValue]);
+  // Day-1 round 2 (2026-10-25): the last value this slider actually sent
+  // (or the server value it was handed). A release is skipped only when it
+  // equals THIS -- not the drag-start value -- so a quick 40 -> 60 -> 40
+  // still saves the final 40, while a repeated release on the same value
+  // (touchend + the emulated mouseup, a stray keyup) fires no duplicate.
+  // null means "the last send was refused", so the next release always saves.
+  const lastSentRef = useRef(Number(initialValue) || 0);
+  useEffect(() => {
+    setVal(Number(initialValue) || 0);
+    lastSentRef.current = Number(initialValue) || 0;
+  }, [initialValue]);
 
   const maxPct = gate && typeof gate.max_pct === "number" ? gate.max_pct : 100;
   const gated = maxPct < 100;
@@ -46,14 +56,23 @@ export default function EodSlider({ rowId, initialValue, locked, updateRow, acti
         toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
       }
     }
-    if (n === startVal) { setVal(n); return; }
+    if (n === lastSentRef.current) { setVal(n); return; }
     const payload = { pct_complete_end_of_day: n };
     // Send the override reason only on a true increase past the gate cap.
     if (override && n > maxPct && n > startVal && overrideReasonRef.current) {
       payload.slider_gate_override_reason = overrideReasonRef.current;
     }
     setVal(n);
-    updateRow(rowId, payload);
+    lastSentRef.current = n;
+    const sent = updateRow(rowId, payload);
+    // updateRow resolves false when the save was refused or failed; forget
+    // the value then so releasing on the same number tries again.
+    if (sent && typeof sent.then === "function") {
+      sent.then(
+        (ok) => { if (ok === false && lastSentRef.current === n) lastSentRef.current = null; },
+        () => { if (lastSentRef.current === n) lastSentRef.current = null; },
+      );
+    }
   };
 
   const startOverride = () => {

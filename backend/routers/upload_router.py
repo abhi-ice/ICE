@@ -7,7 +7,7 @@ from database import get_db, tenant_filter
 from models import gen_id, utc_now, ProjectSpec, Drawing, StrictModel
 from auth import require_tenant
 from services.spec_ingest import ingest_spec_pdf
-from services.storage import put_object, make_path, record_file
+from services.storage import put_object, aput_object, make_path, record_file
 
 router = APIRouter(tags=["uploads"])
 
@@ -82,7 +82,7 @@ async def stream_spec_pdf(spec_id: str, request: Request, ctx: dict = Depends(re
     range support + an LRU blob cache so PDF.js streams 900-page specs page-by-
     page instead of downloading the whole file). The PDF is stored at ingest
     time (services/spec_ingest.ingest_spec_pdf)."""
-    from services.storage import get_object_cached
+    from services.storage import aget_object_cached
     db = get_db()
     spec = await db.project_specs.find_one(
         tenant_filter(ctx["tenant_id"], {"id": spec_id}), {"_id": 0, "pdf_url": 1},
@@ -90,7 +90,7 @@ async def stream_spec_pdf(spec_id: str, request: Request, ctx: dict = Depends(re
     if not spec or not spec.get("pdf_url"):
         raise HTTPException(404, "Spec PDF not found")
     try:
-        data, _ct = get_object_cached(spec["pdf_url"])
+        data, _ct = await aget_object_cached(spec["pdf_url"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
     return _pdf_range_response(data, "application/pdf", request.headers.get("range"))
@@ -122,7 +122,7 @@ async def upload_drawing_revision(
 
     storage_path = make_path(ctx["tenant_id"], "drawings", "pdf")
     try:
-        put_object(storage_path, pdf_bytes, "application/pdf")
+        await aput_object(storage_path, pdf_bytes, "application/pdf")
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
 
@@ -180,13 +180,13 @@ async def get_drawing_revision(rev_id: str, ctx: dict = Depends(require_tenant))
 
 @router.get("/drawing-revisions/{rev_id}/pdf")
 async def stream_drawing_pdf(rev_id: str, request: Request, ctx: dict = Depends(require_tenant)):
-    from services.storage import get_object_cached
+    from services.storage import aget_object_cached
     db = get_db()
     rev = await db.drawing_revisions.find_one(tenant_filter(ctx["tenant_id"], {"id": rev_id}), {"_id": 0})
     if not rev or not rev.get("pdf_url"):
         raise HTTPException(404, "Revision not found")
     try:
-        data, _ct = get_object_cached(rev["pdf_url"])
+        data, _ct = await aget_object_cached(rev["pdf_url"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
     return _pdf_range_response(data, "application/pdf", request.headers.get("range"))
