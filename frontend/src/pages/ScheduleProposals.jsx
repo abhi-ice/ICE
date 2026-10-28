@@ -29,6 +29,7 @@ const STATUS_PILL = {
   pending_review: "pill-blue",
   approved: "pill-green",
   rejected: "pill-red",
+  superseded: "pill-slate",
 };
 
 // Feature F1 (2026-05-17) -- the 4 work-category tags + their display
@@ -246,6 +247,10 @@ function ProposalDetail({ id, onBack }) {
           ["activity_code", "Code"], ["description", "Description"],
           ["planned_start", "Start"], ["planned_finish", "Finish"],
           ["duration_days", "Days"], ["trade_code", "Trade"],
+          // Shown when the file brings progress in (an in-progress schedule):
+          // approving creates these activities at that % complete.
+          ...((doc.diff?.added || []).some((r) => r.pct_complete != null)
+            ? [["pct_complete", "% complete"]] : []),
         ]} />
       <DiffSection icon={Minus} tone="red" title="Dropped" rows={doc.diff?.dropped || []} testid="dropped"
         cols={[
@@ -314,8 +319,10 @@ function ProposalDetail({ id, onBack }) {
       {!pending && (
         <div className="surface p-4 text-sm" data-testid="decision-recap">
           <div className="font-medium mb-1 flex items-center gap-2">
-            {doc.status === "approved" ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
-            {doc.status === "approved" ? "Approved" : "Rejected"} on {doc.reviewed_at ? new Date(doc.reviewed_at).toLocaleString() : "—"}
+            {doc.status === "approved" ? <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              : doc.status === "superseded" ? <RefreshCw className="h-4 w-4 text-slate-500" />
+              : <XCircle className="h-4 w-4 text-red-600" />}
+            {doc.status === "approved" ? "Approved" : doc.status === "superseded" ? "Replaced by a newer sync" : "Rejected"} on {doc.reviewed_at ? new Date(doc.reviewed_at).toLocaleString() : "—"}
           </div>
           {doc.review_notes && <div className="text-slate-600">Notes: {doc.review_notes}</div>}
           {doc.applied_result && (
@@ -324,6 +331,11 @@ function ProposalDetail({ id, onBack }) {
               <Stat label="Updated" value={doc.applied_result.updated || 0} />
               <Stat label="Dropped (soft-deleted)" value={doc.applied_result.deleted || 0} tone="red" />
               <Stat label="Skipped" value={(doc.applied_result.failed || []).length} tone={(doc.applied_result.failed || []).length ? "amber" : "slate"} />
+            </div>
+          )}
+          {doc.applied_result?.migrated_progress > 0 && (
+            <div className="text-xs text-slate-600 mt-2" data-testid="recap-progress">
+              {doc.applied_result.migrated_progress} activities came in with their % complete from the file.
             </div>
           )}
           {!!(doc.applied_result?.failed?.length) && (
@@ -476,7 +488,20 @@ function ParsedRowsPanel({ doc, reload }) {
       </div>
       {/* Feature F1 -- AI work-category tagging status + re-review */}
       <div className="px-2 pb-3" data-testid="work-category-tagging">
-        {tagging.ai_error ? (
+        {tagging.status === "running" ? (
+          <div data-testid="work-category-running"
+            className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+            Sorting these activities into field work and paperwork… Refresh
+            in a minute. Approve is held until it finishes.
+          </div>
+        ) : tagging.status === "timed_out" ? (
+          <div data-testid="work-category-timed-out"
+            className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            Automatic sorting into field work and paperwork did not finish.
+            Check the work category column below, or click &quot;Ask AI to
+            re-review tags&quot;.
+          </div>
+        ) : tagging.ai_error ? (
           <div data-testid="work-category-ai-error"
             className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
             AI work-category tagging was unavailable — every task defaulted to
@@ -491,6 +516,14 @@ function ParsedRowsPanel({ doc, reload }) {
               : ""}.
             {tagging.model && tagging.model !== "fallback"
               ? ` (${tagging.model})` : ""}
+          </div>
+        )}
+        {tagging.labelled_without_ai > 0 && (
+          <div className="text-xs text-slate-500" data-testid="work-category-from-sections">
+            {tagging.labelled_without_ai} kept from the project or from your
+            earlier choices. Rows under submittal, fabrication or delivery
+            headings are labelled paperwork; a &quot;review&quot; tag means the
+            AI disagreed with the heading.
           </div>
         )}
         <div className="mt-1.5 flex items-center gap-2 flex-wrap">

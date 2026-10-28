@@ -28,6 +28,10 @@ def _match(row, q):
                 return False
             continue
         rv = row.get(k)
+        if "." in k:  # dotted path into a sub-document
+            rv = row
+            for part in k.split("."):
+                rv = rv.get(part) if isinstance(rv, dict) else None
         if isinstance(v, dict):
             if "$ne" in v and rv == v["$ne"]:
                 return False
@@ -82,6 +86,13 @@ class _Col:
             self.rows.append(doc)
             return types.SimpleNamespace(matched_count=0, modified_count=0, upserted_id=1)
         return types.SimpleNamespace(matched_count=0, modified_count=0)
+    async def update_many(self, q, ops):
+        n = 0
+        for r in self.rows:
+            if _match(r, q or {}):
+                r.update(ops.get("$set", {}))
+                n += 1
+        return types.SimpleNamespace(matched_count=n, modified_count=n)
     async def find_one_and_update(self, q, ops, upsert=False, return_document=False, sort=None):
         rows = [r for r in self.rows if _match(r, q or {})]
         if sort:
@@ -313,6 +324,199 @@ def test_pull_adapter_maps_text1_and_dependencies():
     by = {r["activity_code"]: r for r in rows}
     assert by["A"]["planned_start"] == "2026-01-05" and by["A"]["predecessors"] == []
     assert by["B"]["predecessors"] == [{"code": "A", "type": "SS", "lag_days": 2}]
+
+
+def test_pull_adapter_carries_file_progress_only_for_unseen_tasks():
+    from services.ms_project_ingest import worker_tasks_to_parsed_rows
+    rows = worker_tasks_to_parsed_rows(
+        [{"text1": "A", "name": "Demo", "start": "2026-06-25", "finish": "2026-09-03",
+          "percent_complete": 100, "actual_start": "2026-06-25",
+          "actual_finish": "2026-09-03"},
+         {"text1": "B", "name": "ICRA", "start": "2026-09-29", "finish": "2026-10-12",
+          "percent_complete": 75, "actual_start": "2026-09-29", "actual_finish": None},
+         {"text1": "C", "name": "Paint", "start": "2026-12-01", "finish": "2026-12-05",
+          "percent_complete": 0, "actual_start": None, "actual_finish": None}],
+        [], live_codes={"A"})
+    by = {r["activity_code"]: r for r in rows}
+    # A already exists in ICE: ICE owns its progress, the file's is not carried.
+    assert "pct_complete" not in by["A"] and "actual_start" not in by["A"]
+    assert by["B"]["pct_complete"] == 75.0 and by["B"]["actual_start"] == "2026-09-29"
+    assert by["B"]["actual_finish"] is None
+    # Not started: imports exactly like a baseline row (no progress keys).
+    assert not ({"pct_complete", "actual_start", "actual_finish"} & set(by["C"]))
+
+
+def test_pull_adapter_older_worker_without_progress_keys_is_unchanged():
+    from services.ms_project_ingest import worker_tasks_to_parsed_rows
+    rows = worker_tasks_to_parsed_rows(
+        [{"text1": "A", "name": "Pour", "start": "2026-01-05", "finish": "2026-01-09"}], [])
+    assert not ({"pct_complete", "actual_start", "actual_finish"} & set(rows[0]))
+
+
+def test_first_pull_proposal_carries_file_progress():
+    _reset()
+    asyncio.run(mps.enqueue_pull_job(T, P, actor_id="u"))
+    claimed = asyncio.run(mps.claim_next_job("w1", ["pull"]))
+    out = asyncio.run(mps.record_result({
+        "job_id": claimed["id"], "seq": claimed["seq"], "status": "ok",
+        "project_rowversion": "rv1", "project_finish": "2027-12-28", "critical_count": 1,
+        "tasks": [
+            {"text1": "VA6B-0010", "unique_id": 2, "name": "Project NTP",
+             "start": "2026-05-06", "finish": "2026-05-06", "milestone": False,
+             "percent_complete": 100, "actual_start": "2026-05-06",
+             "actual_finish": "2026-05-06"},
+            {"text1": "VA6B-1750", "unique_id": 246, "name": "Install ICRA/ILSM",
+             "start": "2026-09-29", "finish": "2026-10-12",
+             "percent_complete": 75, "actual_start": "2026-09-29", "actual_finish": None},
+        ],
+        "dependencies": [],
+    }))
+    assert out["ok"]
+    prop = next(p for p in _STUB.schedule_proposals.rows if p["source"] == "ms_project_pull")
+    by = {r["activity_code"]: r for r in prop["parsed_rows"]}
+    assert by["VA6B-0010"]["pct_complete"] == 100.0
+    assert by["VA6B-0010"]["actual_finish"] == "2026-05-06"
+    assert by["VA6B-1750"]["pct_complete"] == 75.0
+
+
+def test_newer_pull_replaces_an_older_pull_still_waiting_for_review():
+    from services.ms_project_ingest import build_pull_proposal
+    _reset()
+    row = lambda pct: [{"text1": "X", "name": "Fireproofing", "start": "2026-11-30",
+                        "finish": "2026-12-08", "percent_complete": pct,
+                        "actual_start": "2026-11-30" if pct else None,
+                        "actual_finish": "2026-12-08" if pct == 100 else None}]
+    p1 = asyncio.run(build_pull_proposal(_STUB, T, P, row(75), []))
+    p2 = asyncio.run(build_pull_proposal(_STUB, T, P, row(100), []))
+    by = {p["id"]: p for p in _STUB.schedule_proposals.rows}
+    assert by[p1]["status"] == "superseded" and by[p1]["superseded_by"] == p2
+    assert by[p2]["status"] == "pending_review"
+    assert by[p2]["parsed_rows"][0]["pct_complete"] == 100.0
+
+
+def _sectioned_pull_tasks():
+    return [
+        {"text1": "S1", "name": "Air Handling Unit", "start": "2026-05-07", "finish": "2026-06-17",
+         "section_path": ["6B Renovate", "Prepare Critical Submittals", "Mechanical Equipment"]},
+        {"text1": "F1", "name": "Air Handling Unit", "start": "2026-06-18", "finish": "2026-09-01",
+         "section_path": ["6B Renovate", "Fabricate/Delivery ", "Mechanical Equipment"]},
+        {"text1": "I1", "name": "Install Air Handling Unit", "start": "2026-12-01", "finish": "2026-12-20",
+         "section_path": ["6B Renovate", "Construction Activities", "Installation"]},
+        {"text1": "K1", "name": "Relocate Furniture", "start": "2026-05-07", "finish": "2026-07-01",
+         "section_path": ["6B Renovate", "Construction Activities"]},
+    ]
+
+
+def test_pull_labels_by_section_keeps_existing_labels_and_ai_labels_the_rest(monkeypatch):
+    from services.ms_project_ingest import build_pull_proposal
+    monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    _reset()
+    # K1 already exists in ICE and someone labelled it closeout paperwork.
+    _seed_task("K1", "2026-05-07", "2026-07-01")
+    next(t for t in _STUB.tasks.rows if t["activity_code"] == "K1")["work_category"] = "closeout_paperwork"
+
+    async def go():
+        pid = await build_pull_proposal(_STUB, T, P, _sectioned_pull_tasks(), [])
+        first = dict(next(p for p in _STUB.schedule_proposals.rows if p["id"] == pid))
+        first_rows = [dict(r) for r in first["parsed_rows"]]
+        for _ in range(5):
+            await asyncio.sleep(0)  # let the background labelling finish
+        return pid, first, first_rows
+    pid, first, first_rows = asyncio.run(go())
+    by0 = {r["activity_code"]: r for r in first_rows}
+    assert first["work_category_tagging"]["status"] == "running"
+    assert by0["S1"]["work_category"] == "construction_paperwork" and by0["S1"]["work_category_source"] == "section"
+    assert by0["F1"]["work_category"] == "construction_paperwork"
+    assert by0["K1"]["work_category"] == "closeout_paperwork" and by0["K1"]["work_category_source"] == "existing"
+    assert not by0["I1"].get("work_category")
+    done = next(p for p in _STUB.schedule_proposals.rows if p["id"] == pid)
+    by = {r["activity_code"]: r for r in done["parsed_rows"]}
+    assert done["work_category_tagging"]["status"] == "done"
+    assert by["I1"]["work_category"] == "field_work"          # AI unavailable -> default
+    assert by["S1"]["work_category"] == "construction_paperwork"  # untouched by the AI pass
+
+
+def test_background_labelling_never_overwrites_a_reviewer_choice(monkeypatch):
+    from services import ms_project_ingest as mpi
+    monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    _reset()
+    rows = mpi.worker_tasks_to_parsed_rows(_sectioned_pull_tasks(), [])
+    for r in rows:
+        if r["activity_code"] == "S1":
+            r.update(work_category="construction_paperwork", work_category_source="section")
+        if r["activity_code"] == "I1":
+            r.update(work_category="field_work", work_category_source="user")
+    _STUB.schedule_proposals.rows.append({
+        "id": "pp1", "tenant_id": T, "project_id": P, "status": "pending_review",
+        "source": "ms_project_pull", "parsed_rows": rows,
+        "work_category_tagging": {"status": "running"}})
+    asyncio.run(mpi.label_pull_proposal(T, "pp1"))
+    by = {r["activity_code"]: r for r in _STUB.schedule_proposals.rows[0]["parsed_rows"]}
+    assert by["I1"]["work_category_source"] == "user"
+    assert by["K1"]["work_category"] == "field_work" and by["K1"]["work_category_needs_review"]
+    assert _STUB.schedule_proposals.rows[0]["work_category_tagging"]["status"] == "done"
+
+
+def test_pull_where_every_row_keeps_its_label_needs_no_ai():
+    from services.ms_project_ingest import build_pull_proposal
+    _reset()
+    for code in ("S1", "F1"):
+        _seed_task(code, "2026-01-05", "2026-01-09")
+        next(t for t in _STUB.tasks.rows if t["activity_code"] == code)["work_category"] = "construction_paperwork"
+    pid = asyncio.run(build_pull_proposal(_STUB, T, P, _sectioned_pull_tasks()[:2], []))
+    p = next(p for p in _STUB.schedule_proposals.rows if p["id"] == pid)
+    assert p["work_category_tagging"]["status"] == "done"
+    assert all(r["work_category_source"] == "existing" for r in p["parsed_rows"])
+
+
+def test_project_title_heading_is_dropped_from_pulled_rows():
+    from services.ms_project_ingest import worker_tasks_to_parsed_rows
+    rows = worker_tasks_to_parsed_rows(_sectioned_pull_tasks(), [])
+    by = {r["activity_code"]: r for r in rows}
+    assert by["S1"]["section_path"] == ["Prepare Critical Submittals", "Mechanical Equipment"]
+    assert by["K1"]["section_path"] == ["Construction Activities"]
+
+
+def test_pull_label_carry_over_rules():
+    from services.ms_project_ingest import build_pull_proposal
+    _reset()
+    # A reviewer relabelled F1 on an older pull that is still waiting.
+    _STUB.schedule_proposals.rows.append({
+        "id": "old", "tenant_id": T, "project_id": P, "status": "pending_review",
+        "source": "ms_project_pull",
+        "parsed_rows": [{"activity_code": "F1", "work_category": "field_work",
+                         "work_category_source": "user"}]})
+    # S1 was imported before headings were read and wrongly left as field work.
+    _seed_task("S1", "2026-05-07", "2026-06-17")
+    next(t for t in _STUB.tasks.rows if t["activity_code"] == "S1")["work_category"] = "field_work"
+    # K1 was deleted from the schedule earlier, with a label someone chose.
+    _seed_task("K1", "2026-05-07", "2026-07-01")
+    k1 = next(t for t in _STUB.tasks.rows if t["activity_code"] == "K1")
+    k1.update(status="deleted", work_category="closeout_paperwork", work_category_source="user")
+
+    async def go():
+        return await build_pull_proposal(_STUB, T, P, _sectioned_pull_tasks(), [])
+    pid = asyncio.run(go())
+    by = {r["activity_code"]: r for r in next(p for p in _STUB.schedule_proposals.rows
+                                                if p["id"] == pid)["parsed_rows"]}
+    assert by["F1"]["work_category"] == "field_work" and by["F1"]["work_category_source"] == "user"
+    assert by["S1"]["work_category"] == "construction_paperwork"   # heading fixes the old label
+    assert by["K1"]["work_category"] == "closeout_paperwork"        # soft-deleted task keeps its label
+    assert next(p for p in _STUB.schedule_proposals.rows if p["id"] == "old")["status"] == "superseded"
+
+
+def test_version_diff_ignores_progress_missing_from_a_later_pull():
+    from services.schedule_diff import compute_version_diff
+    first = [{"activity_code": "A", "description": "Demo", "planned_start": "2026-06-25",
+              "planned_finish": "2026-09-03", "duration_days": 50, "pct_complete": 100.0}]
+    later = [{"activity_code": "A", "description": "Demo", "planned_start": "2026-06-25",
+              "planned_finish": "2026-09-03", "duration_days": 50}]
+    d = compute_version_diff(first, later)
+    assert d["activities_modified_count"] == 0
+    # Both versions carrying progress still report a real change.
+    later[0]["pct_complete"] = 50.0
+    d = compute_version_diff(first, later)
+    assert d["activities_modified"][0]["pct_change"] == {"prior": 100.0, "new": 50.0}
 
 
 def test_pull_ingests_dates_and_builds_proposal():

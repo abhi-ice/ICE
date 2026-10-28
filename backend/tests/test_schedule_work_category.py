@@ -326,3 +326,116 @@ def test_commissioning_tasks_classify_as_paperwork_not_field_work():
     # Genuine field work is still field_work.
     assert by_code["10"]["work_category"] == "field_work"
     assert by_code["20"]["work_category"] == "field_work"
+
+
+# ---------------------------------------------------------------------------
+# Section headings (2026-10-26). Schedules like VA 6B repeat a bare name
+# ("Air Handling Unit") under "Prepare Critical Submittals", again under
+# "Fabricate/Delivery", and again under construction. The headings decide.
+# ---------------------------------------------------------------------------
+def _va6b_like_rows() -> list[dict]:
+    return [
+        {"activity_code": "H1.4", "description": "Prepare Critical Submittals", "wbs": "1.4",
+         "excluded_as_summary": True},
+        {"activity_code": "H1.4.7", "description": "Mechanical Equipment", "wbs": "1.4.7",
+         "excluded_as_summary": True},
+        {"activity_code": "A1", "description": "Air Handling Unit", "wbs": "1.4.7.6"},
+        {"activity_code": "H1.5", "description": "Fabricate/Delivery ", "wbs": "1.5",
+         "excluded_as_summary": True},
+        {"activity_code": "A2", "description": "Air Handling Unit", "wbs": "1.5.1.6"},
+        {"activity_code": "H1.6", "description": "Construction Activities", "wbs": "1.6",
+         "excluded_as_summary": True},
+        {"activity_code": "A3", "description": "Install Air Handling Unit", "wbs": "1.6.6.9"},
+        {"activity_code": "H1.7", "description": "Project Closeout", "wbs": "1.7",
+         "excluded_as_summary": True},
+        {"activity_code": "A4", "description": "O&M Manuals", "wbs": "1.7.1"},
+    ]
+
+
+def test_section_paths_come_from_heading_rows_by_wbs():
+    rows = swc.attach_section_paths(_va6b_like_rows())
+    by = {r["activity_code"]: r for r in rows}
+    assert by["A1"]["section_path"] == ["Prepare Critical Submittals", "Mechanical Equipment"]
+    assert by["A2"]["section_path"] == ["Fabricate/Delivery"]
+    assert by["A3"]["section_path"] == ["Construction Activities"]
+    assert "section_path" not in by["H1.4"]
+
+
+def test_section_category_reads_the_innermost_heading_that_says():
+    assert swc.section_category(["Prepare Critical Submittals", "Mechanical Equipment"])         == "construction_paperwork"
+    assert swc.section_category(["Fabricate/Delivery "]) == "construction_paperwork"
+    assert swc.section_category(["Review/Approve Critical Submittals"]) == "construction_paperwork"
+    assert swc.section_category(["Pre-Construction Submittals"]) == "construction_paperwork"
+    assert swc.section_category(["Project Close-out"]) == "closeout_paperwork"
+    assert swc.section_category(["Construction Activities", "Installation"]) is None
+    assert swc.section_category([]) is None and swc.section_category(None) is None
+
+
+def test_a_field_work_heading_stops_the_search():
+    # Review finding: field work must never be forced into paperwork.
+    assert swc.section_category(["Structural Steel - Fabricate & Erect", "Erection"]) is None
+    assert swc.section_category(["Furnish, Deliver & Install Equipment"]) is None
+    assert swc.section_category(["Approved Change Order #4"]) is None
+    assert swc.section_category(["Submittals", "Installation"]) is None
+    # Whole words only.
+    assert swc.section_category(["Deliverance Hall Renovation"]) is None
+
+
+def test_the_project_title_row_is_not_a_section():
+    rows = [
+        {"activity_code": "H1", "description": "Amazon Delivery Station Fit-Out", "wbs": "1",
+         "excluded_as_summary": True},
+        {"activity_code": "H1.2", "description": "Interior Framing", "wbs": "1.2",
+         "excluded_as_summary": True},
+        {"activity_code": "A", "description": "Frame walls L1", "wbs": "1.2.1"},
+        {"activity_code": "B", "description": "Notice to Proceed", "wbs": "1.1"},
+    ]
+    swc.attach_section_paths(rows)
+    by = {r["activity_code"]: r for r in rows}
+    assert by["A"]["section_path"] == ["Interior Framing"]
+    assert "section_path" not in by["B"]
+    assert swc.section_category(by["A"].get("section_path")) is None
+
+
+def test_headings_label_bare_names_even_when_the_ai_is_unavailable(monkeypatch):
+    monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    rows = swc.attach_section_paths(_va6b_like_rows())
+    real = [r for r in rows if not r.get("excluded_as_summary")]
+    asyncio.run(swc.tag_work_categories(real))
+    by = {r["activity_code"]: r for r in real}
+    assert by["A1"]["work_category"] == "construction_paperwork"
+    assert by["A2"]["work_category"] == "construction_paperwork"
+    assert by["A1"]["work_category_source"] == "section"
+    assert by["A4"]["work_category"] == "closeout_paperwork"
+    # No heading says what A3 is -> the usual default, flagged for review.
+    assert by["A3"]["work_category"] == "field_work" and by["A3"]["work_category_needs_review"]
+
+
+def test_ai_disagreeing_with_a_submittal_heading_is_flagged_for_review():
+    rows = swc.attach_section_paths(_va6b_like_rows())
+    real = [r for r in rows if not r.get("excluded_as_summary")]
+    swc._apply_classification(real, {"A1": "field_work", "A2": "preconstruction_paperwork",
+                                     "A3": "field_work", "A4": "closeout_paperwork"})
+    by = {r["activity_code"]: r for r in real}
+    # Heading says submittal, AI says field work: heading stands, a person decides.
+    assert by["A1"]["work_category"] == "construction_paperwork"
+    assert by["A1"]["work_category_needs_review"] is True
+    # AI agrees it is not field work: its bucket wins.
+    assert by["A2"]["work_category"] == "preconstruction_paperwork"
+    assert by["A2"]["work_category_source"] == "ai"
+    assert by["A3"]["work_category"] == "field_work"
+
+
+def test_payload_carries_the_section_for_the_ai():
+    rows = swc.attach_section_paths(_va6b_like_rows())
+    p = swc._build_user_payload([r for r in rows if not r.get("excluded_as_summary")], "6B", "")
+    by = {t["activity_code"]: t for t in p["tasks"]}
+    assert by["A1"]["section"] == "Prepare Critical Submittals > Mechanical Equipment"
+    assert "section" in swc.SYSTEM
+
+
+def test_retag_keeps_labels_already_on_the_project():
+    rows = [{"activity_code": "X", "description": "Air Handling Unit",
+             "work_category": "construction_paperwork", "work_category_source": "existing"}]
+    swc._apply_classification(rows, {"X": "field_work"}, skip_user_overrides=True)
+    assert rows[0]["work_category"] == "construction_paperwork"
