@@ -753,3 +753,4 @@ See `/app/memory/test_credentials.md`.
 - Repo abhi-ice/ICE was private; user made it public temporarily for the pull.
 - 2026-10-26: Temporary public sign-up enabled for owner: ALLOW_PUBLIC_SIGNUP (live=true; preview/test slot still holds a wrong sentence value so preview signup stays blocked) + PLATFORM_ADMIN_EMAILS set. Owner must delete ALLOW_PUBLIC_SIGNUP and redeploy after creating their account.
 - 2026-10-26: BUG FIX — public pages (/signup, /landing, /accept-invite, /forgot-password, /reset-password) bounced to /login ~5s after load. Cause: drPrefetch.warmOfflineCache ran signed-out → GET /projects 401 → api.js interceptor redirect. Fix: token guard in warmOfflineCache + interceptor skips public routes. Verified in preview; redeployed.
+- 2026-10-26: Pulled ice/main up to 2f1f288 (MS Project field-work vs paperwork labelling, % complete on first import, always-on worker). Clean merge 93845b4, 189 tests pass, redeployed.
