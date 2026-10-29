@@ -101,6 +101,7 @@ import DrVoiceNotes, { listPendingNotes as listPendingVoiceNotes } from "../comp
 import DrGuidedDesktop from "../components/dr/DrGuidedDesktop";
 import ActivityNoteField from "../components/dr/ActivityNoteField";
 import ActivityPickerDialog from "../components/dr/ActivityPickerDialog";
+import { previewDelayThenConfirm } from "../lib/delayPreview";
 import CarriedDelaysCard from "../components/dr/CarriedDelaysCard";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
@@ -7134,6 +7135,10 @@ function FlowDelayForm({ id, project, activity, reportDate, locked, lockedReason
     }
     setBusy(true);
     try {
+      const okToLog = await previewDelayThenConfirm({
+        projectId: project.id, impacts: [{ task_id: taskId, days: impactDays }],
+      });
+      if (!okToLog) return;
       const res = await api.post(`/delays`, {
         project_id: project.id,
         daily_report_id: id,

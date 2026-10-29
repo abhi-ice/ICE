@@ -13,6 +13,7 @@ import { Sparkles, Loader2, Pencil, Copy as CopyIcon, RefreshCw, Trash2 } from "
 import api from "../../lib/api";
 import ActivityNoteField from "./ActivityNoteField";
 import ActivityPickerDialog from "./ActivityPickerDialog";
+import { previewDelayThenConfirm } from "../../lib/delayPreview";
 import CarriedDelaysCard from "./CarriedDelaysCard";
 import { toast } from "../ui/sonner";
 import { getUser } from "../../lib/auth";
@@ -528,6 +529,10 @@ export default function DrGuidedDesktop({
         ? a.timp
         : (m.row.schedule_activity_id ? [{ task: m.row.activity_description, id: m.row.schedule_activity_id, days: "" }] : []);
       if (!picked.length) { toast.error("This activity has no linked schedule task"); throw new Error("no-task"); }
+      const okToLog = await previewDelayThenConfirm({
+        projectId: project.id, impacts: picked.map((x) => ({ task_id: x.id, days: x.days })),
+      });
+      if (!okToLog) throw new Error("cancelled");
       const res = await api.post(`/delays`, {
         project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
         description: a.what.trim(), severity: a.dsev, status: a.dstat || "open",

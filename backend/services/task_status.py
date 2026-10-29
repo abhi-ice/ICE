@@ -436,6 +436,8 @@ async def compute_projected_finish_dates(
     actor_id: Optional[str] = None,
     request_id: Optional[str] = None,
     data_date: Optional[date] = None,
+    extra_impacts: Optional[dict] = None,
+    dry_run: bool = False,
 ) -> dict:
     """Phase 4 — walk the dependency graph forward, computing each
     task's IMPACTED start / finish date when open blockers push it.
@@ -574,6 +576,8 @@ async def compute_projected_finish_dates(
     impacts_by_task: dict[str, list] = {}
     for t in tasks:
         own_impact[t["id"]] = await _open_blocker_impact_for_task(db, tenant_id, t["id"])
+        if extra_impacts:
+            own_impact[t["id"]] += float(extra_impacts.get(t["id"]) or 0)
         impacts_by_task[t["id"]] = await _exact_resolved_delay_impacts(db, tenant_id, t["id"])
 
     # Working-day helpers + the shared CPM per-edge implied-start
@@ -714,6 +718,10 @@ async def compute_projected_finish_dates(
 
     for t in tasks:
         compute(t)
+
+    if dry_run:
+        # Impact preview: hand back the would-be dates, write nothing.
+        return {"computed": computed, "tasks": tasks}
 
     changed: list[str] = []
     for t in tasks:

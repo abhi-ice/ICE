@@ -1,0 +1,8 @@
+crons:
+  - name: schedule-digest
+    description: "Hourly check that emails each project's weekly schedule digest at Friday 7 AM site time"
+    cron: "0 * * * 4,5,6"
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    endpoint: "{{BASE_URL}}/api/cron/schedule-digest"
+    method: POST
+    enabled: true

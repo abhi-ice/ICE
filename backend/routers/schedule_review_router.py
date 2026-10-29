@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+import hmac
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import Field
 
 from audit import write_audit
@@ -265,3 +268,108 @@ async def reject_logic(proposal_id: str, payload: LogicDecision, ctx: dict = Dep
     if not res.matched_count:
         raise HTTPException(404, "Proposal not found or already decided")
     return {"ok": True}
+
+
+# ------------------------------------------------------------- weekly digest
+@router.post("/cron/schedule-digest")
+async def cron_schedule_digest(request: Request):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    secret = os.environ.get("WEBHOOK_CRON_SECRET") or ""
+    auth = request.headers.get("authorization") or ""
+    token = auth[7:] if auth.lower().startswith("bearer ") else ""
+    if not secret or not token or not hmac.compare_digest(token, secret):
+        raise HTTPException(401, "Unauthorized")
+    run_id = request.headers.get("x-webhook-id")
+    try:
+        body = await request.json() if (await request.body()) else {}
+    except Exception:
+        raise HTTPException(400, "Invalid body")
+    run_id = run_id or (body or {}).get("run_id") or utc_now().isoformat()
+    db = get_db()
+    try:
+        await db.cron_runs.insert_one({"_id": f"schedule-digest:{run_id}", "at": utc_now().isoformat()})
+    except Exception:
+        return {"ok": True, "duplicate": True}
+    from services.schedule_digest import run_due_digests
+    _spawn(run_due_digests(db))
+    return {"ok": True, "accepted": True}
+
+
+@router.get("/projects/{project_id}/schedule-digest/preview")
+async def digest_preview(project_id: str, ctx: dict = Depends(require_tenant)):
+    role_required(ctx, REVIEW_ROLES)
+    from services.schedule_digest import build_digest, digest_recipients
+    db = get_db()
+    d = await build_digest(db, ctx["tenant_id"], project_id)
+    d["recipients"] = [u["email"] for u in await digest_recipients(db, ctx["tenant_id"])]
+    return d
+
+
+@router.post("/projects/{project_id}/schedule-digest/send-now")
+async def digest_send_now(project_id: str, ctx: dict = Depends(require_tenant)):
+    role_required(ctx, REVIEW_ROLES)
+    from services.schedule_digest import send_project_digest
+    db = get_db()
+    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1, "name": 1})
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    return await send_project_digest(db, ctx["tenant_id"], proj)
+
+
+# ------------------------------------------------------------- delay preview
+class ImpactIn(StrictModel):
+    task_id: str
+    days: float = Field(ge=0, le=3650)
+
+
+class ImpactPreviewIn(StrictModel):
+    impacts: List[ImpactIn]
+
+
+@router.post("/projects/{project_id}/delay-impact-preview")
+async def delay_impact_preview(project_id: str, payload: ImpactPreviewIn, ctx: dict = Depends(require_tenant)):
+    """Which dates WOULD move if this delay were logged (nothing is saved)."""
+    from services.task_status import compute_projected_finish_dates
+    from services.working_days import working_days_between
+    db = get_db()
+    extra: dict = {}
+    for i in payload.impacts:
+        extra[i.task_id] = extra.get(i.task_id, 0) + i.days
+    res = await compute_projected_finish_dates(db, ctx["tenant_id"], project_id,
+                                               extra_impacts=extra, dry_run=True)
+    if "computed" not in res:
+        return {"supported": False, "moves": [], "message": "This project's schedule engine recalculates on its own; no preview available."}
+    tasks = res["tasks"]
+    base = (await compute_projected_finish_dates(db, ctx["tenant_id"], project_id, dry_run=True))["computed"]
+    info = {t["id"]: t for t in await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "display_name": 1,
+         "is_critical_path": 1}).to_list(20000)}
+
+    def _cur(t):
+        b = base.get(t["id"]) or (None, None, 0)
+        return (b[0].isoformat() if b[0] else "", b[1].isoformat() if b[1] else "")
+    moves = []
+    for t in tasks:
+        new = res["computed"].get(t["id"])
+        if not new or not new[0] or not new[1]:
+            continue
+        cs, cf = _cur(t)
+        ns, nf = new[0].isoformat(), new[1].isoformat()
+        if (cs, cf) == (ns, nf) or not cf:
+            continue
+        from datetime import date as _d
+        days = working_days_between(_d.fromisoformat(cf), new[1])
+        if days == 0 and cs == ns:
+            continue
+        meta = info.get(t["id"], {})
+        moves.append({"task_id": t["id"], "activity_code": meta.get("activity_code"),
+                      "name": meta.get("display_name") or meta.get("description"),
+                      "start_from": cs, "start_to": ns, "finish_from": cf, "finish_to": nf,
+                      "days": days, "direct": t["id"] in extra,
+                      "critical": bool(meta.get("is_critical_path"))})
+    moves.sort(key=lambda m: (not m["direct"], -m["days"]))
+    cur_finish = max((v[1].isoformat() for v in base.values() if v and v[1]), default=None)
+    new_finish = max((v[1].isoformat() for v in res["computed"].values() if v and v[1]), default=None)
+    return {"supported": True, "moves": moves[:60], "total_moves": len(moves),
+            "project_finish_from": cur_finish, "project_finish_to": new_finish}

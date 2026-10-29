@@ -26,6 +26,94 @@ function NameRow({ s, value, onChange, onReject }) {
   );
 }
 
+const areaOf = (name) => ((name || "").includes(" › ") ? name.split(" › ")[0].trim() : "Other");
+
+function AreaGroup({ area, list, edits, setEdits, onReject, onApprove, busy }) {
+  const [areaText, setAreaText] = useState(area);
+  const [open, setOpen] = useState(true);
+  const renameArea = () => {
+    const next = areaText.trim();
+    if (!next || next === area || area === "Other") return;
+    setEdits((e) => {
+      const out = { ...e };
+      list.forEach((s) => {
+        const cur = e[s.id] ?? s.suggested_name;
+        out[s.id] = cur.startsWith(`${area} › `) ? `${next} › ${cur.slice(area.length + 3)}` : cur;
+      });
+      return out;
+    });
+  };
+  const slug = area.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return (
+    <div className="rounded-xl border border-border" data-testid={`names-area-${slug}`}>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-border/60">
+        <button type="button" onClick={() => setOpen(!open)} className="text-xs opacity-70 w-5" data-testid={`names-area-toggle-${slug}`}>{open ? "▾" : "▸"}</button>
+        {area === "Other" ? <span className="font-medium">Other</span> : (
+          <input data-testid={`names-area-input-${slug}`} value={areaText} onChange={(e) => setAreaText(e.target.value)} onBlur={renameArea}
+            title="Rename this area for every activity in it"
+            className="h-9 px-2.5 rounded-md border border-input bg-background text-sm font-medium min-w-[200px] focus:outline-none focus:ring-2 focus:ring-ring" />
+        )}
+        <span className="text-xs opacity-60">{list.length} activit{list.length === 1 ? "y" : "ies"}</span>
+        <button type="button" data-testid={`names-area-approve-${slug}`} onClick={onApprove} disabled={busy}
+          className="ml-auto h-9 px-3 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-500 disabled:opacity-50 inline-flex items-center gap-1.5 transition-colors">
+          <Check className="h-3.5 w-3.5" /> Approve this area</button>
+      </div>
+      {open && (
+        <div className="overflow-x-auto px-4">
+          <table className="w-full text-left">
+            <thead><tr className="text-[11px] uppercase tracking-wide opacity-60">
+              <th className="py-2 pr-3">Code</th><th className="py-2 pr-3">Current name</th><th className="py-2 pr-3 w-[45%]">Suggested name</th><th className="py-2 pr-3">Source</th><th /></tr></thead>
+            <tbody>{list.map((s) => (
+              <NameRow key={s.id} s={s} value={edits[s.id] ?? s.suggested_name}
+                onChange={(v) => setEdits((e) => ({ ...e, [s.id]: v }))} onReject={() => onReject(s.id)} />))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DigestTab({ projectId }) {
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.get(`/projects/${projectId}/schedule-digest/preview`).then(({ data }) => setD(data))
+      .catch((e) => { setD({ error: true }); toast.error(extractApiError(e, "Couldn't load digest")); });
+  }, [projectId]);
+  const sendNow = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/projects/${projectId}/schedule-digest/send-now`);
+      if (data.sent.length) toast.success(`Digest sent to ${data.sent.length} people`);
+      if (data.failed.length) toast.error(`Email failed for ${data.failed.length} — check the email provider key`);
+      if (!data.sent.length && !data.failed.length) toast.error("No admins or project managers to send to");
+    } catch (e) { toast.error(extractApiError(e, "Send failed")); } finally { setBusy(false); }
+  };
+  if (!d) return <Loader2 className="h-5 w-5 animate-spin" />;
+  if (d.error) return null;
+  const Sec = ({ title, items, render, empty, tid }) => (
+    <div data-testid={tid}><div className="text-sm font-semibold mb-1.5">{title} ({items.length})</div>
+      {items.length ? <ul className="space-y-1 text-sm">{items.map((x, i) => <li key={i} className="rounded-md border border-border/60 px-3 py-1.5">{render(x)}</li>)}</ul>
+        : <div className="text-sm opacity-60">{empty}</div>}</div>
+  );
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm opacity-75 flex-1 min-w-[260px]">Emailed every Friday at 7 AM site time to: <b>{d.recipients.join(", ") || "no admins / PMs yet"}</b></p>
+        <button type="button" data-testid="digest-send-now" onClick={sendNow} disabled={busy}
+          className="h-10 px-4 rounded-md border border-emerald-500/50 text-emerald-400 text-sm font-medium hover:bg-emerald-500/10 disabled:opacity-50 inline-flex items-center gap-2">
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />} Send it now</button>
+      </div>
+      <Sec tid="digest-logic" title="Logic changes waiting" items={d.logic_changes} empty="None"
+        render={(x) => <><b>{x.activity}</b> · {x.kind === "out_of_order" ? "work out of order" : "unplanned work"}</>} />
+      <Sec tid="digest-delays" title="Open delays" items={d.open_delays} empty="None"
+        render={(x) => <><b>{x.activities.join(", ") || "Delay"}</b> · {x.impact_days} impact day(s) · since {x.since}</>} />
+      <Sec tid="digest-slipped" title="Slipped activities" items={d.slipped} empty="Nothing has slipped"
+        render={(x) => <><b>{x.activity}</b> · {x.slip_days} working day(s) late · {x.planned_finish} → {x.projected_finish}{x.critical ? " · critical" : ""}</>} />
+    </div>
+  );
+}
+
 function NamesTab({ projectId }) {
   const [rows, setRows] = useState(null);
   const [edits, setEdits] = useState({});
@@ -48,10 +136,13 @@ function NamesTab({ projectId }) {
     try { await api.post(`/projects/${projectId}/activity-names/generate`); setJob({ status: "running" }); toast.success("AI is naming the activities…"); }
     catch (e) { toast.error(extractApiError(e, "Couldn't start")); }
   };
-  const approveAll = async () => {
+  const groups = Object.entries((rows || []).reduce((acc, r) => {
+    const a = areaOf(r.suggested_name); (acc[a] = acc[a] || []).push(r); return acc;
+  }, {})).sort(([a], [b]) => (a === "Other" ? 1 : b === "Other" ? -1 : a.localeCompare(b)));
+  const approve = async (list) => {
     setBusy(true);
     try {
-      const items = rows.map((s) => ({ id: s.id, name: (edits[s.id] ?? s.suggested_name) }));
+      const items = list.map((s) => ({ id: s.id, name: (edits[s.id] ?? s.suggested_name) }));
       const { data } = await api.post("/activity-name-suggestions/approve", { items });
       toast.success(`${data.approved} names approved`); load();
     } catch (e) { toast.error(extractApiError(e, "Approve failed")); } finally { setBusy(false); }
@@ -69,7 +160,7 @@ function NamesTab({ projectId }) {
           className="h-10 px-4 rounded-md border border-emerald-500/50 text-emerald-400 text-sm font-medium hover:bg-emerald-500/10 disabled:opacity-50 inline-flex items-center gap-2 transition-colors">
           {job.status === "running" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           {job.status === "running" ? "Naming…" : "Suggest names"}</button>
-        <button type="button" data-testid="names-approve-all" onClick={approveAll} disabled={busy || !rows?.length}
+        <button type="button" data-testid="names-approve-all" onClick={() => approve(rows)} disabled={busy || !rows?.length}
           className="h-10 px-4 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 disabled:opacity-50 inline-flex items-center gap-2 transition-colors">
           <Check className="h-4 w-4" /> Approve {rows?.length || 0}</button>
       </div>
@@ -77,14 +168,11 @@ function NamesTab({ projectId }) {
       {rows === null ? <Loader2 className="h-5 w-5 animate-spin" /> : rows.length === 0 ? (
         <div className="text-sm opacity-70 py-10 text-center" data-testid="names-empty">No suggestions waiting. Click “Suggest names” to have AI go through the schedule.</div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left" data-testid="names-table">
-            <thead><tr className="text-[11px] uppercase tracking-wide opacity-60">
-              <th className="py-2 pr-3">Code</th><th className="py-2 pr-3">Current name</th><th className="py-2 pr-3 w-[45%]">Suggested name</th><th className="py-2 pr-3">Source</th><th /></tr></thead>
-            <tbody>{rows.map((s) => (
-              <NameRow key={s.id} s={s} value={edits[s.id] ?? s.suggested_name}
-                onChange={(v) => setEdits((e) => ({ ...e, [s.id]: v }))} onReject={() => reject(s.id)} />))}</tbody>
-          </table>
+        <div className="space-y-4" data-testid="names-groups">
+          {groups.map(([area, list]) => (
+            <AreaGroup key={area} area={area} list={list} edits={edits} setEdits={setEdits}
+              onReject={reject} onApprove={() => approve(list)} busy={busy} />
+          ))}
         </div>
       )}
     </div>
@@ -157,9 +245,11 @@ export default function ScheduleReview() {
           <TabsList>
             <TabsTrigger value="logic" data-testid="tab-logic">Logic changes</TabsTrigger>
             <TabsTrigger value="names" data-testid="tab-names">Activity names</TabsTrigger>
+            <TabsTrigger value="digest" data-testid="tab-digest">Weekly digest</TabsTrigger>
           </TabsList>
           <TabsContent value="logic" className="mt-4"><LogicTab projectId={activeId} /></TabsContent>
           <TabsContent value="names" className="mt-4"><NamesTab projectId={activeId} /></TabsContent>
+          <TabsContent value="digest" className="mt-4"><DigestTab projectId={activeId} /></TabsContent>
         </Tabs>
       )}
     </div>
