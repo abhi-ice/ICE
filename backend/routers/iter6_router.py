@@ -195,6 +195,8 @@ async def export_daily_report_pdf(
         f"<td class='num'>{_html_escape(r.get('pct_complete_start_of_day') or 0)}%</td>"
         f"<td class='num'>{_html_escape(r.get('pct_complete_end_of_day') or 0)}%</td>"
         f"<td>{_html_escape(r.get('status_at_end_of_day') or 'not_started')}</td></tr>"
+        + (f"<tr><td></td><td colspan='5' class='muted'><b>Note:</b> {_html_escape(r.get('notes'))}</td></tr>"
+           if (r.get('notes') or '').strip() else "")
         for r in grid_field_only
     ) or "<tr><td colspan='6' class='muted'>No activities reported.</td></tr>"
 

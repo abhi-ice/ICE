@@ -55,7 +55,13 @@ export default function ConfirmActionDialog() {
 
   const isDanger = opts.danger !== false;     // default destructive
   const requireType = opts.requireType || null;
-  const confirmEnabled = !requireType || typed.trim() === requireType;
+  // requireReason: {label, min} — Confirm resolves with the typed reason.
+  const requireReason = opts.requireReason || null;
+  const reasonMin = requireReason?.min || 10;
+  const confirmEnabled = requireReason
+    ? typed.trim().length >= reasonMin
+    : (!requireType || typed.trim() === requireType);
+  const confirmValue = requireReason ? typed.trim() : true;
   const IconEl = opts.icon === "trash" ? Trash2 : AlertTriangle;
 
   return (
@@ -83,6 +89,26 @@ export default function ConfirmActionDialog() {
           </div>
         </DialogHeader>
 
+        {requireReason && (
+          <div>
+            <label className="block text-xs text-muted-foreground mb-1.5">
+              {requireReason.label || "Reason (saved to the audit trail)"}
+            </label>
+            <textarea
+              autoFocus
+              data-testid="confirm-action-reason-input"
+              rows={3}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              className="w-full px-2.5 py-2 rounded border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              placeholder={requireReason.placeholder || "Why is this being deleted?"}
+            />
+            <div className="text-[11px] text-muted-foreground mt-1" data-testid="confirm-action-reason-hint">
+              At least {reasonMin} characters ({typed.trim().length}/{reasonMin})
+            </div>
+          </div>
+        )}
+
         {requireType && (
           <div>
             <label className="block text-xs text-muted-foreground mb-1.5">
@@ -99,7 +125,7 @@ export default function ConfirmActionDialog() {
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && confirmEnabled) close(true);
+                if (e.key === "Enter" && confirmEnabled) close(confirmValue);
               }}
               className="w-full h-9 px-2.5 rounded border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               placeholder={requireType}
@@ -118,7 +144,7 @@ export default function ConfirmActionDialog() {
           <Button
             data-testid="confirm-action-confirm"
             variant={isDanger ? "destructive" : "default"}
-            onClick={() => close(true)}
+            onClick={() => close(confirmValue)}
             disabled={!confirmEnabled}
           >
             {opts.confirmText || (isDanger ? "Delete" : "Confirm")}

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sparkles, Loader2, Pencil, Copy as CopyIcon, RefreshCw, Trash2 } from "lucide-react";
 import api from "../../lib/api";
+import ActivityNoteField from "./ActivityNoteField";
 import { toast } from "../ui/sonner";
 import { getUser } from "../../lib/auth";
 import { localTodayISO } from "../../lib/dateUtil";
@@ -404,6 +405,21 @@ export default function DrGuidedDesktop({
     };
     commitChain.current[m.row.id] = (commitChain.current[m.row.id] || Promise.resolve()).then(run, run);
   }, [locked, lockedReason, overrides, reload, clearDraftIf]);
+
+  const saveNote = (row) => async (text) => {
+    if (needReason()) return false;
+    try {
+      await api.patch(`/daily-report-activities/${row.id}`, {
+        notes: text, ...(locked ? { edit_reason: lockedReason.trim() } : {}),
+      });
+      touch(row.id);
+      await reload();
+      return true;
+    } catch (e) {
+      toast.error(fmtErr(e, "Save note"));
+      return false;
+    }
+  };
 
   const clampToastAt = useRef({});
   const setProg = (m, v, immediate) => {
@@ -1294,6 +1310,18 @@ export default function DrGuidedDesktop({
             <div className="ra">
               <button className="btn small" onClick={() => openFlow(FLOW_crew(m))}>Add</button>
             </div>
+          </div>
+
+          {/* Row — Activity note (super's free-text note for this activity) */}
+          <div className="arow">
+            <div className="rl">Notes</div>
+            <div className="rc">
+              <ActivityNoteField value={r.notes} testid={`drgx-act-note-${r.id}`} className="gi"
+                disabled={locked && !lockedReasonOk}
+                disabledHint="Enter the edit reason at the top to change this note"
+                onSave={saveNote(r)} />
+            </div>
+            <div className="ra" />
           </div>
 
           {/* Row 3 — Issues & deliveries */}

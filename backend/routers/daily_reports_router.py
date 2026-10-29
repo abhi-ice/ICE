@@ -307,8 +307,83 @@ async def list_daily_reports(project_id: str, ctx: dict = Depends(require_tenant
     return [DailyReport(**d) for d in docs]
 
 
+async def _reverse_dr_schedule_effects(db, ctx: dict, dr: dict) -> dict:
+    """Undo what this report wrote onto schedule tasks: progress, status,
+    crew and hours; soft-delete unplanned tasks it created. Progress is only
+    rolled back when this report is still the latest one that set it."""
+    tid_tenant = ctx["tenant_id"]
+    dr_id = dr["id"]
+    rows = await db.daily_report_activities.find(
+        {"daily_report_id": dr_id}, {"_id": 0},
+    ).to_list(5000)
+    events = await db.task_sync_events.find(
+        tenant_filter(tid_tenant, {"daily_report_id": dr_id}), {"_id": 0},
+    ).sort("triggered_at", 1).to_list(20000)
+    first_before: dict = {}
+    for ev in events:
+        per = first_before.setdefault(ev.get("task_id"), {})
+        for k, v in (ev.get("fields_updated") or {}).items():
+            per.setdefault(k, (v or {}).get("before"))
+    hours_by_task: dict = {}
+    for r in rows:
+        t = r.get("schedule_activity_id")
+        if t:
+            hours_by_task[t] = hours_by_task.get(t, 0.0) + float(r.get("hours_worked") or 0)
+    task_ids = set(hours_by_task) | {t for t in first_before if t}
+    reverted, removed = [], []
+    now_iso = utc_now().isoformat()
+    for task_id in task_ids:
+        task = await db.tasks.find_one(tenant_filter(tid_tenant, {"id": task_id}), {"_id": 0})
+        if not task:
+            continue
+        if task.get("created_from_daily_report_id") == dr_id:
+            await db.tasks.update_one(
+                tenant_filter(tid_tenant, {"id": task_id}),
+                {"$set": {"status": "deleted", "updated_at": now_iso}},
+            )
+            await write_audit(
+                tenant_id=tid_tenant, table_name="tasks", op="DELETE_FROM_DR_DELETE",
+                record_id=task_id, before=task, after={"status": "deleted"},
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+            removed.append(task_id)
+            continue
+        task_set: dict = {"updated_at": now_iso, "progress_lock_at": now_iso}
+        dr_hours = hours_by_task.get(task_id, 0.0)
+        if dr_hours:
+            task_set["actual_hours_to_date"] = max(
+                0.0, float(task.get("actual_hours_to_date") or 0) - dr_hours)
+        if (task.get("last_synced_from_dr") or {}).get("daily_report_id") == dr_id:
+            fb = first_before.get(task_id, {})
+            for k in ("pct_complete", "status", "current_crew_id", "prev_pct_complete"):
+                if k in fb:
+                    task_set[k] = fb[k]
+            if "pct_complete" not in fb:
+                row = next((r for r in rows if r.get("schedule_activity_id") == task_id), None)
+                if row is not None:
+                    sod = float(row.get("pct_complete_start_of_day") or 0)
+                    task_set["pct_complete"] = sod
+                    task_set["status"] = ("complete" if sod >= 100
+                                          else "in_progress" if sod > 0 else "not_started")
+            # Hand the "last set by" marker back to the previous report.
+            task_set["last_synced_from_dr"] = fb.get("last_synced_from_dr")
+        await db.tasks.update_one(
+            tenant_filter(tid_tenant, {"id": task_id}),
+            {"$set": task_set, "$pull": {"crew_assignment_history": {"daily_report_id": dr_id}}},
+        )
+        after = await db.tasks.find_one(tenant_filter(tid_tenant, {"id": task_id}), {"_id": 0})
+        await write_audit(
+            tenant_id=tid_tenant, table_name="tasks", op="REVERSED_BY_DR_DELETE",
+            record_id=task_id, before=task, after=after,
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+        reverted.append(task_id)
+    return {"reverted": reverted, "removed": removed}
+
+
 @router.delete("/daily-reports/{daily_report_id}")
-async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_tenant)):
+async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None,
+                              ctx: dict = Depends(require_tenant)):
     """Item 8 (2026-05-06) — hard-delete a draft daily report and cascade.
 
     Forbidden once status != 'draft' (submitted/approved reports are part
@@ -326,10 +401,13 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
     )
     if not before:
         raise HTTPException(404, "Daily report not found")
-    if before.get("status") != "draft":
+    reason = (reason or "").strip()
+    if before.get("status") != "draft" and len(reason) < EDIT_REASON_MIN_LEN:
         raise HTTPException(
-            403, f"Cannot delete a {before.get('status')} daily report — only drafts can be deleted",
+            422, f"Enter a reason (at least {EDIT_REASON_MIN_LEN} characters) to delete a "
+                 f"{before.get('status')} daily report.",
         )
+    reversal = await _reverse_dr_schedule_effects(db, ctx, before)
 
     # Bucket C3b Phase 5 — record what we're about to cascade-delete so
     # the audit chain captures the presence rows' final state. Without
@@ -370,22 +448,7 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
         {"$set": {"linked_daily_report_id": None}},
     )
 
-    # Bucket C1 Phase 6 — clear the sync-layer marker on any task whose
-    # last_synced_from_dr points at this DR. The task data persists
-    # (pct_complete, status, current_crew_id all stay) — only the
-    # "this came from DR X" pointer is cleared. Status recompute below
-    # picks up the new state.
-    affected_task_docs = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"last_synced_from_dr.daily_report_id": daily_report_id}),
-        {"_id": 0, "id": 1},
-    ).to_list(2000)
-    affected_task_ids = [t["id"] for t in affected_task_docs]
-    if affected_task_ids:
-        await db.tasks.update_many(
-            tenant_filter(ctx["tenant_id"], {"id": {"$in": affected_task_ids}}),
-            {"$set": {"last_synced_from_dr": None,
-                      "updated_at": utc_now().isoformat()}},
-        )
+    affected_task_ids = reversal["reverted"]
 
     await db.daily_reports.delete_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
@@ -400,14 +463,24 @@ async def delete_daily_report(daily_report_id: str, ctx: dict = Depends(require_
                 db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
             )
+    if affected_task_ids or reversal["removed"]:
+        from services.cpm import auto_recompute_after_event
+        await auto_recompute_after_event(
+            ctx["tenant_id"], before.get("project_id"),
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     await write_audit(
-        tenant_id=ctx["tenant_id"], table_name="daily_reports", op="DELETE",
-        record_id=daily_report_id, before=before, after=None,
+        tenant_id=ctx["tenant_id"], table_name="daily_reports",
+        op="DELETE" if before.get("status") == "draft" else "DELETE_LOCKED_WITH_REASON",
+        record_id=daily_report_id, before=before,
+        after={"reason": reason} if reason else None,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     return {"ok": True,
             "cascade_unlinked": cascade_collections + ["coordination_events"],
-            "cascade_deleted": {"daily_presence": len(presence_to_delete)}}
+            "cascade_deleted": {"daily_presence": len(presence_to_delete)},
+            "schedule_reverted": {"tasks_reverted": len(affected_task_ids),
+                                  "unplanned_tasks_removed": len(reversal["removed"])}}
 
 
 @router.get("/daily-reports/{daily_report_id}", response_model=DailyReport)
@@ -917,9 +990,9 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     if history_push is not None:
         update_doc["$push"] = {"crew_assignment_history": history_push}
 
-    # Only fire if there's something meaningful to write (always the case
-    # because last_synced_from_dr is always set, but be explicit).
-    if task_before:
+    # A notes-only edit never touches the schedule task.
+    notes_only = bool(updates) and set(updates) <= {"notes"}
+    if task_before and not notes_only:
         await db.tasks.update_one(
             tenant_filter(ctx["tenant_id"], {"id": task_id}),
             update_doc,

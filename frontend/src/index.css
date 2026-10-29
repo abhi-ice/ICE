@@ -4896,6 +4896,9 @@ html[data-theme="dark"] .copilot-artifact-preview {
     cursor: pointer; display: inline-flex; align-items: center; gap: 5px; min-height: 40px;
   }
   .dr-flow-muted-note { font-size: 11px; color: var(--v4-fg-muted); margin-top: 6px; }
+  .dr-flow-note-input { width: 100%; min-height: 64px; resize: vertical; border-radius: 10px; padding: 10px 12px; font-size: 16px; background: var(--v4-bg-elevated, rgba(255,255,255,0.04)); border: 1px solid var(--v4-border); color: var(--v4-fg-primary); transition: border-color 150ms ease; }
+  .dr-flow-note-input:focus { outline: none; border-color: #34d399; }
+  .dr-flow-note-input:disabled { opacity: 0.55; }
 
   /* issues bar */
   .dr-flow-issuebar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; flex-wrap: wrap; }

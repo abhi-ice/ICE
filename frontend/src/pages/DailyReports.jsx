@@ -11,7 +11,7 @@
  */
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import api from "../lib/api";
+import api, { extractApiError } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
 import { localTodayISO, localISODate, formatDateDisplay } from "../lib/dateUtil";
@@ -99,6 +99,7 @@ import DrVoiceNotes, { listPendingNotes as listPendingVoiceNotes } from "../comp
 // ICE-DR-guided.html mockup: accordion activity cards + guided prompt
 // dialogs, wired to the same endpoints as the mobile flow.
 import DrGuidedDesktop from "../components/dr/DrGuidedDesktop";
+import ActivityNoteField from "../components/dr/ActivityNoteField";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
@@ -435,22 +436,28 @@ export default function DailyReports() {
   };
 
   const removeReport = async (r) => {
-    if (r.status !== "draft") return;
-    // pt.37: themed modal (was window.confirm). Medium-stakes since
-    // it touches child records' daily_report_id.
-    const ok = await confirmAction({
-      title: `Delete draft daily report for ${formatDateDisplay(r.report_date)}?`,
-      message: "Linked delays / QC / safety / RFIs / photos keep their records, but their daily_report_id will be cleared.",
-      confirmText: "Delete draft",
+    const isDraft = r.status === "draft";
+    // pt.37: themed modal (was window.confirm). Submitted/approved reports
+    // need a written reason — it goes into the audit trail.
+    const res = await confirmAction({
+      title: isDraft
+        ? `Delete draft daily report for ${formatDateDisplay(r.report_date)}?`
+        : `Delete ${r.status} daily report for ${formatDateDisplay(r.report_date)}?`,
+      message: isDraft
+        ? "Any progress, crew and hours this report put on the schedule will be undone. Linked delays / QC / safety / RFIs / photos keep their records."
+        : "This report is part of the project record. Deleting it undoes the progress, crew and hours it put on the schedule. Linked delays / QC / safety / RFIs / photos keep their records.",
+      confirmText: "Delete report",
       icon: "trash",
+      ...(isDraft ? {} : { requireReason: { min: 10, label: "Reason for deleting (saved to the audit trail)" } }),
     });
-    if (!ok) return;
+    if (!res) return;
     try {
-      await api.delete(`/daily-reports/${r.id}`);
-      toast.success(`Deleted daily report for ${formatDateDisplay(r.report_date)}`);
+      const qs = typeof res === "string" ? `?reason=${encodeURIComponent(res)}` : "";
+      await api.delete(`/daily-reports/${r.id}${qs}`);
+      toast.success(`Deleted daily report for ${formatDateDisplay(r.report_date)} — schedule effects undone`);
       load();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Delete failed");
+      toast.error(extractApiError(e, "Delete failed"));
     }
   };
 
@@ -534,7 +541,6 @@ export default function DailyReports() {
           <thead><tr><th>Date</th><th>Status</th><th className="max-md:hidden">Submitted</th><th className="w-32"></th></tr></thead>
           <tbody>
             {reports.map((r) => {
-              const canDelete = r.status === "draft";
               return (
                 <tr key={r.id} data-testid={`dr-row-${r.id}`}>
                   <td className="font-mono">{formatDateDisplay(r.report_date)}</td>
@@ -547,9 +553,8 @@ export default function DailyReports() {
                     <button
                       data-testid={`delete-dr-${r.id}`}
                       onClick={() => removeReport(r)}
-                      disabled={!canDelete}
-                      title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
-                      className={`h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded inline-flex align-middle ${canDelete ? "text-red-500 hover:bg-red-50" : "text-slate-300 cursor-not-allowed"}`}
+                      title="Delete report"
+                      className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded inline-flex align-middle text-red-500 hover:bg-red-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -567,7 +572,6 @@ export default function DailyReports() {
           detail header. md:hidden so desktop is untouched. */}
       <div className="md:hidden flex flex-col gap-2" data-testid="dr-list-mobile">
         {reports.map((r) => {
-          const canDelete = r.status === "draft";
           return (
             <div key={r.id} data-testid={`dr-card-${r.id}`}
               className={`rounded-xl border p-3${hotId === r.id ? " dr-flow-card-hot" : ""}`}
@@ -591,9 +595,9 @@ export default function DailyReports() {
                 <div className="ml-auto flex items-center gap-2">
                   {/* spec #8 — Export moved OFF the list card into the DR
                       detail header (ExportDropdown, landing + review). */}
-                  <button data-testid={`delete-dr-m-${r.id}`} onClick={() => removeReport(r)} disabled={!canDelete}
-                    title={canDelete ? "Delete draft" : "Submitted/approved reports cannot be deleted"}
-                    className={`h-9 w-9 grid place-items-center rounded-lg ${canDelete ? "text-red-500" : "text-slate-300 cursor-not-allowed"}`}
+                  <button data-testid={`delete-dr-m-${r.id}`} onClick={() => removeReport(r)}
+                    title="Delete report"
+                    className="h-9 w-9 grid place-items-center rounded-lg text-red-500"
                     style={{ border: "1px solid var(--v4-border)" }}>
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -6296,6 +6300,16 @@ function GuidedDrFlow({
             {thisPresence.length === 0 && (
               <div className="dr-flow-muted-note">No crew on this activity yet.</div>
             )}
+          </div>
+
+          {/* Activity note card */}
+          <div className="dr-flow-block" data-testid={`dr-flow-note-block-${screen}`}>
+            <div className="dr-flow-block-h"><MessageSquare className="h-4 w-4" style={{ color: "#34d399" }} /> Notes</div>
+            <ActivityNoteField key={r.id} value={r.notes} testid={`dr-flow-act-note-${r.id}`}
+              className="dr-flow-note-input"
+              disabled={locked && !lockedReasonOk}
+              disabledHint="Enter the edit reason at the top to change this note"
+              onSave={(t) => updateRow(r.id, { notes: t })} />
           </div>
 
           {/* Issues & deliveries card (spec #3 — heading renamed, green
