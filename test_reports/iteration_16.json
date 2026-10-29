@@ -1,0 +1,38 @@
+{
+  "summary": "Tested the DR delete feature (submitted/approved deletes need a reason, schedule effects get undone) and per-activity notes (desktop guided view, mobile flow, locked edit reason, PDF). Regression manual_dr_delete_reversal.py: ALL PASS. New pytest test_dr_delete_and_notes.py: 4 of 5 pass. The 1 failure is a real reversal bug when reports are deleted out of order. UI checked on desktop 1920 and mobile 390: trash buttons are enabled for every status, the draft dialog has no reason box, the submitted/approved dialog has a reason box that stays disabled under 10 chars, deleted reports leave the list and a toast shows. Desktop and mobile notes save on blur ('Note saved') and persist after reload. On submitted DRs the note is disabled until an edit reason is entered, then it saves. A note-only edit on an older submitted DR did not touch task %. Notes show up in the pdf-rich export as 'Note: ...'.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "DELETE /api/daily-reports/{id} (_reverse_dr_schedule_effects)", "issue": "Out-of-order delete leaves a ghost value. Setup: DR1 (older) sets task to 25%, DR2 (newer) to 55%. Delete DR1 first: task correctly stays 55% and DR1's hours are subtracted. Then delete DR2: task goes back to 25%, which was DR1's value, and DR1 no longer exists. Expected 0%. last_synced_from_dr is also handed back to the deleted DR1. Root cause: the restore uses the 'before' values in DR2's task_sync_events (and DR2 row pct_complete_start_of_day), which were recorded while DR1 still existed. Deleting DR1 never rewrites those values. The same happens with 3+ DRs when a middle one is deleted.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "DELETE /api/daily-reports/{id}", "issue": "The docstring still says 'Forbidden once status != draft'. It is out of date."},
+      {"endpoint": "DELETE /api/daily-reports/{id}", "issue": "task_sync_events for the deleted DR are left in place (orphans). Reversal sets progress_lock_at=now on every affected task, so any other open DR tab with an older stamp will get a 409 on its next row PATCH, note-only saves included, because the stale check runs before the notes_only skip."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "DR list desktop", "issues": ["The trash icon is very small and sits on its own line under 'Open' instead of inline. Each row looks misaligned."]},
+      {"screen": "Desktop guided DR, submitted report", "issues": ["The 'Submitted report' reason card looks unstyled at 1920: the lock icon is on its own line, the textarea is tiny (about 170px wide) and the char counter is plain text. The mobile version of the same card is styled correctly."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_dr_delete_and_notes.py", "/app/backend/tests/manual_dr_delete_reversal.py", "/app/backend/tests/seed_ui_dr.py", "/app/test_reports/pytest/pytest_dr_delete_notes.xml"],
+  "action_items": [
+    "Fix the out-of-order reversal in _reverse_dr_schedule_effects. When this DR owns the task, rebuild pct_complete/status/last_synced_from_dr from the latest REMAINING DR row for that task (by report_date, excluding the DR being deleted). Only fall back to the earliest pre-DR baseline when no other DR row exists. Alternatively, when deleting a non-owning older DR, fix up the newer DRs' event 'before' values and pct_complete_start_of_day.",
+    "Optional: skip the progress_lock_at stale-409 check for notes-only PATCHes, and delete or tombstone task_sync_events for deleted DRs.",
+    "Optional design polish: the inline trash button on the desktop list, and LockedReasonCard styling on the desktop guided view."
+  ],
+  "critical_code_review_comments": [
+    "Reversal restore values come from frozen event 'before' snapshots, so they go stale once an earlier DR is deleted (see critical issue).",
+    "DailyReports.jsx is about 7900 lines and DrGuidedDesktop.jsx about 1670 lines. Both are well over the size guideline.",
+    "ActivityNoteField: 'Note saved' clears after 2s. Fine for users, but tests must read it immediately after blur."
+  ],
+  "updated_files": ["/app/backend/tests/test_dr_delete_and_notes.py (new)", "/app/backend/tests/seed_ui_dr.py (new)"],
+  "success_rate": {"backend": "95% (1 edge-case failure across 23 checks)", "frontend": "100%"},
+  "seed_data_creation": "Created project TEST_UI_DR_Notes and DRs under qa.super@example.com, then deleted the project. The pytest fixture deletes its own TEST_DR_Delete_Notes project. Each run of manual_dr_delete_reversal.py leaves behind a 'QA Reversal Project'.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Login: qa.super@example.com / QaSuper!2026. Set the active project via localStorage key 'ice.active_project_id'. Open a DR directly with /daily-reports?openId={id}. The mobile flow uses dr-flow-start then dr-flow-next to reach the activity screen. The locked reason textarea is dr-flow-locked-reason on both desktop and mobile. An empty DR cannot be submitted (it needs an activity or the no-work flow). Run: cd /app/backend && pytest tests/test_dr_delete_and_notes.py; the out-of-order test should pass once the fix is in.",
+  "rca of the issue": "Repro: task T. DR1 (day1) sets EOD 25%, DR2 (day2) sets EOD 55%. DELETE DR1 leaves the task at 55%, which is correct. DELETE DR2 leaves the task at 25%, but it should be 0. The DR2 delete takes first_before['pct_complete'] from DR2's task_sync_events, which was 25 at the time DR1 existed, and hands last_synced_from_dr back to DR1. Fix: work out what to restore from the DR rows still in the DB, not from historical snapshots."
+}

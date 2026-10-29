@@ -538,7 +538,7 @@ export default function DailyReports() {
       {/* Desktop table (unchanged) — hidden on phones. */}
       <div className="bg-card border border-border rounded-lg overflow-hidden max-md:hidden">
         <table className="w-full dense-table">
-          <thead><tr><th>Date</th><th>Status</th><th className="max-md:hidden">Submitted</th><th className="w-32"></th></tr></thead>
+          <thead><tr><th>Date</th><th>Status</th><th className="max-md:hidden">Submitted</th><th className="w-40"></th></tr></thead>
           <tbody>
             {reports.map((r) => {
               return (
@@ -546,7 +546,7 @@ export default function DailyReports() {
                   <td className="font-mono">{formatDateDisplay(r.report_date)}</td>
                   <td><StatusPill status={r.status} /></td>
                   <td className="text-xs max-md:hidden">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
-                  <td className="text-right">
+                  <td className="text-right whitespace-nowrap">
                     <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline mr-3">
                       Open
                     </button>

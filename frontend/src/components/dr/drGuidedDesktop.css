@@ -352,3 +352,12 @@ html[data-theme="dark"] .drgx-toast,html.dark .drgx-toast{background:#ececf0;col
   .drgx .opts.two{grid-template-columns:1fr}
   .drgx .g2{grid-template-columns:1fr}
 }
+
+/* Locked-report reason card (shared LockedReasonCard; mobile styles live in index.css) */
+.drgx .dr-flow-reason{border:1px solid rgba(240,115,106,.45);background:rgba(240,115,106,.08);border-radius:12px;padding:12px 14px;margin-bottom:16px}
+.drgx .dr-flow-reason.ok{border-color:rgba(16,185,129,.45);background:rgba(16,185,129,.07)}
+.drgx .dr-flow-reason .t{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--fg);margin-bottom:8px}
+.drgx .dr-flow-reason textarea{width:100%;min-height:56px;resize:vertical;background:var(--input-bg);border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:8px 10px;font-size:14px;font-family:inherit;transition:border-color .15s ease}
+.drgx .dr-flow-reason textarea:focus{outline:none;border-color:#10b981}
+.drgx .dr-flow-reason .s{font-size:11px;opacity:.7;margin-top:6px}
+.drgx .dr-flow-reason.ok .s{color:#10b981;opacity:1}
