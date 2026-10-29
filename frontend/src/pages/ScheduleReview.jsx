@@ -17,7 +17,7 @@ function NameRow({ s, value, onChange, onReject }) {
         <input data-testid={`name-input-${s.id}`} value={value} onChange={(e) => onChange(e.target.value)}
           className="w-full h-9 px-2.5 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
       </td>
-      <td className="py-2 pr-3 text-[11px] opacity-60">{s.source === "ai" ? "AI" : "Headings"}</td>
+      <td className="py-2 pr-3 text-[11px] opacity-60">{s.source === "ai" ? "AI" : s.source === "dates" ? "Dates" : "Headings"}</td>
       <td className="py-2 text-right">
         <button type="button" data-testid={`name-reject-${s.id}`} onClick={onReject} title="Reject"
           className="h-8 w-8 inline-flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-400"><X className="h-4 w-4" /></button>

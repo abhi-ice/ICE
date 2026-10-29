@@ -762,3 +762,15 @@ See `/app/memory/test_credentials.md`.
 - UI: ConfirmActionDialog `requireReason` option; trash enabled for all statuses (desktop + mobile list); ActivityNoteField (components/dr) on desktop guided card ("Notes" row) and mobile activity screen ("Notes" card); locked DR requires edit reason. Desktop locked-reason card styled.
 - PDF (iter6_router pdf-rich): "Note: …" row under each activity with a note.
 - Tests: tests/manual_dr_delete_reversal.py, tests/test_dr_delete_and_notes.py, tests/test_dr_delete_iter17.py — all pass (iteration_16/17).
+
+## 2026-10-29 — One-way DR → schedule model (Phase "field-driven schedule")
+- New DRs start EMPTY; "Add activity" picker (desktop drgx-add-activity, mobile dr-flow-add-activity / dr-flow-empty-add-activity) with search; field work only (paperwork excluded); shows display_name / section_path. After add, the activity opens.
+- Open delay gate: POST /daily-reports/{id}/grid → 409 {code:"open_delay"}; picker offers resolve (optional comment) then adds.
+- Delays: new delays stamped push_model="exact"; status in_progress when impact>0. Resolved exact delays keep pushing by actual_impact_days until DR actuals take over (task_status._exact_resolved_delay_impacts). Not started → start+finish move; started → finish moves.
+- Actuals: services/schedule_feedback.recompute_task_actuals (first worked DR day / first 100% day), actuals_source="daily_report"; engine uses actual_start/finish (compute_projected_finish_dates).
+- Carried-forward open delays card (GET /daily-reports/{id}/carried-delays) on desktop + mobile.
+- AI logic proposals (db.logic_proposals): out-of-order (also when FF_SLIDER_GATING blocks progress) + unplanned work; admin approves/edits/rejects on /schedule-review (validation: codes exist, no self, no loops).
+- AI activity names (db.activity_name_suggestions) reviewed on /schedule-review; NO WBS numbers/codes in names (_clean_name); fallback without AI = planned date window for duplicates.
+- One-time prod job services/one_time_migrations.py (db.migrations _id claim): project 6007bdf1-a09d-4de3-a55b-cb5117c64e36 — delete its DR(s) (with reversal) + all delays (audited), queue name suggestions (pending approval).
+- NOTE: AI goes through anthropic_compat shim using ANTHROPIC_API_KEY; preview key is invalid (401) → rule-based fallbacks.
+- Tests: tests/manual_schedule_feedback.py, tests/test_schedule_review_iter18.py (iteration_18).

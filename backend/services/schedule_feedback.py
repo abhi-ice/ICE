@@ -244,15 +244,41 @@ NAME_SYSTEM = (
     "(section_path) and the name of the nearest heading-like rows around them. Output ONE JSON "
     "array only: [{\"code\": str, \"name\": str}] for EVERY input activity. Format names as "
     "'Area or phase › Activity' (max 70 chars, use ' › '). Keep the original trade words; add the "
-    "phase/area/floor/system that distinguishes duplicates. Never invent scope."
+    "phase/area/floor/system that distinguishes duplicates. Never invent scope. NEVER include WBS "
+    "numbers, outline numbers or activity codes in a name."
 )
+
+
+_WBS_RE = re.compile(r"\(?\b(?:WBS\s*)?\d+(?:\.\d+)+\b\)?", re.IGNORECASE)
+
+
+def _clean_name(name: str, code: Optional[str]) -> str:
+    """Strip WBS/outline numbers and the activity code from a name."""
+    out = _WBS_RE.sub("", name)
+    if code:
+        out = out.replace(code, "")
+    out = re.sub(r"\s*›\s*(›\s*)+", " › ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ›·-–,")
+    return out[:120]
+
+
+def _window_label(t: dict) -> Optional[str]:
+    ps = _d(t.get("planned_start"))
+    pf = _d(t.get("planned_finish"))
+    if not ps:
+        return None
+    if pf and pf != ps:
+        return f"{ps.strftime('%b')} {ps.day}–{pf.strftime('%b')} {pf.day}" if ps.month != pf.month \
+            else f"{ps.strftime('%b')} {ps.day}–{pf.day}"
+    return f"{ps.strftime('%b')} {ps.day}"
 
 
 def heading_name(t: dict) -> Optional[str]:
     path = [s for s in (t.get("section_path") or []) if s]
     if not path:
         return None
-    return " › ".join(path[-2:] + [t.get("description") or t.get("activity_code")])[:120]
+    return _clean_name(" › ".join(path[-2:] + [t.get("description") or t.get("activity_code")]),
+                       t.get("activity_code")) or None
 
 
 async def generate_name_suggestions(db, tenant_id: str, project_id: str, *, auto_approve: bool = False) -> dict:
@@ -260,7 +286,7 @@ async def generate_name_suggestions(db, tenant_id: str, project_id: str, *, auto
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
                                   "work_category": {"$nin": list(PAPERWORK)}}),
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "wbs": 1,
-         "section_path": 1, "display_name": 1, "planned_start": 1},
+         "section_path": 1, "display_name": 1, "planned_start": 1, "planned_finish": 1},
     ).to_list(5000)
     tasks.sort(key=lambda t: (str(t.get("wbs") or ""), str(t.get("activity_code") or "")))
     names = {t["id"]: (heading_name(t), "headings") for t in tasks}
@@ -273,7 +299,17 @@ async def generate_name_suggestions(db, tenant_id: str, project_id: str, *, auto
         for item in out if isinstance(out, list) else []:
             t = by_code.get(str(item.get("code"))) if isinstance(item, dict) else None
             if t and item.get("name"):
-                names[t["id"]] = (str(item["name"]).strip()[:120], "ai")
+                clean = _clean_name(str(item["name"]), t.get("activity_code"))
+                if clean:
+                    names[t["id"]] = (clean, "ai")
+    # No AI (or AI failed): tell duplicate names apart by their planned window.
+    from collections import Counter
+    dup = Counter((t.get("description") or "").strip().lower() for t in tasks)
+    for t in tasks:
+        if names[t["id"]][0] is None and dup[(t.get("description") or "").strip().lower()] > 1:
+            win = _window_label(t)
+            if win:
+                names[t["id"]] = (f"{t.get('description')} · {win}"[:120], "dates")
     now = utc_now().isoformat()
     await db.activity_name_suggestions.update_many(
         tenant_filter(tenant_id, {"project_id": project_id, "status": "pending"}),

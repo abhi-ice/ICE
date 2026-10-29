@@ -1,0 +1,44 @@
+{
+  "summary": "Tested the one-way 'Daily Reports drive the schedule' model end to end. Backend: manual_schedule_feedback.py printed ALL PASS (21 checks). manual_dr_delete_reversal.py printed ALL PASS. The 8 tests in test_dr_delete_and_notes.py + test_dr_delete_iter17.py pass. The 6 tests in the new test_schedule_review_iter18.py pass: picker drops all 3 paperwork categories and rows already on the report, and carries open_delay_count/name; grid add returns 409 open_delay with impact_days; carried-delays excludes the delay's own report; names generate/poll/approve sets display_name; logic 404 on an unknown id; the super role gets 403 on all 6 review endpoints. Desktop at 1920x800: a new DR shows 'No activities yet' and drgx-add-activity. The picker lists only field work (no paperwork), shows the heading path, and marks open delays with a badge. Search filters. Picking an activity adds it and opens its card. An activity with an open delay shows activity-picker-delay-panel ('3 impact days'); the optional note plus Resolve & add resolves it (resolved_note and actual_impact_days=2 stored, task slip=2) and adds it. The carried-delays card resolves an item and disappears. Mobile at 390x844: dr-flow-empty-add-activity shows; after adding, the app goes to that activity's screen; dr-flow-add-activity sits below the list; the carried card resolves with an empty comment. Approved names show on desktop card titles, mobile list/activity screens and the picker. Schedule review page: names tab with inline edit + Approve all persisted (an edited name was saved as edited); logic tab approve with edited 'L100 SS+2' set the task predecessors to SS lag 2, reject left them unchanged. Found 1 functional UI bug: the carried card goes stale after a resolve in the picker. Also: AI refinement fails in preview because ANTHROPIC_API_KEY is invalid, so rule-based fallback is used.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "services/schedule_feedback._ask_ai (names + logic AI refinement)", "issue": "Every AI call fails with Anthropic 401 'invalid x-api-key'. The server.py shim routes emergentintegrations.llm.chat to api.anthropic.com using ANTHROPIC_API_KEY, which is invalid in preview. Fallback works: proposals get ai_status 'failed' and a 'Rule-based draft'. But names are produced ONLY for tasks with section_path, so a schedule without headings gets 0 name suggestions (job done, suggested=0)."},
+      {"endpoint": "POST /api/logic-proposals/{id}/approve", "issue": "Predecessor codes are not checked: they may not exist in the project, may point to the task itself, or may create a cycle. Bad logic can be written to the task."},
+      {"endpoint": "POST /api/logic-proposals/{id}/reject", "issue": "Returns 200 {ok:true} even for an unknown or already-decided proposal (approve returns 404 in that case)."},
+      {"endpoint": "GET /api/projects/{pid}/activity-names/job", "issue": "Has no role_required check, unlike the other review endpoints. Low risk, since it is read-only job status."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Desktop DR: resolve an open delay via the picker ('Resolve & add')", "issue": "CarriedDelaysCard does not refetch after the picker resolves a delay. The resolved delay stays listed with a Resolve button until something else reloads the card. Verified: after Resolve & add on C100, the card still showed both delays, though the DB had status=resolved. RCA: CarriedDelaysCard's load() depends only on [reportId], and onAdded only calls the parent reload(). Fix: pass a refreshKey/version prop (bumped in onAdded) into CarriedDelaysCard's load deps, in both DrGuidedDesktop.jsx:1544 and DailyReports.jsx:6170.", "affected_selectors": ["carried-delays-card", "activity-picker-resolve-confirm"]}
+    ],
+    "design_issues": [
+      {"screen": "ActivityPickerDialog (mobile 390px)", "issues": ["Long names overflow the item card: 'Building B › Foundations › Concrete slab' is clipped at the right edge, under the + icon.", "Once a name is approved ('Building A › Level 1 › Electrical'), the section_path header above it ('BUILDING A › LEVEL 1') repeats the same headings. Consider hiding the header when display_name already contains it."]},
+      {"screen": "Mobile DR landing", "issues": ["dr-flow-add-activity subtitle 'Search the schedule for another activity worked today' runs past the chevron / card edge at 390px."]},
+      {"screen": "Desktop DR Today's activities", "issues": ["After a second activity is added, the earlier collapsed card shrinks to half width (left column) while the newly opened card spans full width, leaving an empty right half. The layout looks uneven."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_schedule_review_iter18.py", "/app/backend/tests/seed_ui_iter18.py", "/app/backend/tests/manual_schedule_feedback.py", "/app/backend/tests/manual_dr_delete_reversal.py", "/app/test_reports/pytest/pytest_iter18.xml", "/app/test_reports/pytest/pytest_iter18_review.xml"],
+  "action_items": [
+    "Refresh CarriedDelaysCard after the picker's Resolve & add (desktop + mobile)",
+    "Fix ANTHROPIC_API_KEY in preview (or drop the shim so the Emergent gateway is used); otherwise AI names and logic refinement never run",
+    "Validate predecessor codes on logic approve (exist in project, not self, no cycle)",
+    "Make reject return 404 for an unknown or already-decided proposal, matching approve",
+    "Wrap long names in the mobile picker; avoid repeating the heading in the picker once a display_name is approved"
+  ],
+  "critical_code_review_comments": [
+    "Without AI, name suggestions need section_path. Imported schedules that have no section_path but do have WBS/heading rows get no suggestions. Consider a WBS-based fallback.",
+    "activity_picker reads daily_report_activities without tenant_filter (it relies on the UUID). Wrapping it in tenant_filter would be safer.",
+    "ActivityPickerDialog.resolveAndAdd PATCHes the delays one by one. If one fails partway, earlier delays stay resolved but the activity is not added, with no rollback or message saying which delays were resolved.",
+    "daily_reports_router.py (~6k-line DailyReports.jsx as well) remains far over 700 lines"
+  ],
+  "updated_files": ["/app/backend/tests/test_schedule_review_iter18.py (new)", "/app/backend/tests/seed_ui_iter18.py (new)"],
+  "success_rate": {"backend": "100% (35/35 checks)", "frontend": "~93% (1 integration staleness bug; all requested testids and flows work)"},
+  "test_credentials": "qa.super@example.com / QaSuper!2026 (admin). test_schedule_review_iter18.py invites + accepts a throwaway 'super' user (test_super_*@example.com). It was deleted after the run.",
+  "seed_data_creation": "seed_ui_iter18.py creates the 'TEST_UI_iter18' project: E100/E200 'Electrical' with different section_path, C100/C200 with open delays on an older DR, paperwork P100, and 3 DRs. All TEST_*, 'QA Feedback Project' and 'QA Reversal Project' projects plus the test users were deleted afterwards.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Login on /login: wait for input[type=email] before filling (the landing page sometimes loads first). Set localStorage 'ice.active_project_id' to choose the project. Desktop: open-dr-{id}; mobile: open-dr-m-{id}. The carried-delays-card loads async, so wait_for_selector on it. section_path cannot be set via POST /api/tasks; seed scripts set it directly in Mongo. Creating out-of-order progress (PATCH pct on a task whose FS predecessor is incomplete) returns 422 and creates a pending logic proposal."
+}

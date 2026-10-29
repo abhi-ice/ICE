@@ -10,7 +10,7 @@ from pydantic import Field
 from audit import write_audit
 from auth import require_tenant, role_required
 from database import get_db, tenant_filter
-from models import StrictModel, utc_now
+from models import StrictModel, utc_now, pred_code
 from services.schedule_feedback import (
     PAPERWORK, OPEN_DELAY_STATUSES, open_delays_for_task, generate_name_suggestions,
     apply_logic_proposal, _spawn,
@@ -134,6 +134,7 @@ async def generate_names(project_id: str, ctx: dict = Depends(require_tenant)):
 
 @router.get("/projects/{project_id}/activity-names/job")
 async def names_job(project_id: str, ctx: dict = Depends(require_tenant)):
+    role_required(ctx, REVIEW_ROLES)
     p = await get_db().projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}),
                                          {"_id": 0, "activity_names_job": 1}) or {}
     return p.get("activity_names_job") or {"status": "idle"}
@@ -218,6 +219,25 @@ async def approve_logic(proposal_id: str, payload: LogicDecision, ctx: dict = De
         if x["type"].upper() not in {"FS", "SS", "FF", "SF"}:
             raise HTTPException(422, f"Bad relationship type {x['type']}")
         x["type"] = x["type"].upper()
+    proj_tasks = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": p["project_id"], "status": {"$ne": "deleted"}}),
+        {"_id": 0, "activity_code": 1, "predecessors": 1}).to_list(20000)
+    graph = {t["activity_code"]: [pred_code(x) for x in (t.get("predecessors") or []) if pred_code(x)]
+             for t in proj_tasks}
+    for x in preds:
+        if x["code"] == p["activity_code"]:
+            raise HTTPException(422, "An activity can't be its own predecessor")
+        if x["code"] not in graph:
+            raise HTTPException(422, f"Activity {x['code']} isn't in this project's schedule")
+    graph[p["activity_code"]] = [x["code"] for x in preds]
+    seen, stack = set(), [x["code"] for x in preds]
+    while stack:
+        c = stack.pop()
+        if c == p["activity_code"]:
+            raise HTTPException(422, "That change would create a loop in the schedule logic")
+        if c not in seen:
+            seen.add(c)
+            stack.extend(graph.get(c, []))
     task_before = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": p["task_id"]}), {"_id": 0})
     await apply_logic_proposal(db, ctx["tenant_id"], p, preds)
     await db.logic_proposals.update_one(
@@ -238,8 +258,10 @@ async def approve_logic(proposal_id: str, payload: LogicDecision, ctx: dict = De
 @router.post("/logic-proposals/{proposal_id}/reject")
 async def reject_logic(proposal_id: str, payload: LogicDecision, ctx: dict = Depends(require_tenant)):
     role_required(ctx, REVIEW_ROLES)
-    await get_db().logic_proposals.update_one(
+    res = await get_db().logic_proposals.update_one(
         tenant_filter(ctx["tenant_id"], {"id": proposal_id, "status": "pending"}),
         {"$set": {"status": "rejected", "note": payload.note, "decided_by": ctx["user"]["id"],
                   "decided_at": utc_now().isoformat()}})
+    if not res.matched_count:
+        raise HTTPException(404, "Proposal not found or already decided")
     return {"ok": True}

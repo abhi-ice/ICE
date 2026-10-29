@@ -11,8 +11,8 @@ from models import gen_id, utc_now
 log = logging.getLogger(__name__)
 
 # 2026-10-29 owner request: clear every daily report + delay on this project
-# (schedule effects reversed) and load AI/heading activity names.
-RESET_PROJECT_ID = "__SET_AFTER_EXPORT__"
+# (schedule effects reversed) and queue AI activity names for owner approval.
+RESET_PROJECT_ID = "6007bdf1-a09d-4de3-a55b-cb5117c64e36"
 RESET_JOB_ID = "2026-10-29-reset-dr-and-name-activities"
 
 
@@ -38,7 +38,7 @@ async def _reset_project(db) -> dict:
                           record_id=d["id"], before=d, after=None,
                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
     from services.schedule_feedback import generate_name_suggestions
-    names = await generate_name_suggestions(db, tenant_id, RESET_PROJECT_ID, auto_approve=True)
+    names = await generate_name_suggestions(db, tenant_id, RESET_PROJECT_ID)
     from services.cpm import auto_recompute_after_event
     await auto_recompute_after_event(tenant_id, RESET_PROJECT_ID, actor_id=ctx["user"]["id"],
                                      request_id=ctx["request_id"])

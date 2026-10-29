@@ -4,7 +4,7 @@ import api, { extractApiError } from "../../lib/api";
 import { toast } from "../ui/sonner";
 
 // Open delays from EARLIER reports, shown on every later report until resolved.
-export default function CarriedDelaysCard({ reportId, reportDate, className = "", onChange }) {
+export default function CarriedDelaysCard({ reportId, reportDate, className = "", onChange, refreshKey }) {
   const [rows, setRows] = useState([]);
   const [resolving, setResolving] = useState(null);
   const [note, setNote] = useState("");
@@ -13,7 +13,7 @@ export default function CarriedDelaysCard({ reportId, reportDate, className = ""
   const load = useCallback(() => {
     api.get(`/daily-reports/${reportId}/carried-delays`).then(({ data }) => setRows(data || [])).catch(() => setRows([]));
   }, [reportId]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshKey]);
 
   const resolve = async (d) => {
     setBusy(true);

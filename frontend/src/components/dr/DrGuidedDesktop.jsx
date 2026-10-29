@@ -305,6 +305,7 @@ export default function DrGuidedDesktop({
   };
   const addReasonPatch = locked ? { add_reason: (lockedReason || "").trim() } : {};
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [carriedKey, setCarriedKey] = useState(0);
 
   /* ---------- accordion ---------- */
   const toggleAct = (rowId) => {
@@ -1541,7 +1542,7 @@ export default function DrGuidedDesktop({
         </div>
 
         {/* ============ Today's activities ============ */}
-        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} className="mt-6" />
+        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} refreshKey={carriedKey} className="mt-6" />
         <div style={{ marginTop: 30, display: "flex", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 260 }}>
             <div className="sec-title" style={{ fontSize: 22 }}>Today's activities</div>
@@ -1555,7 +1556,7 @@ export default function DrGuidedDesktop({
         </div>
         <ActivityPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} reportId={id}
           reportDate={report?.report_date} locked={locked} lockedReason={lockedReason}
-          onAdded={async (row) => { await reload(); if (row?.id) toggleAct(row.id); }} />
+          onAdded={async (row) => { setCarriedKey((k) => k + 1); await reload(); if (row?.id) toggleAct(row.id); }} />
         <div className="actsgrid">
           {model.length === 0
             ? <div className="card emptyday"><span className="none">No activities yet. Use “Add activity” to pick what's being worked today, log unplanned work below, or file a no-work day.</span></div>

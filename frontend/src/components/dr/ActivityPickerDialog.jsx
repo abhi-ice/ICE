@@ -118,9 +118,9 @@ export default function ActivityPickerDialog({ open, onOpenChange, reportId, rep
               )}
               {shown.map((t) => (
                 <button type="button" key={t.id} data-testid={`activity-picker-item-${t.id}`} onClick={() => add(t)} disabled={!!busyId}
-                  className="w-full text-left rounded-lg border border-border px-3 py-2.5 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-colors flex items-start gap-3 disabled:opacity-60">
-                  <div className="flex-1 min-w-0">
-                    {t.section_path?.length > 0 && (
+                  className="w-full overflow-hidden text-left rounded-lg border border-border px-3 py-2.5 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-colors flex items-start gap-3 disabled:opacity-60">
+                  <div className="flex-1 min-w-0 [overflow-wrap:anywhere]">
+                    {t.section_path?.length > 0 && !(t.display_name || "").includes(t.section_path[t.section_path.length - 1]) && (
                       <div className="text-[11px] uppercase tracking-wide opacity-60 truncate">{t.section_path.join(" › ")}</div>
                     )}
                     <div className="text-sm font-medium break-words">{t.name}</div>

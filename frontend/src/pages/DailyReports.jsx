@@ -6012,6 +6012,7 @@ function GuidedDrFlow({
   // "Add activity" picker -> after the add, open that activity's screen.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pendingAddId, setPendingAddId] = useState(null);
+  const [carriedKey, setCarriedKey] = useState(0);
   useEffect(() => {
     if (!pendingAddId) return;
     const idx = activities.findIndex((r) => r.id === pendingAddId);
@@ -6021,7 +6022,7 @@ function GuidedDrFlow({
   const picker = (
     <ActivityPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} reportId={id}
       reportDate={report?.report_date} locked={locked} lockedReason={lockedReason}
-      onAdded={(row) => { setPendingAddId(row?.id); reload(); }} />
+      onAdded={(row) => { setPendingAddId(row?.id); setCarriedKey((k) => k + 1); reload(); }} />
   );
 
   // Submit wrappers that navigate back to the DR list on success (spec E).
@@ -6158,16 +6159,16 @@ function GuidedDrFlow({
             <button type="button" className="dr-flow-bigcard" data-testid="dr-flow-add-activity" onClick={() => setPickerOpen(true)}
               style={{ marginTop: 10 }}>
               <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
-              <div className="dr-flow-big-body">
+              <div className="dr-flow-big-body" style={{ minWidth: 0 }}>
                 <div className="dr-flow-big-t">Add activity</div>
-                <div className="dr-flow-big-s">Search the schedule for another activity worked today</div>
+                <div className="dr-flow-big-s" style={{ whiteSpace: "normal" }}>Search the schedule</div>
               </div>
               <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />
             </button>
           </>
         )}
 
-        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} className="mt-3" />
+        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} refreshKey={carriedKey} className="mt-3" />
         {picker}
         <div className="dr-flow-rowlbl">Site-wide</div>
         {/* Day-1 audit #21: on a draft the Weather card opens the phone
