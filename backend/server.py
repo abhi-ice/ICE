@@ -85,6 +85,7 @@ from routers.vendors_router import router as vendors_router  # noqa: E402
 from routers.exhibit_exports_router import router as exhibit_exports_router  # noqa: E402
 from routers.ms_project_internal_router import router as ms_project_internal_router  # noqa: E402
 from routers.admin_settings_router import router as admin_settings_router  # noqa: E402
+from routers.schedule_review_router import router as schedule_review_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -464,6 +465,13 @@ async def lifespan(app: FastAPI):
             logger.warning("Index ensure failed (will retry on next boot): %s", _exc)
     import asyncio as _asyncio_boot
     app.state.ensure_indexes_task = _asyncio_boot.create_task(_ensure_indexes_bg())
+    async def _one_time_jobs_bg():
+        try:
+            from services.one_time_migrations import run_one_time_jobs
+            await run_one_time_jobs()
+        except Exception as _exc:
+            logger.warning("one-time jobs failed: %s", _exc)
+    app.state.one_time_jobs_task = _asyncio_boot.create_task(_one_time_jobs_bg())
     # UI runtime settings (2026-07-02): load the admin-set flags + worker token
     # into the in-process cache, and keep it converging every 30s in case this
     # deployment ever runs more than one process. Best-effort: a cold DB at
@@ -1025,6 +1033,7 @@ api_router.include_router(vendors_router)
 api_router.include_router(exhibit_exports_router)
 api_router.include_router(ms_project_internal_router)
 api_router.include_router(admin_settings_router)
+api_router.include_router(schedule_review_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)

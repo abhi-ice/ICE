@@ -422,9 +422,15 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     # Explicit impact start (2026-07-03): impact_start_date rides through
     # from DelayCreate's model dump above and is persisted as-is. Absent ->
     # None, and every anchor consumer falls back to the log date.
+    _has_impact = any(float(i.get("projected_impact_days") or 0) > 0 for i in (impacts or []))
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
-        "status": doc.get("status") or "open",
+        # A delay with impact days is actively pushing -> In progress.
+        "status": ("in_progress" if _has_impact and (doc.get("status") or "open") == "open"
+                   else doc.get("status") or "open"),
+        # Exact-push model: once resolved, the real days keep pushing until
+        # Daily Report actual dates take over (task_status engine).
+        "push_model": "exact",
         "linked_task_ids": linked_ids,
         "per_task_impacts": impacts,
         "logged_date": doc.get("date"),

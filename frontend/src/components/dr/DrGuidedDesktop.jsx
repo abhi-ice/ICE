@@ -12,6 +12,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sparkles, Loader2, Pencil, Copy as CopyIcon, RefreshCw, Trash2 } from "lucide-react";
 import api from "../../lib/api";
 import ActivityNoteField from "./ActivityNoteField";
+import ActivityPickerDialog from "./ActivityPickerDialog";
+import CarriedDelaysCard from "./CarriedDelaysCard";
 import { toast } from "../ui/sonner";
 import { getUser } from "../../lib/auth";
 import { localTodayISO } from "../../lib/dateUtil";
@@ -302,6 +304,7 @@ export default function DrGuidedDesktop({
     return false;
   };
   const addReasonPatch = locked ? { add_reason: (lockedReason || "").trim() } : {};
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   /* ---------- accordion ---------- */
   const toggleAct = (rowId) => {
@@ -1538,15 +1541,24 @@ export default function DrGuidedDesktop({
         </div>
 
         {/* ============ Today's activities ============ */}
-        <div style={{ marginTop: 30 }}>
-          <div className="sec-title" style={{ fontSize: 22 }}>Today's activities</div>
-          <div className="sec-sub" style={{ marginBottom: 0 }}>
-            Everything for each activity lives on its card — progress, crew, issues &amp; deliveries, photos.
+        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} className="mt-6" />
+        <div style={{ marginTop: 30, display: "flex", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <div className="sec-title" style={{ fontSize: 22 }}>Today's activities</div>
+            <div className="sec-sub" style={{ marginBottom: 0 }}>
+              Everything for each activity lives on its card — progress, crew, issues &amp; deliveries, photos.
+            </div>
           </div>
+          <button type="button" className="btn accent" data-testid="drgx-add-activity" onClick={() => setPickerOpen(true)}>
+            + Add activity
+          </button>
         </div>
+        <ActivityPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} reportId={id}
+          reportDate={report?.report_date} locked={locked} lockedReason={lockedReason}
+          onAdded={async (row) => { await reload(); if (row?.id) toggleAct(row.id); }} />
         <div className="actsgrid">
           {model.length === 0
-            ? <div className="card emptyday"><span className="none">No activities scheduled today. Log unplanned work below, or file a no-work day.</span></div>
+            ? <div className="card emptyday"><span className="none">No activities yet. Use “Add activity” to pick what's being worked today, log unplanned work below, or file a no-work day.</span></div>
             : model.map(renderCard)}
         </div>
 

@@ -968,6 +968,11 @@ class Task(ReadModel):
     planned_finish: Optional[date] = None
     actual_start: Optional[date] = None
     actual_finish: Optional[date] = None
+    # "daily_report" when the actuals were derived from DR rows (else import).
+    actuals_source: Optional[str] = None
+    # Admin-approved readable name ("Demolition › Phase 2 › Electrical").
+    display_name: Optional[str] = None
+    section_path: Optional[List[str]] = None
     duration_days: Optional[float] = None
     budgeted_hours: Optional[float] = None
     actual_hours: float = 0
@@ -1319,6 +1324,8 @@ class DailyReportActivity(ReadModel):
     #                         in_progress > not_started).
     # METADATA / VIEW ONLY -- the CPM engine never reads these.
     work_category: Optional[WorkCategory] = None
+    activity_display_name: Optional[str] = None
+    section_path: Optional[List[str]] = None
     open_blocker_count: int = 0
     # 2026-05-19 -- mirror the open_blocker_summary list from the linked
     # task so the DR Activity Grid blocker badge can render the same

@@ -406,6 +406,31 @@ async def _open_blocker_impact_for_task(db, tenant_id: str, task_id: str) -> flo
     return total
 
 
+async def _exact_resolved_delay_impacts(db, tenant_id: str, task_id: str) -> list:
+    """Resolved delays logged under the exact-push model keep pushing by
+    their REAL days (actual_impact_days) until DR actual dates take over.
+    Returns [(days, anchor_date|None)]."""
+    docs = await db.delays.find(
+        tenant_filter(tenant_id, {"linked_task_ids": task_id, "status": "resolved",
+                                  "push_model": "exact"}),
+        {"_id": 0, "actual_impact_days": 1, "per_task_impacts": 1,
+         "impact_start_date": 1, "logged_date": 1, "date": 1},
+    ).to_list(50)
+    out = []
+    for d in docs:
+        days = d.get("actual_impact_days")
+        if days is None:
+            days = sum(float(i.get("projected_impact_days") or 0)
+                       for i in (d.get("per_task_impacts") or []) if i.get("task_id") == task_id)
+        raw = d.get("impact_start_date") or d.get("logged_date") or d.get("date")
+        try:
+            anchor = date.fromisoformat(str(raw)[:10]) if raw else None
+        except ValueError:
+            anchor = None
+        out.append((float(days or 0), anchor))
+    return out
+
+
 async def compute_projected_finish_dates(
     db, tenant_id: str, project_id: str, *,
     actor_id: Optional[str] = None,
@@ -510,7 +535,7 @@ async def compute_projected_finish_dates(
          # CPM Cruft 3.G -- slip_days pulled so the idempotent
          # skip-if-unchanged check below can compare it.
          "projected_start_date": 1, "projected_finish_date": 1,
-         "slip_days": 1},
+         "slip_days": 1, "actual_start": 1, "actual_finish": 1},
     ).to_list(5000)
     by_code = {t.get("activity_code"): t for t in tasks if t.get("activity_code")}
 
@@ -546,8 +571,10 @@ async def compute_projected_finish_dates(
     # Per-task own_impact (open-blocker sum across delays + RFIs +
     # over-SLA submittals). One walk per task.
     own_impact: dict[str, float] = {}
+    impacts_by_task: dict[str, list] = {}
     for t in tasks:
         own_impact[t["id"]] = await _open_blocker_impact_for_task(db, tenant_id, t["id"])
+        impacts_by_task[t["id"]] = await _exact_resolved_delay_impacts(db, tenant_id, t["id"])
 
     # Working-day helpers + the shared CPM per-edge implied-start
     # derivation. Local import keeps the services.cpm <-> services.
@@ -583,7 +610,9 @@ async def compute_projected_finish_dates(
         pf = _parse(task.get("planned_finish"))
         dur = int(round(float(task.get("duration_days") or 1.0)))
         dur_minus_one = max(0, dur - 1)
-        own_days = max(0, int(round(own_impact.get(tid, 0.0))))
+        resolved_exact = impacts_by_task.get(tid) or []
+        own_days = max(0, int(round(
+            own_impact.get(tid, 0.0) + sum(d for d, _a in resolved_exact))))
         # CPM B2 (2026-06-12) -- combine the impact-days own shift with the
         # progress-driven shift via MAX (not sum): a logged delay's
         # impact_days and a visible progress shortfall are two views of the
@@ -596,6 +625,23 @@ async def compute_projected_finish_dates(
             # Cycle guard -- treat as un-impacted (planned dates,
             # zero shift). Memoize so other paths short-circuit.
             result = (ps, pf, 0)
+            computed[tid] = result
+            return result
+
+        # Actual dates from Daily Reports take over. A started activity's
+        # start is its real start; open delays then extend only its finish.
+        a_start = _parse(task.get("actual_start"))
+        if a_start is not None and ps is not None and pf is not None:
+            a_finish = _parse(task.get("actual_finish"))
+            if a_finish is not None:
+                imp_finish = a_finish
+            else:
+                own_after = max(0, int(round(own_impact.get(tid, 0.0) + sum(
+                    d for d, anchor in resolved_exact if anchor is None or anchor >= a_start))))
+                base = add_working_days(a_start, working_days_between(ps, pf))
+                imp_finish = max(add_working_days(base, own_after),
+                                 add_working_days(pf, progress_shift.get(tid, 0)))
+            result = (a_start, imp_finish, working_days_between(pf, imp_finish))
             computed[tid] = result
             return result
 
@@ -679,7 +725,8 @@ async def compute_projected_finish_dates(
         # Tasks page Impacted Start / Impacted Finish / Slip columns
         # render em-dash. THIS is the bug fix: a task whose
         # predecessors' delays were absorbed by float shows nothing.
-        if total_shift > 0 and imp_start is not None and imp_finish is not None:
+        _ps, _pf = _parse(t.get("planned_start")), _parse(t.get("planned_finish"))
+        if imp_start is not None and imp_finish is not None and (imp_start, imp_finish) != (_ps, _pf):
             new_psd = imp_start.isoformat()
             new_pfd = imp_finish.isoformat()
             # CPM Cruft 3.G (2026-05-16) -- persist the working-day

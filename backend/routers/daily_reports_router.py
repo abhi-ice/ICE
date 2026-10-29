@@ -270,8 +270,7 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
         if existing:
             return DailyReport(**existing)
         raise
-    # pre-populate grid
-    await _prepopulate_grid(ctx["tenant_id"], payload.project_id, doc["id"], payload.report_date)
+    # Reports start empty; the super adds today's activities from the picker.
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="INSERT",
         record_id=doc["id"], before=None, after=doc,
@@ -496,7 +495,9 @@ async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None
     # from any delays whose daily_report_id we just nulled out).
     if affected_task_ids:
         from services.task_status import compute_and_persist_status
+        from services.schedule_feedback import recompute_task_actuals
         for tid in affected_task_ids:
+            await recompute_task_actuals(db, ctx["tenant_id"], tid)
             await compute_and_persist_status(
                 db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
@@ -558,7 +559,8 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
         # fields are unchanged either way.
         gating = slider_gating_enabled()
         projection = {"_id": 0, "id": 1, "updated_at": 1, "progress_lock_at": 1, "work_category": 1,
-                      "open_blocker_count": 1, "open_blocker_summary": 1}
+                      "open_blocker_count": 1, "open_blocker_summary": 1,
+                      "display_name": 1, "section_path": 1}
         if gating:
             projection.update({"predecessors": 1, "pct_complete": 1,
                                "status": 1, "activity_code": 1, "project_id": 1})
@@ -688,6 +690,11 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
     )
     if await db.daily_report_activities.find_one({"daily_report_id": daily_report_id, "schedule_activity_id": payload.schedule_activity_id}, {"_id": 0}):
         raise HTTPException(409, "Activity already in grid")
+    from services.schedule_feedback import open_delays_for_task
+    _open = await open_delays_for_task(db, ctx["tenant_id"], payload.schedule_activity_id)
+    if _open:
+        raise HTTPException(409, {"code": "open_delay", "delays": _open,
+                                  "message": "This activity has an open delay. Resolve it before adding the activity."})
     t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.schedule_activity_id}), {"_id": 0})
     if not t:
         raise HTTPException(404, "Task not found")
@@ -934,11 +941,22 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                 )
             elif decision["action"] == "block":
                 gate = decision["gate"]
+                # Out-of-order work: send a logic-change proposal to the
+                # admin review screen so the overlap can be approved.
+                try:
+                    from services.schedule_feedback import detect_out_of_order
+                    _gdr = await db.daily_reports.find_one(
+                        tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}),
+                        {"_id": 0, "report_date": 1}) or {}
+                    await detect_out_of_order(db, ctx["tenant_id"], before["schedule_activity_id"],
+                                              _gdr.get("report_date"))
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("gate logic proposal failed: %s", exc)
                 raise HTTPException(status_code=422, detail={
                     "error": "slider_gate_blocked",
-                    "message": gate["reason"] or (
+                    "message": (gate["reason"] or (
                         "This activity's progress is gated by its predecessors."
-                    ),
+                    )) + " A logic change was sent to the admin for approval.",
                     "relationship": gate["relationship"],
                     "binding_pred_code": gate["binding_pred_code"],
                     "max_pct": gate["max_pct"],
@@ -1086,13 +1104,23 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         # gates the impact-days linear cascade. Project read (cheap
         # projection) only happens when the EOD% actually changed; with all
         # three flags off nothing runs (pre-B2 behaviour).
-        if "pct_complete_end_of_day" in updates:
+        # One-way DR -> schedule: actual start/finish come from the reports.
+        from services.schedule_feedback import recompute_task_actuals, detect_out_of_order
+        _act_before = (task_before.get("actual_start"), task_before.get("actual_finish"))
+        _act = await recompute_task_actuals(db, ctx["tenant_id"], task_id)
+        _actuals_moved = bool(_act) and (_act.get("actual_start"), _act.get("actual_finish")) != _act_before
+        if _act.get("actual_start") and not task_before.get("actual_start"):
+            try:
+                await detect_out_of_order(db, ctx["tenant_id"], task_id, dr.get("report_date"))
+            except Exception as exc:
+                logging.getLogger(__name__).warning("out-of-order check failed: %s", exc)
+        if "pct_complete_end_of_day" in updates or _actuals_moved:
             from services.feature_flags import progress_recompute_enabled_for
             _dr_project_id = dr.get("project_id") or task_before.get("project_id")
             _proj = await db.projects.find_one(
                 tenant_filter(ctx["tenant_id"], {"id": _dr_project_id}),
                 {"_id": 0, "schedule_mode": 1, "schedule_engine": 1}) or {}
-            if progress_recompute_enabled_for(_proj):
+            if _actuals_moved or progress_recompute_enabled_for(_proj):
                 from services.cpm import auto_recompute_after_event
                 await auto_recompute_after_event(
                     ctx["tenant_id"], _dr_project_id,
@@ -2466,6 +2494,11 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
             add_reason=payload.add_reason or "", after=row,
             request_id=ctx["request_id"],
         )
+    try:
+        from services.schedule_feedback import propose_for_unplanned
+        await propose_for_unplanned(db, ctx["tenant_id"], task_doc, dr.get("report_date"))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("unplanned logic proposal failed: %s", exc)
     return {"task": {k: v for k, v in task_doc.items() if k != "_id"},
             "grid_row": row}
 

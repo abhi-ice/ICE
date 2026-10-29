@@ -115,6 +115,8 @@ def enrich_grid_row(row: dict, task: dict | None) -> dict:
     daily_report_activities."""
     task = task or {}
     row["work_category"] = task.get("work_category")
+    row["activity_display_name"] = task.get("display_name")
+    row["section_path"] = task.get("section_path")
     # Day-1 round 2 (2026-10-25) -- the optimistic-lock token is the
     # task's HUMAN-edit stamp (progress_lock_at), not updated_at: schedule
     # recomputes (enterprise CPM, MS Project sync, status derivation)

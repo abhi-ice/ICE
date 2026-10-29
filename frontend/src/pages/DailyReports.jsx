@@ -100,6 +100,8 @@ import DrVoiceNotes, { listPendingNotes as listPendingVoiceNotes } from "../comp
 // dialogs, wired to the same endpoints as the mobile flow.
 import DrGuidedDesktop from "../components/dr/DrGuidedDesktop";
 import ActivityNoteField from "../components/dr/ActivityNoteField";
+import ActivityPickerDialog from "../components/dr/ActivityPickerDialog";
+import CarriedDelaysCard from "../components/dr/CarriedDelaysCard";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
@@ -718,7 +720,9 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         api.get(`/daily-reports/${id}/context`),
         api.get(`/daily-reports/${id}/delay-reminders`).catch(() => ({ data: [] })),
       ]);
-      setBundle(ctx);
+      setBundle(ctx && Array.isArray(ctx.grid)
+        ? { ...ctx, grid: ctx.grid.map((r) => (r.activity_display_name ? { ...r, activity_description: r.activity_display_name } : r)) }
+        : ctx);
       setReminders(Array.isArray(remindersRes.data) ? remindersRes.data : []);
       setLoadFailed(null);
     } catch (e) {
@@ -6005,6 +6009,21 @@ function GuidedDrFlow({
     setScreen(idx);
   };
 
+  // "Add activity" picker -> after the add, open that activity's screen.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pendingAddId, setPendingAddId] = useState(null);
+  useEffect(() => {
+    if (!pendingAddId) return;
+    const idx = activities.findIndex((r) => r.id === pendingAddId);
+    if (idx >= 0) { setPendingAddId(null); goActivity(idx); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAddId, grid]);
+  const picker = (
+    <ActivityPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} reportId={id}
+      reportDate={report?.report_date} locked={locked} lockedReason={lockedReason}
+      onAdded={(row) => { setPendingAddId(row?.id); reload(); }} />
+  );
+
   // Submit wrappers that navigate back to the DR list on success (spec E).
   // A successful submit/approve stamps sessionStorage so the list can flag
   // the just-submitted card.
@@ -6101,10 +6120,13 @@ function GuidedDrFlow({
           ) : (
             <div className="dr-flow-empty">
               <ClipboardList className="h-8 w-8" style={{ color: "var(--v4-fg-faint)" }} />
-              <div className="dr-flow-empty-t">No activities scheduled</div>
-              <div className="dr-flow-empty-s">Nothing on the plan today. Log work done off-schedule, or file a no-work day.</div>
-              <button className="dr-flow-cta" data-testid="dr-flow-empty-unplanned" onClick={() => setSheet({ kind: "unplanned" })}>
-                <Plus className="h-4 w-4" /> Add unplanned activity
+              <div className="dr-flow-empty-t">No activities yet</div>
+              <div className="dr-flow-empty-s">Add the activities being worked today. Log work done off-schedule, or file a no-work day.</div>
+              <button className="dr-flow-cta" data-testid="dr-flow-empty-add-activity" onClick={() => setPickerOpen(true)}>
+                <Plus className="h-4 w-4" /> Add activity
+              </button>
+              <button className="dr-flow-alt" data-testid="dr-flow-empty-unplanned" onClick={() => setSheet({ kind: "unplanned" })}>
+                Add unplanned activity
               </button>
               {!locked && (
                 <button className="dr-flow-alt" data-testid="dr-flow-empty-nowork" onClick={submitAndReturn}>
@@ -6133,9 +6155,20 @@ function GuidedDrFlow({
                 );
               })}
             </div>
+            <button type="button" className="dr-flow-bigcard" data-testid="dr-flow-add-activity" onClick={() => setPickerOpen(true)}
+              style={{ marginTop: 10 }}>
+              <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
+              <div className="dr-flow-big-body">
+                <div className="dr-flow-big-t">Add activity</div>
+                <div className="dr-flow-big-s">Search the schedule for another activity worked today</div>
+              </div>
+              <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />
+            </button>
           </>
         )}
 
+        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} className="mt-3" />
+        {picker}
         <div className="dr-flow-rowlbl">Site-wide</div>
         {/* Day-1 audit #21: on a draft the Weather card opens the phone
             weather editor; on a submitted/approved report it stays

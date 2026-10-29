@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { History, FileText, ChevronLeft, ShieldAlert, ShieldOff } from "lucide-react";
 import api from "../lib/api";
+import BackButton from "../components/BackButton";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 // CPM Part G (2026-05-15) -- date_range columns rendered MM/DD/YYYY.

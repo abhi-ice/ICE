@@ -5,7 +5,7 @@ import {
   MapPin, MessagesSquare, Truck, FileText, BookOpen, FileSignature,
   GitPullRequest, Sparkles, Wrench, Users, HardHat, BadgeCheck, Briefcase,
   CalendarClock, FileUp, Bot, ShoppingBasket, ShieldCheck, History,
-  Settings, Layers, Box, Activity, Clock, Building2, Brain,
+  Settings, Layers, Box, Activity, Clock, Building2, Brain, Wand2,
 } from "lucide-react";
 
 export const SIDEBAR_SECTIONS = [
@@ -103,6 +103,7 @@ export const SIDEBAR_SECTIONS = [
       { label: "Team", path: "/team", icon: Users, testid: "sidebar-team" },
       { label: "Imports", path: "/imports", icon: FileUp, testid: "sidebar-imports" },
       { label: "Schedule changes", path: "/schedule-changes", icon: GitPullRequest, testid: "sidebar-schedule-changes", badge: "schedule_proposals" },
+      { label: "Schedule review", path: "/schedule-review", icon: Wand2, testid: "sidebar-schedule-review" },
       { label: "AI agents", path: "/agents", icon: Bot, testid: "sidebar-agents" },
       { label: "Knowledge base", path: "/kb", icon: Brain, testid: "sidebar-kb" },
       { label: "Marketplace", path: "/marketplace", icon: ShoppingBasket, testid: "sidebar-marketplace" },
