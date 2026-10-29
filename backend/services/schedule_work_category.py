@@ -205,6 +205,11 @@ def attach_section_paths(rows: list) -> list:
     is a dotted prefix of the task's WBS. Rows that already carry a
     section_path (an MS Project pull reads it from the file's outline) are
     left alone. Mutates and returns `rows`."""
+    if any(r.get("section_path") for r in rows if not r.get("excluded_as_summary")):
+        # Already done for this list (an import is stored with its paths, and
+        # the project-title root removed); doing it again would hand the
+        # top-level rows the title back as a heading.
+        return rows
     headings = {}
     for r in rows:
         if r.get("excluded_as_summary") and r.get("wbs"):

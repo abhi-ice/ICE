@@ -23,6 +23,7 @@ import { isMasterTaskComplete } from "../../lib/taskCompletion";
 import JigsawField from "./JigsawField";
 import FieldLabel from "./FieldLabel";
 import { getUser } from "../../lib/auth";
+import { sectionLabel } from "../../lib/sectionLabel";
 // Bucket D Corrective (2026-05-08) -- DrActivityPicker import removed.
 // The duplicate "Affected activities (optional)" picker that briefly
 // lived on this form (alongside the canonical "Linked tasks" picker
@@ -520,7 +521,7 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
               <option value="">{tasksLoaded ? `Select a task (${availableTasks.length} available)…` : "Loading project tasks…"}</option>
               {availableTasks.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {t.description}{t.is_critical_path ? " · CP" : ""}
+                  {t.description}{sectionLabel(t.section_path) ? ` (${sectionLabel(t.section_path)})` : ""}{t.is_critical_path ? " · CP" : ""}
                 </option>
               ))}
             </select>

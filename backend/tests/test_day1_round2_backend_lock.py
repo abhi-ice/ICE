@@ -620,6 +620,26 @@ def test_pull_never_blanks_fields_ms_project_does_not_send(env):
     assert (a["constraint_type"], a["calendar_id"], a["required_trade"]) == ("snet", "cal-6day", "Electrician")
 
 
+def test_import_saves_schedule_headings_on_activities(env):
+    db = env
+    db.schedule_proposals.docs.append({
+        "id": "prop1", "tenant_id": TID, "project_id": "p1", "status": "pending_review",
+        "filename": "s.xlsx", "source": "file_upload", "diff": {},
+        "parsed_rows": [
+            {"activity_code": "A100", "description": "Activity A100",
+             "planned_start": "2026-11-01", "planned_finish": "2026-11-05", "duration_days": 5,
+             "section_path": ["Construction Activities", "Demolition", "Demolition - Phase 2"]},
+            {"activity_code": "N904", "description": "Electrical",
+             "planned_start": "2026-11-01", "planned_finish": "2026-11-05", "duration_days": 5,
+             "section_path": ["Construction Activities", "Installation"]},
+        ],
+    })
+    _run(spr.approve_proposal("prop1", ScheduleProposalDecision(), _BG(), PM))
+    assert _task_doc(db, "taskA")["section_path"][-1] == "Demolition - Phase 2"
+    n = next(t for t in db.tasks.docs if t.get("activity_code") == "N904")
+    assert n["section_path"] == ["Construction Activities", "Installation"]
+
+
 def test_actual_start_at_zero_percent_imports_as_in_progress(env):
     db = env
     db.schedule_proposals.docs.append({

@@ -365,6 +365,11 @@ async def approve_proposal(
                 updates.pop("work_category", None)
             else:
                 updates["work_category_source"] = row.get("work_category_source")
+            # The schedule's headings above the activity ("Demolition -
+            # Phase 2"): the daily report shows them so a super can tell
+            # same-named activities apart.
+            if row.get("section_path"):
+                updates["section_path"] = row["section_path"]
             # pt.76 -- NEVER let a baseline-only re-import (no progress columns)
             # wipe a task's existing execution state: drop the (None) progress
             # keys first, then re-apply only when the import actually carried
@@ -423,6 +428,8 @@ async def approve_proposal(
             })
             if row.get("work_category"):
                 doc["work_category_source"] = row.get("work_category_source")
+            if row.get("section_path"):
+                doc["section_path"] = row["section_path"]
             await db.tasks.insert_one(doc.copy())
             created += 1
 

@@ -70,8 +70,48 @@ async def activity_picker(daily_report_id: str, ctx: dict = Depends(require_tena
         t["open_delay_count"] = delayed.get(t["id"], 0)
         t["name"] = t.get("display_name") or t.get("description")
         out.append(t)
-    out.sort(key=lambda t: (str(t.get("wbs") or ""), str(t.get("activity_code") or "")))
-    return out
+    return order_for_picker(out, str(dr.get("report_date") or "")[:10])
+
+
+def wbs_sort_key(wbs) -> tuple:
+    """Schedule order for a WBS code: 1.6.2 before 1.6.10 (plain text sorting
+    puts 1.6.10 first)."""
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p)
+                 for p in str(wbs or "").split("."))
+
+
+SOON_DAYS = 14
+
+
+def order_for_picker(tasks: list, report_date: str) -> list:
+    """Order the super's "Add activity" list the way the work happens:
+      now   -- planned to have started by the report date (in progress,
+               due today, or late);
+      soon  -- starting within the next two weeks;
+      later -- everything after that.
+    Within each group: by start date, then schedule (WBS) order. Dates are
+    the impacted ones when delays moved them. Each item gets `group` and
+    `late` (should have finished before the report date)."""
+    from datetime import date, timedelta
+
+    try:
+        day = date.fromisoformat(report_date)
+    except ValueError:
+        day = utc_now().date()
+    soon_end = (day + timedelta(days=SOON_DAYS)).isoformat()
+    today = day.isoformat()
+    rank = {"now": 0, "soon": 1, "later": 2}
+    for t in tasks:
+        start = str(t.get("projected_start_date") or t.get("planned_start") or "")[:10]
+        finish = str(t.get("projected_finish_date") or t.get("planned_finish") or "")[:10]
+        t["group"] = ("now" if start and start <= today
+                      else "soon" if start and start <= soon_end else "later")
+        t["late"] = bool(finish) and finish < today
+    tasks.sort(key=lambda t: (
+        rank[t["group"]],
+        str(t.get("projected_start_date") or t.get("planned_start") or "9999")[:10],
+        wbs_sort_key(t.get("wbs")), str(t.get("activity_code") or "")))
+    return tasks
 
 
 @router.get("/tasks/{task_id}/open-delays")

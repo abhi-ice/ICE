@@ -103,6 +103,7 @@ import ActivityNoteField from "../components/dr/ActivityNoteField";
 import ActivityPickerDialog from "../components/dr/ActivityPickerDialog";
 import { previewDelayThenConfirm } from "../lib/delayPreview";
 import CarriedDelaysCard from "../components/dr/CarriedDelaysCard";
+import { sectionLabel } from "../lib/sectionLabel";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
@@ -6148,7 +6149,7 @@ function GuidedDrFlow({
                 return (
                   <button key={r.id} className="dr-flow-minirow" data-testid={`dr-flow-minirow-${i}`} onClick={() => goActivity(i)}>
                     <span className="dr-flow-mini-dot" style={{ background: flowFillColor(r) }} />
-                    <span className="dr-flow-mini-name">{r.activity_description || r.activity_code}</span>
+                    <span className="dr-flow-mini-name">{r.activity_description || r.activity_code}{sectionLabel(r.section_path) && <span className="opacity-60"> · {sectionLabel(r.section_path)}</span>}</span>
                     <span className="dr-flow-mini-r">
                       <span className={`dr-flow-pill ${st.cls}`}>{r.pct_complete_end_of_day || 0}%</span>
                       <ChevronRight className="h-3.5 w-3.5" />
@@ -6272,6 +6273,9 @@ function GuidedDrFlow({
             <LockedReasonCard value={lockedReason} onChange={setLockedReason} />
           )}
           <div className="dr-flow-actname">{r.activity_description || r.activity_code}</div>
+          {sectionLabel(r.section_path) && (
+            <div className="text-sm opacity-70 -mt-1 mb-1" data-testid="dr-flow-act-section">{sectionLabel(r.section_path)}</div>
+          )}
           <div className="dr-flow-subline">
             {project?.name || "Project"} · {longDate} · <span className={`dr-flow-pill ${st.cls}`}>{st.label}</span>
           </div>

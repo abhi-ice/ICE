@@ -25,6 +25,7 @@ import DrVoiceNotes from "./DrVoiceNotes";
 import GuidedDialog from "./GuidedDialog";
 import { COMMON_TRADES, LockedReasonCard, isFlowReasonValid } from "./drFlowShared";
 import "./drGuidedDesktop.css";
+import { sectionLabel } from "../../lib/sectionLabel";
 
 /* ================= option lists — mockup labels, real enum values ================= */
 const opt = (pairs) => pairs.map(([label, value]) => ({ label, value }));
@@ -1206,7 +1207,7 @@ export default function DrGuidedDesktop({
         <div className="ahead">
           <div>
             <div className="anm">{r.activity_description}</div>
-            <div className="aloc">{r.location_name || r.activity_code || ""}</div>
+            <div className="aloc">{[sectionLabel(r.section_path), r.location_name || r.activity_code].filter(Boolean).join(" · ")}</div>
           </div>
           <span className={`pill ${m.status.cls}`}>{m.status.word}</span>
           <span className="chev">&#9662;</span>

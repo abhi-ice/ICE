@@ -3,6 +3,16 @@ import { Search, AlertTriangle, Plus, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../ui/dialog";
 import api, { extractApiError } from "../../lib/api";
 import { toast } from "../ui/sonner";
+import { sectionLabel } from "../../lib/sectionLabel";
+import { formatDateDisplay } from "../../lib/dateUtil";
+
+// The list arrives ordered by the server: activities scheduled now (or late)
+// first, then the next two weeks, then the rest -- each by start date.
+const GROUPS = [
+  ["now", "Scheduled now"],
+  ["soon", "Starting in the next 2 weeks"],
+  ["later", "Later in the schedule"],
+];
 
 // "Add activity" picker shared by the desktop and phone Daily Report views.
 // Field work only; if the activity has an open delay the super must resolve
@@ -12,10 +22,11 @@ export default function ActivityPickerDialog({ open, onOpenChange, reportId, rep
   const [q, setQ] = useState("");
   const [busyId, setBusyId] = useState(null);
   const [blocked, setBlocked] = useState(null);
+  const [showLater, setShowLater] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setItems(null); setQ(""); setBlocked(null);
+    setItems(null); setQ(""); setBlocked(null); setShowLater(false);
     api.get(`/daily-reports/${reportId}/activity-picker`)
       .then(({ data }) => setItems(data))
       .catch((e) => { setItems([]); toast.error(extractApiError(e, "Couldn't load activities")); });
@@ -28,6 +39,41 @@ export default function ActivityPickerDialog({ open, onOpenChange, reportId, rep
     return list.filter((t) => [t.name, t.description, t.activity_code, ...(t.section_path || [])]
       .filter(Boolean).join(" ").toLowerCase().includes(needle));
   }, [items, q]);
+  // Later activities stay folded until asked for (or matched by a search),
+  // so the super starts from what is scheduled now.
+  const searching = q.trim().length > 0;
+  const groups = GROUPS.map(([key, title]) => ({
+    key, title, rows: shown.filter((t) => (t.group || "later") === key),
+  })).filter((g) => g.rows.length);
+  const laterCount = (shown.filter((t) => (t.group || "later") === "later")).length;
+
+  const renderItem = (t) => {
+    const label = sectionLabel(t.section_path);
+    return (
+      <button type="button" key={t.id} data-testid={`activity-picker-item-${t.id}`} onClick={() => add(t)} disabled={!!busyId}
+        className="w-full overflow-hidden text-left rounded-lg border border-border px-3 py-2.5 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-colors flex items-start gap-3 disabled:opacity-60">
+        <div className="flex-1 min-w-0 [overflow-wrap:anywhere]">
+          <div className="text-sm font-medium break-words">{t.name}</div>
+          {label && !(t.display_name || "").includes(label) && (
+            <div className="text-xs text-emerald-400/90 break-words" data-testid={`activity-picker-section-${t.id}`}>{label}</div>
+          )}
+          <div className="text-xs opacity-60">
+            {t.activity_code}
+            {t.planned_start ? ` · ${formatDateDisplay(t.projected_start_date || t.planned_start)} → ${formatDateDisplay(t.projected_finish_date || t.planned_finish)}` : ""}
+            {t.pct_complete ? ` · ${Math.round(t.pct_complete)}% done` : ""}
+          </div>
+        </div>
+        {t.late && (
+          <span className="shrink-0 text-[11px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-400" data-testid={`activity-picker-late-${t.id}`}>Late</span>
+        )}
+        {t.open_delay_count > 0 && (
+          <span className="shrink-0 text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 inline-flex items-center gap-1" data-testid={`activity-picker-delay-badge-${t.id}`}>
+            <AlertTriangle className="h-3 w-3" /> Open delay</span>
+        )}
+        {busyId === t.id ? <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-1" /> : <Plus className="h-4 w-4 shrink-0 mt-1 text-emerald-400" />}
+      </button>
+    );
+  };
 
   const add = async (task) => {
     if (locked && (lockedReason || "").trim().length < 10) {
@@ -116,22 +162,19 @@ export default function ActivityPickerDialog({ open, onOpenChange, reportId, rep
                 <div className="py-8 text-center text-sm opacity-70" data-testid="activity-picker-empty">
                   {items.length ? "No match. Try another word." : "Every open field activity is already on this report."}</div>
               )}
-              {shown.map((t) => (
-                <button type="button" key={t.id} data-testid={`activity-picker-item-${t.id}`} onClick={() => add(t)} disabled={!!busyId}
-                  className="w-full overflow-hidden text-left rounded-lg border border-border px-3 py-2.5 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition-colors flex items-start gap-3 disabled:opacity-60">
-                  <div className="flex-1 min-w-0 [overflow-wrap:anywhere]">
-                    {t.section_path?.length > 0 && !(t.display_name || "").includes(t.section_path[t.section_path.length - 1]) && (
-                      <div className="text-[11px] uppercase tracking-wide opacity-60 truncate">{t.section_path.join(" › ")}</div>
-                    )}
-                    <div className="text-sm font-medium break-words">{t.name}</div>
-                    <div className="text-xs opacity-60">{t.activity_code}{t.planned_start ? ` · ${String(t.planned_start).slice(0, 10)} → ${String(t.planned_finish || "").slice(0, 10)}` : ""}{t.pct_complete ? ` · ${Math.round(t.pct_complete)}%` : ""}</div>
+              {groups.map((g) => (
+                <div key={g.key} data-testid={`activity-picker-group-${g.key}`}>
+                  <div className="sticky top-0 z-[1] bg-background/95 backdrop-blur px-1 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70">
+                    {g.title} <span className="opacity-60">({g.rows.length})</span>
                   </div>
-                  {t.open_delay_count > 0 && (
-                    <span className="shrink-0 text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 inline-flex items-center gap-1" data-testid={`activity-picker-delay-badge-${t.id}`}>
-                      <AlertTriangle className="h-3 w-3" /> Open delay</span>
+                  {g.key === "later" && !searching && !showLater ? (
+                    <button type="button" data-testid="activity-picker-show-later" onClick={() => setShowLater(true)}
+                      className="w-full h-10 rounded-lg border border-dashed border-border text-sm opacity-80 hover:opacity-100 hover:bg-muted transition-colors">
+                      Show {laterCount} later activit{laterCount === 1 ? "y" : "ies"}</button>
+                  ) : (
+                    <div className="space-y-1.5">{g.rows.map(renderItem)}</div>
                   )}
-                  {busyId === t.id ? <Loader2 className="h-4 w-4 animate-spin shrink-0 mt-1" /> : <Plus className="h-4 w-4 shrink-0 mt-1 text-emerald-400" />}
-                </button>
+                </div>
               ))}
             </div>
           </>

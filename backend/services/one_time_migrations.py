@@ -45,22 +45,59 @@ async def _reset_project(db) -> dict:
     return {"daily_reports_deleted": len(drs), "delays_deleted": len(delays), "names": names}
 
 
-async def run_one_time_jobs() -> None:
-    db = get_db()
-    if not await db.projects.find_one({"id": RESET_PROJECT_ID}, {"_id": 0, "id": 1}):
-        return
+# 2026-10-29: activities imported before headings were saved on tasks carry
+# no section_path, so the daily report cannot say "Demolition - Phase 2"
+# under a bare "Electrical". Rebuild it from each project's approved
+# schedule imports, whose stored rows still hold the heading rows.
+SECTION_PATH_JOB_ID = "2026-10-29-backfill-section-paths"
+
+
+async def _backfill_section_paths(db) -> dict:
+    from services.schedule_work_category import attach_section_paths
+
+    projects = await db.projects.find({}, {"_id": 0, "id": 1, "tenant_id": 1}).to_list(10000)
+    filled = 0
+    for p in projects:
+        props = await db.schedule_proposals.find(
+            tenant_filter(p["tenant_id"], {"project_id": p["id"], "status": "approved"}),
+            {"_id": 0, "parsed_rows": 1, "reviewed_at": 1},
+        ).sort("reviewed_at", 1).to_list(500)
+        paths: dict = {}
+        for prop in props:  # oldest first, so the latest import wins
+            rows = prop.get("parsed_rows") or []
+            attach_section_paths(rows)
+            for r in rows:
+                if not r.get("excluded_as_summary") and r.get("section_path") and r.get("activity_code"):
+                    paths[r["activity_code"]] = r["section_path"]
+        for code, path in paths.items():
+            res = await db.tasks.update_many(
+                tenant_filter(p["tenant_id"], {"project_id": p["id"], "activity_code": code,
+                                               "section_path": {"$in": [None, []]}}),
+                {"$set": {"section_path": path}})
+            filled += res.modified_count
+    return {"tasks_filled": filled}
+
+
+async def _run_job(db, job_id: str, job) -> None:
     try:
         # _id claim: only one pod ever runs the job.
-        await db.migrations.insert_one({"_id": RESET_JOB_ID, "status": "running",
+        await db.migrations.insert_one({"_id": job_id, "status": "running",
                                         "started_at": utc_now().isoformat()})
     except Exception:
         return
     try:
-        result = await _reset_project(db)
+        result = await job(db)
         upd = {"status": "done", "result": result}
     except Exception as exc:
-        log.warning("one-time job %s failed: %s", RESET_JOB_ID, exc)
+        log.warning("one-time job %s failed: %s", job_id, exc)
         upd = {"status": "failed", "error": str(exc)[:500]}
     upd["finished_at"] = utc_now().isoformat()
-    await db.migrations.update_one({"_id": RESET_JOB_ID}, {"$set": upd})
-    log.info("one-time job %s: %s", RESET_JOB_ID, upd)
+    await db.migrations.update_one({"_id": job_id}, {"$set": upd})
+    log.info("one-time job %s: %s", job_id, upd)
+
+
+async def run_one_time_jobs() -> None:
+    db = get_db()
+    if await db.projects.find_one({"id": RESET_PROJECT_ID}, {"_id": 0, "id": 1}):
+        await _run_job(db, RESET_JOB_ID, _reset_project)
+    await _run_job(db, SECTION_PATH_JOB_ID, _backfill_section_paths)
