@@ -554,7 +554,7 @@ export default function DailyReports() {
                       data-testid={`delete-dr-${r.id}`}
                       onClick={() => removeReport(r)}
                       title="Delete report"
-                      className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] grid place-items-center rounded inline-flex align-middle text-red-500 hover:bg-red-50"
+                      className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] inline-flex items-center justify-center rounded align-middle text-red-500 hover:bg-red-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

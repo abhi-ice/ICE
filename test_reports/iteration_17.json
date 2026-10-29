@@ -1,0 +1,24 @@
+{
+  "summary": "Retest of the iteration_16 fixes. Backend: 8/8 pytest tests pass (5 in test_dr_delete_and_notes.py plus 3 new in test_dr_delete_iter17.py), and manual_dr_delete_reversal.py reports ALL PASS. The out-of-order delete bug is fixed. With 2 DRs (25/55), deleting the older one keeps the task at 55, with last_synced pointing at DR2 and DR1's hours subtracted. Then deleting DR2 gives 0 / not_started / last_synced_from_dr=null, and hours go back to the baseline. With 3 DRs (10/30/60), deleting the middle one keeps 60. Deleting the newest falls back to 10 / in_progress, with last_synced pointing at the oldest DR. Deleting that one gives 0 / null. A notes-only PATCH with a 2020 task_last_modified_at stamp now returns 200; a pct PATCH with the same stamp still returns 409 as it should. UI: the locked-reason card on the desktop guided view is styled correctly at 1920x800 (bordered card, full-width 1568px textarea, '0 / 10 min chars' counter). Desktop note save (drgx-act-note) persisted, confirmed via the API. Mobile note save (dr-flow-act-note) showed 'Note saved' and was prefilled with the desktop note. The trash icon on the desktop DR list was STILL wrapping below 'Open'. Root cause: the button had both the 'grid' and 'inline-flex' classes, and Tailwind outputs .grid later, so display:grid (block-level) won. I fixed this (replaced with inline-flex items-center justify-center), and it is now inline (same y).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "DailyReports desktop list", "issue": "Trash button wrapped below Open because the 'grid' and 'inline-flex' classes conflicted. FIXED by testing agent.", "selector": "[data-testid^=delete-dr-]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_dr_delete_and_notes.py", "/app/backend/tests/test_dr_delete_iter17.py", "/app/backend/tests/manual_dr_delete_reversal.py", "/app/test_reports/pytest/pytest_iter17.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_progress_without_dr queries daily_report_activities without tenant_filter (it relies on UUID ids). Wrapping it in tenant_filter would be safer.",
+    "_progress_without_dr's fallback baseline uses the earliest task_sync_event 'before' value, including events from already-deleted DRs. This is correct today because those events are kept. If events are ever purged or tombstoned, the baseline logic must be revisited.",
+    "daily_reports_router.py is 2677 lines and should be split."
+  ],
+  "updated_files": ["/app/frontend/src/pages/DailyReports.jsx (delete button className)", "/app/backend/tests/test_dr_delete_iter17.py (new)"],
+  "success_rate": {"backend": "100%", "frontend": "100% (after the 1 class fix)"},
+  "seed_data_creation": "Seeded with seed_ui_dr.py. All TEST_* and 'QA Reversal Project' projects were deleted afterwards.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Login: qa.super@example.com / QaSuper!2026. Desktop guided activity cards are collapsed, so click the activity title to reveal drgx-act-note-{rowId}. The note '-state' text clears 2s after saving. On mobile, dr-flow-start leads straight to the activity screen. Run: cd /app/backend/tests && pytest test_dr_delete_and_notes.py test_dr_delete_iter17.py"
+}

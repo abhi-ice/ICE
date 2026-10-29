@@ -754,3 +754,11 @@ See `/app/memory/test_credentials.md`.
 - 2026-10-26: Temporary public sign-up enabled for owner: ALLOW_PUBLIC_SIGNUP (live=true; preview/test slot still holds a wrong sentence value so preview signup stays blocked) + PLATFORM_ADMIN_EMAILS set. Owner must delete ALLOW_PUBLIC_SIGNUP and redeploy after creating their account.
 - 2026-10-26: BUG FIX — public pages (/signup, /landing, /accept-invite, /forgot-password, /reset-password) bounced to /login ~5s after load. Cause: drPrefetch.warmOfflineCache ran signed-out → GET /projects 401 → api.js interceptor redirect. Fix: token guard in warmOfflineCache + interceptor skips public routes. Verified in preview; redeployed.
 - 2026-10-26: Pulled ice/main up to 2f1f288 (MS Project field-work vs paperwork labelling, % complete on first import, always-on worker). Clean merge 93845b4, 189 tests pass, redeployed.
+
+## 2026-10-29 — Delete any DR (with reason) + schedule reversal + per-activity notes
+- DELETE /api/daily-reports/{id}?reason=… : drafts delete freely; submitted/approved need reason >=10 chars (422 otherwise), audited as DELETE_LOCKED_WITH_REASON.
+- _reverse_dr_schedule_effects: subtracts DR hours from tasks, pulls crew history, soft-deletes unplanned tasks created by the DR; if the DR "owns" the task's progress (last_synced_from_dr) → _progress_without_dr recomputes from the latest REMAINING DR, else earliest-ever baseline from task_sync_events. Then status recompute + CPM auto-recompute.
+- Notes-only grid PATCH skips task write-back and stale-409 check.
+- UI: ConfirmActionDialog `requireReason` option; trash enabled for all statuses (desktop + mobile list); ActivityNoteField (components/dr) on desktop guided card ("Notes" row) and mobile activity screen ("Notes" card); locked DR requires edit reason. Desktop locked-reason card styled.
+- PDF (iter6_router pdf-rich): "Note: …" row under each activity with a note.
+- Tests: tests/manual_dr_delete_reversal.py, tests/test_dr_delete_and_notes.py, tests/test_dr_delete_iter17.py — all pass (iteration_16/17).
