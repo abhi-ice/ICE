@@ -115,17 +115,28 @@ async def run_due_digests(db, now: datetime | None = None) -> list:
             local = now.astimezone(ZoneInfo(p.get("timezone") or "America/New_York"))
         except Exception:
             local = now.astimezone(ZoneInfo("America/New_York"))
-        if local.weekday() != 4 or local.hour != 7:
+        # 7 AM send; later morning hours only retry a failed send.
+        if local.weekday() != 4 or not 7 <= local.hour < 12:
             continue
         if not await db.tasks.find_one({"project_id": p["id"], "status": {"$ne": "deleted"}}, {"_id": 0, "id": 1}):
             continue
-        try:
-            await db.digest_runs.insert_one({"_id": f"{p['id']}:{local.date().isoformat()}",
-                                             "started_at": utc_now().isoformat()})
-        except Exception:
-            continue
+        key = f"{p['id']}:{local.date().isoformat()}"
+        # Claim: fresh run, or retry of a failed one (never a sent/running one).
+        claimed = await db.digest_runs.find_one_and_update(
+            {"_id": key, "status": "failed"},
+            {"$set": {"status": "running", "started_at": utc_now().isoformat()}})
+        if not claimed:
+            try:
+                await db.digest_runs.insert_one({"_id": key, "status": "running",
+                                                 "started_at": utc_now().isoformat()})
+            except Exception:
+                continue
         res = await send_project_digest(db, p["tenant_id"], p)
-        await db.digest_runs.update_one({"_id": f"{p['id']}:{local.date().isoformat()}"},
-                                        {"$set": {"result": res, "finished_at": utc_now().isoformat()}})
+        if res["failed"] and not res["sent"]:
+            await db.digest_runs.update_one({"_id": key}, {"$set": {"status": "failed", "result": res}})
+            done.append({"project_id": p["id"], "retry": True, **res})
+            continue
+        await db.digest_runs.update_one({"_id": key},
+                                        {"$set": {"status": "sent", "result": res, "finished_at": utc_now().isoformat()}})
         done.append({"project_id": p["id"], **res})
     return done

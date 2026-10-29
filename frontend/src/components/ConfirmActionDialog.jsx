@@ -68,7 +68,7 @@ export default function ConfirmActionDialog() {
     <Dialog open={!!opts} onOpenChange={(o) => !o && close(false)}>
       <DialogContent
         data-testid="confirm-action-dialog"
-        className="max-w-md"
+        className={opts.wide ? "max-w-lg" : "max-w-md"}
         onEscapeKeyDown={() => close(false)}
       >
         <DialogHeader>
@@ -81,8 +81,8 @@ export default function ConfirmActionDialog() {
             <div className="flex-1 min-w-0 text-left">
               <DialogTitle>{opts.title || "Are you sure?"}</DialogTitle>
               {opts.message && (
-                <DialogDescription className="mt-1.5 leading-relaxed">
-                  {opts.message}
+                <DialogDescription asChild={typeof opts.message !== "string"} className="mt-1.5 leading-relaxed">
+                  {typeof opts.message === "string" ? opts.message : <div>{opts.message}</div>}
                 </DialogDescription>
               )}
             </div>

@@ -1,0 +1,42 @@
+{
+  "summary": "Tested the Weekly Schedule Digest, Approve Names By Area and Delay Impact Preview features. Backend: the new test_iter19_digest_preview.py passes 9/9. Cron: 401 with no bearer or a wrong one; 200 {accepted:true} with the right secret; the same X-Webhook-Id twice returns {duplicate:true}. Delay-impact-preview returns the direct move plus FS knock-ons with the right working days (it accounts for the Veterans Day holiday) and the project finish dates, and it writes nothing (slip_days and delay count unchanged). Negative days return 422. Digest preview returns open delays, slipped tasks (all slip>0) and recipients. Send-now returns {sent, failed, subject}; the email ends up in 'failed' because of the invalid SendGrid key, which is an environment issue. The super role gets 403 on preview and send-now and 200 on delay-impact-preview. manual_digest_due.py checks run_due_digests: it sends at Friday 07:xx site time (America/Los_Angeles), does not send again the same Friday, and skips 04:00 local and Thursday. Regression: manual_schedule_feedback.py ALL PASS; test_schedule_review_iter18.py 6/6. Desktop UI 1920x800: Issues & deliveries > Add > Delay guided flow > Log delay shows the confirm dialog with delay-preview, delay-preview-project-finish and delay-preview-move-{A100,A200,A300} (+3 days, direct and knock-on). Cancel keeps the flow open with Log delay enabled and creates no delay. Confirm creates exactly 1 delay, and the task slips match the preview (3/3/3). Esc also cancels. Mobile UI 390x844: the activity screen's Delay sheet with impact 2 shows the preview (project finish Nov 27 to Nov 30, 3 moves). Cancel keeps the form; confirm logs the delay, so DB total is 2 delays with no extras from the cancels. /schedule-review: names-groups shows building-a, building-b and other. A rename on blur changes the prefix of every row in that area only. Approve this area approved only Building A's rows; the B and Other rows stayed pending. The digest tab shows digest-logic, digest-delays and digest-slipped with the right data. digest-send-now shows a toast ('Email failed for 1 — check the email provider key'). Found 2 functional bugs: a second area rename does nothing, and approve accepts names that contain WBS numbers.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/activity-name-suggestions/approve", "issue": "An edited name with a WBS number is saved as-is. Approving {name:'1.2.3 Building B › Plumbing'} set tasks.display_name='1.2.3 Building B › Plumbing'. The spec says names must never contain WBS numbers. _WBS_RE / the clean-name helper in schedule_feedback.py is only applied when suggestions are generated, not when they are approved."},
+      {"endpoint": "GET /api/projects/{pid}/schedule-digest/preview", "issue": "Returns 200 with empty lists for a project id that doesn't exist. send-now correctly returns 404 in that case."},
+      {"endpoint": "POST /api/projects/{pid}/delay-impact-preview", "issue": "An unknown task_id is accepted silently (200, no moves). No project existence or ownership check is made before computing."},
+      {"endpoint": "services/schedule_digest.run_due_digests", "issue": "The digest_runs claim is written before sending. If every recipient fails (e.g. a bad provider key), that Friday is never retried. An email is also sent when the digest is completely empty (0 logic, 0 delays, 0 slipped)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "ScheduleReview.jsx AreaGroup.renameArea", "issue": "A second rename of the same area does nothing. Renaming 'Building A' to 'Tower A' updated all 3 rows. Renaming again to 'Block A' left the rows at 'Tower A › …' while the area input still showed 'Block A', and Approve this area then saved 'Tower A'. RCA: renameArea matches cur.startsWith(`${area} › `), where `area` is the ORIGINAL group key prop, not the last applied prefix. Fix: keep a ref of the last applied prefix (init = area), match against it, and update it after each rename.", "selector": "[data-testid=names-area-input-building-a]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Delay preview confirm dialog", "issues": ["The JSX message is rendered inside DialogDescription (<p>), which gives a console error: '<div> cannot be a descendant of <p>' (hydration warning). Render the message outside DialogDescription, or use asChild/div.", "The dialog always uses the danger style (red icon and red 'Log delay' button), even when 'Project finish does not move (absorbed by float)'. Consider a neutral or amber style when the finish doesn't move.", "Desktop: the max-w-md dialog stacked on the guided dialog wraps the activity names into 2 lines, and the list needs scrolling at 800px height. A wider dialog (max-w-lg) would read better."]},
+      {"screen": "/schedule-review tabs", "issues": ["The active TabsContent area shows a green-tinted background block behind the names and digest content, which looks like a focus or selection tint. Worth checking it is intentional."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_iter19_digest_preview.py", "/app/backend/tests/manual_digest_due.py", "/app/backend/tests/seed_ui_iter19.py", "/app/test_reports/pytest/pytest_iter19.xml"],
+  "action_items": [
+    "Fix AreaGroup.renameArea so it matches the last applied prefix and repeated renames work (ScheduleReview.jsx)",
+    "Strip or reject WBS numbers in the names on POST /activity-name-suggestions/approve (reuse the clean-name helper with _WBS_RE)",
+    "Move the delay preview JSX out of DialogDescription <p> to fix the DOM-nesting console error",
+    "Optional: return 404 from digest preview and delay-impact-preview for an unknown project; validate task_ids in delay-impact-preview",
+    "Optional: don't mark digest_runs done when every send failed; skip empty digests"
+  ],
+  "critical_code_review_comments": [
+    "delay_impact_preview runs compute_projected_finish_dates twice (with and without the extra impact) plus a full task fetch on every preview. Fine for now; cache the base if schedules get large.",
+    "cron_schedule_digest falls back to utc_now() as run_id when there is no X-Webhook-Id, so dedupe only works when the header is sent. The per-project digest_runs claim still prevents double sends.",
+    "manual_schedule_feedback.py leaves 'QA Feedback Project' projects behind on every run (I deleted 3 leftovers). Add a cleanup step."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter19_digest_preview.py (new)", "/app/backend/tests/manual_digest_due.py (new)", "/app/backend/tests/seed_ui_iter19.py (new)"],
+  "success_rate": {"backend": "100% of requested checks (9/9 new + 6/6 iter18 + manual ALL PASS); 1 minor spec gap (WBS on approve)", "frontend": "~90% (delay preview desktop and mobile fully working; 1 area rename bug)"},
+  "test_credentials": "qa.super@example.com / QaSuper!2026 (admin). The test creates and deletes a throwaway super user, test_super_*@example.com.",
+  "seed_data_creation": "seed_ui_iter19.py creates TEST_UI_iter19: A100→A200→A300 FS chain under Building A, B100/B200 under Building B, two Painting tasks for the Other group, 2 DRs with A100 on the grid, and name suggestions. Deleted after the run, along with TEST_iter19 and the leftover QA Feedback projects. The fake-time run_due_digests call claimed digest_runs for 2026-01-08/09; those were deleted.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Desktop DR card is collapsed: click its 'Click to open' text, then the .arow 'Issues & deliveries' Add button, then button.opt 'Delay'. Steps: gf-what, then g-next, button.opt (severity), button.gchip (cause), input.gi.num (days), then Skip x3, then g-next. Mobile: open-dr-m-{id}, dr-flow-minirow-0, dr-flow-issue-delay; impact stepper is the + button after dr-flow-delay-impact; then dr-flow-delay-save. Confirm dialog: confirm-action-confirm / confirm-action-cancel. Wait about 1s before taking screenshots of the preview, because the Radix fade makes it look overlapped mid-animation."
+}

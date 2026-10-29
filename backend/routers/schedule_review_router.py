@@ -16,8 +16,15 @@ from database import get_db, tenant_filter
 from models import StrictModel, utc_now, pred_code
 from services.schedule_feedback import (
     PAPERWORK, OPEN_DELAY_STATUSES, open_delays_for_task, generate_name_suggestions,
-    apply_logic_proposal, _spawn,
+    apply_logic_proposal, _spawn, _clean_name,
 )
+
+
+async def _project_or_404(db, ctx, project_id: str) -> dict:
+    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1, "name": 1})
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    return proj
 
 router = APIRouter(tags=["schedule-review"])
 REVIEW_ROLES = ["pm", "pe", "scheduling_engineer"]
@@ -162,7 +169,7 @@ async def approve_names(payload: NameDecisions, ctx: dict = Depends(require_tena
             tenant_filter(ctx["tenant_id"], {"id": it.id}), {"_id": 0})
         if not s:
             continue
-        name = (it.name or s["suggested_name"]).strip()
+        name = _clean_name((it.name or s["suggested_name"]).strip(), s.get("activity_code"))
         if not name:
             continue
         await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": s["task_id"]}),
@@ -300,6 +307,7 @@ async def digest_preview(project_id: str, ctx: dict = Depends(require_tenant)):
     role_required(ctx, REVIEW_ROLES)
     from services.schedule_digest import build_digest, digest_recipients
     db = get_db()
+    await _project_or_404(db, ctx, project_id)
     d = await build_digest(db, ctx["tenant_id"], project_id)
     d["recipients"] = [u["email"] for u in await digest_recipients(db, ctx["tenant_id"])]
     return d
@@ -332,6 +340,10 @@ async def delay_impact_preview(project_id: str, payload: ImpactPreviewIn, ctx: d
     from services.task_status import compute_projected_finish_dates
     from services.working_days import working_days_between
     db = get_db()
+    await _project_or_404(db, ctx, project_id)
+    ids = list({i.task_id for i in payload.impacts})
+    if await db.tasks.count_documents(tenant_filter(ctx["tenant_id"], {"project_id": project_id, "id": {"$in": ids}})) != len(ids):
+        raise HTTPException(422, "Every activity must belong to this project")
     extra: dict = {}
     for i in payload.impacts:
         extra[i.task_id] = extra.get(i.task_id, 0) + i.days

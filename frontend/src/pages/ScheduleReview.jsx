@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Wand2, Check, X, Loader2, RefreshCw, GitBranch } from "lucide-react";
 import api, { extractApiError } from "../lib/api";
 import { useProjects } from "../lib/projects";
@@ -31,17 +31,20 @@ const areaOf = (name) => ((name || "").includes(" › ") ? name.split(" › ")[0
 function AreaGroup({ area, list, edits, setEdits, onReject, onApprove, busy }) {
   const [areaText, setAreaText] = useState(area);
   const [open, setOpen] = useState(true);
+  const applied = useRef(area);
   const renameArea = () => {
     const next = areaText.trim();
-    if (!next || next === area || area === "Other") return;
+    const prev = applied.current;
+    if (!next || next === prev || area === "Other") return;
     setEdits((e) => {
       const out = { ...e };
       list.forEach((s) => {
         const cur = e[s.id] ?? s.suggested_name;
-        out[s.id] = cur.startsWith(`${area} › `) ? `${next} › ${cur.slice(area.length + 3)}` : cur;
+        out[s.id] = cur.startsWith(`${prev} › `) ? `${next} › ${cur.slice(prev.length + 3)}` : cur;
       });
       return out;
     });
+    applied.current = next;
   };
   const slug = area.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return (
@@ -247,9 +250,9 @@ export default function ScheduleReview() {
             <TabsTrigger value="names" data-testid="tab-names">Activity names</TabsTrigger>
             <TabsTrigger value="digest" data-testid="tab-digest">Weekly digest</TabsTrigger>
           </TabsList>
-          <TabsContent value="logic" className="mt-4"><LogicTab projectId={activeId} /></TabsContent>
-          <TabsContent value="names" className="mt-4"><NamesTab projectId={activeId} /></TabsContent>
-          <TabsContent value="digest" className="mt-4"><DigestTab projectId={activeId} /></TabsContent>
+          <TabsContent value="logic" className="mt-4 focus-visible:ring-0 focus-visible:ring-offset-0"><LogicTab projectId={activeId} /></TabsContent>
+          <TabsContent value="names" className="mt-4 focus-visible:ring-0 focus-visible:ring-offset-0"><NamesTab projectId={activeId} /></TabsContent>
+          <TabsContent value="digest" className="mt-4 focus-visible:ring-0 focus-visible:ring-offset-0"><DigestTab projectId={activeId} /></TabsContent>
         </Tabs>
       )}
     </div>

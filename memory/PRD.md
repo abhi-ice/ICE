@@ -774,3 +774,10 @@ See `/app/memory/test_credentials.md`.
 - One-time prod job services/one_time_migrations.py (db.migrations _id claim): project 6007bdf1-a09d-4de3-a55b-cb5117c64e36 — delete its DR(s) (with reversal) + all delays (audited), queue name suggestions (pending approval).
 - NOTE: AI goes through anthropic_compat shim using ANTHROPIC_API_KEY; preview key is invalid (401) → rule-based fallbacks.
 - Tests: tests/manual_schedule_feedback.py, tests/test_schedule_review_iter18.py (iteration_18).
+
+## 2026-10-29 — Weekly digest, names by area, delay impact preview
+- Weekly Schedule Digest: services/schedule_digest.py; platform cron .emergent/crons.yml "schedule-digest" hourly Thu–Sat UTC → POST /api/cron/schedule-digest (Bearer WEBHOOK_CRON_SECRET, X-Webhook-Id idempotency via db.cron_runs). Sends per project at Friday 7 AM site time (projects.timezone) to tenant admins+PMs; db.digest_runs status claim, retries failed sends until 11 AM. UI: /schedule-review → Weekly digest tab (preview + Send it now).
+- Approve names by area: Activity names tab grouped by first " › " segment; area rename (prefix for all rows), "Approve this area"; WBS numbers stripped on approve too.
+- Delay impact preview: POST /api/projects/{pid}/delay-impact-preview (dry run of compute_projected_finish_dates with extra_impacts, two runs diffed); lib/delayPreview.jsx confirm dialog before saving delays on desktop (GuidedDialog Log delay) and mobile (FlowDelayForm).
+- KNOWN ENV ISSUE: SENDGRID_API_KEY (shared preview+prod) returns 401 → digest/invite/reset emails not delivered until the key is replaced.
+- Tests: tests/test_iter19_digest_preview.py, tests/manual_digest_due.py (iteration_19).

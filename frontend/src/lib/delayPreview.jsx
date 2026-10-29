@@ -55,5 +55,6 @@ export async function previewDelayThenConfirm({ projectId, impacts }) {
       )}
     </div>
   );
-  return confirmAction({ title: "This delay will move these dates", message, confirmText: "Log delay" });
+  return confirmAction({ title: "This delay will move these dates", message, confirmText: "Log delay",
+    danger: moved, wide: true });
 }
