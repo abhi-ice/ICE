@@ -57,3 +57,17 @@ def test_odd_values_are_written_safely_instead_of_failing():
 def test_no_usable_answer_is_a_clear_error():
     with pytest.raises(dte.DrTemplateExportError):
         _run("I could not map this template.")
+
+
+def test_download_header_survives_non_latin1_project_names():
+    # VA 6B's project name has an en dash; a raw header crashed with a bare 500.
+    from starlette.responses import Response
+    from services.http_download import attachment_disposition
+    for name in ["DR_2026-11-04_Renovate 6B for Outpatient Mental Health – Building 100.xlsx",
+                 r'DR_2026-11-04_Café "Main"\x.xlsx', "Ω", ""]:
+        h = attachment_disposition(name, "DR.xlsx")
+        Response(b"x", headers={"content-disposition": h})  # must not raise
+        h.encode("latin-1")
+        assert h.startswith('attachment; filename="')
+    assert "%E2%80%93" in attachment_disposition("A – B.xlsx")
+    assert attachment_disposition("plain.xlsx") == 'attachment; filename="plain.xlsx"'
