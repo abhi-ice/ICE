@@ -1764,6 +1764,7 @@ async def export_dr_via_client_template(
         raise HTTPException(
             422, f"Client-format export failed: {type(e).__name__}: {str(e)[:300]}")
 
+    from services.http_download import attachment_disposition
     safe_proj = (proj.get("name") or "project").replace("/", "-").replace("\\", "-")
     out_name = f"DR_{dr.get('report_date') or 'unknown'}_{safe_proj}.xlsx"
     return Response(
@@ -1773,7 +1774,10 @@ async def export_dr_via_client_template(
             "spreadsheetml.sheet"
         ),
         headers={
-            "content-disposition": f'attachment; filename="{out_name}"',
+            # The project name can hold non-latin-1 characters (VA 6B's has
+            # an en dash), which crashed the response with a bare 500.
+            "content-disposition": attachment_disposition(
+                out_name, f"DR_{dr.get('report_date') or 'unknown'}.xlsx"),
         },
     )
 

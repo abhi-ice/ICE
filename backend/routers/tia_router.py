@@ -19,6 +19,7 @@ from auth import require_tenant
 from audit import write_audit
 from models import TIAGenerationCreate, TIAUnflagPayload, utc_now, gen_id
 from services.tia_generator import generate_tia, fetch_artifact_bytes
+from services.http_download import attachment_disposition
 
 
 # Followup-fix 2 (2026-05-07): threshold for switching from inline
@@ -320,7 +321,7 @@ async def _stream_download(generation_id: str, kind: str, ctx: dict):
     return Response(
         content=data,
         media_type=content_type or CONTENT_TYPES[kind],
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": attachment_disposition(filename, f"tia.{kind}")},
     )
 
 
