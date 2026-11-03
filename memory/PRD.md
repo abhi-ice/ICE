@@ -782,3 +782,4 @@ See `/app/memory/test_credentials.md`.
 - KNOWN ENV ISSUE: SENDGRID_API_KEY (shared preview+prod) returns 401 → digest/invite/reset emails not delivered until the key is replaced.
 - Tests: tests/test_iter19_digest_preview.py, tests/manual_digest_due.py (iteration_19).
 - 2026-10-29: Pulled ice/main 880f281 (picker schedule order + now/next 2 weeks/later groups + phase headings; section_path backfill run-once job). Clean merge, tests pass, redeployed.
+- 2026-10-29: Pulled ice/main f977001 (client DR template export: real error + blank client forms filled). Clean merge, 48 tests pass; full-rebuild deploy requested (prior secret-only deploy had reused pre-880f281 image).
