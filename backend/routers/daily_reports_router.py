@@ -1737,7 +1737,16 @@ async def export_dr_via_client_template(
     # object storage -- run it on the thread pool so a slow storage
     # answer cannot freeze the event loop for every other user.
     from starlette.concurrency import run_in_threadpool
-    template_bytes, _ct = await run_in_threadpool(get_object, proj["dr_template_file_url"])
+    # Every failure answers 422 with the reason, never 5xx: production sits
+    # behind Cloudflare, which swaps any 5xx body for its own HTML page, so
+    # the user only ever saw "Client-format export failed".
+    try:
+        template_bytes, _ct = await run_in_threadpool(get_object, proj["dr_template_file_url"])
+    except Exception as e:
+        logger.exception("client template fetch failed for project %s", proj.get("id"))
+        raise HTTPException(
+            422, f"Couldn't read the uploaded client template ({type(e).__name__}). "
+                 "Upload the template again and retry.")
     try:
         filled_bytes = await inject_dr_into_template(
             template_bytes,
@@ -1748,7 +1757,12 @@ async def export_dr_via_client_template(
             request_id=ctx["request_id"],
         )
     except DrTemplateExportError as e:
-        raise HTTPException(502, str(e))
+        logger.warning("client template export failed: %s", e)
+        raise HTTPException(422, f"Client-format export failed: {e}")
+    except Exception as e:
+        logger.exception("client template export crashed")
+        raise HTTPException(
+            422, f"Client-format export failed: {type(e).__name__}: {str(e)[:300]}")
 
     safe_proj = (proj.get("name") or "project").replace("/", "-").replace("\\", "-")
     out_name = f"DR_{dr.get('report_date') or 'unknown'}_{safe_proj}.xlsx"

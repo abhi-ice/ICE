@@ -141,6 +141,22 @@ def _is_writable(cell) -> bool:
     return getattr(cell, "data_type", None) != "f"
 
 
+_ILLEGAL_XLSX_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _cell_safe(value):
+    """A value Excel can hold: lists become lines, other objects text, and
+    control characters (pasted or dictated notes) are dropped -- openpyxl
+    refuses them and one bad cell must not fail the whole export."""
+    if isinstance(value, (list, tuple)):
+        value = "\n".join(str(v) for v in value if v is not None)
+    elif isinstance(value, dict):
+        value = json.dumps(value, default=str)
+    if isinstance(value, str):
+        value = _ILLEGAL_XLSX_CHARS.sub("", value)
+    return value
+
+
 # ---- Template snapshot -----------------------------------------------
 def _extract_template_snapshot(wb) -> dict:
     """Walk every worksheet and capture every non-empty cell as
@@ -170,6 +186,12 @@ def _extract_template_snapshot(wb) -> dict:
             "max_row": ws.max_row or 0,
             "max_col": ws.max_column or 0,
             "non_empty_cells": cells,
+            # The form's boxes. A blank template has no sample data, so
+            # without these the model cannot tell a two-row header from
+            # the first data row, or find an unlabeled value box.
+            "merged_ranges": sorted(
+                (str(r) for r in ws.merged_cells.ranges),
+                key=lambda a: (int(re.sub(r"\D", " ", a).split()[0]), a))[:300],
         }
     return sheets
 
@@ -386,6 +408,38 @@ CELL-ADDRESS PATTERNS
   have no equipment records), BLANK any stale prefilled data rows in that section
   but LEAVE the section header.
 
+READING THE FORM'S BOXES (merged_ranges)
+----------------------------------------
+Each worksheet also lists merged_ranges -- the form's boxes. A template is often
+completely blank, so use the boxes to find where values go:
+- Write ONLY to the top-left cell of a merged box (e.g. "C14" for C14:E14); other
+  cells inside a box are ignored.
+- Where a value goes: if the cell directly BELOW a label is empty and not inside
+  any box, the value goes there ("Date" in A8 -> A9, "Day of Week:" in A10 -> A11).
+  Otherwise use the empty box or cell to the RIGHT on the same row ("Weather:" in
+  A6 with box C6:F6 -> C6; "High" in C7 -> D7). Leave the label alone.
+- Header lines the template already fills in (station, project title, contract
+  number, contractor name) are the client's own wording for this project: LEAVE
+  them exactly as they are. Fill a header item only where the template leaves it
+  empty.
+- A table header box that spans several rows (e.g. "SKILLED WORKERS" in C12:E13)
+  ends at its bottom row; the data rows start on the next row (14). Never write data
+  into a header's rows.
+- Identical boxes repeated on consecutive rows (C14:E14, C15:E15, ... C18:E18) are
+  the table's data rows. Use them top-down, one record per row; the row labelled
+  "TOTAL" after them is the totals row.
+- Unlabeled full-width boxes below the main tables (e.g. A22:K22, A23:K23,
+  A24:K24) are remarks lines: put our notes there, one sentence or item per line.
+
+VA DAILY REPORT (headers SKILLED WORKERS / UNSKILLED / LOCATION AND DESCRIPTION OF WORK)
+- One row per company on site (from crew_presence, else from activities).
+- SKILLED WORKERS cell: "<company> - <N> men" (e.g. "J&J Mechanical - 6 men").
+- UNSKILLED cell: that company's unskilled headcount when we have it, else leave it.
+- LOCATION AND DESCRIPTION OF WORK cell (same row): what that company worked on --
+  the activity description and its notes, in plain words, without activity codes.
+- TOTAL row: total skilled headcount under SKILLED WORKERS; unskilled total under
+  UNSKILLED only when known.
+
 GENERAL RULES
 -------------
 - Never invent values. If we have no DR data for a value cell, BLANK it (null) --
@@ -501,8 +555,8 @@ async def inject_dr_into_template(
             if not _is_writable(cell):
                 continue
             try:
-                cell.value = value  # None is a legitimate blank intent
-            except (AttributeError, TypeError):
+                cell.value = _cell_safe(value)  # None is a legitimate blank intent
+            except (AttributeError, TypeError, ValueError):
                 # Merged-cell secondaries / read-only cell subclasses
                 # reject .value assignment -- skip without aborting.
                 continue
