@@ -1712,10 +1712,8 @@ async def export_dr_via_client_template(
         ),
         {"_id": 0},
     ).sort("reported_at", -1).to_list(100)
-    # Visits, meetings, deliveries, safety and quality items the super
-    # logged that day -- the client's supervisor writes these in the
-    # remarks and "DELIVERY OF MATERIALS" boxes.
-    not_deleted = {"status": {"$ne": "deleted"}}
+    # Visits and deliveries the super logged that day; the export keeps only
+    # what belongs on a client's form.
     site_log = {
         # Coordination events soft-delete by stamping deleted_at.
         "site_events": await db.coordination_events.find(
@@ -1723,27 +1721,15 @@ async def export_dr_via_client_template(
                 {"linked_daily_report_id": daily_report_id},
                 {"daily_report_id": daily_report_id}], "deleted_at": None}),
             {"_id": 0},
-        ).sort("occurred_at", 1).to_list(50),
-        "people_on_site": await db.daily_report_attendance.find(
-            tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id}),
-            {"_id": 0},
-        ).to_list(50),
+        ).sort("occurred_at", 1).to_list(200),
         # Form deliveries carry delivery_date; voice-intake ones carry
         # daily_report_id instead.
         "deliveries": list({d.get("id") or i: d for i, d in enumerate(await db.deliveries.find(
             tenant_filter(ctx["tenant_id"], {"$or": [
                 {"project_id": dr["project_id"], "delivery_date": dr["report_date"]},
-                {"daily_report_id": daily_report_id}], **not_deleted}),
+                {"daily_report_id": daily_report_id}], "status": {"$ne": "deleted"}}),
             {"_id": 0},
         ).to_list(50))}.values()),
-        "safety_events": await db.safety_events.find(
-            tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}),
-            {"_id": 0},
-        ).to_list(50),
-        "quality_issues": await db.qc_issues.find(
-            tenant_filter(ctx["tenant_id"], {"daily_report_id": daily_report_id, **not_deleted}),
-            {"_id": 0},
-        ).to_list(50),
     }
 
     # Signer precedence -- same as the PDF exports (submitted_by ->

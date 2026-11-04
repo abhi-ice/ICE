@@ -73,185 +73,353 @@ def test_download_header_survives_non_latin1_project_names():
     assert attachment_disposition("plain.xlsx") == 'attachment; filename="plain.xlsx"'
 
 
-def _va_like_template() -> bytes:
-    """The parts of the VA 6B form that went wrong on 2026-11-03."""
-    from openpyxl.styles import Alignment, Font
+def _sheet():
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Sheet1"
-    ws["A3"] = "STATION -  VA Medical center, Bronx NY"
-    ws["A4"] = "PROJECT TITLE- Renovate 6B for Outpatient Mental Health"
-    ws["K4"] = "NAME OF CONTRACTOR"
-    ws["K5"] = "J&J Mechanical"
-    ws["A5"] = "Contract Number:  36C24218C008"
-    ws["A8"] = "Date"
-    ws.merge_cells("B8:D9")
-    ws["A9"].font = Font(color="FF00B050", bold=True)
-    ws["A9"].number_format = "mm-dd-yy"
-    ws["G7"] = "Prec."
-    ws["H7"].number_format = "0%"
-    ws["C12"], ws["F12"], ws["K12"] = "Contractor", "Trade", "Men"
-    ws["C13"] = "Old Co"
-    ws.column_dimensions["K"].width = 47.44
-    ws["K14"].alignment = Alignment(wrap_text=True)
-    ws.row_dimensions[14].height = 30
-    ws["A25"] = "SIGNATURE OF SUPERVISOR :"
+    return wb, wb.active
+
+
+def _reloaded(wb):
+    # Column widths only carry their min..max once read back from a file,
+    # which is how every template reaches the export.
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    return openpyxl.load_workbook(io.BytesIO(buf.getvalue())).active
 
 
-def _run_va(answer: dict):
-    class _Chat:
-        async def send_message(self, _m):
-            return __import__("json").dumps(answer)
-    dte._new_chat = lambda sid, sysmsg: _Chat()
-    dte._track_usage = lambda *a, **k: asyncio.sleep(0)
-    out = asyncio.run(dte.inject_dr_into_template(
-        _va_like_template(), dr={"report_date": "2026-11-03"}, project={}, activities=[],
-        presence=[], delays=[], signer_name="", tenant_id="t", request_id="r"))
-    return openpyxl.load_workbook(io.BytesIO(out)).active
+def _height(ws, row):
+    return ws.row_dimensions[row].height if row in ws.row_dimensions else None
 
 
-def test_client_header_lines_are_kept():
-    ws = _run_va({"Sheet1": {
-        "A3": "STATION -  526-19-122", "A4": "PROJECT TITLE- Renovate 6B – Building 100",
-        "A5": "Contract Number:  36C24218C0080", "K5": "ICE",
-        "A25": "SIGNATURE OF SUPERVISOR : Juemil Alfaro", "C13": "Star tech - 3 men"}})
-    assert ws["A3"].value == "STATION -  VA Medical center, Bronx NY"
-    assert ws["A4"].value == "PROJECT TITLE- Renovate 6B for Outpatient Mental Health"
-    assert ws["A5"].value == "Contract Number:  36C24218C008"
-    assert ws["K5"].value == "J&J Mechanical"
-    # per-report lines and table rows are still written
-    assert ws["A25"].value == "SIGNATURE OF SUPERVISOR : Juemil Alfaro"
-    assert ws["C13"].value == "Star tech - 3 men"
+LONG = ("Final wall to be demoed when ICRA barrier is demoed. Men disposed of metal in "
+        "early morning. Loaded up bins to dispose of remaining garbage. Proceeded with demo")
 
 
-def test_snapshot_points_at_styled_entry_cells_and_kept_headers():
-    wb = openpyxl.load_workbook(io.BytesIO(_va_like_template()))
-    snap = dte._extract_template_snapshot(wb)["Sheet1"]
-    styled = {c["address"]: c for c in snap["styled_empty_cells"]}
-    assert styled["A9"]["number_format"] == "mm-dd-yy" and styled["A9"]["bold"]
-    assert set(snap["kept_header_cells"]) == {"A3", "A4", "A5", "K5"}
-
-
-def test_values_take_the_cells_own_format_and_long_text_gets_room():
-    long = ("Final wall to be demoed when ICRA barrier is demoed. Men disposed of metal in "
-            "early morning. Loaded up bins to dispose of remaining garbage. Proceeded with demo")
-    ws = _run_va({"Sheet1": {"A9": "11/03/2026", "H7": 2, "C9": "inside the box", "K14": long}})
-    assert ws["A9"].value.year == 2026 and ws["A9"].value.day == 3
-    assert "%" not in ws["H7"].number_format
-    assert ws["B8"].value == "inside the box"
-    assert ws.row_dimensions[14].height > 30
+def test_long_text_in_a_wrapped_cell_grows_the_row():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.column_dimensions["K"].width = 47.44
+    ws["K14"] = LONG
+    ws["K14"].alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[14].height = 30
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["K14"]])
+    # Default 11pt font: about 52 characters a line, so four lines.
+    assert 50 <= _height(ws, 14) <= 75
     assert list(ws.column_dimensions) == ["K"]  # no stray column entries saved
 
 
-def test_weather_numbers_read_like_a_supervisor_wrote_them():
-    snap = dte._build_dr_snapshot(
-        dr={"weather_temp_high_f": 70, "weather_temp_low_f": 46.4, "weather_conditions": "overcast"},
-        project={}, activities=[], presence=[], delays=[], signer_name="")
-    assert snap["weather"] == {**snap["weather"], "temp_high_f": 70, "temp_low_f": 46,
-                               "conditions": "Overcast"}
+def test_long_text_in_an_unwrapped_box_wraps_on_any_form():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.merge_cells("A5:C5")
+    ws["A5"] = LONG * 2
+    ws["A5"].alignment = Alignment(horizontal="left")
+    dte._fit_rows(ws, [ws["A5"]])
+    assert ws["A5"].alignment.wrap_text
+    assert ws["A5"].alignment.horizontal == "left"
+    assert _height(ws, 5) > 15
 
 
-def _sheet(cells: dict, merges=()):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    for a, v in cells.items():
-        ws[a] = v
-    for m in merges:
-        ws.merge_cells(m)
-    return ws
+def test_long_text_cut_off_by_a_filled_neighbour_wraps():
+    wb, ws = _sheet()
+    ws["A5"], ws["B5"] = LONG, "6"
+    ws.row_dimensions[5].height = 15
+    dte._fit_rows(ws, [ws["A5"], ws["B5"]])
+    assert ws["A5"].alignment.wrap_text and _height(ws, 5) > 15
 
 
-def test_header_lock_stays_in_the_header_block():
-    # Review 2026-11-03: remarks lower down, two-column tables, per-day cells
-    # under a header label and placeholders must all stay writable.
-    ws = _sheet({"A2": "Contract No.", "B2": "36C24218C0080", "A3": "Report No. 152",
-                 "A5": "Contractor", "B5": "No. of Men", "A6": "Old Plumbing Co", "B6": 4,
-                 "A7": "Project Name: (Insert Project Name)", "A8": "Contractor: TBD",
-                 "A9": "Contractor Name: J&J Mechanical",
-                 "A29": "Owner - COR walkthrough", "A30": "Station: 12+50 curb placed"})
-    kept = dte._protected_header_cells(ws)
-    assert "B2" in kept and "A9" in kept
-    for free in ("A3", "A6", "A7", "A8", "A29", "A30"):
-        assert free not in kept, free
+def test_text_that_fits_the_form_stays_on_one_line():
+    wb, ws = _sheet()
+    for c, w in zip("ABCDEFGHIJK", (6, 14, 14, 10, 10, 10, 10, 10, 10, 10, 10)):
+        ws.column_dimensions[c].width = w
+    ws["K1"] = "edge"
+    ws["A21"] = "x" * 120
+    ws.row_dimensions[21].height = 15
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["A21"]])
+    assert not ws["A21"].alignment.wrap_text and _height(ws, 21) == 15
 
 
-def test_label_and_value_on_one_row_is_still_protected():
-    ws = _sheet({"A3": "Project:", "B3": "Renovate 6B for Outpatient Mental Health", "E3": "Date:"})
-    assert "B3" in dte._protected_header_cells(ws)
+def test_a_narrow_cell_with_free_space_is_not_stacked_into_a_tower():
+    wb, ws = _sheet()
+    ws.column_dimensions["A"].width = 10
+    ws["K1"] = "edge"
+    ws["A21"] = LONG * 2
+    ws.row_dimensions[21].height = 15
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["A21"]])
+    assert not ws["A21"].alignment.wrap_text and _height(ws, 21) == 15
 
 
-def test_writes_aimed_inside_a_header_box_do_not_erase_the_header():
-    ws = _sheet({"C12": "SKILLED WORKERS"}, merges=["C12:E13"])
-    assert dte._top_left(ws, ws["C13"]) is None
-    ws2 = _sheet({}, merges=["B8:D9"])
-    assert dte._top_left(ws2, ws2["C9"]).coordinate == "B8"
+def test_a_box_keeps_room_for_the_automatic_cell_beside_it():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.column_dimensions["A"].width = 12
+    ws.merge_cells("B5:F5")
+    ws["A5"], ws["B5"] = "y" * 68, "z" * 92
+    ws["A5"].alignment = ws["B5"].alignment = Alignment(wrap_text=True)
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["A5"], ws["B5"]])
+    assert _height(ws, 5) >= 6 * 14.55
+
+
+def test_thin_columns_are_left_alone():
+    wb, ws = _sheet()
+    ws["A5"], ws["B5"], ws["C5"] = "Weather:", "overcast, high 70 F, low 46 F", "Date:"
+    ws["D5"], ws["E5"], ws["F5"] = "x", "Superintendent", "y"
+    ws.row_dimensions[5].height = 15
+    ws.column_dimensions["B"].width = 1.71
+    ws.column_dimensions["E"].width = 5
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["B5"], ws["E5"]])
+    assert _height(ws, 5) == 15
+
+
+def test_right_aligned_text_cannot_run_on_to_the_right():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws["G1"] = "edge"
+    ws["A5"], ws["B5"] = "x", "y" * 70
+    ws["B5"].alignment = Alignment(horizontal="right")
+    ws.row_dimensions[5].height = 15
+    dte._fit_rows(ws, [ws["B5"]])
+    assert ws["B5"].alignment.wrap_text and ws["B5"].alignment.horizontal == "right"
+    assert _height(ws, 5) > 15
+
+
+def test_automatic_rows_are_left_for_excel_to_fit():
+    wb, ws = _sheet()
+    ws["A5"], ws["B5"] = LONG, "6"
+    dte._fit_rows(ws, [ws["A5"], ws["B5"]])
+    assert ws["A5"].alignment.wrap_text and _height(ws, 5) is None
+
+
+def test_long_text_in_the_forms_last_column_wraps():
+    wb, ws = _sheet()
+    ws["A4"], ws["D4"] = "Company", "Description of Work"
+    ws["D5"] = LONG
+    dte._fit_rows(ws, [ws["D5"]])
+    assert ws["D5"].alignment.wrap_text
+
+
+def test_long_text_stopped_by_a_filled_cell_further_along_wraps():
+    wb, ws = _sheet()
+    ws.column_dimensions["A"].width = 22
+    ws["A5"], ws["C5"] = LONG, 3
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["A5"], ws["C5"]])
+    assert ws["A5"].alignment.wrap_text
+
+
+def test_long_text_stopped_by_the_print_area_wraps():
+    wb, ws = _sheet()
+    ws.column_dimensions["B"].width = 22
+    ws["F1"] = "beyond the form"
+    ws["B5"] = LONG
+    ws.print_area = "A1:C30"
+    ws = _reloaded(wb)
+    assert dte._right_edge(ws) == 3
+    dte._fit_rows(ws, [ws["B5"]])
+    assert ws["B5"].alignment.wrap_text
+
+
+def test_long_text_stopped_by_an_empty_box_wraps():
+    wb, ws = _sheet()
+    ws.column_dimensions["A"].width = 22
+    ws["L1"] = "edge"
+    ws.merge_cells("C5:E5")
+    ws["A5"] = LONG
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["A5"]])
+    assert ws["A5"].alignment.wrap_text
+
+
+def test_line_breaks_always_wrap_even_with_room_to_run_on():
+    wb, ws = _sheet()
+    ws["Z1"] = "edge"
+    ws["B10"] = "COR walkthrough\nRain stopped work at 2pm"
+    dte._fit_rows(ws, [ws["B10"]])
+    assert ws["B10"].alignment.wrap_text
+
+
+def test_a_short_value_just_over_the_free_space_stays_on_one_line():
+    wb, ws = _sheet()
+    ws["A3"], ws["G3"] = "Project:", "Date:"
+    ws["B3"] = "Renovate 6B for Outpatient Mental Health Clinic"
+    ws.row_dimensions[3].height = 15
+    dte._fit_rows(ws, [ws["B3"]])
+    assert not ws["B3"].alignment.wrap_text and _height(ws, 3) == 15
+
+
+def test_several_items_in_a_narrow_cell_still_wrap():
+    wb, ws = _sheet()
+    ws["H1"] = "edge"
+    ws["B6"] = ("ABC Supply - 40 sheets of 5/8 drywall\nXYZ Metals - 12 bundles of stud track\n"
+                "Acme Electric - 2 panels (scheduled)")
+    ws.row_dimensions[6].height = 18
+    dte._fit_rows(ws, [ws["B6"]])
+    assert ws["B6"].alignment.wrap_text and _height(ws, 6) > 18
+
+
+def test_hidden_and_spacer_columns_never_blow_up_a_row():
+    wb, ws = _sheet()
+    ws["A5"], ws["B5"], ws["C5"], ws["C6"] = "x", "Sunny and very long text here", "y", "z"
+    ws["B6"] = "Star tech"
+    ws.row_dimensions[5].height = 15
+    ws.row_dimensions[6].height = 15
+    ws.column_dimensions["B"].width = 0.1
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["B5"], ws["B6"]])
+    assert _height(ws, 5) == 15 and _height(ws, 6) == 15
+    assert not ws["B5"].alignment.wrap_text
+
+
+def test_capitals_get_their_extra_room():
+    from openpyxl.styles import Alignment, Font
+    wb, ws = _sheet()
+    ws.column_dimensions["K"].width = 47.44
+    for a, text in (("K1", "a" * 400), ("K2", "A" * 400)):
+        ws[a] = text
+        ws[a].font = Font(sz=12)
+        ws[a].alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[1].height = ws.row_dimensions[2].height = 30
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["K1"], ws["K2"]])
+    assert _height(ws, 2) >= 1.25 * _height(ws, 1)
+
+
+def test_rows_get_enough_height_for_calibri():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.merge_cells("A5:F5")
+    ws["A5"] = "\n".join(f"Item {i}" for i in range(8))
+    ws["A5"].alignment = Alignment(wrap_text=True)
+    dte._fit_rows(ws, [ws["A5"]])
+    assert _height(ws, 5) >= 8 * 14.55  # Excel's measured line pitch for Calibri 11
+
+
+def test_text_running_over_empty_cells_stays_on_one_line():
+    wb, ws = _sheet()
+    ws["Z1"] = "edge"
+    ws["A5"] = LONG
+    dte._fit_rows(ws, [ws["A5"]])
+    assert not ws["A5"].alignment.wrap_text
+    assert _height(ws, 5) is None
+    assert (5, 2) not in ws._cells  # no stray cell saved into the client's file
 
 
 def test_one_line_values_do_not_grow_rows():
     from openpyxl.styles import Alignment
-    ws = _sheet({"A1": "Sunny"})
+    wb, ws = _sheet()
+    ws["A1"] = "Sunny"
     ws["A1"].alignment = Alignment(wrap_text=True)
     dte._fit_rows(ws, [ws["A1"]])
-    assert 1 not in ws.row_dimensions or ws.row_dimensions[1].height is None
+    assert _height(ws, 1) is None
 
 
-def test_coloured_bands_do_not_crowd_out_entry_cells():
-    from openpyxl.styles import Font
-    ws = _sheet({"A8": "Date"})
-    for r in range(1, 5):
-        for c in range(1, 15):
-            ws.cell(row=r, column=c).font = Font(color="FFFFFFFF", bold=True)
-    for c in range(1, 15):
-        ws.cell(row=6, column=c).font = Font(color="FF1F4E79")
-    ws["A9"].font = Font(color="FF00B050", bold=True)
-    got = [e["address"] for e in dte._styled_empty_cells(ws)]
-    assert got == ["A9"]
+def test_very_long_text_is_not_capped_early_but_stays_within_excel():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws["A1"], ws["A2"] = "x " * 400, "x " * 4000
+    for c in (ws["A1"], ws["A2"]):
+        c.alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[1].height = ws.row_dimensions[2].height = 15
+    dte._fit_rows(ws, [ws["A1"], ws["A2"]])
+    assert 200 < _height(ws, 1) <= 409
+    assert _height(ws, 2) == 409
 
 
-def test_table_header_in_row_one_locks_nothing_below():
-    ws = _sheet({"A1": "Project:", "D1": "Date:", "G1": "Report No.:",
-                 "A29": "Owner - COR walkthrough", "A30": "Station: 12+50 curb placed"})
-    assert dte._protected_header_cells(ws) == set()
+def test_a_box_over_several_rows_counts_all_its_rows():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.merge_cells("A5:A7")
+    ws.column_dimensions["A"].width = 40
+    ws["A5"] = LONG
+    ws["A5"].alignment = Alignment(wrap_text=True)
+    for r in (5, 6, 7):
+        ws.row_dimensions[r].height = 30
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["A5"]])
+    assert _height(ws, 7) == 30  # three 30pt rows already hold it
 
 
-def test_combined_lines_stay_writable():
-    # A line that also carries the date, report number or a crew count is the
-    # day's data too -- never locked (round-5 review).
-    ws = _sheet({"A3": "Project No.: 526-19-122      Date: 11/02/2026",
-                 "A4": "Contractor: ____________   Date: ____________",
-                 "A5": "Project No. 526-19-122      Date 11/02/2026",
-                 "A6": "Contract No: 36C24218C0080   Report # 45",
-                 "A7": "Project: VA 6B Temp: 45F",
-                 "A8": "Contractor: J&J Mechanical    Workers: 6"})
-    assert dte._protected_header_cells(ws) == set()
+def test_a_tall_box_spreads_past_excels_row_limit():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.merge_cells("A5:H12")
+    ws["A5"] = "\n".join(f"Item {i}" for i in range(60))
+    ws["A5"].alignment = Alignment(wrap_text=True)
+    dte._fit_rows(ws, [ws["A5"]])
+    heights = [_height(ws, r) or 15 for r in range(5, 13)]
+    assert max(heights) <= 409 and sum(heights) >= 60 * 14.55
 
 
-def test_header_values_without_digits_and_other_wordings_are_kept():
-    ws = _sheet({"A1": "DAILY CONSTRUCTION REPORT", "A3": "Project:", "B3": "Downtown Library Renovation",
-                 "D3": "Date:", "A4": "Contractor:", "B4": "J&J Mechanical", "D4": "Weather:",
-                 "A5": "Client Name: VA NY Harbor Healthcare", "A6": "Station No.: 526",
-                 "A7": "Owner/Client: VA", "A8": "Contractor's Name: J&J Mechanical"})
-    kept = dte._protected_header_cells(ws)
-    assert "A7" not in kept  # "Owner" lines are usually the owner's visits
-    for cell in ("B3", "B4", "A5", "A6", "A8"):
-        assert cell in kept, cell
+def test_hidden_rows_do_not_count_as_room():
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    ws.merge_cells("A5:D7")
+    ws["A5"] = "\n".join(f"Item {i}" for i in range(6))
+    ws["A5"].alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[6].height = 15
+    ws.row_dimensions[7].height = 15
+    ws.row_dimensions[7].hidden = True
+    dte._fit_rows(ws, [ws["A5"]])
+    assert _height(ws, 7) == 15
+    assert (_height(ws, 5) or 15) + _height(ws, 6) >= 6 * 14.55
 
 
-def test_label_row_of_header_items_keeps_the_values_below():
-    ws = _sheet({"A2": "Project Name", "B2": "Contract No.", "C2": "Contractor",
-                 "A3": "Bronx 6B", "B3": "36C24218C0080", "C3": "J&J Mechanical"})
-    assert {"A3", "B3", "C3"} <= set(dte._protected_header_cells(ws))
+def test_a_column_width_covering_several_columns_is_read():
+    from openpyxl.styles import Alignment
+    from openpyxl.worksheet.dimensions import ColumnDimension
+    wb, ws = _sheet()
+    ws.merge_cells("B2:D2")
+    ws["B2"] = LONG
+    ws["B2"].alignment = Alignment(wrap_text=True)
+    ws.column_dimensions["B"] = ColumnDimension(ws, index="B", min=2, max=4, width=30,
+                                                customWidth=True)
+    ws = _reloaded(wb)
+    dte._fit_rows(ws, [ws["B2"]])
+    assert _height(ws, 2) is None or _height(ws, 2) <= 30  # 90 wide: two lines at most
 
 
-def test_placeholder_check_is_fast_on_long_x_runs():
+def test_many_merged_boxes_stay_fast():
     import time
+    from openpyxl.styles import Alignment
+    wb, ws = _sheet()
+    for r in range(1, 1501):
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
+    written = []
+    for r in range(1, 151):
+        ws.cell(row=r, column=1).value = "x" * 120
+        written.append(ws.cell(row=r, column=1))
     t = time.time()
-    assert not dte._has_content("XXX-XX-XXX")
-    assert dte._has_content("X" * 40 + " (to be assigned)")
-    assert time.time() - t < 0.5
+    dte._fit_rows(ws, written)
+    assert time.time() - t < 1.5
+
+
+def test_export_fits_rows_but_keeps_going_if_sizing_fails():
+    answer = '{"Sheet1": {"K14": "' + LONG + '"}}'
+    assert _run(answer)["K14"].value == LONG
+    original = dte._fit_rows
+    try:
+        dte._fit_rows = lambda ws, written: 1 / 0
+        assert _run(answer)["K14"].value == LONG
+    finally:
+        dte._fit_rows = original
+
+
+def test_visits_and_deliveries_reach_the_form():
+    snap = dte._build_dr_snapshot(
+        dr={}, project={}, activities=[], presence=[], delays=[], signer_name="",
+        site_log={"site_events": [{"other_party_name": "William Anis", "other_party_org": "VA",
+                                   "other_party_role": "COR", "summary": "Viewed work in progress"}],
+                  "deliveries": [{"vendor": "ABC Supply", "description": "40 sheets drywall",
+                                  "po_number": "PO-7"}]})
+    assert snap["site_events"][0]["who"] == "William Anis"
+    assert snap["site_events"][0]["role"] == "COR"
+    assert snap["deliveries"] == [{"vendor": "ABC Supply", "description": "40 sheets drywall",
+                                   "po_number": "PO-7", "status": None}]
 
 
 def test_spoken_visits_and_deliveries_reach_the_form():
@@ -264,96 +432,69 @@ def test_spoken_visits_and_deliveries_reach_the_form():
     assert snap["deliveries"][0]["vendor"] == "ABC Supply"
 
 
-def test_percent_cells_are_pointed_out():
-    wb = openpyxl.load_workbook(io.BytesIO(_va_like_template()))
-    assert dte._extract_template_snapshot(wb)["Sheet1"]["percent_cells"] == ["H7"]
+def _visit(**kw):
+    return {"other_party_name": "A Person", "summary": "Walked the site", **kw}
 
 
-def test_header_values_in_capitals_are_still_kept():
-    ws = _sheet({"K4": "NAME OF CONTRACTOR", "K5": "J&J MECHANICAL", "A3": "PROJECT:",
-                 "B3": "RENOVATE BUILDING SIX", "A6": "Contractor:", "B6": "ICE", "E6": "Weather:"})
-    assert {"K5", "B3", "B6"} <= set(dte._protected_header_cells(ws))
+def test_only_real_visits_reach_a_client_form():
+    log = [_visit(channel="in_person", direction="inbound", topic="regulatory"),
+           _visit(channel="meeting", direction="outbound", topic="owner_direction"),
+           {"with_party": "Spoken", "description": "Came by"},
+           _visit(channel="phone", direction="inbound"),
+           _visit(channel="email", direction="inbound"),
+           _visit(channel="text_message", direction="outbound"),
+           _visit(channel="formal_letter", direction="inbound"),
+           _visit(channel="system_notification", direction="inbound"),
+           _visit(channel="in_person", direction="internal"),
+           _visit(channel="meeting", direction="inbound", topic="payment"),
+           _visit(channel="in_person", direction="inbound", topic="sub_coordination")]
+    snap = dte._build_dr_snapshot(dr={}, project={}, activities=[], presence=[], delays=[],
+                                  signer_name="", site_log={"site_events": log})
+    assert len(snap["site_events"]) == 3
+    assert snap["site_events"][2]["who"] == "Spoken"
 
 
-def test_field_rows_do_not_end_the_header_block():
-    ws = _sheet({"A2": "Date:", "C2": "Weather:", "E2": "Temp:",
-                 "A3": "Contractor: J&J Mechanical", "A4": "Station - VA Medical Center",
-                 "A6": "Project:", "B6": "Downtown Library Renovation", "D6": "Date:", "F6": "Report No.:"})
-    assert {"A3", "A4", "B6"} <= set(dte._protected_header_cells(ws))
+def test_internal_outcome_notes_never_reach_the_ai():
+    snap = dte._build_dr_snapshot(
+        dr={}, project={}, activities=[], presence=[], delays=[], signer_name="",
+        site_log={"site_events": [_visit(channel="in_person", outcome_notes="Preparing a claim")]})
+    assert "Preparing a claim" not in str(snap)
 
 
-def test_small_crew_table_near_the_top_stays_writable():
-    ws = _sheet({"A1": "DAILY REPORT", "A2": "Project:", "B2": "Bronx 6B", "A5": "Contractor",
-                 "B5": "Trade", "C5": "Workers", "D5": "Description of Work", "A6": "Old Plumbing Co"})
-    kept = dte._protected_header_cells(ws)
-    assert "B2" in kept and "A6" not in kept
+def test_deliveries_carry_their_status_and_skip_what_never_came():
+    day = "2026-11-03"
+    rows = [{"vendor": "Today", "delivery_date": day, "status": "received"},
+            {"vendor": "Planned", "delivery_date": day, "status": "scheduled"},
+            {"supplier_name": "Spoken", "status": "rejected", "date": day},
+            {"vendor": "Off", "delivery_date": day, "status": "cancelled"},
+            {"vendor": "Moved", "delivery_date": "2026-11-04", "status": "scheduled"}]
+    snap = dte._build_dr_snapshot(dr={"report_date": day}, project={}, activities=[], presence=[],
+                                  delays=[], signer_name="", site_log={"deliveries": rows})
+    assert [(d["vendor"], d["status"]) for d in snap["deliveries"]] == [
+        ("Today", "received"), ("Planned", "scheduled"), ("Spoken", "rejected")]
 
 
-def test_single_space_header_lines_are_kept():
-    ws = _sheet({"A3": "Contract No. 36C24218C0080", "A4": "PROJECT NO 526-19-122",
-                 "A5": "Project Title Renovate 6B"})
-    assert {"A3", "A4", "A5"} <= set(dte._protected_header_cells(ws))
+def test_deliveries_typed_into_the_report_count_as_arrived():
+    day = "2026-11-03"
+    rows = [{"vendor": "Typed", "delivery_date": day, "daily_report_id": "dr-1", "status": "scheduled"},
+            {"vendor": "Planned", "delivery_date": day, "status": "scheduled"},
+            {"supplier_name": "Spoken", "daily_report_id": "dr-1", "status": "scheduled",
+             "source": "voice_intake"},
+            {"vendor": "Late", "delivery_date": day, "daily_report_id": "dr-1", "status": "delayed"}]
+    snap = dte._build_dr_snapshot(dr={"id": "dr-1", "report_date": day}, project={}, activities=[],
+                                  presence=[], delays=[], signer_name="", site_log={"deliveries": rows})
+    assert [d["status"] for d in snap["deliveries"]] == ["received", "scheduled", "scheduled", "delayed"]
 
 
-def test_theme_coloured_entry_cells_are_found():
-    from openpyxl.styles import Font
-    from openpyxl.styles.colors import Color
-    ws = _sheet({"A8": "Date"})
-    ws["A9"].font = Font(color=Color(theme=4))
-    assert [e["address"] for e in dte._styled_empty_cells(ws)] == ["A9"]
+def test_no_site_log_still_exports():
+    snap = dte._build_dr_snapshot(dr={}, project={}, activities=[], presence=[], delays=[],
+                                  signer_name="")
+    assert snap["site_events"] == [] and snap["deliveries"] == []
 
 
-def test_a_stray_far_right_cell_does_not_slow_the_snapshot():
-    import time
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    for r in range(1, 61):
-        for c in range(1, 20):
-            ws.cell(row=r, column=c, value=f"v{r}-{c}")
-    ws["XFD5"] = "x"
-    t = time.time()
-    dte._extract_template_snapshot(wb)
-    assert time.time() - t < 2
-
-
-def test_crew_rows_and_owner_visits_near_the_top_stay_writable():
-    ws = _sheet({"A6": "DESCRIPTION OF WORK PERFORMED", "D6": "CONTRACTOR", "A7": "Demo duct work",
-                 "D7": "J&J Mechanical", "A8": "Owner", "B8": "COR William Anis walkthrough",
-                 "A3": "Contractor:", "B3": "Star Tech", "C3": "Workers:", "D3": 3})
-    assert dte._protected_header_cells(ws) == set()
-
-
-def test_a_real_zero_percent_stays_a_percent():
-    wb = openpyxl.Workbook()
-    c = wb.active["B3"]
-    c.number_format = "0%"
-    assert dte._typed_for_cell(c, 0) == 0 and c.number_format == "0%"
-    dte._typed_for_cell(c, 55)
-    assert c.number_format == "General"
-
-
-def test_many_merged_boxes_stay_fast():
-    import time
-    from openpyxl.styles import Alignment
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    for r in range(1, 1501):
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
-        ws.cell(row=r, column=1).alignment = Alignment(wrap_text=True)
-    t = time.time()
-    written = []
-    for r in range(1, 151):
-        cell = dte._top_left(ws, ws.cell(row=r, column=2))
-        cell.value = "x" * 120
-        written.append(cell)
-    dte._fit_rows(ws, written)
-    assert time.time() - t < 1.5
-
-
-def test_rain_is_never_shown_as_a_percent():
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws["G7"] = "Prec."
-    ws["H7"].number_format = "0%"
-    dte._typed_for_cell(ws["H7"], 0)
-    assert ws["H7"].number_format == "General"
+def test_prompt_has_no_project_specific_rules():
+    assert "kept_header_cells" not in dte.SYSTEM_PROMPT
+    assert "styled_empty_cells" not in dte.SYSTEM_PROMPT
+    assert "percent_cells" not in dte.SYSTEM_PROMPT
+    assert "William Anis" not in dte.SYSTEM_PROMPT and "Ivars" not in dte.SYSTEM_PROMPT
+    assert "site_events" in dte.SYSTEM_PROMPT and "deliveries" in dte.SYSTEM_PROMPT
