@@ -466,6 +466,10 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
     invite_projects = await _validated_project_ids(db, ctx, payload.project_ids)
     if invite_scope == "all":
         invite_projects = []
+    elif (payload.role or "").strip().lower() == "admin" and not invite_projects:
+        # A limited admin is held to their projects from day one, so with
+        # none they would see nothing.
+        raise HTTPException(422, "An admin limited to specific projects needs at least one project. Tick a project, or choose All projects.")
     if await db.users.find_one({"email": payload.email.lower(), "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1}):
         raise HTTPException(409, "User with this email is already a member")
     pending = await db.team_invites.find_one({
@@ -664,6 +668,14 @@ async def update_member_access(user_id: str, payload: MemberAccessUpdate,
     new_projects = None
     if payload.project_ids is not None:
         new_projects = await _validated_project_ids(db, ctx, payload.project_ids)
+    if new_role == "admin" and new_scope == "assigned":
+        if new_projects is not None:
+            has_projects = bool(new_projects)
+        else:
+            has_projects = bool(await db.project_members.find_one(
+                {"tenant_id": tid, "user_id": user_id}, {"_id": 0, "id": 1}))
+        if not has_projects:
+            raise HTTPException(422, "An admin limited to specific projects needs at least one project. Tick a project, or choose All projects.")
 
     sets = {"access_scope": new_scope}
     if new_role != old_role:

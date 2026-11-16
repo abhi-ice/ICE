@@ -291,8 +291,11 @@ async def ensure_auth_attempt_indexes(db=None) -> None:
     global _attempt_indexes_ready
     if _attempt_indexes_ready:
         return
-    db = db or get_db()
     try:
+        # A Motor/pymongo database refuses a true/false test, so compare
+        # with None (``db or get_db()`` raised and broke every sign-in).
+        if db is None:
+            db = get_db()
         await db.auth_attempts.create_index("at", expireAfterSeconds=_ATTEMPTS_TTL_SECONDS)
         await db.auth_attempts.create_index([("key", 1), ("at", 1)])
         _attempt_indexes_ready = True

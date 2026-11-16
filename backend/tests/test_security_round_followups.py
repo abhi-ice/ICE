@@ -416,3 +416,52 @@ def test_audit_chain_heads_follow_audit_log():
     assert "audit_log" in mig.PRESERVED_COLLECTIONS
     assert "audit_chain_heads" in mig.PRESERVED_COLLECTIONS
     assert all(c != "audit_chain_heads" for c, _ in mig.WIPE_COLLECTIONS)
+
+
+# ---------------- 7b. a real database object refuses bool(); must not raise
+class _NoBoolColl:
+    def __init__(self, log):
+        self._log = log
+
+    async def create_index(self, *a, **kw):
+        self._log.append(a)
+
+
+class _NoBoolDB:
+    """Like pymongo/Motor: truth-testing the database raises."""
+    def __init__(self):
+        self.created = []
+        self.auth_attempts = _NoBoolColl(self.created)
+
+    def __bool__(self):
+        raise NotImplementedError("Database objects do not implement truth value testing")
+
+
+def test_auth_attempt_indexes_accept_real_database_object(monkeypatch):
+    monkeypatch.setattr(auth, "_attempt_indexes_ready", False)
+    db = _NoBoolDB()
+    _run(auth.ensure_auth_attempt_indexes(db))
+    assert len(db.created) == 2 and auth._attempt_indexes_ready is True
+    # And through the default (db=None) path.
+    monkeypatch.setattr(auth, "_attempt_indexes_ready", False)
+    db2 = _NoBoolDB()
+    monkeypatch.setattr(auth, "get_db", lambda: db2)
+    _run(auth.ensure_auth_attempt_indexes())
+    assert len(db2.created) == 2
+
+
+def test_startup_indexes_continue_if_auth_index_setup_raises(monkeypatch):
+    import server
+    made = []
+
+    async def _safe(coll, keys, **kw):
+        made.append(kw.get("name") or str(keys))
+        return True
+
+    async def _boom(db=None):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(server, "_safe_create_index", _safe)
+    monkeypatch.setattr(server, "get_db", lambda: _DB(), raising=False)
+    monkeypatch.setattr(auth, "ensure_auth_attempt_indexes", _boom)
+    _run(server._ensure_indexes())
+    assert any("paw_" in m or "pm_tenant" in m for m in made)

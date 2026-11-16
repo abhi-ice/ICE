@@ -204,13 +204,14 @@ export default function Team() {
               {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
           </div>
-          <button data-testid="send-invite-btn" type="submit" disabled={busy}
+          <button data-testid="send-invite-btn" type="submit"
+            disabled={busy || (draftIsAdmin && draftLimited && !draft.project_ids.length)}
             className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
             <Mail className="h-4 w-4" /> Send invite
           </button>
           {/* Which projects the new person can use. Full width under the
               email / role row, so that row looks the same as before. */}
-          <div className="basis-full" data-testid="invite-access">
+          <div className="basis-full min-w-0" data-testid="invite-access">
             {draftIsAdmin && (
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm mb-2">
                 <label className="inline-flex items-center gap-2 max-md:min-h-[44px] cursor-pointer">
@@ -239,7 +240,9 @@ export default function Team() {
                   <div data-testid="invite-no-projects-warning"
                     className="mt-1 text-xs text-amber-700 flex items-start gap-1">
                     <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                    No project ticked. Once per-project access is switched on, this person will not see any project until you assign one (here or on the Project Access page).
+                    {draftIsAdmin
+                      ? "No project ticked. This admin will not see any project until you tick at least one."
+                      : "No project ticked. Once per-project access is switched on, this person will not see any project until you assign one (here or on the Project Access page)."}
                   </div>
                 )}
               </div>
@@ -297,12 +300,15 @@ export default function Team() {
             Role/Status/Code/copy/Sent meta; Revoke on its own line). Inert >=768px. */}
         <div className="crud-list-table-wrap">
         <table className="dense-table w-full">
-          <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Code</th><th>Invite link</th><th>Sent</th><th></th></tr></thead>
+          <thead><tr><th>Email</th><th>Role</th><th>Access</th><th>Status</th><th>Code</th><th>Invite link</th><th>Sent</th><th></th></tr></thead>
           <tbody>
             {invites.map((i) => (
               <tr key={i.id} data-testid={`invite-${i.id}`}>
                 <td className="text-xs col-primary" data-label="Email">{i.email}</td>
                 <td data-label="Role"><span className="pill pill-slate">{i.role}</span></td>
+                <td className="text-xs text-slate-600" data-label="Access" data-testid={`invite-access-${i.id}`}>
+                  {accessLabel({ ...i, project_count: (i.project_ids || []).length })}
+                </td>
                 <td data-label="Status"><span className={`pill ${i.status === "pending" ? "pill-blue" : i.status === "accepted" ? "pill-green" : "pill-slate"}`}>{i.status}</span></td>
                 <td className="font-mono text-xs" data-label="Code">{i.code}</td>
                 <td data-label="Link">
@@ -405,7 +411,9 @@ function MemberAccessForm({ member, projects, onCancel, onSaved }) {
           {!projectIds.length && (
             <div className="mt-1 text-xs text-amber-700 flex items-start gap-1">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              No project ticked: once per-project access is on, this person will not see any project.
+              {isAdminRole
+                ? "No project ticked. This admin will not see any project until you tick at least one."
+                : "No project ticked: once per-project access is on, this person will not see any project."}
             </div>
           )}
         </div>
@@ -415,7 +423,8 @@ function MemberAccessForm({ member, projects, onCancel, onSaved }) {
           className="h-9 px-3 max-md:min-h-[44px] rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
           Cancel
         </button>
-        <button type="button" data-testid="access-save" onClick={save} disabled={saving}
+        <button type="button" data-testid="access-save" onClick={save}
+          disabled={saving || (isAdminRole && scope === "assigned" && !projectIds.length)}
           className="h-9 px-4 max-md:min-h-[44px] rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
           Save
         </button>

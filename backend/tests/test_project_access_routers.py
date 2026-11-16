@@ -461,6 +461,7 @@ def _sockets(monkeypatch, wr):
     monkeypatch.setattr(wr, "_subs", {A: {s_p1, s_all, s_unknown}})
     monkeypatch.setattr(wr, "_owners", {s_p1: "super1", s_all: "admin1", s_unknown: "pm1"})
     monkeypatch.setattr(wr, "_allowed", {s_p1: frozenset({P1}), s_all: None})
+    monkeypatch.setattr(wr, "_limited", set())
     monkeypatch.setattr(wr, "_lock", asyncio.Lock())
     return s_p1, s_all, s_unknown
 
@@ -483,6 +484,23 @@ def test_ws_unfiltered_when_off(db, monkeypatch):
     s_p1, s_all, s_unknown = _sockets(monkeypatch, wr)
     run(wr.broadcast(A, {"kind": "task_progress", "project_id": P2}))
     assert len(s_p1.sent) == len(s_all.sent) == len(s_unknown.sent) == 1
+
+
+def test_ws_limited_admin_filtered_when_off(db, monkeypatch):
+    wr = importlib.import_module("routers.ws_router")
+    s_p1, s_all, s_unknown = _sockets(monkeypatch, wr)
+    wr._limited.add(s_p1)  # s_p1 now plays an admin limited to P1
+    run(wr.broadcast(A, {"kind": "task_progress", "project_id": P2}))
+    assert not s_p1.sent and len(s_all.sent) == len(s_unknown.sent) == 1
+    run(wr.broadcast(A, {"kind": "task_progress", "project_id": P1}))
+    assert len(s_p1.sent) == 1
+
+
+def test_ws_access_for_flags_limited_admin(db):
+    wr = importlib.import_module("routers.ws_router")
+    assert run(wr._access_for(_token("admin2"), A)) == (frozenset({P2}), True)
+    assert run(wr._access_for(_token("super1"), A))[1] is False
+    assert run(wr._access_for(_token("admin1"), A)) == (None, False)
 
 
 def test_ws_allowed_set_matches_rest_rules(db):

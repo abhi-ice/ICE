@@ -1847,6 +1847,9 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
             updates[k] = None
     if not updates:
         return DailyReport(**before)
+    # Who last edited it (the access report counts editors as well as
+    # authors when it looks for people working on unassigned projects).
+    updates["updated_by"] = ctx["user"]["id"]
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates},
     )

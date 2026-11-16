@@ -20,14 +20,18 @@ from test_project_access_foundation import (  # noqa: F401  (fixtures)
 PREFETCH = {"X-ICE-Prefetch": "1"}
 
 
-def test_prefetch_reads_not_recorded_but_views_and_saves_are(db):
+def test_prefetch_reads_counted_apart_views_and_saves_counted(db):
     c = _app(db)
     r = c.get(f"/api/projects/{P2}", headers={**_h("super1"), **PREFETCH})
     assert r.status_code == 200
-    assert not db.project_access_watch.docs
+    # Recorded (anyone can send the header, so it must leave a trace) but
+    # only as a background download, not as the person opening it.
+    [w] = db.project_access_watch.docs
+    assert w.get("prefetch_count") == 1 and not w.get("count")
     # The same read without the header is a person opening the project.
     assert c.get(f"/api/projects/{P2}", headers=_h("super1")).status_code == 200
-    assert len(db.project_access_watch.docs) == 1
+    [w] = db.project_access_watch.docs
+    assert w.get("count") == 1 and w.get("prefetch_count") == 1
     # A save is always recorded, header or not.
     assert c.patch(f"/api/projects/{P2}", headers={**_h("super1"), **PREFETCH}).status_code == 200
     methods = sorted(w["method"] for w in db.project_access_watch.docs)

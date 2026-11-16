@@ -971,8 +971,14 @@ async def issue_voice_pin(payload: IssueVoicePinRequest, ctx: dict = Depends(req
     # assigned to it (403). An admin limited to specific projects can issue
     # PINs for those projects. (/api/auth/ paths are skipped by the
     # route-level check, so it is done here.)
-    await check_project_access(ctx, payload.project_id, write=True)
     db = get_db()
+    # The project must exist in the caller's company (a PIN for another
+    # company's project, or a made-up id, is refused).
+    if not await db.projects.find_one(
+        {"tenant_id": ctx["tenant_id"], "id": payload.project_id}, {"_id": 0, "id": 1}
+    ):
+        raise HTTPException(404, "Project not found")
+    await check_project_access(ctx, payload.project_id, write=True)
     # 2026-11 security round: PINs come from the operating system's secure
     # random source, not the predictable `random` module.
     import secrets

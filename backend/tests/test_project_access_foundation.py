@@ -768,7 +768,13 @@ def test_last_full_admin_guard(db):
     assert e.value.status_code == 409
     # a second all-projects admin makes the change fine
     run(ar.update_member_access("admin2", MemberAccessUpdate(access_scope="all"), _ctx("admin1")))
-    run(ar.update_member_access("admin1", MemberAccessUpdate(access_scope="assigned"),
+    # A limited admin needs at least one project (422 with none).
+    with pytest.raises(HTTPException) as e:
+        run(ar.update_member_access("admin1", MemberAccessUpdate(access_scope="assigned"),
+                                    _ctx("admin1")))
+    assert e.value.status_code == 422
+    run(ar.update_member_access("admin1", MemberAccessUpdate(access_scope="assigned",
+                                                             project_ids=[P1]),
                                 _ctx("admin1")))
     assert not pa.is_full_admin(_ctx("admin1"))
     # now admin2 is the last one: removal is refused by the guard
@@ -808,7 +814,8 @@ def test_last_full_admin_guard_rechecks_after_saving(db, monkeypatch):
     assert pa.is_full_admin(_ctx("admin1"))
     # The same for removal: admin1 is the only all-projects admin left.
     run(ar.update_member_access("admin2", MemberAccessUpdate(access_scope="all"), _ctx("admin1")))
-    run(ar.update_member_access("admin1", MemberAccessUpdate(access_scope="assigned"),
+    run(ar.update_member_access("admin1", MemberAccessUpdate(access_scope="assigned",
+                                                             project_ids=[P1]),
                                 _ctx("admin2")))
     with pytest.raises(HTTPException) as e:
         run(ar.remove_member("admin2", _ctx("admin1") | {"access_scope": "all"}))

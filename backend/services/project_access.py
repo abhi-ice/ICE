@@ -159,15 +159,16 @@ async def _record_watch(ctx: dict, project_id: str, *, write: bool, route: str,
     The phone's background offline warm-up (frontend lib/drPrefetch.js)
     reads every project in the list, and while the switch is off that list
     is every project in the company. Those reads are marked with the
-    X-ICE-Prefetch header and are not counted, so the admin's report shows
-    what people actually opened and saved, not the warm-up."""
-    if not write and ctx.get("_pa_prefetch"):
-        return
+    X-ICE-Prefetch header. They are counted apart (prefetch_count, not
+    count), so the report puts what people actually opened and saved first.
+    They are still recorded: any client can send that header, so it must
+    not be a way to leave no trace."""
+    warmup = (not write) and bool(ctx.get("_pa_prefetch"))
     try:
         method = (ctx.get("_pa_method") or ("POST" if write else "GET")).upper()
         now = datetime.now(timezone.utc).isoformat()
         user = ctx.get("user") or {}
-        inc = {"count": 1}
+        inc = {"prefetch_count": 1} if warmup else {"count": 1}
         if blocked:
             inc["blocked_count"] = 1
         await get_db()[WATCH_COLLECTION].update_one(

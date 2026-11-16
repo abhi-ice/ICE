@@ -466,14 +466,29 @@ async def project_access_report(ctx: dict = Depends(require_tenant)):
     daily_reports_by_unassigned = sorted(
         unassigned.values(), key=lambda x: (x.get("last_report_date") or ""), reverse=True)
 
-    watch = await db[WATCH_COLLECTION].find(
-        {"tenant_id": tid}, {"_id": 0},
-    ).sort("last_at", -1).to_list(2000)
-    # Saves first (newest first within each group), then views: a refused
-    # save is work a supervisor's phone is holding, so it must never be
-    # pushed off the list by a pile of page views.
-    watch.sort(key=lambda w: 0 if w.get("write") else 1)
-    watch = watch[:500]
+    # Saves first (newest first within each group), then views, then rows
+    # that are only the phone's background warm-up: a refused save is work a
+    # supervisor's phone is holding, so it must never be pushed off the list
+    # by a pile of page views. Each group is read on its own so an older
+    # save is never cut by newer views.
+    WATCH_LIMIT = 500
+    wcol = db[WATCH_COLLECTION]
+    groups = [
+        {"tenant_id": tid, "write": True},
+        {"tenant_id": tid, "write": {"$ne": True}, "count": {"$gt": 0}},
+        {"tenant_id": tid, "write": {"$ne": True},
+         "$or": [{"count": {"$exists": False}}, {"count": {"$lte": 0}}]},
+    ]
+    watch = []
+    for q in groups:
+        room = WATCH_LIMIT - len(watch)
+        if room <= 0:
+            break
+        watch += await wcol.find(q, {"_id": 0}).sort("last_at", -1).to_list(room)
+    try:
+        watch_total = await wcol.count_documents({"tenant_id": tid})
+    except Exception:
+        watch_total = len(watch)
     watch_rows = []
     for w in watch:
         uid = w.get("user_id")
@@ -485,6 +500,8 @@ async def project_access_report(ctx: dict = Depends(require_tenant)):
             "project_name": project_names.get(w.get("project_id")),
             "suggested_role_on_project": p.get("suggested_role_on_project"),
             "now_assigned": w.get("project_id") in (by_user.get(uid) or set()),
+            # Left the company since: nothing to assign.
+            "still_member": uid in people,
         })
 
     return {
@@ -495,5 +512,6 @@ async def project_access_report(ctx: dict = Depends(require_tenant)):
         "projects_without_members": projects_without_members,
         "daily_reports_by_unassigned": daily_reports_by_unassigned,
         "watch": watch_rows,
+        "watch_total": watch_total,
         "projects": [{"id": p.get("id"), "name": p.get("name")} for p in projects],
     }

@@ -58,7 +58,11 @@ export default function AccessReport({ onChanged, onSelectProject }) {
   const limitedAdmins = report.limited_admins_without_projects || [];
   const emptyProjects = report.projects_without_members || [];
   const drRows = report.daily_reports_by_unassigned || [];
-  const watch = (report.watch || []).filter((w) => !w.now_assigned);
+  const watchAll = (report.watch || []).filter((w) => !w.now_assigned);
+  // Rows that are only the phone's background download (nobody opened the
+  // project) are summarised in one line, not listed as problems.
+  const watch = watchAll.filter((w) => w.write || w.count > 0);
+  const warmupOnly = watchAll.length - watch.length;
   const problems = noProjects.length + limitedAdmins.length + drRows.length + watch.length;
   const projects = report.projects || [];
 
@@ -158,14 +162,21 @@ export default function AccessReport({ onChanged, onSelectProject }) {
                   <span className="grow min-w-[160px]">
                     {who(w)} on <strong>{w.project_name || w.project_id}</strong>
                     <span className="block text-xs text-slate-500 break-all">
-                      {w.write ? "Change" : "View"} · {w.method} {w.route} · {w.count}× · last {when(w.last_at)}
+                      {w.write ? "Change" : "View"} · {w.method} {w.route} · {w.count ? `${w.count}×` : "background download only"}{w.count && w.prefetch_count ? ` (+${w.prefetch_count} background)` : ""} · last {when(w.last_at)}
                     </span>
                   </span>
-                  <AssignButton row={w} projectId={w.project_id} label="Assign to this project" />
+                  {w.still_member === false
+                    ? <span className="text-xs text-slate-500 shrink-0">No longer in the company</span>
+                    : <AssignButton row={w} projectId={w.project_id} label="Assign to this project" />}
                 </li>
               ))}
             </ul>
           </section>
+        )}
+        {warmupOnly > 0 && (
+          <p className="text-xs text-slate-500" data-testid="par-warmup-only">
+            Plus {warmupOnly} project{warmupOnly === 1 ? "" : "s"} only downloaded in the background by phones for offline use (nobody opened them). These are not counted as problems.
+          </p>
         )}
 
         {!!emptyProjects.length && (
@@ -174,7 +185,7 @@ export default function AccessReport({ onChanged, onSelectProject }) {
             <div className="flex flex-wrap gap-2">
               {emptyProjects.map((p) => (
                 <button key={p.project_id} type="button" onClick={() => onSelectProject?.(p.project_id)}
-                  className="pill pill-slate hover:bg-slate-200 max-md:min-h-[44px]">
+                  className="pill pill-slate hover:bg-slate-200 max-md:min-h-[44px] max-w-full whitespace-normal break-words text-left">
                   {p.project_name || p.project_id}
                 </button>
               ))}

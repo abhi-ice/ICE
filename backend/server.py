@@ -412,8 +412,12 @@ async def _ensure_indexes():
     )
     # Sign-in throttling rows: TTL (auto-removal after an hour) + lookup
     # index. Safe to repeat; never raises (a failure is only logged).
-    from auth import ensure_auth_attempt_indexes
-    await ensure_auth_attempt_indexes(db)
+    # Its own try: a problem here must not stop the indexes below.
+    try:
+        from auth import ensure_auth_attempt_indexes
+        await ensure_auth_attempt_indexes(db)
+    except Exception as _exc:
+        logger.warning("auth_attempts index setup failed: %s", _exc)
     # Per-project access (2026-11-16). project_members is read on every
     # request that names a project, so its indexes are created here too
     # (same definitions and names as migration 009, so nothing changes on a

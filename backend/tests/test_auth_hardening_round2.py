@@ -545,6 +545,8 @@ def _iter7(monkeypatch, d):
 
 def test_voice_pin_uses_secrets_and_is_six_digits(db, monkeypatch):
     ir = _iter7(monkeypatch, db)
+    if not any(p.get("id") == "p1" for p in db.projects.docs):
+        db.projects.docs.append({"id": "p1", "tenant_id": _ctx("admin")["tenant_id"], "name": "P1"})
     import random
     monkeypatch.setattr(random, "randint", lambda *a: (_ for _ in ()).throw(AssertionError("random used")))
     out = run(ir.issue_voice_pin(ir.IssueVoicePinRequest(name="F", project_id="p1"),
@@ -671,6 +673,10 @@ def test_ws_recheck_runs_for_a_silent_client(db, monkeypatch):
     """A client that never pings is still re-checked and closed once removed."""
     wr = _ws(monkeypatch, db)
     monkeypatch.setattr(wr, "RECHECK_SECONDS", 0.05)
+
+    async def _access(*a, **k):
+        return None, False
+    monkeypatch.setattr(wr, "_access_for", _access)
     monkeypatch.setattr(wr, "_subs", {})
     monkeypatch.setattr(wr, "_owners", {})
     monkeypatch.setattr(wr, "_lock", asyncio.Lock())
