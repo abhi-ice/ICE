@@ -559,6 +559,7 @@ function SchedulingTab() {
   const [newToken, setNewToken] = useState(null); // shown ONCE after rotate
   const [rotating, setRotating] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
 
   const load = async () => {
     try {
@@ -626,6 +627,31 @@ function SchedulingTab() {
     } catch (e) {
       toast.error(e.response?.data?.detail || "Download failed");
     } finally { setDownloading(false); }
+  };
+
+  const downloadBackup = async () => {
+    setBackingUp(true);
+    try {
+      const res = await api.get("/admin/backup/download", { responseType: "blob", timeout: 10 * 60 * 1000 });
+      const cd = res.headers?.["content-disposition"] || "";
+      const m = cd.match(/filename="([^"]+)"/);
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = m ? m[1] : `ice-backup-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Backup downloaded");
+    } catch (e) {
+      let msg = "Backup failed";
+      try {
+        const d = e.response?.data;
+        if (d instanceof Blob) msg = JSON.parse(await d.text()).detail || msg;
+      } catch { /* keep the generic message */ }
+      toast.error(msg);
+    } finally { setBackingUp(false); }
   };
 
   const msp = state?.ms_project || {};
@@ -761,6 +787,21 @@ function SchedulingTab() {
             </div>
           </li>
         </ol>
+      </div>
+
+      {/* ------- Card 3: full database backup (platform owner only) ------- */}
+      <div className="bg-card border border-border rounded-lg p-4" data-testid="backup-card">
+        <h2 className="text-sm font-semibold mb-1">Full backup</h2>
+        <p className="text-xs text-muted-foreground mb-3">
+          Download a copy of everything stored on this server (every company, project and daily report) as one
+          .zip file. It only reads the data; nothing is changed. Only the platform owner can download it. Keep the
+          file somewhere private: it contains everyone&apos;s information.
+        </p>
+        <button data-testid="backup-download" onClick={downloadBackup} disabled={backingUp}
+          className="sbtn sbtn-sm sbtn-secondary inline-flex items-center gap-1.5">
+          {backingUp ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+          {backingUp ? "Preparing backup…" : "Download full backup (.zip)"}
+        </button>
       </div>
     </div>
   );

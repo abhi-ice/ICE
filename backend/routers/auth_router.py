@@ -53,6 +53,19 @@ def _public_signup_allowed() -> bool:
     return (os.environ.get("ALLOW_PUBLIC_SIGNUP") or "").strip().lower() in {"1", "true", "yes"}
 
 
+def _is_platform_owner_email(email: str | None) -> bool:
+    """Full-backup hardening (2026-11-16). The platform owner is identified
+    by email (PLATFORM_ADMIN_EMAILS) and can download every company's data.
+    Nobody may create an account for, remove, or reset the password of
+    that email through a company's own team tools; the owner's account is
+    managed only with scripts/reset_password.py on the server."""
+    from routers.admin_settings_router import _platform_admin_emails
+    return bool(email) and email.strip().lower() in _platform_admin_emails()
+
+
+_RESERVED_EMAIL = "This email address is reserved for the platform owner and can't be used here."
+
+
 @router.post("/register", response_model=TokenResponse)
 async def register(payload: UserRegister):
     """Public signup. Creates a fresh tenant + makes the registrant its admin.
@@ -69,6 +82,8 @@ async def register(payload: UserRegister):
             status.HTTP_403_FORBIDDEN,
             "Sign-up is by invitation only. Ask your company admin to invite you.",
         )
+    if _is_platform_owner_email(getattr(payload, "email", None)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _RESERVED_EMAIL)
     db = get_db()
     if await db.users.find_one({"email": payload.email.lower()}, {"_id": 0, "id": 1}):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
@@ -212,6 +227,8 @@ async def accept_invite(payload: InviteAccept, request: Request):
     if invite["email"].lower() != payload.email.lower():
         await record_failure([ip_key])
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Email does not match the invite")
+    if _is_platform_owner_email(payload.email):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _RESERVED_EMAIL)
     # Right code for the right email: not a guess, so it does not count.
     await release_attempt(rid)
     expires = invite.get("expires_at")
@@ -462,6 +479,8 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
     # 2026-11-16: inviting is a company-wide control -- admins limited to
     # specific projects cannot invite.
     require_full_admin(ctx, "Only an admin with access to all projects can invite teammates")
+    if _is_platform_owner_email(payload.email):
+        raise HTTPException(403, _RESERVED_EMAIL)
     db = get_db()
     invite_scope = effective_access_scope(payload.role, payload.access_scope)
     invite_projects = await _validated_project_ids(db, ctx, payload.project_ids)
@@ -739,9 +758,11 @@ async def remove_member(user_id: str, ctx: dict = Depends(require_tenant)):
     if user_id == ctx["user"]["id"]:
         raise HTTPException(400, "Cannot remove yourself; ask another admin")
     db = get_db()
-    user = await db.users.find_one({"id": user_id, "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1})
+    user = await db.users.find_one({"id": user_id, "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1, "email": 1})
     if not user:
         raise HTTPException(404, "Member not found")
+    if _is_platform_owner_email(user.get("email")):
+        raise HTTPException(403, "The platform owner's account can't be removed here.")
     target_is_full = await ensure_keeps_full_admin(db, ctx["tenant_id"], user_id, removing=True)
     if target_is_full:
         # Mark the admin as being removed (no longer counted), then check
@@ -794,6 +815,8 @@ async def admin_reset_password(
     )
     if not user:
         raise HTTPException(404, "Member not found in this tenant")
+    if _is_platform_owner_email(user.get("email")) and user_id != ctx["user"]["id"]:
+        raise HTTPException(403, "Only the platform owner can change the platform owner's password.")
 
     new_hash = hash_password(payload.new_password)
     # Capture the BEFORE-prefix so the audit log shows the old hash got
