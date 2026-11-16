@@ -54,13 +54,24 @@ def effective_finish(task: dict) -> Optional[str]:
 # it has been forecast (or slipped) into the window.
 _DONE_STATUSES = ["complete", "deleted"]
 
+# Only field work is pulled into a list because it is overdue. Paperwork
+# (submittals, procurement, closeout documents) is tracked on its own pages;
+# on a real schedule hundreds of old paperwork items are open past their
+# planned finish, and pulling them in buried the field work in the
+# look-ahead. Tasks with no work category yet count as field work, so
+# nothing untagged disappears. Paperwork whose own dates fall inside the
+# window is still listed as before.
+PAPERWORK_CATEGORIES = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"]
+
 
 def overdue_unfinished(start_iso: str, end_iso: str) -> dict:
-    """Mongo ``$expr`` matching tasks that are overdue relative to the window
-    [start_iso, end_iso]: planned finish before start_iso, status not
-    complete/deleted and percent complete under 100 (a missing percent
-    counts as 0). end_iso is kept for the callers' symmetry."""
+    """Mongo ``$expr`` matching field-work tasks that are overdue relative to
+    the window [start_iso, end_iso]: planned finish before start_iso, status
+    not complete/deleted, percent complete under 100 (a missing percent
+    counts as 0), and not a paperwork category (see PAPERWORK_CATEGORIES).
+    end_iso is kept for the callers' symmetry."""
     return {"$and": [
+        {"$not": [{"$in": [{"$ifNull": ["$work_category", ""]}, PAPERWORK_CATEGORIES]}]},
         {"$ne": [{"$ifNull": ["$planned_finish", None]}, None]},
         {"$lt": ["$planned_finish", start_iso]},
         {"$not": [{"$in": [{"$ifNull": ["$status", ""]}, _DONE_STATUSES]}]},
@@ -89,8 +100,10 @@ def _iso(value) -> Optional[str]:
 
 def is_overdue(task: dict, start_iso: str) -> bool:
     """Python mirror of overdue_unfinished for marking rows already fetched:
-    True when the task's planned finish is before start_iso and it is not
-    complete, deleted, or at 100%."""
+    True when the task is field work (or untagged), its planned finish is
+    before start_iso, and it is not complete, deleted, or at 100%."""
+    if task.get("work_category") in PAPERWORK_CATEGORIES:
+        return False
     ef = _iso(task.get("planned_finish"))
     if not ef or ef >= start_iso:
         return False

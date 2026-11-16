@@ -199,3 +199,66 @@ def test_daily_report_picker_includes_overdue():
         assert by["OVERDUE"]["overdue"] is True and by["SLIPPED_IN"]["overdue"] is True
         assert by["IN_WINDOW"]["overdue"] is False
     _run(body)
+
+
+# ---------------------------------------------------------------- field work only
+# Overdue paperwork is not pulled into the lists (it buried the field work on
+# real schedules); untagged tasks still count as field work.
+
+def test_overdue_paperwork_is_not_overdue():
+    late = {"planned_start": "2026-11-02", "planned_finish": "2026-11-10", "status": "not_started"}
+    for cat in ("preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"):
+        assert is_overdue({**late, "work_category": cat}, WIN_START) is False
+    assert is_overdue({**late, "work_category": "field_work"}, WIN_START) is True
+    assert is_overdue({**late, "work_category": None}, WIN_START) is True
+    assert is_overdue(late, WIN_START) is True
+
+
+async def _seed_with_paperwork(db, tenant):
+    pid = await _seed(db, tenant)
+    base = {"tenant_id": tenant, "project_id": pid, "pct_complete": 0, "status": "not_started",
+            "created_at": "2026-11-01T00:00:00+00:00"}
+    await db.tasks.insert_many([
+        {**base, "id": "task-PW-LATE-" + uuid.uuid4().hex[:6], "activity_code": "PW_LATE",
+         "description": "Submit shop drawings", "planned_start": "2026-11-02",
+         "planned_finish": "2026-11-06", "work_category": "construction_paperwork"},
+        {**base, "id": "task-PW-IN-" + uuid.uuid4().hex[:6], "activity_code": "PW_IN",
+         "description": "Approve samples", "planned_start": "2026-11-18",
+         "planned_finish": "2026-11-20", "work_category": "construction_paperwork"},
+        {**base, "id": "task-FW-LATE-" + uuid.uuid4().hex[:6], "activity_code": "FW_LATE",
+         "description": "Frame walls", "planned_start": "2026-11-02",
+         "planned_finish": "2026-11-06", "work_category": "field_work"},
+    ])
+    return pid
+
+
+@needs_db
+def test_lookahead_skips_overdue_paperwork_but_keeps_in_window_paperwork():
+    from routers import tasks_router
+    from services import tasks_exports
+
+    async def body(db, tenant):
+        pid = await _seed_with_paperwork(db, tenant)
+        rows = await tasks_router.lookahead(pid, days=14, start=date(2026, 11, 16), ctx=_ctx(tenant))
+        codes = set(_codes(rows))
+        assert "PW_LATE" not in codes
+        assert {"PW_IN", "FW_LATE", "OVERDUE"} <= codes
+        payload = await tasks_exports.gather_lookahead_for_export(
+            tenant_id=tenant, project_id=pid, days=14, start_date=date(2026, 11, 16))
+        ecodes = set(_codes(payload["rows"]))
+        assert "PW_LATE" not in ecodes and {"PW_IN", "FW_LATE"} <= ecodes
+    _run(body)
+
+
+@needs_db
+def test_daily_report_picker_skips_overdue_paperwork():
+    from routers import daily_reports_router as drr
+
+    async def body(db, tenant):
+        pid = await _seed_with_paperwork(db, tenant)
+        rid = "dr-" + uuid.uuid4().hex[:8]
+        await db.daily_reports.insert_one({"id": rid, "tenant_id": tenant, "project_id": pid,
+                                           "report_date": "2026-11-18", "status": "draft"})
+        codes = set(_codes(await drr.list_available_tasks(rid, ctx=_ctx(tenant))))
+        assert "PW_LATE" not in codes and "FW_LATE" in codes
+    _run(body)
