@@ -286,9 +286,12 @@ async def stripe_webhook(request: Request):
         event_id = evt.event_id
     else:
         secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
-        if not secret and (_stripe_api_key() or "").startswith("sk_live_"):
-            # A live key with no secret would accept forged events.
-            _stripe_log.error("Stripe webhook: live key in use but STRIPE_WEBHOOK_SECRET is not set; event refused.")
+        allow_unsigned = (os.environ.get("STRIPE_WEBHOOK_ALLOW_UNSIGNED") or "").strip().lower() in {"1", "true", "yes"}
+        if not secret and (not allow_unsigned or (_stripe_api_key() or "").startswith("sk_live_")):
+            # Without the signing secret anyone could post a fake "paid" event.
+            # STRIPE_WEBHOOK_ALLOW_UNSIGNED=1 is for local development only,
+            # and never applies with a live key.
+            _stripe_log.error("Stripe webhook: STRIPE_WEBHOOK_SECRET is not set; event refused.")
             return JSONResponse(status_code=400, content={"ok": False, "error": "webhook secret not configured"})
         try:
             if secret:
@@ -606,7 +609,7 @@ NIST_800_171 = [
      "implementation": "Role-permission matrix in auth.py; admin/pm/super/foreman/voice scopes.",
      "evidence_endpoint": "/api/users/me, role_required()"},
     {"id": "3.1.20", "family": "AC", "name": "Verify external information system connections",
-     "implementation": "Explicit allow-list of LLM providers (Emergent universal key only); CORS allow-list.",
+     "implementation": "Explicit allow-list of AI providers (Anthropic, OpenAI and Gemini keys held as server environment variables); CORS allow-list.",
      "evidence_endpoint": "/api/system/info"},
     {"id": "3.3.1", "family": "AU", "name": "Create and retain audit records",
      "implementation": "audit_logs collection with hash-chain (audit.py); every write logs actor+entity+diff.",
@@ -633,7 +636,7 @@ NIST_800_171 = [
      "implementation": "Field-issue (work_items) workflow with severity, assignment, resolution.",
      "evidence_endpoint": "/api/work-items"},
     {"id": "3.8.1", "family": "MP", "name": "Protect (i.e. physically control) media",
-     "implementation": "All binary uploads in Emergent Object Storage (audit-trailed access).",
+     "implementation": "All binary uploads in private S3-compatible object storage (audit-trailed access).",
      "evidence_endpoint": "/api/photos/:id/file, /api/drawing-revisions/:id/pdf"},
     {"id": "3.13.1", "family": "SC", "name": "Monitor and protect communications boundaries",
      "implementation": "K8s ingress + HTTPS-only; CORS controlled by env var.",

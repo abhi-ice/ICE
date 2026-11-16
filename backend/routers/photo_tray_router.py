@@ -344,7 +344,10 @@ async def stream_tray_image(tray_id: str, ctx: dict = Depends(require_tenant)):
         data, ct = await aget_object(doc["storage_key"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
-    return Response(content=data, media_type=ct)
+    # The type came from the uploader; only ever send it back as an image.
+    if not (ct or "").lower().startswith("image/") or "svg" in (ct or "").lower():
+        ct = "application/octet-stream"
+    return Response(content=data, media_type=ct, headers={"X-Content-Type-Options": "nosniff"})
 
 
 # ============================================================

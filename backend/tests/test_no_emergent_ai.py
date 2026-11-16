@@ -419,6 +419,11 @@ def test_stripe_webhook_unsigned_when_no_secret(no_emergent, monkeypatch):
     monkeypatch.setattr(it7, "get_db", lambda: db)
     monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
     monkeypatch.setenv("STRIPE_API_KEY", "sk_test_not_real")
+    # Unsigned events are refused unless explicitly allowed (local dev).
+    monkeypatch.delenv("STRIPE_WEBHOOK_ALLOW_UNSIGNED", raising=False)
+    refused = asyncio.run(it7.stripe_webhook(_FakeRequest(_session_event())))
+    assert refused.status_code == 400 and not db.payment_transactions.updates
+    monkeypatch.setenv("STRIPE_WEBHOOK_ALLOW_UNSIGNED", "1")
     out = asyncio.run(it7.stripe_webhook(_FakeRequest(_session_event())))
     assert out == {"ok": True}
     flt, upd = db.payment_transactions.updates[0]

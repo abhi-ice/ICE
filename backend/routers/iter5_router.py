@@ -692,9 +692,14 @@ async def list_trades(ctx: dict = Depends(require_tenant)):
 async def admin_tenants(ctx: dict = Depends(require_tenant)):
     if ctx["user"].get("role") != "admin":
         raise HTTPException(403, "Admin only")
+    from routers.admin_settings_router import _platform_admin_emails
     db = get_db()
-    docs = await db.tenants.find({}, {"_id": 0}).to_list(500)
-    return docs
+    platform = _platform_admin_emails()
+    email = (ctx["user"].get("email") or "").strip().lower()
+    if platform and email in platform:
+        return await db.tenants.find({}, {"_id": 0}).to_list(500)
+    # A company admin sees only their own company.
+    return await db.tenants.find({"id": ctx["tenant_id"]}, {"_id": 0}).to_list(1)
 
 
 @router.get("/admin/ai-observability")

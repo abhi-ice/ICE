@@ -28,6 +28,18 @@
 }
 
 :{$PORT:8080} {
+	# Browser safety settings on every response, including the proxied /api
+	# ones: HTTPS only, no showing the site inside other sites, no guessing
+	# file types, and a strict referrer. Caddy's own name is not sent.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=(self)"
+		-Server
+	}
+
 	# Simple check for Railway's health check setting.
 	handle /healthz {
 		respond "ok" 200
@@ -65,8 +77,19 @@
 		file_server
 	}
 
+	# The live-update connection carries the login token in its address
+	# (?token=...), so the query string is blanked in the log.
 	log {
 		output stdout
-		format console
+		format filter {
+			wrap console
+			fields {
+				request>uri query {
+					replace token REDACTED
+				}
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
 	}
 }

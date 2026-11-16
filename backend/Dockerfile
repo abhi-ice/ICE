@@ -47,6 +47,7 @@ RUN mkdir -p /usr/share/man/man1 \
       shared-mime-info \
       fonts-liberation \
       fonts-dejavu-core \
+      fonts-noto-cjk \
       poppler-utils \
       tesseract-ocr \
       ca-certificates \
