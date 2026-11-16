@@ -43,6 +43,10 @@ def main() -> None:
         proxy_headers=True,
         forwarded_allow_ips="*",
         log_level=(os.environ.get("LOG_LEVEL") or "info").lower(),
+        # Keep idle connections open longer than Caddy does, so Caddy never
+        # reuses a connection the api has just closed (that showed as rare
+        # 502s on saves under load).
+        timeout_keep_alive=75,
     )
     # uvicorn configures its loggers when Config is created; add the filter after.
     server = uvicorn.Server(config)

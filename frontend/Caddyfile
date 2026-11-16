@@ -47,12 +47,25 @@
 
 	@api path /api /api/*
 	handle @api {
+		# Largest upload the app accepts is a 250 MB schedule file; anything
+		# bigger is refused here before it reaches the api.
+		request_body {
+			max_size 260MB
+		}
 		# Caddy passes WebSocket upgrades through on its own. There is no
 		# request size limit and no read timeout here, so large .mpp uploads
 		# and the worker's long-poll calls are not cut short by Caddy.
+		# API answers are never stored by the browser or any cache in between.
+		header Cache-Control "no-store"
 		reverse_proxy {$API_UPSTREAM:api.railway.internal:8000} {
 			# Try again for a short while if the api is restarting.
 			lb_try_duration 10s
+			# Drop idle connections to the api well before the api does
+			# (uvicorn keeps them 75 s), so a reused connection is never
+			# already closed.
+			transport http {
+				keepalive 30s
+			}
 		}
 	}
 
