@@ -597,13 +597,14 @@ def _render_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
+    from services.xlsx_safe import set_text_cell
 
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_title[:31]   # XLSX sheet title 31-char cap
 
     # Subtitle row (merged across all columns).
-    ws.cell(row=1, column=1, value=header_subtitle)
+    set_text_cell(ws.cell(row=1, column=1), header_subtitle)
     ws.merge_cells(start_row=1, start_column=1,
                     end_row=1, end_column=len(columns))
     ws.cell(row=1, column=1).font = Font(italic=True, color="555555")
@@ -636,7 +637,10 @@ def _render_xlsx(
             # render as TRUE / FALSE which is fine.
             if val is None:
                 val = ""
-            cell = ws.cell(row=ri, column=ci, value=val)
+            cell = ws.cell(row=ri, column=ci)
+            # Task names / codes are typed by users: never let them
+            # become live formulas in the spreadsheet.
+            set_text_cell(cell, val)
             if flagged:
                 cell.fill = at_risk_fill
 

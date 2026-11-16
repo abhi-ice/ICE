@@ -2361,6 +2361,18 @@ class PhotoCreate(StrictModel):
     pin_x: Optional[float] = None
     pin_y: Optional[float] = None
 
+    @field_validator("storage_path")
+    @classmethod
+    def _storage_path_is_server_key(cls, v: str) -> str:
+        # File keys are only ever built on the server (services.storage.
+        # make_path). Refuse anything that does not have that shape, such
+        # as path tricks. The endpoint must still check the key is under
+        # the caller's own company (services.storage.key_belongs_to_tenant).
+        from services.storage import looks_like_storage_key
+        if not looks_like_storage_key(v):
+            raise ValueError("storage_path must be a file key from a server upload")
+        return v
+
 
 class PhotoUpdate(StrictModel):
     """Phase 4 — caption + class editable; file is NOT replaceable

@@ -10,6 +10,7 @@ from models import (
     gen_id, utc_now,
 )
 from auth import require_tenant
+from services.project_scope import require_project_if_given
 
 router = APIRouter(tags=["resources"])
 
@@ -42,6 +43,9 @@ async def _bg_recompute_capacity(tenant_id: str, crew_id: str):
 async def create_crew(payload: CrewCreate, bg: BackgroundTasks,
                        ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # Home project is optional; when given it must be one of the caller's
+    # company's projects.
+    await require_project_if_given(ctx, payload.home_project_id)
     if await db.crews.find_one(tenant_filter(ctx["tenant_id"], {"crew_code": payload.crew_code}), {"_id": 0}):
         raise HTTPException(409, "Crew code already exists")
     doc = payload.model_dump(mode="json")

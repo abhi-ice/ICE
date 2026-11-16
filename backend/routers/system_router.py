@@ -8,7 +8,8 @@ from models import (
     RecoveryRequest, RfiDraftRequest,
     gen_id, utc_now, StrictModel,
 )
-from auth import require_tenant
+from auth import require_tenant, role_required, redact_secrets, INVITE_SECRET_KEYS
+from services.project_scope import require_project_if_given
 from audit import write_audit, verify_chain
 from services.schedule_parser import parse_schedule_file
 from services.schedule_proposal import parsed_to_task_create_payload, validate_payload
@@ -22,6 +23,8 @@ router = APIRouter(tags=["system"])
 @router.post("/approvals", response_model=Approval)
 async def create_approval(payload: ApprovalCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project_if_given(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
@@ -101,7 +104,14 @@ async def list_audit(
 ):
     """Bucket H Phase 5 -- op + table filters for the Audit Log page.
     Both optional; default is "last 200 entries this tenant." Tenant-
-    scoped via tenant_filter() so cross-tenant entries never leak."""
+    scoped via tenant_filter() so cross-tenant entries never leak.
+
+    2026-11 security round: admins only (the log records every change in
+    the company, including team invites), and secret fields (invite codes,
+    tokens, PINs, password / token hashes) are masked on the way out.
+    Older rows in the database still hold them; they are hidden here
+    instead of rewriting live records."""
+    role_required(ctx, ["admin"])
     db = get_db()
     q = dict(tenant_filter(ctx["tenant_id"]))
     if op:
@@ -115,11 +125,20 @@ async def list_audit(
     if limit > 1000:
         limit = 1000
     docs = await db.audit_log.find(q, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    for d in docs:
+        # On invite rows "code" is the redeemable invite code; elsewhere it
+        # is an ordinary field (cost code, room code) and stays visible.
+        extra = INVITE_SECRET_KEYS if d.get("table_name") == "team_invites" else ()
+        for field in ("before_data", "after_data"):
+            if d.get(field):
+                d[field] = redact_secrets(d[field], extra)
     return docs
 
 
 @router.get("/audit-log/verify")
 async def verify_audit_chain(ctx: dict = Depends(require_tenant)):
+    # Admins only, like the log itself (2026-11 security round).
+    role_required(ctx, ["admin"])
     return await verify_chain(ctx["tenant_id"])
 
 
@@ -144,6 +163,9 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     in copilot_messages with the JSON action plan + executed tool results.
     """
     from services.copilot_tools import execute_copilot_turn
+    # A given project must belong to the caller's company (404 otherwise),
+    # so the assistant never reads or writes another company's project.
+    await require_project_if_given(ctx, payload.project_id)
     session_id = payload.session_id or f"copilot-{ctx['user']['id']}"
     res = await execute_copilot_turn(
         tenant_id=ctx["tenant_id"],

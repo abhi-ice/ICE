@@ -42,6 +42,7 @@ from auth import (
     require_tenant, role_required,
     get_accessible_project_ids, has_project_access,
 )
+from services.project_scope import require_project
 from audit import write_audit
 from services import resource_leveling as svc
 
@@ -702,6 +703,9 @@ async def commit_reallocation(
     # target projects. Source can be None for a pool-to-project move.
     role = (ctx["user"].get("role") or "")
     for pid in filter(None, [payload.from_project_id, payload.to_project_id]):
+        # The project must exist in the caller's company (admins skip the
+        # membership check below, so this is what stops a made-up id).
+        await require_project(ctx, pid)
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=pid,

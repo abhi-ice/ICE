@@ -102,6 +102,9 @@ PRESERVED_COLLECTIONS: list[str] = [
     "schedule_imports",
     "task_predecessors",
     "audit_log",
+    # Kept with the audit log: the per-company chain head must keep
+    # pointing at the log's last row.
+    "audit_chain_heads",
     "tenant_settings",
     "project_settings",
     "roles",

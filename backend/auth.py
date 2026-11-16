@@ -162,10 +162,23 @@ def validate_bcrypt_runtime() -> dict:
                 "error": f"{type(e).__name__}: {e}"}
 
 
-def create_token(user_id: str, tenant_id: str, email: str) -> str:
+def token_version_of(user: Optional[dict]) -> int:
+    """The user's current sign-in version. Missing or unreadable = 0, so
+    every user created before this field existed starts at 0."""
+    try:
+        return int((user or {}).get("token_version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def create_token(user_id: str, tenant_id: str, email: str, token_version: int = 0) -> str:
+    """Sign a login token. `tv` carries the user's token_version at sign-in;
+    a password reset / account close / member removal bumps the user's
+    version, which retires every token signed before it."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id, "tenant_id": tenant_id, "tid": tenant_id, "email": email,
+        "tv": int(token_version or 0),
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(hours=JWT_EXPIRE_HOURS)).timestamp()),
     }
@@ -174,7 +187,231 @@ def create_token(user_id: str, tenant_id: str, email: str) -> str:
 
 def create_access_token(user: dict) -> str:
     """Compatibility shim used by voice-PIN flow + tests."""
-    return create_token(user["id"], user["tenant_id"], user.get("email", ""))
+    return create_token(user["id"], user["tenant_id"], user.get("email", ""),
+                        token_version_of(user))
+
+
+# ------------------------------------------------------------------
+# Timing-safe login for unknown emails (2026-11 security round).
+# When the email is not on file we still run one bcrypt check against a
+# fixed throwaway hash, so "no such account" takes as long as "wrong
+# password" and the response time cannot be used to discover accounts.
+# ------------------------------------------------------------------
+_DUMMY_HASH: Optional[str] = None
+
+
+def dummy_password_check(plain: str) -> None:
+    global _DUMMY_HASH
+    try:
+        if _DUMMY_HASH is None:
+            _DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+        bcrypt.checkpw((plain or "").encode("utf-8"), _DUMMY_HASH.encode("utf-8"))
+    except Exception:
+        pass
+
+
+# ------------------------------------------------------------------
+# Hiding secrets in audit rows (2026-11 security round).
+# Audit rows must never carry an invite code, a reset token, a PIN or a
+# password hash. Used when writing new rows AND when reading old ones
+# back out (older production rows still hold invite codes; we mask them
+# on the way out instead of rewriting live records).
+# ------------------------------------------------------------------
+_SECRET_KEYS = {
+    "invite_code", "token", "access_token", "refresh_token",
+    "pin", "secret", "api_key",
+}
+# "code" is an ordinary field in many tables (cost codes, room codes,
+# predecessor codes), so it is only hidden where it is the invite code:
+# callers pass extra_keys=INVITE_SECRET_KEYS for team_invites rows.
+INVITE_SECRET_KEYS = frozenset({"code"})
+REDACTED = "[hidden]"
+
+
+def _is_secret_key(key, extra_keys=()) -> bool:
+    k = str(key or "").strip().lower()
+    if k in _SECRET_KEYS or k in extra_keys:
+        return True
+    if k.endswith("_hash") or k.endswith("_token") or k.endswith("_secret"):
+        return True
+    # password, password_hash, password_reset_token_hash ... but keep the
+    # harmless "when / by whom" stamps (password_reset_at, _by).
+    if k.startswith("password") and not k.endswith(("_at", "_by")):
+        return True
+    return False
+
+
+def redact_secrets(value, extra_keys=()):
+    """Return a copy of `value` with secret-looking fields masked, at any
+    depth. Non-dict / non-list values are returned unchanged.
+    `extra_keys` adds field names to hide for this call (for example
+    INVITE_SECRET_KEYS on invite rows)."""
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if _is_secret_key(k, extra_keys) and v not in (None, ""):
+                out[k] = REDACTED
+            else:
+                out[k] = redact_secrets(v, extra_keys)
+        return out
+    if isinstance(value, list):
+        return [redact_secrets(v, extra_keys) for v in value]
+    return value
+
+
+# ------------------------------------------------------------------
+# Sign-in throttling (2026-11 security round).
+#
+# Failed attempts are stored in the `auth_attempts` collection (one small
+# row per failure, removed automatically by a TTL index after an hour),
+# so the limits survive a restart and hold across several servers.
+# Each check names one or more buckets with their own limit, e.g. the
+# account (10 per 15 minutes) and the client address (50 per 15 minutes,
+# higher so a site office sharing one internet connection is not shut
+# out by one person's typos). If the database itself has a problem we let
+# the attempt through: a throttling hiccup must never lock people out.
+# ------------------------------------------------------------------
+THROTTLE_WINDOW = timedelta(minutes=15)
+ACCOUNT_FAILURE_LIMIT = 10
+IP_FAILURE_LIMIT = 50
+_ATTEMPTS_TTL_SECONDS = 3600
+_attempt_indexes_ready = False
+
+
+async def ensure_auth_attempt_indexes(db=None) -> None:
+    """Create the TTL + lookup indexes for auth_attempts. Safe to call
+    many times (index creation is idempotent); runs once per process."""
+    global _attempt_indexes_ready
+    if _attempt_indexes_ready:
+        return
+    db = db or get_db()
+    try:
+        await db.auth_attempts.create_index("at", expireAfterSeconds=_ATTEMPTS_TTL_SECONDS)
+        await db.auth_attempts.create_index([("key", 1), ("at", 1)])
+        _attempt_indexes_ready = True
+    except Exception as e:  # never block sign-in on an index problem
+        log.warning("auth_attempts index setup failed: %s", e)
+
+
+def client_ip(request) -> str:
+    """The caller's address. The server runs uvicorn with proxy_headers on
+    (serve.py), so request.client.host is already the real client address
+    taken from X-Forwarded-For. Falls back to that header, then "unknown"."""
+    host = ""
+    try:
+        if request is not None and request.client:
+            host = request.client.host or ""
+    except Exception:
+        host = ""
+    if not host and request is not None:
+        try:
+            host = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        except Exception:
+            host = ""
+    return host or "unknown"
+
+
+async def check_throttle(buckets: list[tuple[str, int]], *, includes_current: bool = False) -> None:
+    """Raise 429 (with Retry-After) when any bucket already holds `limit`
+    failures inside the window. `buckets` is a list of (key, limit).
+    `includes_current` means this attempt's own row is already counted
+    (see reserve_attempt), so one more row is allowed."""
+    db = get_db()
+    await ensure_auth_attempt_indexes(db)
+    now = datetime.now(timezone.utc)
+    since = now - THROTTLE_WINDOW
+    allowed_extra = 1 if includes_current else 0
+    for key, limit in buckets:
+        try:
+            n = await db.auth_attempts.count_documents({"key": key, "at": {"$gte": since}})
+            if n < limit + allowed_extra:
+                continue
+            oldest = await db.auth_attempts.find_one(
+                {"key": key, "at": {"$gte": since}}, {"_id": 0, "at": 1},
+                sort=[("at", 1)],
+            )
+        except Exception as e:
+            log.warning("sign-in throttle check failed (letting attempt through): %s", e)
+            continue
+        retry = int(THROTTLE_WINDOW.total_seconds())
+        at = (oldest or {}).get("at")
+        if isinstance(at, datetime):
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            retry = int((at + THROTTLE_WINDOW - now).total_seconds()) + 1
+        retry = max(1, retry)
+        minutes = max(1, (retry + 59) // 60)
+        plural = "s" if minutes != 1 else ""
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"Too many attempts. Try again in {minutes} minute{plural}.",
+            headers={"Retry-After": str(retry)},
+        )
+
+
+async def reserve_attempt(buckets: list[tuple[str, int]]) -> Optional[str]:
+    """Count this attempt as a failure FIRST, then check the limit.
+
+    Checking first and recording afterwards let many requests sent at the
+    same moment all pass the check before any of them was recorded, so an
+    attacker could make far more than 10 guesses on one account. Recording
+    first closes that gap. The caller removes the row again with
+    release_attempt() when the attempt turns out not to be a wrong guess
+    (a good sign-in clears the account's rows anyway). A refused attempt
+    removes its own row, so retrying while locked does not extend the lock.
+    Used for the per-account buckets only; per-address buckets keep the
+    check-then-record order so a busy site office is never refused for
+    good sign-ins that happen at the same time.
+    Returns an id for release_attempt(), or None if nothing was recorded
+    (database problem: the attempt is let through, as in check_throttle)."""
+    db = get_db()
+    await ensure_auth_attempt_indexes(db)
+    rid = secrets.token_hex(12)
+    now = datetime.now(timezone.utc)
+    try:
+        for key, _limit in buckets:
+            await db.auth_attempts.insert_one({"key": key, "at": now, "rid": rid})
+    except Exception as e:
+        log.warning("could not record sign-in attempt (letting it through): %s", e)
+        await release_attempt(rid)
+        return None
+    try:
+        await check_throttle(buckets, includes_current=True)
+    except HTTPException:
+        await release_attempt(rid)
+        raise
+    return rid
+
+
+async def release_attempt(rid: Optional[str]) -> None:
+    """Remove the rows reserve_attempt() added for one attempt. Best effort."""
+    if not rid:
+        return
+    db = get_db()
+    try:
+        await db.auth_attempts.delete_many({"rid": rid})
+    except Exception as e:
+        log.warning("could not release sign-in attempt: %s", e)
+
+
+async def record_failure(keys: list[str]) -> None:
+    """Count one failed attempt against each key. Best effort."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    for key in keys:
+        try:
+            await db.auth_attempts.insert_one({"key": key, "at": now})
+        except Exception as e:
+            log.warning("could not record sign-in failure: %s", e)
+
+
+async def clear_failures(keys: list[str]) -> None:
+    """Forget the failures for these keys (after a successful sign-in)."""
+    db = get_db()
+    try:
+        await db.auth_attempts.delete_many({"key": {"$in": list(keys)}})
+    except Exception as e:
+        log.warning("could not clear sign-in failures: %s", e)
 
 
 def role_required(ctx: dict, roles: list[str]) -> None:
@@ -330,6 +567,18 @@ async def _resolve_via_jwt(token: str) -> dict | None:
     db = get_db()
     claims = decode_token(token)
     user = await db.users.find_one({"id": claims["sub"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        return None
+    # Token retired by a password reset / account close / member removal.
+    # Tokens issued before this check existed carry no "tv" claim and
+    # count as 0, the same as a user with no token_version yet, so they
+    # keep working until one of those events happens.
+    try:
+        claim_tv = int(claims.get("tv") or 0)
+    except (TypeError, ValueError):
+        claim_tv = 0
+    if claim_tv < token_version_of(user):
+        return None
     return user
 
 

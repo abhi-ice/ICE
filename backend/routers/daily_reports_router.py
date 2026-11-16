@@ -2586,6 +2586,12 @@ async def _user_label_map(db, tenant_id: str, ids: list[str]) -> dict:
     return out
 
 
+# Audit entry fields sent in the /context bundle (what the DR Audit trail
+# panel renders, plus id/record_id for keys).
+CONTEXT_AUDIT_FIELDS = {"_id": 0, "id": 1, "op": 1, "table_name": 1,
+                        "record_id": 1, "actor_id": 1, "created_at": 1}
+
+
 @router.get("/daily-reports/{daily_report_id}/context")
 async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Single-shot bundle for DailyReports.jsx + copilot:
@@ -2689,11 +2695,16 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "delivery_date": dr["report_date"]}), {"_id": 0},
     ).sort("delivery_date", -1).to_list(100)
 
+    # The Audit trail panel only shows time, op, table and who -- it never
+    # reads before/after. Sending full before/after report copies made
+    # this key most of the bundle's size, so only the fields the panel
+    # uses go out. Same 100-row cap as before (the panel's count chip
+    # shows rows.length).
     audit_log = await db.audit_log.find(
         tenant_filter(ctx["tenant_id"], {"$or": [
             {"table_name": "daily_reports", "record_id": daily_report_id},
             {"table_name": "daily_presence", "record_id": {"$in": [p["id"] for p in presence]}} if presence else {"_unused": True},
-        ]}), {"_id": 0},
+        ]}), CONTEXT_AUDIT_FIELDS,
     ).sort("created_at", -1).limit(100).to_list(100)
 
     # Bucket D Task 2 -- enrich every supplement row with its parent

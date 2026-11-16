@@ -17,6 +17,7 @@ import io
 
 from database import get_db, tenant_filter
 from auth import require_tenant
+from services.xlsx_safe import escape_row
 
 
 router = APIRouter(tags=["calendar-reconciliation"])
@@ -205,7 +206,9 @@ async def calendar_reconciliation_csv(
         "daily_report_status",
     ])
     for r in rows:
-        w.writerow([
+        # escape_row: notes / weather text are typed by users; a leading
+        # '=' must not become a live formula when the CSV is opened.
+        w.writerow(escape_row([
             r["date"],
             "Y" if r["is_working_day"] else "N",
             "Y" if r["is_holiday"] else "",
@@ -218,7 +221,7 @@ async def calendar_reconciliation_csv(
             r["headcount_total"],
             r.get("notes") or "",
             r.get("daily_report_status") or "",
-        ])
+        ]))
     fname = f"calendar_reconciliation_{project_id[:8]}_{start.isoformat()}_{end.isoformat()}.csv"
     return Response(
         content=buf.getvalue().encode("utf-8"),

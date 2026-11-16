@@ -89,8 +89,11 @@ async def export_audit_extract(
     entity_id: Optional[str] = None,
     ctx: dict = Depends(require_tenant),
 ):
-    if _user_role(ctx) not in _ROLE_EXPORT:
-        raise HTTPException(403, "Admins / PMs only")
+    # Admins only (2026-11-16), like the Audit Log page itself: the log
+    # records every change in the company, including team invites.
+    # Secret fields in the rows are masked by gather_audit_extract.
+    if _user_role(ctx) != "admin":
+        raise HTTPException(403, "Admins only")
     await _check_project_access(ctx, project_id)
     _enforce_date_range_cap(date_range_start, date_range_end)
 

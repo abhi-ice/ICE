@@ -252,10 +252,13 @@ async def export_daily_report_pdf(
     from io import BytesIO
     import base64 as _b64
     from PIL import Image
-    from services.storage import aget_object
+    from services.storage import aget_object, key_belongs_to_tenant, open_image_capped
 
     async def _photo_data_uri(p: dict) -> Optional[str]:
-        path = p.get("thumbnail_path") or p.get("storage_path")
+        # Only read files stored under this company (a row pointed at
+        # another company's file shows "image unavailable" instead).
+        path = next((k for k in (p.get("thumbnail_path"), p.get("storage_path"))
+                     if k and key_belongs_to_tenant(k, ctx["tenant_id"])), None)
         if not path:
             return None
         try:
@@ -266,7 +269,8 @@ async def export_daily_report_pdf(
 
     def _thumb_data_uri(data: bytes) -> Optional[str]:
         try:
-            img = Image.open(BytesIO(data))
+            # Pixel-capped open: a "decompression bomb" is skipped.
+            img = open_image_capped(data)
             img.thumbnail((320, 320))  # in-place; keeps aspect ratio
             buf = BytesIO()
             fmt = "JPEG" if (img.mode in ("RGB", "L")) else "PNG"
@@ -485,11 +489,14 @@ async def extract_photo_exif(photo_id: str, ctx: dict = Depends(require_tenant))
     fingerprinting (substitution for DINOv2 — pHash is deterministic and free)."""
     from PIL import Image, ExifTags
     import imagehash
-    from services.storage import aget_object
+    from services.storage import aget_object, key_belongs_to_tenant, open_image_capped
     db = get_db()
     p = await db.photos.find_one(tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0})
     if not p or not p.get("storage_path"):
         raise HTTPException(404, "Photo not found")
+    # Only read a file stored under this company.
+    if not key_belongs_to_tenant(p["storage_path"], ctx["tenant_id"]):
+        raise HTTPException(404, "File not found")
     try:
         data, _ct = await aget_object(p["storage_path"])
     except Exception as e:
@@ -497,7 +504,9 @@ async def extract_photo_exif(photo_id: str, ctx: dict = Depends(require_tenant))
 
     out: dict = {}
     try:
-        img = Image.open(io.BytesIO(data))
+        # Pixel-capped open: an oversized image is reported as an error
+        # here (the photo itself is kept), never decoded.
+        img = open_image_capped(data)
         exif_raw = img._getexif() or {}
         exif: dict = {}
         for k, v in exif_raw.items():

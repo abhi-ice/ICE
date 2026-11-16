@@ -162,7 +162,11 @@ async def require_worker(authorization: Optional[str] = Header(default=None)) ->
     token = runtime_settings.worker_token() or os.environ.get("MS_PROJECT_WORKER_TOKEN")
     if not token:
         raise HTTPException(status_code=503, detail="MS Project worker integration not configured")
-    if not authorization or authorization.strip() != f"Bearer {token}":
+    # Constant-time compare (2026-11-16) so response timing cannot be used
+    # to guess the token one character at a time.
+    import hmac
+    if not authorization or not hmac.compare_digest(
+            authorization.strip().encode("utf-8"), f"Bearer {token}".encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid MS Project worker token")
     return {"worker": True}
 

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
 from services.site_time import project_today
+from services.project_scope import require_project
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate, SafetyEventUpdate,
     QcIssue, QcIssueCreate, QcIssueUpdate, QcReworkOutcome,
@@ -400,6 +401,8 @@ def _enrich_delay_for_read(d: dict) -> dict:
 @router.post("/delays", response_model=Delay)
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. Strip the
     # add_reason out of the record (it's metadata, stamped by
@@ -1099,6 +1102,8 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 @router.post("/safety-events", response_model=SafetyEvent)
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1272,6 +1277,8 @@ async def update_safety_event(
 @router.post("/qc-issues", response_model=QcIssue)
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1570,6 +1577,15 @@ async def _hash_storage_object(storage_path: str) -> Optional[str]:
 @router.post("/photos", response_model=Photo)
 async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
+    # The file key comes from the client. It must be one of this
+    # company's stored files, checked BEFORE the object is read for its
+    # fingerprint, so a photo row can never be pointed at (or used to read)
+    # another company's file.
+    from services.storage import key_belongs_to_tenant
+    if not key_belongs_to_tenant(payload.storage_path, ctx["tenant_id"]):
+        raise HTTPException(status_code=404, detail="File not found")
     from datetime import timezone as _tz
     doc = payload.model_dump(mode="json")
     now = utc_now()

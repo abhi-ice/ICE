@@ -677,6 +677,7 @@ async def inject_dr_into_template(
     user -- there is NO fallback to the heuristic engine.
     """
     from openpyxl import load_workbook
+    from services.xlsx_safe import set_text_cell
 
     wb = load_workbook(BytesIO(template_bytes))
     template_snapshot = _extract_template_snapshot(wb)
@@ -747,7 +748,11 @@ async def inject_dr_into_template(
             if not _is_writable(cell):
                 continue
             try:
-                cell.value = _cell_safe(value)  # None is a legitimate blank intent
+                # None is a legitimate blank intent. set_text_cell keeps
+                # text from the report (notes, names) from becoming a live
+                # formula; the template's own formula cells were skipped
+                # above and are never touched.
+                set_text_cell(cell, _cell_safe(value))
             except (AttributeError, TypeError, ValueError):
                 # Merged-cell secondaries / read-only cell subclasses
                 # reject .value assignment -- skip without aborting.

@@ -26,6 +26,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
 from database import get_db, tenant_filter
+from services.xlsx_safe import escape_row
 
 
 def _real_caption(cap):
@@ -128,7 +129,9 @@ async def gather_audit_extract(
     if project_id:
         out_rows: list[dict] = []
         for r in rows:
-            after = r.get("after") or {}
+            # Rows written by audit.write_audit keep the new values in
+            # "after_data"; "after" is the older spelling.
+            after = r.get("after_data") or r.get("after") or {}
             row_pid = after.get("project_id") if isinstance(after, dict) else None
             if row_pid is None or row_pid == project_id:
                 out_rows.append(r)
@@ -160,6 +163,18 @@ async def gather_audit_extract(
             })
             chain_intact = False
         prev_hash = r.get("hash")
+
+    # Hide secrets (invite codes, tokens, PINs, password / token hashes) in
+    # the recorded values. Older rows in the database still hold them; they
+    # are masked on the way out instead of rewriting live records. Done
+    # after the chain walk, and only inside the recorded values, so the
+    # row's own hash / prev_hash columns stay visible.
+    from auth import redact_secrets, INVITE_SECRET_KEYS
+    for r in rows:
+        extra = INVITE_SECRET_KEYS if r.get("table_name") == "team_invites" else ()
+        for field in ("before_data", "after_data", "before", "after"):
+            if r.get(field):
+                r[field] = redact_secrets(r[field], extra)
 
     return {
         "tenant_id": tenant_id,
@@ -193,7 +208,9 @@ def render_audit_csv(payload: dict) -> bytes:
         "actor_id", "hash", "prev_hash",
     ])
     for r in payload.get("rows") or []:
-        w.writerow([
+        # escape_row: record ids / table names can carry user text; keep
+        # them from becoming live formulas when the CSV is opened.
+        w.writerow(escape_row([
             r.get("created_at") or "",
             r.get("op") or "",
             r.get("table_name") or "",
@@ -201,7 +218,7 @@ def render_audit_csv(payload: dict) -> bytes:
             r.get("actor_id") or "",
             (r.get("hash") or "")[:64],
             (r.get("prev_hash") or "")[:64],
-        ])
+        ]))
     return buf.getvalue().encode("utf-8")
 
 

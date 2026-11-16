@@ -433,6 +433,10 @@ class KbEntryCreate(StrictModel):
 @router.post("/kb/entries")
 async def kb_create(payload: KbEntryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A given project must belong to the caller's company (404 otherwise);
+    # an entry without a project stays allowed.
+    from services.project_scope import require_project_if_given
+    await require_project_if_given(ctx, getattr(payload, "project_id", None))
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -676,7 +680,11 @@ async def nist_controls(ctx: dict = Depends(require_tenant)):
 async def verify_audit_chain(ctx: dict = Depends(require_tenant), limit: int = 5000):
     """Walk the audit-log hash chain forwards. Each row's stored hash must
     equal SHA-256(prev_hash + canonical_payload). Returns first divergence
-    (if any) plus total verified count."""
+    (if any) plus total verified count.
+
+    Admins only (2026-11-16), like /audit-log and /audit-log/verify."""
+    from auth import role_required
+    role_required(ctx, ["admin"])
     import hashlib
     db = get_db()
     rows = await db.audit_logs.find(
@@ -730,8 +738,14 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
     if not rev or not (rev.get("storage_path") or rev.get("pdf_url")):
         raise HTTPException(404, "Revision PDF not found")
 
-    from services.storage import get_object
-    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    from services.storage import aget_object, key_belongs_to_tenant
+    _key = rev.get("storage_path") or rev.get("pdf_url")
+    # Only read a file stored under this company. (The rendered page goes
+    # through Pillow's own decompression-bomb check inside pdf2image.)
+    if not key_belongs_to_tenant(_key, ctx["tenant_id"]):
+        raise HTTPException(404, "File not found")
+    # Worker thread: a slow storage read must not freeze the server.
+    pdf_bytes, _ = await aget_object(_key)
     if payload.page < 1:
         raise HTTPException(422, "Page must be 1 or more")
     try:
@@ -825,8 +839,13 @@ async def drawing_ocr(payload: DrawingOcrRequest, ctx: dict = Depends(require_te
     )
     if not rev or not (rev.get("storage_path") or rev.get("pdf_url")):
         raise HTTPException(404, "Revision not found")
-    from services.storage import get_object
-    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    from services.storage import aget_object, key_belongs_to_tenant
+    _key = rev.get("storage_path") or rev.get("pdf_url")
+    # Only read a file stored under this company.
+    if not key_belongs_to_tenant(_key, ctx["tenant_id"]):
+        raise HTTPException(404, "File not found")
+    # Worker thread: a slow storage read must not freeze the server.
+    pdf_bytes, _ = await aget_object(_key)
     # Read the page count first so a page past the end gets a clear message.
     # Raw tool errors (pdftoppm / tesseract output) go to the server log only.
     try:
@@ -896,7 +915,10 @@ async def issue_voice_pin(payload: IssueVoicePinRequest, ctx: dict = Depends(req
     from auth import role_required
     role_required(ctx, ["admin", "pm"])
     db = get_db()
-    pin = "".join(str(random.randint(0, 9)) for _ in range(6))
+    # 2026-11 security round: PINs come from the operating system's secure
+    # random source, not the predictable `random` module.
+    import secrets
+    pin = f"{secrets.randbelow(10 ** 6):06d}"
     expires_at = (utc_now() + timedelta(hours=payload.ttl_hours)).isoformat()
     doc = {
         "id": gen_id(),
@@ -920,19 +942,37 @@ class ExchangePinRequest(StrictModel):
 
 
 @router.post("/auth/voice-pin/exchange")
-async def exchange_voice_pin(payload: ExchangePinRequest):
-    """Public — voice user keys in their PIN, gets a 'voice' scope JWT."""
+async def exchange_voice_pin(payload: ExchangePinRequest, request: Request):
+    """Public — voice user keys in their PIN, gets a 'voice' scope JWT.
+
+    2026-11 security round:
+      * an unknown company and a wrong PIN get the same 401 reply, so the
+        endpoint cannot be used to discover company slugs;
+      * wrong tries are throttled (20 per company and 50 per client
+        address in 15 minutes, then 429 with Retry-After);
+      * only the company's id, display name and slug are returned."""
+    from auth import (check_throttle, record_failure, client_ip, IP_FAILURE_LIMIT,
+                      reserve_attempt, release_attempt)
     db = get_db()
+    slug_key = f"voicepin:slug:{(payload.tenant_slug or '').strip().lower()}"
+    ip_key = f"voicepin:ip:{client_ip(request)}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    # The company's row is written before the PIN check, so simultaneous
+    # guesses cannot all slip past the limit; a good PIN removes it below.
+    rid = await reserve_attempt([(slug_key, 20)])
     tenant = await db.tenants.find_one({"slug": payload.tenant_slug}, {"_id": 0})
-    if not tenant:
-        raise HTTPException(404, "Tenant not found")
-    rec = await db.voice_pins.find_one(
-        {"tenant_id": tenant["id"], "pin": payload.pin, "redeemed_at": None}, {"_id": 0},
-    )
+    rec = None
+    if tenant:
+        rec = await db.voice_pins.find_one(
+            {"tenant_id": tenant["id"], "pin": payload.pin, "redeemed_at": None}, {"_id": 0},
+        )
     if not rec:
+        await record_failure([ip_key])
         raise HTTPException(401, "Invalid PIN")
     if rec["expires_at"] < utc_now().isoformat():
+        await record_failure([ip_key])
         raise HTTPException(401, "PIN expired")
+    await release_attempt(rid)
     user = {
         "id": f"voicepin_{rec['id']}",
         "tenant_id": tenant["id"],
@@ -945,7 +985,8 @@ async def exchange_voice_pin(payload: ExchangePinRequest):
     await db.voice_pins.update_one(
         {"id": rec["id"]}, {"$set": {"redeemed_at": utc_now().isoformat()}},
     )
-    return {"access_token": token, "token_type": "bearer", "user": user, "tenant": tenant}
+    tenant_view = {k: tenant.get(k) for k in ("id", "display_name", "slug")}
+    return {"access_token": token, "token_type": "bearer", "user": user, "tenant": tenant_view}
 
 
 # ============================================================

@@ -10,11 +10,15 @@ Spec semantic search via TF-IDF (services.spec_search).
 """
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Response, BackgroundTasks
 import io
+import asyncio
 from typing import Optional, List, Literal
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel, Photo, PhotoCreate
 from auth import require_tenant
-from services.storage import aput_object, aget_object, make_path, record_file
+from services.storage import (
+    aput_object, aget_object, make_path, record_file,
+    key_belongs_to_tenant, read_upload_limited, UploadTooLarge, open_image_capped,
+)
 from services.spec_search import (
     fit_spec_index, search_spec, search_all_specs_in_project,
 )
@@ -97,6 +101,73 @@ async def delete_markup(markup_id: str, ctx: dict = Depends(require_tenant)):
 # ============================================================
 # PHOTOS UPLOAD
 # ============================================================
+_PHOTO_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _read_photo_meta(body: bytes, server_now) -> dict:
+    """EXIF + perceptual hash for a just-saved photo. Runs in a worker
+    thread (image decoding is slow). Never raises: on any problem (an
+    unreadable or oversized image, odd EXIF) it returns what it has, and
+    the photo stays saved without the extra details."""
+    update: dict = {}
+    try:
+        from PIL import ExifTags
+        import imagehash
+        img = open_image_capped(body)
+        try:
+            exif_raw = img._getexif() or {}
+        except Exception:
+            exif_raw = {}
+        exif: dict = {}
+        for k, v in exif_raw.items():
+            tag = ExifTags.TAGS.get(k, str(k))
+            exif[tag] = v
+        update["phash"] = str(imagehash.phash(img))
+        if "DateTimeOriginal" in exif:
+            update["captured_at_exif"] = str(exif["DateTimeOriginal"])
+            # Bucket C3b Phase 4 — also stamp device_timestamp + check
+            # for clock skew vs server-receive. EXIF datetime format:
+            # "YYYY:MM:DD HH:MM:SS" (note ':' separators in date).
+            try:
+                from datetime import datetime as _dt
+                raw = str(exif["DateTimeOriginal"])
+                # Convert "YYYY:MM:DD HH:MM:SS" → ISO
+                if len(raw) >= 19 and raw[4] == ":":
+                    iso = raw[:4] + "-" + raw[5:7] + "-" + raw[8:10] + "T" + raw[11:19]
+                else:
+                    iso = raw
+                dt = _dt.fromisoformat(iso)
+                update["device_timestamp"] = dt.isoformat()
+                # Compare to server_now without tzinfo on the device side
+                # (EXIF carries no offset). Mismatch threshold = 60 sec.
+                skew = abs((server_now.replace(tzinfo=None) - dt).total_seconds())
+                update["timestamp_mismatch_flag"] = skew > 60
+            except Exception:
+                pass
+        try:
+            gps_raw = exif.get("GPSInfo")
+            if isinstance(gps_raw, dict):
+                gps: dict = {}
+                for k, v in gps_raw.items():
+                    tag = ExifTags.GPSTAGS.get(k, str(k))
+                    gps[tag] = v
+                if "GPSLatitude" in gps and "GPSLongitude" in gps:
+                    from routers.iter6_router import _dms_to_dd
+                    lat = _dms_to_dd(gps["GPSLatitude"], gps.get("GPSLatitudeRef") or "N")
+                    lng = _dms_to_dd(gps["GPSLongitude"], gps.get("GPSLongitudeRef") or "E")
+                    update["gps_lat"] = lat
+                    update["gps_lng"] = lng
+        except Exception:
+            pass
+        if "Make" in exif:
+            update["camera_make"] = str(exif["Make"]).strip()
+        if "Model" in exif:
+            update["camera_model"] = str(exif["Model"]).strip()
+    except Exception:
+        pass
+    return update
+
+
 @router.post("/photos/upload", response_model=Photo)
 async def upload_photo(
     project_id: str = Form(...),
@@ -118,8 +189,11 @@ async def upload_photo(
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1})
     if not proj:
         raise HTTPException(404, "Project not found")
-    body = await file.read()
-    if len(body) > 25 * 1024 * 1024:  # pt.68: raised 10MB -> 25MB (matches photo-tray + vision cap)
+    # pt.68: raised 10MB -> 25MB (matches photo-tray + vision cap). Read in
+    # chunks with a running limit so an oversized file is never held whole.
+    try:
+        body = await read_upload_limited(file, _PHOTO_MAX_BYTES)
+    except UploadTooLarge:
         raise HTTPException(413, "Photo exceeds 25MB limit")
     if not body:
         raise HTTPException(400, "Empty file")
@@ -212,56 +286,13 @@ async def upload_photo(
         "pin_y": pin_y,
     }
     await db.photos.insert_one(doc.copy())
-    # Best-effort EXIF + perceptual hash (master prompt §13)
+    # Best-effort EXIF + perceptual hash (master prompt §13). Decoding
+    # runs off the event loop; a failure here never undoes the save.
     try:
-        from PIL import Image, ExifTags
-        import imagehash
-        img = Image.open(io.BytesIO(body))
-        exif_raw = img._getexif() or {}
-        exif: dict = {}
-        for k, v in exif_raw.items():
-            tag = ExifTags.TAGS.get(k, str(k))
-            exif[tag] = v
-        update: dict = {"phash": str(imagehash.phash(img))}
-        if "DateTimeOriginal" in exif:
-            update["captured_at_exif"] = str(exif["DateTimeOriginal"])
-            # Bucket C3b Phase 4 — also stamp device_timestamp + check
-            # for clock skew vs server-receive. EXIF datetime format:
-            # "YYYY:MM:DD HH:MM:SS" (note ':' separators in date).
-            try:
-                from datetime import datetime as _dt
-                raw = str(exif["DateTimeOriginal"])
-                # Convert "YYYY:MM:DD HH:MM:SS" → ISO
-                if len(raw) >= 19 and raw[4] == ":":
-                    iso = raw[:4] + "-" + raw[5:7] + "-" + raw[8:10] + "T" + raw[11:19]
-                else:
-                    iso = raw
-                dt = _dt.fromisoformat(iso)
-                update["device_timestamp"] = dt.isoformat()
-                # Compare to server_now without tzinfo on the device side
-                # (EXIF carries no offset). Mismatch threshold = 60 sec.
-                skew = abs((server_now.replace(tzinfo=None) - dt).total_seconds())
-                update["timestamp_mismatch_flag"] = skew > 60
-            except Exception:
-                pass
-        gps_raw = exif.get("GPSInfo")
-        if isinstance(gps_raw, dict):
-            gps: dict = {}
-            for k, v in gps_raw.items():
-                tag = ExifTags.GPSTAGS.get(k, str(k))
-                gps[tag] = v
-            if "GPSLatitude" in gps and "GPSLongitude" in gps:
-                from routers.iter6_router import _dms_to_dd
-                lat = _dms_to_dd(gps["GPSLatitude"], gps.get("GPSLatitudeRef") or "N")
-                lng = _dms_to_dd(gps["GPSLongitude"], gps.get("GPSLongitudeRef") or "E")
-                update["gps_lat"] = lat
-                update["gps_lng"] = lng
-        if "Make" in exif:
-            update["camera_make"] = str(exif["Make"]).strip()
-        if "Model" in exif:
-            update["camera_model"] = str(exif["Model"]).strip()
-        await db.photos.update_one({"id": doc["id"]}, {"$set": update})
-        doc.update(update)
+        update = await asyncio.to_thread(_read_photo_meta, body, server_now)
+        if update:
+            await db.photos.update_one({"id": doc["id"]}, {"$set": update})
+            doc.update(update)
     except Exception:
         pass
     return Photo(**doc)
@@ -272,6 +303,9 @@ async def stream_photo(photo_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     p = await db.photos.find_one(tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0})
     if not p or not p.get("storage_path"):
+        raise HTTPException(404, "Photo not found")
+    # Only ever read a file stored under the caller's own company.
+    if not key_belongs_to_tenant(p["storage_path"], ctx["tenant_id"]):
         raise HTTPException(404, "Photo not found")
     try:
         data, ct = await aget_object(p["storage_path"])

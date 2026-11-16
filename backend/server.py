@@ -108,6 +108,7 @@ async def _ensure_indexes():
     await _safe_create_index(db.daily_reports, [("tenant_id", 1), ("project_id", 1), ("report_date", 1)], unique=True)
     await _safe_create_index(db.daily_report_activities, [("daily_report_id", 1), ("position", 1)])
     await _safe_create_index(db.audit_log, [("tenant_id", 1), ("created_at", -1)])
+    await _safe_create_index(db.audit_log, [("tenant_id", 1), ("table_name", 1), ("record_id", 1), ("created_at", -1)])
     await _safe_create_index(db.approvals, [("tenant_id", 1), ("status", 1)])
     await _safe_create_index(db.locations, [("tenant_id", 1), ("project_id", 1), ("floor_id", 1)])
     await _safe_create_index(db.crews, [("tenant_id", 1), ("crew_code", 1)], unique=True)
@@ -408,6 +409,10 @@ async def _ensure_indexes():
         [("tenant_id", 1), ("status", 1), ("generated_at", -1)],
         name="rr_tenant_status_generated",
     )
+    # Sign-in throttling rows: TTL (auto-removal after an hour) + lookup
+    # index. Safe to repeat; never raises (a failure is only logged).
+    from auth import ensure_auth_attempt_indexes
+    await ensure_auth_attempt_indexes(db)
 
 
 def _warn_if_platform_admins_unset() -> bool:

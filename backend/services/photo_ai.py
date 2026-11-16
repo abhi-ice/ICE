@@ -649,11 +649,17 @@ def _preprocess_image_for_vision(blob: bytes) -> tuple[bytes, str, dict]:
         from PIL import Image, ImageOps
     except ImportError:
         raise ImageConversionError("Pillow not installed")
+    from services.storage import open_image_capped, ImageTooLarge
     try:
-        img = Image.open(io.BytesIO(blob))
+        # Pixel-capped open (2026-11-16): a "decompression bomb" (small
+        # file, huge picture) is refused before any pixels are decoded.
+        # This only skips the AI analysis; the photo itself is kept.
+        img = open_image_capped(blob)
         # HEIC may require pillow-heif. If not registered, Pillow
         # raises UnidentifiedImageError which we surface clearly.
         img.load()
+    except ImageTooLarge as exc:
+        raise ImageTooLargeError(f"image too large to analyze: {exc}") from exc
     except Exception as exc:
         raise NotAnImageError(f"unrecognized image format: {exc}") from exc
     try:

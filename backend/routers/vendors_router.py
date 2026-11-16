@@ -99,6 +99,15 @@ async def _patch_kind(kind: str, vid: str, payload: dict, ctx: dict) -> dict:
     )
     if not before:
         raise HTTPException(404, f"{kind.capitalize()} not found")
+    # 2026-11-16: drop server-owned fields (id, tenant_id, created stamps,
+    # file keys, hashes...) so an edit can never move the record to another
+    # company; refuse names the database would misread ("$set", "a.b").
+    from services.patch_fields import split_patch_fields
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    payload, bad = split_patch_fields(payload)
+    if bad:
+        raise HTTPException(400, f"invalid field name: {str(bad[0])[:64]!r}")
     updates = {k: v for k, v in payload.items() if v is not None}
     updates["updated_at"] = datetime.now(timezone.utc)
     await coll.update_one(

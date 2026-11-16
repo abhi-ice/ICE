@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_db, tenant_filter
 from auth import require_tenant, has_project_access
+from services.project_scope import require_project
 from audit import write_audit
 from models import (
     FieldSuggestionCreate, FieldSuggestionRejectPayload,
@@ -157,6 +158,8 @@ async def create_suggestion_endpoint(
         raise HTTPException(
             403, "Admins only -- AI producers call the service module directly",
         )
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     # Confirm entity exists + caller has access.
     await _check_entity_access(
         ctx=ctx, entity_type=payload.entity_type,

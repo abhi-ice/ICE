@@ -76,7 +76,7 @@ Tools:
                                 specs, spec_sections, drawings, kb_entries, photos,
                                 crews, equipment, people, subcontractors, suppliers,
                                 locations, floors, rooms,
-                                approvals, audit_log,
+                                approvals, audit_log (admins only),
                                 ai_recovery_suggestions, ai_kb_recommendations.
                               `filter` is a MongoDB-style dict, e.g. {"severity": "high"} or
                               {"created_at": {"$gte": "2026-05-01"}}. `sort` is a field name; prefix
@@ -327,6 +327,17 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
         "ai_recovery_suggestions", "ai_recovery_applied",
         "ai_kb_recommendations",
     }
+    # SECURITY (2026-11-16): the audit trail is admin-only. Older audit rows
+    # hold plaintext invite codes and other secrets, and copilot_messages
+    # holds every user's private assistant chats. Non-admins cannot query
+    # either. Collections that hold sign-in secrets (users, tenant_users,
+    # team_invites, auth_attempts, worker tokens, payment rows) were never
+    # in ALLOWED and must stay out. Every returned row is also passed
+    # through auth.redact_secrets below.
+    ADMIN_ONLY = {"audit_log", "copilot_messages"}
+    _role = (((ctx.get("user") or {}).get("role")) or "").strip().lower()
+    if _role != "admin":
+        ALLOWED = ALLOWED - ADMIN_ONLY
     collection = args.get("collection") or args.get("entity_type")
     if not collection:
         return {"error": "collection arg is required", "allowed_collections": sorted(ALLOWED)}
@@ -401,6 +412,17 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
         rows = await cursor.limit(limit).to_list(limit)
     except Exception as e:
         return {"error": f"query failed: {e}", "filter_used": safe_filter}
+    from auth import redact_secrets, INVITE_SECRET_KEYS
+    # On audit rows about team invites, "code" is the redeemable invite
+    # code; elsewhere "code" is an ordinary field and stays visible.
+    rows = [
+        redact_secrets(r, INVITE_SECRET_KEYS
+                       if (collection == "audit_log"
+                           and isinstance(r, dict)
+                           and r.get("table_name") == "team_invites")
+                       else ())
+        for r in rows
+    ]
     return {"collection": collection, "count": len(rows), "rows": rows}
 
 
@@ -1193,8 +1215,22 @@ async def _tool_update_entity(ctx: dict, args: dict) -> dict:
     if not target_id:
         return {"error": "id required"}
     fields = args.get("fields") or {}
-    for k in ("id", "tenant_id", "created_at", "created_by", "_id"):
-        fields.pop(k, None)
+    if not isinstance(fields, dict):
+        return {"error": "fields must be a dict"}
+    # 2026-11-16: same protected list as the generic edit endpoint, so the
+    # assistant can never point a photo at another company's stored file,
+    # move a record to another company or fake lock / audit stamps.
+    from services.patch_fields import split_patch_fields
+    fields, bad = split_patch_fields(fields)
+    if bad:
+        return {"error": f"invalid field name: {str(bad[0])[:64]!r}"}
+    # A record can only be moved onto a project of the caller's company.
+    for _pk in ("project_id", "home_project_id"):
+        _pv = fields.get(_pk)
+        if _pv not in (None, ""):
+            if not isinstance(_pv, str) or not await get_db().projects.find_one(
+                    tenant_filter(ctx["tenant_id"], {"id": _pv}), {"_id": 0, "id": 1}):
+                fields.pop(_pk, None)
     if not fields:
         return {"error": "fields required"}
     fields["updated_at"] = utc_now().isoformat()

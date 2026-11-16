@@ -364,7 +364,10 @@ def ocr(monkeypatch):
     """Fake pdf2image / pytesseract / storage for the OCR endpoint."""
     from routers import iter7_router
     d = _DB()
-    d.drawing_revisions.docs.append({"id": "r1", "tenant_id": TID, "pdf_url": "x/r1.pdf"})
+    # A real key as make_path builds it ({app}/{kind}/{tenant}/{file}); the
+    # endpoint only reads files stored under the caller's company.
+    d.drawing_revisions.docs.append({"id": "r1", "tenant_id": TID,
+                                     "pdf_url": f"ice/drawings/{TID}/r1.pdf"})
     monkeypatch.setattr(iter7_router, "get_db", lambda: d)
     state = {"pages": 3, "info_error": None, "render_error": None, "tess_error": None}
 

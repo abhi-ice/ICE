@@ -12,7 +12,13 @@ from models import (
     InviteCreate, InviteAccept, StrictModel,
     gen_id, utc_now,
 )
-from auth import hash_password, verify_password, create_token, require_tenant
+from auth import (
+    hash_password, verify_password, create_token, require_tenant,
+    token_version_of, dummy_password_check, redact_secrets, INVITE_SECRET_KEYS,
+    check_throttle, record_failure, clear_failures, client_ip,
+    reserve_attempt, release_attempt,
+    ACCOUNT_FAILURE_LIMIT, IP_FAILURE_LIMIT,
+)
 from audit import write_audit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -111,16 +117,38 @@ async def register(payload: UserRegister):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: UserLogin):
+async def login(payload: UserLogin, request: Request):
+    """2026-11 security round:
+      * throttled -- 10 failed tries per account and 50 per client address
+        in 15 minutes, then 429 with Retry-After; a good sign-in clears the
+        account's count.
+      * an unknown email still runs one bcrypt check so the reply takes
+        the same time as a wrong password (no account discovery by timing).
+      * the token carries the user's token_version ("tv")."""
     db = get_db()
-    user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
-    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+    email_norm = payload.email.lower()
+    account_key = f"login:acct:{email_norm}"
+    ip_key = f"login:ip:{client_ip(request)}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    # The account's row is written before the password check, so a burst of
+    # simultaneous guesses cannot all slip past the limit; a good sign-in
+    # clears it below.
+    await reserve_attempt([(account_key, ACCOUNT_FAILURE_LIMIT)])
+    user = await db.users.find_one({"email": email_norm}, {"_id": 0})
+    if not user:
+        dummy_password_check(payload.password)
+        ok = False
+    else:
+        ok = verify_password(payload.password, user.get("password_hash", ""))
+    if not ok:
+        await record_failure([ip_key])
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
     tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0})
     if not tenant:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Tenant not found")
+    await clear_failures([account_key])
     user_view = {k: v for k, v in user.items() if k != "password_hash"}
-    token = create_token(user["id"], tenant["id"], user["email"])
+    token = create_token(user["id"], tenant["id"], user["email"], token_version_of(user))
     return TokenResponse(access_token=token, user=User(**user_view), tenant=Tenant(**tenant))
 
 
@@ -144,15 +172,26 @@ async def my_tenants(ctx: dict = Depends(require_tenant)):
 # TEAM INVITES — admin invites teammates into the SAME tenant
 # ============================================================
 @router.post("/accept-invite", response_model=TokenResponse)
-async def accept_invite(payload: InviteAccept):
+async def accept_invite(payload: InviteAccept, request: Request):
     """Public route — code + new password produces an account joined to the
-    tenant that issued the code. Code is single-use; expires after 14 days."""
+    tenant that issued the code. Code is single-use; expires after 14 days.
+
+    2026-11 security round: wrong codes / wrong emails are throttled like
+    sign-in (10 per email, 50 per client address, per 15 minutes)."""
     db = get_db()
+    email_key = f"invite:acct:{payload.email.lower()}"
+    ip_key = f"invite:ip:{client_ip(request)}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    rid = await reserve_attempt([(email_key, ACCOUNT_FAILURE_LIMIT)])
     invite = await db.team_invites.find_one({"code": payload.code, "status": "pending"}, {"_id": 0})
     if not invite:
+        await record_failure([ip_key])
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invite not found or already used")
     if invite["email"].lower() != payload.email.lower():
+        await record_failure([ip_key])
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Email does not match the invite")
+    # Right code for the right email: not a guess, so it does not count.
+    await release_attempt(rid)
     expires = invite.get("expires_at")
     if expires and datetime.fromisoformat(expires.replace("Z", "+00:00")) < datetime.now(timezone.utc):
         await db.team_invites.update_one({"id": invite["id"]}, {"$set": {"status": "expired"}})
@@ -363,9 +402,12 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
         "accepted_user_id": None,
     }
     await db.team_invites.insert_one(invite.copy())
+    # 2026-11 security round: the audit row must never hold the invite
+    # code (anyone who could read the log could claim the invite).
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="team_invites", op="INSERT",
-        record_id=invite["id"], before=None, after=invite,
+        record_id=invite["id"], before=None,
+        after=redact_secrets(invite, INVITE_SECRET_KEYS),
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
 
@@ -428,13 +470,25 @@ async def revoke_invite(invite_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
+# 2026-11 security round: an explicit list of the member fields the Team
+# page uses (id, email, full_name, role, created_at) plus harmless profile
+# fields. Everything else on the user record -- password hash, reset-token
+# hash and stamps, token_version -- stays on the server.
+_MEMBER_FIELDS = (
+    "id", "email", "full_name", "role", "tenant_id", "created_at",
+    "title", "phone", "status", "active_project_id",
+)
+
+
 @team_router.get("/members")
 async def list_members(ctx: dict = Depends(require_tenant)):
     db = get_db()
+    projection = {"_id": 0, **{f: 1 for f in _MEMBER_FIELDS}}
     members = await db.users.find(
-        {"tenant_id": ctx["tenant_id"]}, {"_id": 0, "password_hash": 0},
+        {"tenant_id": ctx["tenant_id"]}, projection,
     ).sort("created_at", 1).to_list(500)
-    return members
+    # Filter again in Python as well, so nothing else can slip through.
+    return [{k: v for k, v in m.items() if k in _MEMBER_FIELDS} for m in members]
 
 
 @team_router.delete("/members/{user_id}")
@@ -449,6 +503,11 @@ async def remove_member(user_id: str, ctx: dict = Depends(require_tenant)):
         raise HTTPException(404, "Member not found")
     await db.tenant_users.update_many({"user_id": user_id, "tenant_id": ctx["tenant_id"]},
                                       {"$set": {"status": "revoked"}})
+    # Retire the removed member's sign-in tokens. Deleting the record next
+    # already blocks them; this keeps that true even if removal ever
+    # becomes a soft delete.
+    await db.users.update_one({"id": user_id, "tenant_id": ctx["tenant_id"]},
+                              {"$inc": {"token_version": 1}})
     await db.users.delete_one({"id": user_id, "tenant_id": ctx["tenant_id"]})
     return {"ok": True}
 
@@ -493,13 +552,11 @@ async def admin_reset_password(
         {"id": user_id, "tenant_id": ctx["tenant_id"]},
         {"$set": {"password_hash": new_hash,
                    "password_reset_at": utc_now().isoformat(),
-                   "password_reset_by": ctx["user"]["id"]}},
+                   "password_reset_by": ctx["user"]["id"]},
+         # 2026-11 security round: bumping token_version signs the member
+         # out everywhere -- every token issued before the reset stops working.
+         "$inc": {"token_version": 1}},
     )
-    # Bearer JWTs are stateless and will expire naturally; document that
-    # in the response so the operator knows tokens issued before the
-    # reset remain valid until expiry. (The Google-OAuth cookie session
-    # path was removed in the 2026-05-11 purge, so there's no longer
-    # anything else to invalidate here.)
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="users",
         op="ADMIN_PASSWORD_RESET",
@@ -514,8 +571,8 @@ async def admin_reset_password(
         "ok": True,
         "user_id": user_id,
         "email": user.get("email"),
-        "note": "User must re-login with the new password. Active JWTs "
-                "remain valid until expiry.",
+        "note": "User must sign in again with the new password. Every "
+                "earlier sign-in for this user has been signed out.",
     }
 
 
@@ -536,6 +593,9 @@ TENANT_SCOPED_COLLECTIONS = [
     "coordination_events", "photos", "specs", "submittals", "drawings",
     "schedule_imports", "schedule_revisions", "recovery_reports",
     "marketplace_listings", "notifications", "approvals", "audit_log",
+    # The audit log's per-company chain head goes with the log itself, so
+    # nothing keeps pointing at rows that no longer exist.
+    "audit_chain_heads",
     "team_invites", "users", "memberships", "tia_generations",
     "edit_requests", "photo_tray", "subcontractors", "suppliers",
 ]
@@ -563,9 +623,33 @@ async def close_account(ctx: dict = Depends(require_tenant)):
     # admin's records.
     await write_audit(
         tenant_id=tenant_id, table_name="tenants", op="CLOSE_TENANT",
-        record_id=tenant_id, before=tenant, after={},
+        record_id=tenant_id, before=redact_secrets(tenant), after={},
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # 2026-11 security round: sign out everyone attached to this company.
+    # Users whose home is this company are deleted below; members from
+    # other companies keep their accounts, but their memberships here are
+    # closed and their old tokens retired.
+    try:
+        member_rows = await db.tenant_users.find(
+            {"tenant_id": tenant_id}, {"_id": 0, "user_id": 1},
+        ).to_list(length=None)
+        member_ids = {r.get("user_id") for r in member_rows if r.get("user_id")}
+        home_rows = await db.users.find(
+            {"tenant_id": tenant_id}, {"_id": 0, "id": 1},
+        ).to_list(length=None)
+        member_ids |= {r.get("id") for r in home_rows if r.get("id")}
+        if member_ids:
+            await db.users.update_many(
+                {"id": {"$in": sorted(member_ids)}}, {"$inc": {"token_version": 1}},
+            )
+        await db.tenant_users.update_many(
+            {"tenant_id": tenant_id}, {"$set": {"status": "revoked"}},
+        )
+    except Exception:
+        # Never leave a half-closed account because of this step; the
+        # deletes below still remove the home users and their tokens.
+        pass
     deleted_counts: dict[str, int] = {}
     for coll in TENANT_SCOPED_COLLECTIONS:
         try:
@@ -692,6 +776,14 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     """
     db = get_db()
     email_norm = (payload.email or "").strip().lower()
+    # 2026-11 security round: limit reset requests. Every request counts,
+    # whether or not the email exists, so a 429 reveals nothing: 5 per
+    # email and 50 per client address in 15 minutes.
+    email_key = f"forgot:acct:{email_norm}"
+    ip_key = f"forgot:ip:{client_ip(request)}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    await reserve_attempt([(email_key, 5)])
+    await record_failure([ip_key])
     user = await db.users.find_one({"email": email_norm}, {"_id": 0})
 
     plain_token = secrets.token_urlsafe(32)
@@ -824,6 +916,8 @@ async def reset_password(payload: ResetPasswordRequest, request: Request):
                 "password_reset_at": utc_now().isoformat(),
                 "password_reset_by": "self",
             },
+            # Sign out every earlier session (2026-11 security round).
+            "$inc": {"token_version": 1},
             "$unset": {
                 "password_reset_token_hash": "",
                 "password_reset_expires_at": "",

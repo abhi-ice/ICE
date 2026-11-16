@@ -392,6 +392,123 @@ def make_path(tenant_id: str, kind: str, ext: str) -> str:
     return f"{APP_NAME}/{kind}/{tenant_id}/{uuid.uuid4().hex}.{safe_ext}"
 
 
+# Characters that never appear in a key built by make_path but could change
+# what a key points at (path tricks, URL query / fragment / escapes on the
+# Emergent store's URL, Windows separators, control characters).
+_UNSAFE_KEY_CHARS = ("\\", "?", "#", "%", "\x00")
+
+
+def key_belongs_to_tenant(key, tenant_id) -> bool:
+    """True when a stored file key belongs to this company.
+
+    Every key the app has ever written comes from make_path, whose layout
+    has not changed since the first commit (checked with git log -p on this
+    file, and the Emergent-to-bucket copy keeps keys unchanged):
+        {app_name}/{kind}/{tenant_id}/{uuid}.{ext}
+    where {kind} can itself hold a slash (for example "audio/voice"). So
+    the company id is always the folder directly above the file name. The
+    first folder is not checked, so a key written under an older app name
+    still passes as long as the company folder is right.
+
+    Read endpoints call this before fetching a key that is stored on a
+    database row, so a row that was pointed at another company's file can
+    never be used to read it."""
+    if not isinstance(key, str) or not key or tenant_id is None:
+        return False
+    tenant = str(tenant_id)
+    if not tenant or "/" in tenant:
+        return False
+    if key.startswith("/") or any(c in key for c in _UNSAFE_KEY_CHARS):
+        return False
+    if any(ord(c) < 32 for c in key):
+        return False
+    parts = key.split("/")
+    if len(parts) < 3:
+        return False
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    return parts[-2] == tenant
+
+
+def looks_like_storage_key(key) -> bool:
+    """True when a value has the shape of a key built by make_path (no
+    company check). Used to refuse obviously made-up keys from clients."""
+    if not isinstance(key, str) or not key:
+        return False
+    parts = key.split("/")
+    if len(parts) < 4:
+        return False
+    return key_belongs_to_tenant(key, parts[-2])
+
+
+# =====================================================================
+# Safe upload reading and image opening
+# =====================================================================
+
+class UploadTooLarge(Exception):
+    """An uploaded file is bigger than the allowed limit."""
+
+
+_UPLOAD_CHUNK = 1024 * 1024
+
+
+async def read_upload_limited(upload, max_bytes: int) -> bytes:
+    """Read an uploaded file without ever holding more than max_bytes (plus
+    one chunk) in memory. Checks the size the upload already reports first
+    (cheap), then reads in 1 MB chunks with a running total. Raises
+    UploadTooLarge when the file is over the limit; the caller answers 413.
+    """
+    size = getattr(upload, "size", None)
+    if isinstance(size, int) and size > max_bytes:
+        raise UploadTooLarge()
+    buf = bytearray()
+    while True:
+        chunk = await upload.read(_UPLOAD_CHUNK)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise UploadTooLarge()
+    return bytes(buf)
+
+
+# Largest image (in pixels) the server will decode for thumbnails, photo
+# fingerprints and metadata. Modern phone cameras go up to about 50
+# megapixels (8000 x 6000 = 48 MP), so 60 MP leaves room for those. A
+# bigger image is still stored -- only the extra metadata is skipped. This
+# is a per-call check, so Pillow's process-wide setting is left alone for
+# other code (drawings, PDFs).
+MAX_IMAGE_PIXELS = 60_000_000
+
+
+class ImageTooLarge(Exception):
+    """An image has more pixels than MAX_IMAGE_PIXELS."""
+
+
+def open_image_capped(data: bytes, max_pixels: int = MAX_IMAGE_PIXELS):
+    """Open image bytes with Pillow, refusing to decode a "decompression
+    bomb" (a small file that unpacks to a huge picture). Image.open only
+    reads the header, so the size check below runs before any pixels are
+    decoded. Every image big enough for Pillow's own bomb warning (about
+    89 MP) is already over this cap, so it is refused as an error here too.
+    (warnings.catch_warnings is deliberately not used: this runs in worker
+    threads, and that helper swaps the process-wide warning filters, so two
+    uploads at once could leave the filters changed for all other code.)
+    Raises ImageTooLarge (or Pillow's own errors); callers treat any error
+    as "no metadata" and still keep the photo."""
+    import io as _io
+    from PIL import Image
+    try:
+        img = Image.open(_io.BytesIO(data))
+    except Image.DecompressionBombError as exc:
+        raise ImageTooLarge(str(exc)) from exc
+    w, h = img.size
+    if w * h > max_pixels:
+        img.close()
+        raise ImageTooLarge(f"{w}x{h} is over {max_pixels} pixels")
+    return img
+
+
 async def record_file(
     *,
     tenant_id: str,

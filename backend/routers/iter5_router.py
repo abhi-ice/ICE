@@ -27,6 +27,7 @@ from services.anthropic_compat import LlmChat, UserMessage
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
+from services.project_scope import require_project, require_project_if_given
 from services.ai_agents import _new_chat, MODEL_NAME, MODEL_PROVIDER, _track_usage
 
 router = APIRouter(tags=["iter5"])
@@ -379,6 +380,9 @@ class CalendarCreate(StrictModel):
 @router.post("/calendars")
 async def create_cal(payload: CalendarCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A company-wide calendar has no project_id and stays allowed; a
+    # project calendar must name a project in the caller's company.
+    await require_project_if_given(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
@@ -414,6 +418,8 @@ class CrewAssignmentCreate(StrictModel):
 @router.post("/crew-assignments")
 async def create_crew_assign(payload: CrewAssignmentCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "active",
@@ -445,6 +451,8 @@ class EquipAssignmentCreate(StrictModel):
 @router.post("/equipment-assignments")
 async def create_equip_assign(payload: EquipAssignmentCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"], "status": "active",
@@ -870,6 +878,8 @@ class DeliveryUpdate(StrictModel):
 @router.post("/deliveries")
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1033,6 +1043,9 @@ class MarketplacePostingCreate(StrictModel):
 @router.post("/marketplace/postings")
 async def post_marketplace(payload: MarketplacePostingCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # project_id is optional on a posting; when given it must be one of
+    # the caller's own projects.
+    await require_project_if_given(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
@@ -1054,7 +1067,21 @@ async def list_marketplace(ctx: dict = Depends(require_tenant)):
         ],
     }
     docs = await db.marketplace_postings.find(pipeline, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
-    return docs
+    return [marketplace_public_view(d, ctx["tenant_id"]) for d in docs]
+
+
+# Fields that identify the company, project and person behind a posting.
+# Another company browsing the marketplace sees the posting itself (title,
+# type, budget, location, deadline...) but not these internal ids.
+_MARKETPLACE_PRIVATE_FIELDS = ("tenant_id", "project_id", "posted_by")
+
+
+def marketplace_public_view(doc: dict, viewer_tenant_id: str) -> dict:
+    """The owning company gets the full posting; everyone else gets it
+    without the internal company / project / user ids."""
+    if doc.get("tenant_id") == viewer_tenant_id:
+        return doc
+    return {k: v for k, v in doc.items() if k not in _MARKETPLACE_PRIVATE_FIELDS}
 
 
 class MarketplaceResponseCreate(StrictModel):

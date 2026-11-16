@@ -21,6 +21,8 @@ from datetime import datetime, timezone, date, timedelta
 from typing import Optional, Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import Field
+from pymongo.errors import PyMongoError
+from bson.errors import BSONError
 
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
@@ -82,6 +84,41 @@ _GATING_ENTITY_TYPE = {
 }
 
 
+# Fields the generic PATCH never writes, whatever the client sends. These
+# are set by the server (ids, company, who/when, stored-file keys, photo
+# fingerprints, lock state, audit hashes) or belong to dedicated endpoints.
+# No screen sends any of them (checked against frontend/src: CrudList only
+# sends the form fields of crews, people, equipment, certifications,
+# deliveries, work-items, change-orders, delays and locations), so they are
+# dropped quietly rather than refused -- an older client's save still goes
+# through with its real edits.
+# The list itself lives in services/patch_fields.py (shared with the
+# subcontractor / supplier edits and the AI assistant's update tool).
+from services.patch_fields import PROTECTED_FIELDS as _CRUD_PROTECTED_FIELDS  # noqa: E402
+
+
+def _clean_crud_payload(payload) -> dict:
+    """Validate and trim a generic PATCH body.
+
+    * 400 when the body is not a JSON object, or a field name starts with
+      "$", contains "." or a NUL character (these would either be read by
+      the database as an operator / nested path, or crash the write).
+    * Protected fields (above) are dropped.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    clean: dict = {}
+    for k, v in payload.items():
+        if not isinstance(k, str) or not k:
+            raise HTTPException(400, "invalid field name")
+        if k.startswith("$") or "." in k or "\x00" in k:
+            raise HTTPException(400, f"invalid field name: {k[:64]!r}")
+        if k in _CRUD_PROTECTED_FIELDS:
+            continue
+        clean[k] = v
+    return clean
+
+
 def _cfg(entity: str) -> dict:
     cfg = ENTITY_CONFIG.get(entity)
     if not cfg:
@@ -103,16 +140,33 @@ async def crud_patch(entity: str, id: str, payload: dict,
         before = await coll.find_one(
             tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0},
         )
-    # Strip immutable fields
-    for k in ("id", "tenant_id", "created_at", "created_by", "_id"):
-        payload.pop(k, None)
+    # Refuse field names the database would misread; drop server-owned
+    # fields (ids, company, file keys, lock state, hashes).
+    payload = _clean_crud_payload(payload)
+    # A record can only be moved onto a project of the caller's own
+    # company. A project id that is not found under this company is
+    # dropped quietly (like the protected fields above) rather than
+    # refused, so an older client's save still goes through with its
+    # other edits.
+    for _pk in ("project_id", "home_project_id"):
+        _pv = payload.get(_pk)
+        if _pv not in (None, ""):
+            if not isinstance(_pv, str) or not await db.projects.find_one(
+                    tenant_filter(ctx["tenant_id"], {"id": _pv}), {"_id": 0, "id": 1}):
+                payload.pop(_pk, None)
     if not payload:
         raise HTTPException(400, "no fields to update")
     payload["updated_at"] = utc_now().isoformat()
     payload["updated_by"] = ctx["user"]["id"]
-    res = await coll.update_one(
-        tenant_filter(ctx["tenant_id"], {"id": id}), {"$set": payload},
-    )
+    try:
+        res = await coll.update_one(
+            tenant_filter(ctx["tenant_id"], {"id": id}), {"$set": payload},
+        )
+    except (PyMongoError, BSONError) as exc:
+        # A value the database cannot store (for example a nested field
+        # name starting with "$") is the client's mistake: answer 400, not
+        # a server error.
+        raise HTTPException(400, f"could not save these fields: {type(exc).__name__}")
     if not res.matched_count:
         raise HTTPException(404, f"{entity} {id} not found")
     doc = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
@@ -341,8 +395,12 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
     if not floor:
         raise HTTPException(404, "Floor not found")
 
-    from services.storage import get_object
-    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    from services.storage import aget_object, key_belongs_to_tenant
+    plan_key = rev.get("storage_path") or rev.get("pdf_url")
+    # Only ever read a file stored under the caller's own company.
+    if not key_belongs_to_tenant(plan_key, ctx["tenant_id"]):
+        raise HTTPException(404, "Drawing revision not found")
+    pdf_bytes, _ = await aget_object(plan_key)
     try:
         images = pdf2image.convert_from_bytes(
             pdf_bytes, first_page=payload.page, last_page=payload.page, dpi=120,

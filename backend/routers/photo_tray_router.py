@@ -42,7 +42,13 @@ from audit import write_audit
 from models import (PhotoTray, PhotoTagCreate, EVIDENTIARY_CLASSES,
                      TenantAiBudgetUpdate,
                      gen_id, utc_now)
-from services.storage import put_object, get_object, aput_object, aget_object, make_path, record_file
+from services.storage import (
+    put_object, get_object, aput_object, aget_object, make_path, record_file,
+    key_belongs_to_tenant, read_upload_limited, UploadTooLarge, open_image_capped,
+)
+
+# Largest photo accepted (pt.68: 25 MB, matches the vision-preprocess guard).
+_TRAY_MAX_BYTES = 25 * 1024 * 1024
 
 
 router = APIRouter(tags=["photo-tray"])
@@ -72,9 +78,11 @@ def _extract_image_meta(body: bytes) -> dict:
         "exif_gps_lng": None,
     }
     try:
-        from PIL import Image, ExifTags
+        from PIL import ExifTags
         import imagehash
-        img = Image.open(io.BytesIO(body))
+        # Refuses decompression bombs before decoding; any error here just
+        # means no metadata -- the photo itself is still saved.
+        img = open_image_capped(body)
         out["width"] = img.width
         out["height"] = img.height
         out["phash"] = str(imagehash.phash(img))
@@ -165,12 +173,15 @@ async def upload_to_tray(
     if capture_source not in ("mobile_camera", "manual_upload", "drawing_pin"):
         capture_source = "manual_upload"
 
-    body = await file.read()
     # pt.68: 10MB was too tight — modern phone / high-res site photos routinely
     # exceed it. 25MB matches the vision-preprocess guard so anything that
     # uploads can also be AI-reviewed. (Large media transiting the API process
     # is the P1 presigned-direct-upload item in the scale audit.)
-    if len(body) > 25 * 1024 * 1024:
+    # Read in chunks with a running limit so an oversized file is never
+    # held whole in memory.
+    try:
+        body = await read_upload_limited(file, _TRAY_MAX_BYTES)
+    except UploadTooLarge:
         raise HTTPException(413, "Photo exceeds 25MB limit")
     if not body:
         raise HTTPException(400, "Empty file")
@@ -340,6 +351,9 @@ async def stream_tray_image(tray_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not doc:
         raise HTTPException(404, "Tray entry not found")
+    # Only ever read a file stored under the caller's own company.
+    if not key_belongs_to_tenant(doc.get("storage_key"), ctx["tenant_id"]):
+        raise HTTPException(404, "Tray entry not found")
     try:
         data, ct = await aget_object(doc["storage_key"])
     except Exception as e:
@@ -385,6 +399,10 @@ async def _remove_tray_blob(tenant_id: str, storage_key: Optional[str]) -> None:
         return
     import logging
     log = logging.getLogger("photo_tray_router")
+    # Never delete a file that is not stored under this company.
+    if not key_belongs_to_tenant(storage_key, tenant_id):
+        log.warning("Tray delete: storage key is not under this company; kept")
+        return
     db = get_db()
     try:
         still_used = (
@@ -1731,6 +1749,11 @@ async def create_safety_event_from_photo(
             422,
             "Daily report's project does not match the photo's project",
         )
+    # The project the event is filed under must belong to the caller's
+    # company (404 otherwise).
+    if tray.get("project_id"):
+        from services.project_scope import require_project
+        await require_project(ctx, tray.get("project_id"))
 
     # Build the SafetyEventCreate body. Override fields take precedence
     # over AI-derived defaults.
