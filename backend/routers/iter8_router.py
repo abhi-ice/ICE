@@ -134,6 +134,22 @@ def _cfg(entity: str) -> dict:
     return cfg
 
 
+async def _ensure_daily_report_rules(ctx: dict, entity: str, *records) -> None:
+    """The generic edit and delete must follow the same daily report rules as
+    the dedicated routes (PATCH /delays/{id}, DELETE /photo-tags/{id} ...),
+    or a read-only role could change a report through this side door:
+      * photos are report material: only a role that may change daily
+        reports may edit or delete one;
+      * any record filed on a daily report (stored row or request body):
+        read-only roles are refused, and on a draft only its author, an admin
+        or a project manager may change it."""
+    from auth import ensure_daily_report_writer
+    from services.edit_permissions import ensure_can_change_linked_report
+    if entity == "photos":
+        ensure_daily_report_writer(ctx)
+    await ensure_can_change_linked_report(ctx, *records)
+
+
 @router.patch("/crud/{entity}/{id}")
 async def crud_patch(entity: str, id: str, payload: dict,
                       bg: BackgroundTasks,
@@ -141,16 +157,16 @@ async def crud_patch(entity: str, id: str, payload: dict,
     cfg = _cfg(entity)
     db = get_db()
     coll = db[cfg["collection"]]
-    # Bucket H Phase 4 -- snapshot the before-state when entity=crews so
-    # we know if a supply-side field actually moved.
-    before = None
-    if entity == "crews":
-        before = await coll.find_one(
-            tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0},
-        )
+    # Snapshot the before-state: crews use it to tell whether a supply-side
+    # field moved (Bucket H Phase 4), and every entity uses it for the daily
+    # report check below.
+    before = await coll.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0},
+    )
     # Refuse field names the database would misread; drop server-owned
     # fields (ids, company, file keys, lock state, hashes).
     payload = _clean_crud_payload(payload)
+    await _ensure_daily_report_rules(ctx, entity, before, payload)
     # A record can only be moved onto a project of the caller's own
     # company. A project id that is not found under this company is
     # dropped quietly (like the protected fields above) rather than
@@ -308,6 +324,7 @@ async def crud_delete(entity: str, id: str, bg: BackgroundTasks,
     before = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
     if not before:
         raise HTTPException(404, f"{entity} {id} not found")
+    await _ensure_daily_report_rules(ctx, entity, before)
     if cfg.get("soft_delete"):
         await coll.update_one(
             tenant_filter(ctx["tenant_id"], {"id": id}),

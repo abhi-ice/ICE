@@ -303,6 +303,9 @@ sys.modules["audit"] = _audit_mod
 # auth: only needed because routers/field_events_router.py imports it.
 _auth_mod = types.ModuleType("auth")
 _auth_mod.require_tenant = lambda: {}
+# Daily-report role guard (2026-11-16) imported by the same routers.
+_auth_mod.require_daily_report_writer = lambda: {}
+_auth_mod.ensure_daily_report_writer_if_linked = lambda *a, **k: None
 sys.modules["auth"] = _auth_mod
 
 # Now import the real services. This must come AFTER the stubs above.

@@ -52,6 +52,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
+from fastapi import HTTPException
+
 from database import get_db, tenant_filter
 
 log = logging.getLogger("edit_permissions")
@@ -475,6 +477,15 @@ async def stamp_add_metadata(
         record_id=record_id, before=None, after=enriched,
         actor_id=actor_id, request_id=request_id,
     )
+    # Work recorded on a report filed as a no-work day: it is not a no-work
+    # day any more, so the heading must not print on its exports.
+    from auth import report_link_ids
+    from services.no_work_day import clear_no_work_day_if_work_added
+    for dr_id in report_link_ids(after):
+        await clear_no_work_day_if_work_added(
+            db, tenant_id=tenant_id, daily_report_id=dr_id,
+            actor_id=actor_id, request_id=request_id,
+        )
 
 
 async def get_locked_dr_for_event(
@@ -757,3 +768,172 @@ async def enforce_locked_dr_add_policy(
         daily_report_id, event_type, actor_id, role, reason_len,
     )
     return dr, True
+
+
+# ---------------------------------------------------------------------------
+# Report ownership (2026-11-16)
+# ---------------------------------------------------------------------------
+# A draft belongs to the person who started it. Until it is submitted, only
+# that person, an admin or a project manager may change it or delete it.
+# Another superintendent or foreman on the same project can read the draft
+# but not edit it: two people typing into one report at once overwrite each
+# other's crew counts and progress, and the report is signed by its author.
+# Once a report is submitted or approved, the rules above
+# (enforce_locked_dr_edit_policy / enforce_locked_dr_add_policy) apply
+# instead, and deleting it is for an admin or project manager only.
+#
+# These 403s carry code "not_report_author" next to the usual text detail
+# (NotReportAuthorError below). Signing in again does not change who wrote a
+# report, so a phone's offline queue must not keep retrying such a save like
+# a sign-in 403: it takes the save out of the retry queue and shows it to the
+# user instead (see frontend/src/lib/drOfflineSync.js).
+#
+# Delays, safety events, quality issues, RFIs, deliveries, coordination
+# events and photos filed on a draft follow the same rule as the draft itself
+# (ensure_can_change_linked_report): another superintendent cannot change a
+# crew count on someone else's draft, so they cannot delete the delay filed
+# on it either.
+DRAFT_CHANGE_FORBIDDEN = (
+    "Only the person who started this report, an admin or a project manager "
+    "can change it."
+)
+DRAFT_DELETE_FORBIDDEN = (
+    "Only the person who started this report, an admin or a project manager "
+    "can delete it."
+)
+LOCKED_DELETE_FORBIDDEN = "Only an admin or project manager can delete a submitted report."
+
+_LOCKED_STATUSES = ("submitted", "approved")
+
+NOT_REPORT_AUTHOR_CODE = "not_report_author"
+
+
+class NotReportAuthorError(HTTPException):
+    """403 for someone who may not change or delete this report because they
+    did not start it (see the note above). The body is the usual
+    {"detail": text} plus "code": "not_report_author"."""
+
+    code = NOT_REPORT_AUTHOR_CODE
+
+    def __init__(self, message: str):
+        super().__init__(403, message)
+
+
+REPORT_NOT_DRAFT_CODE = "report_not_draft"
+
+
+class ReportNotDraftError(HTTPException):
+    """409 for a change that only a draft accepts (for example a voice memo
+    turned into report entries) when the report was already submitted. The
+    body carries "code": "report_not_draft" so a phone keeps the queued
+    recording and shows it to the user instead of dropping it."""
+
+    code = REPORT_NOT_DRAFT_CODE
+
+    def __init__(self, message: str):
+        super().__init__(409, message)
+
+
+async def not_report_author_handler(request, exc):
+    """Exception handler (registered in server.py) for NotReportAuthorError
+    and ReportNotDraftError: the usual {"detail": text} plus "code"."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "code": exc.code},
+    )
+    from fastapi import HTTPException
+
+    class _NotReportAuthorError(HTTPException):
+        """403 for someone who may not change or delete this report because
+        they did not start it (see the module note above)."""
+
+        code = NOT_REPORT_AUTHOR_CODE
+
+        def __init__(self, message: str):
+            super().__init__(403, message)
+
+    _NotReportAuthorError.__name__ = "NotReportAuthorError"
+    _NotReportAuthorError.__qualname__ = "NotReportAuthorError"
+    NotReportAuthorError = _NotReportAuthorError
+    return NotReportAuthorError
+
+
+def is_privileged(ctx: dict) -> bool:
+    """True for an admin or project manager (the same two roles that may
+    edit anyone's submitted report). Which projects they reach is decided
+    by the per-project access check that runs on every route."""
+    role = (((ctx or {}).get("user") or {}).get("role") or "").strip().lower()
+    return role in PRIVILEGED_ROLES
+
+
+def report_author_ids(daily_report: Optional[dict]) -> set:
+    """Who started the report: prepared_by, or created_by on older rows."""
+    dr = daily_report or {}
+    return {v for v in (dr.get("prepared_by"), dr.get("created_by")) if v}
+
+
+def can_change_draft(ctx: dict, daily_report: Optional[dict]) -> bool:
+    """May the caller change this report while it is still a draft?
+    Always True for a submitted/approved report (the locked-report rules
+    decide those) and for an older report with no author recorded."""
+    dr = daily_report or {}
+    if dr.get("status") in _LOCKED_STATUSES:
+        return True
+    if is_privileged(ctx):
+        return True
+    authors = report_author_ids(dr)
+    if not authors:
+        return True
+    return ((ctx or {}).get("user") or {}).get("id") in authors
+
+
+def ensure_can_change_draft(ctx: dict, daily_report: Optional[dict]) -> None:
+    """403 unless the caller may change this draft (see can_change_draft)."""
+    if not can_change_draft(ctx, daily_report):
+        raise NotReportAuthorError(DRAFT_CHANGE_FORBIDDEN)
+
+
+def ensure_can_delete_report(ctx: dict, daily_report: dict) -> None:
+    """403 unless the caller may delete this report: a submitted or approved
+    report only by an admin or project manager; a draft also by its author."""
+    if daily_report.get("status") in _LOCKED_STATUSES:
+        if not is_privileged(ctx):
+            raise NotReportAuthorError(LOCKED_DELETE_FORBIDDEN)
+        return
+    if not can_change_draft(ctx, daily_report):
+        raise NotReportAuthorError(DRAFT_DELETE_FORBIDDEN)
+
+
+async def ensure_can_change_linked_report(ctx: dict, *records) -> None:
+    """For a delay, safety event, quality issue, RFI, delivery, coordination
+    event or photo: when the request body or the stored record is filed on a
+    daily report,
+      1. a read-only role is refused (auth.ensure_daily_report_writer, code
+         "role_read_only"), and
+      2. while that report is still a draft, only its author, an admin or a
+         project manager may add, change or remove the record
+         (ensure_can_change_draft, code "not_report_author").
+    A submitted or approved report is left to the locked-report rules each
+    route already applies. Each record may be a dict or a pydantic model;
+    None is skipped."""
+    from auth import ensure_daily_report_writer_if_linked, report_link_ids
+    ensure_daily_report_writer_if_linked(ctx, *records)
+    ids = report_link_ids(*records)
+    if not ids:
+        return
+    db = get_db()
+    tenant_id = (ctx or {}).get("tenant_id")
+    for rid in ids:
+        dr = await db.daily_reports.find_one(
+            tenant_filter(tenant_id, {"id": rid}),
+            {"_id": 0, "id": 1, "status": 1, "prepared_by": 1, "created_by": 1,
+             "project_id": 1},
+        )
+        if dr:
+            # Project assignment first ("You are not assigned to this
+            # project"), so nothing about someone else's report is told to a
+            # caller outside its project.
+            from services.project_access import check_project_access
+            await check_project_access(ctx, dr.get("project_id"), write=True)
+            ensure_can_change_draft(ctx, dr)

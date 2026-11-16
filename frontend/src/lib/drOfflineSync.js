@@ -131,7 +131,8 @@ export function isQueueable(method, url) {
  * the app itself — a 4xx whose body is the app's JSON `{detail: ...}`.
  * Everything else is TRANSIENT and must be kept for a later retry:
  *  - no response (offline), any 5xx (Cloudflare 520 pages included)
- *  - 401/403 (auth comes back after re-login)
+ *  - 401/403 (auth comes back after re-login), except a 403 with code
+ *    "role_read_only": that role can never make the change, so it drops
  *  - 408/425/429 (timeout / too early / rate limited)
  *  - any non-JSON response, e.g. the HTML 404 a sleeping or restarting
  *    backend answers with — that is NOT the app saying "no".
@@ -143,6 +144,10 @@ export function isPermanentRejection(err) {
   if (!resp) return false;
   const status = resp.status;
   if (!(status >= 400 && status < 500)) return false;
+  // The one 403 that never clears: the signed-in role may read daily reports
+  // but not change them (code "role_read_only"). Signing in again does not
+  // help, so the save is dropped instead of retried every minute forever.
+  if (isRoleReadOnlyRejection(err)) return true;
   if ([401, 403, 408, 425, 429].includes(status)) return false;
   let ct = "";
   try {
@@ -153,6 +158,14 @@ export function isPermanentRejection(err) {
   if (ct && !/json/i.test(ct)) return false;
   const d = resp.data;
   if (!d || typeof d !== "object" || d.detail == null) return false;
+  // AI not available right now (no AI key on the server, code
+  // "ai_unavailable", 2026-11-16): not a rejection of this save. Keep it
+  // (e.g. a queued voice clip) and retry once AI is back.
+  if (d.code === AI_UNAVAILABLE_CODE) return false;
+  // The report was started by someone else, or is no longer a draft
+  // (codes "not_report_author" / "report_not_draft"): the save is HELD on
+  // the phone and shown to the user, never dropped (see rejectionAction).
+  if (HELD_CODES.includes(d.code)) return false;
   // The framework's own route-miss replies ({"detail": "Not Found"} /
   // "Method Not Allowed") mean the server we reached does not have the
   // route right now — a half-started or mid-deploy backend — not that the
@@ -161,6 +174,116 @@ export function isPermanentRejection(err) {
   if ((status === 404 && d.detail === "Not Found")
       || (status === 405 && d.detail === "Method Not Allowed")) return false;
   return true;
+}
+
+// Role refusal (2026-11-16). The server answers a read-only role (viewer,
+// submittal technician, scheduling engineer) with
+//   403 {"detail": "Your role can view daily reports but not change them.",
+//        "code": "role_read_only"}
+// Unlike a sign-in 403, this one is permanent for that person.
+export const ROLE_READ_ONLY_CODE = "role_read_only";
+// Server code for "AI isn't available right now" (services/ai_unavailable.py).
+export const AI_UNAVAILABLE_CODE = "ai_unavailable";
+export const ROLE_READ_ONLY_DROP_EVENT = "ice-offline-role-read-only";
+// Report ownership (2026-11-16, services/edit_permissions.py): only the
+// person who started a draft, an admin or a project manager may change it.
+export const NOT_REPORT_AUTHOR_CODE = "not_report_author";
+// The report was submitted before a queued voice memo reached it
+// (routers/dr_voice_router.py).
+export const REPORT_NOT_DRAFT_CODE = "report_not_draft";
+const HELD_CODES = [NOT_REPORT_AUTHOR_CODE, REPORT_NOT_DRAFT_CODE];
+export const HELD_EVENT = "ice-offline-held";
+export const RELEASE_HELD_EVENT = "ice-offline-release-held";
+
+export function isRoleReadOnlyRejection(err) {
+  const resp = err?.response;
+  const d = resp?.data;
+  return !!resp && resp.status === 403 && !!d && typeof d === "object"
+    && d.code === ROLE_READ_ONLY_CODE;
+}
+
+/** Call where a queue drops a save: when the reason is the role refusal,
+ * tell the page (lib/api.js shows one plain message) so the drop is never
+ * silent. Never throws. */
+export function announceRoleReadOnlyDrop(err) {
+  if (!isRoleReadOnlyRejection(err)) return;
+  try {
+    window.dispatchEvent(new CustomEvent(ROLE_READ_ONLY_DROP_EVENT, {
+      detail: { message: err.response.data.detail },
+    }));
+  } catch { /* non-window env */ }
+}
+
+function errorCode(err) {
+  const d = err?.response?.data;
+  return d && typeof d === "object" ? d.code || null : null;
+}
+
+/**
+ * What a queue does with a save the server refused (2026-11-16). One rule
+ * for the request, photo, voice and note queues:
+ *  "retry" - keep it and try again on the next drain (offline, server
+ *            waking up, sign-in 403 ...).
+ *  "wait"  - keep it unchanged (no retry counted) and stop draining this
+ *            queue for now. Used for a role_read_only refusal of a save with
+ *            NO owner stamp: it may belong to someone else who used this
+ *            phone earlier (for example a superintendent's progress saved
+ *            before owner stamps existed), so a viewer signing in must never
+ *            make it disappear. It syncs when a person who may change daily
+ *            reports signs in.
+ *  "hold"  - keep it, stop retrying it automatically and tell the user: the
+ *            report was started by someone else ("not_report_author") or was
+ *            already submitted ("report_not_draft"). Signing in again does not
+ *            change that, so retrying every minute would never succeed. The
+ *            user can retry held saves after an admin or project manager hands
+ *            them the report (releaseHeldSaves).
+ *  "drop"  - a definitive rejection (see isPermanentRejection), including
+ *            role_read_only for a save stamped with the signed-in user.
+ */
+export function rejectionAction(err, entry, owner = queueOwnerStamp()) {
+  if (isRoleReadOnlyRejection(err)) {
+    const o = entry?.owner;
+    return o && o.userId && owner && sameOwner(o, owner) ? "drop" : "wait";
+  }
+  if (HELD_CODES.includes(errorCode(err))) return "hold";
+  return isPermanentRejection(err) ? "drop" : "retry";
+}
+
+/** Tell the page (lib/api.js shows one plain message with a Retry button)
+ *  that a save is held on this phone. Never throws. */
+export function announceHeld(err) {
+  try {
+    window.dispatchEvent(new CustomEvent(HELD_EVENT, {
+      detail: { message: err?.response?.data?.detail || "", code: errorCode(err) },
+    }));
+  } catch { /* non-window env */ }
+}
+
+/** The held saves of the signed-in user in the request queue. */
+export function getHeldRequests() {
+  const owner = queueOwnerStamp();
+  return readQueue().filter((r) => r.held && belongsToCurrentUser(r, owner));
+}
+
+/** Put the signed-in user's held saves (every queue) back into the normal
+ *  retry flow, for example after an admin or project manager handed them
+ *  the report. The photo, voice and note queues clear their own held marks
+ *  on RELEASE_HELD_EVENT. */
+export function releaseHeldSaves() {
+  const owner = queueOwnerStamp();
+  const q = readQueue();
+  let changed = false;
+  const out = q.map((r) => {
+    if (r.held && belongsToCurrentUser(r, owner)) {
+      changed = true;
+      const rest = { ...r };
+      delete rest.held;
+      return rest;
+    }
+    return r;
+  });
+  if (changed) writeQueue(out);
+  try { window.dispatchEvent(new Event(RELEASE_HELD_EVENT)); } catch { /* non-window env */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -314,9 +437,11 @@ function applyRemapToRequest(req, map) {
 
 // Counts and lists below cover only the signed-in user's saves (plus
 // unstamped ones) — another person's pending saves are not theirs to see.
+// Held saves (see rejectionAction) are not "waiting to sync": they are
+// counted separately (getHeldRequests) so the sync chip can clear.
 export function getQueueSize() {
   const owner = queueOwnerStamp();
-  return readQueue().filter((r) => belongsToCurrentUser(r, owner)).length;
+  return readQueue().filter((r) => !r.held && belongsToCurrentUser(r, owner)).length;
 }
 
 /**
@@ -330,11 +455,11 @@ export async function getPendingSyncCounts(dailyReportId = null) {
   counts.requests = getQueueSize();
   try {
     const { listPendingPhotos } = await import("./drPhotoQueue");
-    counts.photos = (await listPendingPhotos(dailyReportId)).length;
+    counts.photos = (await listPendingPhotos(dailyReportId)).filter((r) => !r.held).length;
   } catch { /* ignore */ }
   try {
     const { listPending } = await import("./drVoiceQueue");
-    counts.voice = (await listPending(dailyReportId)).length;
+    counts.voice = (await listPending(dailyReportId)).filter((r) => !r.held).length;
   } catch { /* ignore */ }
   counts.total = counts.requests + counts.photos + counts.voice;
   return counts;
@@ -379,7 +504,7 @@ async function _drainQueueOnce(api) {
   // else's stay in the queue untouched, in place, until they sign in.
   const owner = queueOwnerStamp();
   const isMine = (r) => belongsToCurrentUser(r, owner);
-  const mine = q.filter(isMine);
+  const mine = q.filter((r) => isMine(r) && !r.held);
   if (!mine.length) return { synced: 0, failed: 0, remaining: 0 };
   _drainingIds = new Set(mine.map((r) => r.id));
   let synced = 0;
@@ -465,8 +590,12 @@ async function _drainQueueOnce(api) {
   };
 
   const keep = [];
+  // Set when an unowned save got a role_read_only refusal ("wait"): the
+  // rest of the queue is kept as it is for someone who may change reports.
+  let stopDrain = false;
   for (const raw of q) {
     if (!isMine(raw)) { keep.push(raw); continue; } // another owner's: untouched
+    if (raw.held || stopDrain) { keep.push(raw); continue; } // held / waiting: untouched
     // Someone else signed in while this drain was running: stop replaying
     // (the next request would go out under THEIR sign-in) and keep the rest
     // exactly as queued for the next drain.
@@ -550,10 +679,18 @@ async function _drainQueueOnce(api) {
       // minutes of downtime or a logged-out tab and silently lose a day's
       // records. retryCount is informational only (mirrors drPhotoQueue's
       // policy); only a DEFINITIVE server rejection drops.
-      const retryable = !isPermanentRejection(e);
+      const action = rejectionAction(e, raw, owner);
+      if (action === "wait") {
+        // Unowned save refused for the signed-in read-only role: keep it
+        // and everything after it exactly as queued (see rejectionAction).
+        failed -= 1;
+        keep.push(raw);
+        stopDrain = true;
+        continue;
+      }
       // Auth failures don't even bump the informational counter — a tab
       // idling on /login must leave the queue byte-identical (no churn).
-      const authWait = status === 401 || status === 403;
+      const authWait = (status === 401 || status === 403) && action === "retry";
       const next = {
         ...req, // keep the REMAPPED url/data so a later drain needs no map
         id: raw.id,
@@ -563,7 +700,11 @@ async function _drainQueueOnce(api) {
           ? "The schedule changed while you were offline. Your field entry will be saved on the next sync."
           : (e?.response?.data?.detail || e.message || "unknown"),
       };
-      if (retryable) {
+      if (action === "hold") {
+        // Kept on the phone, no automatic retries, and the user is told.
+        keep.push({ ...next, held: { code: errorCode(e), at: new Date().toISOString() } });
+        announceHeld(e);
+      } else if (action === "retry") {
         keep.push(next);
       } else if (raw.offlineCreate?.tempId) {
         // The CREATE itself is permanently rejected (validation/404/409):
@@ -571,6 +712,7 @@ async function _drainQueueOnce(api) {
         deadTempIds.add(raw.offlineCreate.tempId);
       }
       // other permanent 4xx (validation / 404 / 409) -- drop it.
+      if (action === "drop") announceRoleReadOnlyDrop(e);
     }
   }
   // Skip the rewrite + event when the queue is byte-identical (e.g. every
@@ -595,7 +737,7 @@ async function _drainQueueOnce(api) {
     try { window.dispatchEvent(new Event("ice-offline-remap-ready")); }
     catch { /* non-window env */ }
   }
-  return { synced, failed, remaining: keep.filter(isMine).length };
+  return { synced, failed, remaining: keep.filter((r) => isMine(r) && !r.held).length };
 }
 
 /**

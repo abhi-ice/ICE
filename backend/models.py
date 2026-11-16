@@ -1213,6 +1213,15 @@ class DailyReport(ReadModel):
     notes: Optional[str] = None
     status: str = "draft"
     prepared_by: Optional[str] = None
+    # Who started the report on older rows (prepared_by is used now), and
+    # the starter's name for the "Started by ..." note on someone else's
+    # draft (filled on GET /daily-reports/{id} only). The screens use these
+    # to mirror the server's draft-ownership rule (2026-11-16).
+    created_by: Optional[str] = None
+    prepared_by_name: Optional[str] = None
+    # An admin or project manager who opened the day before any field
+    # writer did: recorded here, not as the author (see the create route).
+    opened_by: Optional[str] = None
     submitted_by: Optional[str] = None
     submitted_at: Optional[datetime] = None
     approved_by: Optional[str] = None

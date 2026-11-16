@@ -4,7 +4,8 @@ import api, { extractApiError } from "../../lib/api";
 import { toast } from "../ui/sonner";
 
 // Open delays from EARLIER reports, shown on every later report until resolved.
-export default function CarriedDelaysCard({ reportId, reportDate, className = "", onChange, refreshKey }) {
+// readOnly (a role that can only view daily reports) hides the Resolve button.
+export default function CarriedDelaysCard({ reportId, reportDate, className = "", onChange, refreshKey, readOnly = false }) {
   const [rows, setRows] = useState([]);
   const [resolving, setResolving] = useState(null);
   const [note, setNote] = useState("");
@@ -40,14 +41,14 @@ export default function CarriedDelaysCard({ reportId, reportDate, className = ""
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
               <span className="font-medium">{(d.activity_names || []).join(", ") || "Delay"}</span>
               <span className="text-xs opacity-70">{d.impact_days} impact day{d.impact_days === 1 ? "" : "s"} · since {String(d.logged_date || d.date || "").slice(0, 10)} · {d.status === "in_progress" ? "In progress" : "Open"}</span>
-              {resolving !== d.id && (
+              {!readOnly && resolving !== d.id && (
                 <button type="button" data-testid={`carried-delay-resolve-${d.id}`} onClick={() => { setResolving(d.id); setNote(""); }}
                   className="ml-auto h-8 px-3 rounded-md border border-emerald-500/50 text-emerald-400 text-xs font-medium hover:bg-emerald-500/10 transition-colors inline-flex items-center gap-1">
                   <CheckCircle2 className="h-3.5 w-3.5" /> Resolve</button>
               )}
             </div>
             {d.description && <div className="text-xs opacity-70 mt-1">{d.description}</div>}
-            {resolving === d.id && (
+            {!readOnly && resolving === d.id && (
               <div className="mt-2 space-y-2">
                 <textarea data-testid={`carried-delay-note-${d.id}`} rows={2} value={note} onChange={(e) => setNote(e.target.value)}
                   placeholder="Comment (optional)"

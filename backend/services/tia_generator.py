@@ -932,8 +932,8 @@ def _render_docx(data: dict) -> bytes:
         # Addition 3 -- explicit no-work-day acknowledgments surface
         # here so legal sees "this was a planned blank day" rather
         # than "looks like the super forgot to log anything."
-        ("no_work_reason", "No-work reason"),
-        ("no_work_note", "No-work note"),
+        # One plain heading per no-work day: "No work day — <reason>".
+        ("no_work_heading", "No-work day"),
     ])
 
     # SECTION 12

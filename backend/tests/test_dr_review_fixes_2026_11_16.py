@@ -651,6 +651,8 @@ def test_voice_intake_crew_counts_toward_activity(monkeypatch):
                                        "headcount": 4, "hours_per_person": 8,
                                        "linked_activity_code": "FW-0003"}]}
         monkeypatch.setattr(dvr, "extract_dr_fields", fake_extract)
+        # AI counts as available (no key answers 422 "ai_unavailable" first).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
         async def allow(*a, **k):
             return None

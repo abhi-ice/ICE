@@ -238,11 +238,23 @@ export async function removeClip(id) {
   notifyQueueChanged();
 }
 
-export async function markClipFailed(id, errMsg) {
+/** Mark a clip failed (bump retryCount). opts.held = true holds it (no
+ *  automatic retries; see drOfflineSync.rejectionAction), false releases it. */
+export async function markClipFailed(id, errMsg, opts = {}) {
+  const apply = (r) => {
+    if (opts.held === undefined) {
+      r.retryCount = (r.retryCount || 0) + 1;
+      r.lastError = String(errMsg || "").slice(0, 500);
+    } else if (opts.held) {
+      r.held = true;
+      r.lastError = String(errMsg || "").slice(0, 500);
+    } else {
+      delete r.held;
+    }
+  };
   const mem = _memPending.find((r) => r.id === id);
   if (mem) {
-    mem.retryCount = (mem.retryCount || 0) + 1;
-    mem.lastError = String(errMsg || "").slice(0, 500);
+    apply(mem);
     return;
   }
   try {
@@ -254,8 +266,7 @@ export async function markClipFailed(id, errMsg) {
       getReq.onsuccess = () => {
         const r = getReq.result;
         if (!r) return resolve();
-        r.retryCount = (r.retryCount || 0) + 1;
-        r.lastError = String(errMsg || "").slice(0, 500);
+        apply(r);
         store.put(r);
       };
       tx.oncomplete = () => resolve();
@@ -297,7 +308,7 @@ async function _drainAll(api) {
   // Offline-created DRs (2026-07-06): clips recorded against a provisional
   // "offline-dr-*" id can only upload after the request queue's drain has
   // created the real report and recorded the id mapping.
-  const { resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection } = await import("./drOfflineSync");
+  const { resolveOfflineId, isUnresolvedOfflineId, rejectionAction, announceRoleReadOnlyDrop, announceHeld } = await import("./drOfflineSync");
   const pending = await listPending();
   let synced = 0, failed = 0;
   for (const clip of pending) {
@@ -306,6 +317,9 @@ async function _drainAll(api) {
     if (isUnresolvedOfflineId(clip.dailyReportId)) continue;
     // A different person signed in mid-drain: leave the rest for its owner.
     if (!belongsToCurrentUser(clip)) break;
+    // Held (report started by someone else, or already submitted): no
+    // automatic retries until the user chooses to retry.
+    if (clip.held) continue;
     const drId = resolveOfflineId(clip.dailyReportId);
     try {
       const ext = (clip.mimeType || "audio/webm").split("/")[1] || "webm";
@@ -332,7 +346,15 @@ async function _drainAll(api) {
       await removeClip(clip.id);
       synced += 1;
     } catch (e) {
+      // 2026-11-16: see drOfflineSync.rejectionAction for "wait" and "hold".
+      const action = rejectionAction(e, clip);
+      if (action === "wait") break; // unowned clip, read-only role: keep as is
       failed += 1;
+      if (action === "hold") {
+        await markClipFailed(clip.id, e?.response?.data?.detail || e?.message, { held: true });
+        announceHeld(e);
+        continue;
+      }
       await markClipFailed(clip.id, e?.response?.data?.detail || e?.message);
       if (!e?.response) {
         // Network-only: still offline — keep everything, stop draining
@@ -346,8 +368,8 @@ async function _drainAll(api) {
       // auth comes back after re-login. Day-1 fix (2026-10-25, finding 35):
       // only a genuine JSON rejection from the app counts; 408/425/429 and
       // non-JSON replies (the HTML 404 of a sleeping backend) are kept.
-      const permanent = isPermanentRejection(e);
-      if (permanent) {
+      if (action === "drop") {
+        announceRoleReadOnlyDrop(e); // read-only role: say why it was dropped
         await removeClip(clip.id).catch(() => {});
       }
     }
@@ -372,6 +394,12 @@ export function wireAutoDrain(api) {
   // remap) can't swallow the event — the second pass sees the fresh map.
   window.addEventListener("ice-offline-remap-ready", () => {
     drainQueue(api).then(() => drainQueue(api)).catch(() => {});
+  });
+  // The user chose to retry held clips (drOfflineSync.releaseHeldSaves).
+  window.addEventListener("ice-offline-release-held", () => {
+    listPending().then(async (rows) => {
+      for (const r of rows) if (r.held) await markClipFailed(r.id, null, { held: false });
+    }).then(() => drainQueue(api)).catch(() => {});
   });
 }
 

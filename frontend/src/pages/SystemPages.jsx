@@ -1847,6 +1847,20 @@ function WeeklyRollupTab() {
           <Stat label="Activities completed" value={`${data.activities_completed} / ${data.total_planned_activities}`} />
         </div>
       )}
+      {/* Days this week filed as no-work days, each with its reason. */}
+      {data?.no_work_days?.length > 0 && (
+        <div className="bg-card border border-border rounded-lg p-4" data-testid="weekly-no-work-days">
+          <div className="font-medium text-sm mb-2">No work days</div>
+          <div className="space-y-1 text-sm">
+            {data.no_work_days.map((d) => (
+              <div key={d.daily_report_id || d.report_date} className="flex items-center gap-3">
+                <div className="font-mono">{formatDateDisplay(d.report_date)}</div>
+                <div>{d.heading}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {data?.hours_by_trade && (
         <div className="bg-card border border-border rounded-lg p-4">
           <div className="font-medium text-sm mb-2">Hours by trade</div>

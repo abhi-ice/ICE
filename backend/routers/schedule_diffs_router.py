@@ -96,7 +96,10 @@ async def generate_ai_narrative(diff_id: str, ctx: dict = Depends(require_tenant
 
     api_key = llm_api_key()
     if not api_key:
-        raise HTTPException(503, "AI narrative unavailable (no LLM key configured)")
+        # Same plain 422 "ai_unavailable" answer as every other AI feature
+        # (a 503 body is replaced by Cloudflare's own page in production).
+        from services.ai_unavailable import AiUnavailableError, SCHEDULE_NARRATIVE_UNAVAILABLE_MESSAGE
+        raise AiUnavailableError(SCHEDULE_NARRATIVE_UNAVAILABLE_MESSAGE)
 
     try:
         from services.anthropic_compat import LlmChat, UserMessage

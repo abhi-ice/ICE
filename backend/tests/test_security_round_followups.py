@@ -198,6 +198,9 @@ def test_ai_copilot_refuses_foreign_project(db, monkeypatch):
         called.append(kw)
         return {"reply": "ok"}
     monkeypatch.setattr(copilot_tools, "execute_copilot_turn", _fake_turn)
+    # The copilot answers "AI isn't available" with no key (2026-11-16);
+    # this test is about project access, so give it a fake key.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     msg = system_router.CopilotMessage(message="hi", project_id=FOREIGN_PID)
     assert _status(system_router.ai_copilot(msg, SUPER)) == 404
     assert called == []

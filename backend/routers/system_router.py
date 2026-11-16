@@ -195,6 +195,10 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     # assigned to as well.
     if payload.daily_report_id:
         await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
+    # No AI key: plain message, and no assistant turn is saved (before
+    # 2026-11-16 the raw key error was saved and shown as the reply).
+    from services.ai_unavailable import ensure_ai_available, COPILOT_UNAVAILABLE_MESSAGE
+    ensure_ai_available(COPILOT_UNAVAILABLE_MESSAGE)
     session_id = payload.session_id or f"copilot-{ctx['user']['id']}"
     # access_ctx: the caller's sign-in, so every assistant tool only reads
     # and changes projects the caller may use (the model cannot widen it).
@@ -260,6 +264,9 @@ async def ai_recovery(payload: RecoveryRequest, ctx: dict = Depends(require_tena
     # The project and target activity come in the body.
     await check_project_access(ctx, payload.project_id, write=True)
     await check_record_access(ctx, "task", payload.target_activity_id, write=True)
+    # No AI key: plain 422 "ai_unavailable", nothing saved.
+    from services.ai_unavailable import ensure_ai_available, RECOVERY_UNAVAILABLE_MESSAGE
+    ensure_ai_available(RECOVERY_UNAVAILABLE_MESSAGE)
     return await recovery_suggestions(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
@@ -282,6 +289,11 @@ async def ai_rfi_draft(payload: RfiDraftRequest, ctx: dict = Depends(require_ten
     # The project (body) must be one the caller is assigned to. The RFI
     # shell below is only used when it is on that same project.
     await check_project_access(ctx, payload.project_id, write=True)
+    # No AI key: plain 422 "ai_unavailable", nothing saved.
+    from services.ai_unavailable import (
+        AiUnavailableError, ensure_ai_available, RFI_DRAFT_UNAVAILABLE_MESSAGE,
+    )
+    ensure_ai_available(RFI_DRAFT_UNAVAILABLE_MESSAGE)
     out = await rfi_draft(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
@@ -293,6 +305,9 @@ async def ai_rfi_draft(payload: RfiDraftRequest, ctx: dict = Depends(require_ten
     # create field suggestions on that RFI so the form lights up
     # with the Jigsaw pre-fill pattern. Best-effort; failures here
     # never break the draft response.
+    if out.get("ok") is False or not (out.get("draft") or "").strip():
+        # The AI call failed: no draft, and no suggestion is created.
+        raise AiUnavailableError(RFI_DRAFT_UNAVAILABLE_MESSAGE)
     if payload.rfi_id and out.get("draft"):
         try:
             from services import field_suggestions as fs

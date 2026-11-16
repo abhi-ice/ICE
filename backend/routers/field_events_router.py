@@ -20,7 +20,10 @@ from models import (
     Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
-from auth import require_tenant
+from auth import (
+    require_tenant, require_daily_report_writer,
+)
+from services.edit_permissions import ensure_can_change_linked_report
 from audit import write_audit
 
 router = APIRouter(tags=["field-events"])
@@ -421,6 +424,8 @@ def _enrich_delay_for_read(d: dict) -> dict:
 @router.post("/delays", response_model=Delay)
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
     await _check_linked_records(ctx, [
@@ -588,6 +593,8 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     before = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Delay not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)  # not a record field
     updates: dict = {k: v for k, v in raw.items() if v is not None}
@@ -926,6 +933,8 @@ async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
     before = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Delay not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before)
     await db.delays.delete_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}))
 
     # CPM Part E (2026-05-15) -- auto-recompute fires immediately
@@ -958,12 +967,20 @@ async def generate_delay_ai_report(delay_id: str, ctx: dict = Depends(require_te
     """Generate (or regenerate) the AI narrative for this delay and persist
     it on the delay record. Idempotent — overwrites previous report."""
     from services.ai_agents import generate_delay_report
+    from services.ai_unavailable import (
+        AiUnavailableError, ensure_ai_available, DELAY_REPORT_UNAVAILABLE_MESSAGE,
+    )
     db = get_db()
     delay = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not delay:
         raise HTTPException(404, "Delay not found")
+    # No AI key: plain 422 "ai_unavailable" and the earlier report is kept
+    # (a failed call inside generate_delay_report raises the same answer).
+    ensure_ai_available(DELAY_REPORT_UNAVAILABLE_MESSAGE)
     delay = _enrich_delay_for_read(delay)
     report = await generate_delay_report(tenant_id=ctx["tenant_id"], delay=delay)
+    if not str(report or "").strip():
+        raise AiUnavailableError(DELAY_REPORT_UNAVAILABLE_MESSAGE)
     await db.delays.update_one(
         tenant_filter(ctx["tenant_id"], {"id": delay_id}),
         {"$set": {"ai_report": report, "ai_report_generated_at": utc_now().isoformat()}},
@@ -1129,6 +1146,8 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 @router.post("/safety-events", response_model=SafetyEvent)
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
     await _check_linked_records(ctx, [
@@ -1246,6 +1265,8 @@ async def update_safety_event(
     )
     if not before:
         raise HTTPException(404, "Safety event not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
@@ -1308,6 +1329,8 @@ async def update_safety_event(
 @router.post("/qc-issues", response_model=QcIssue)
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
     await _check_linked_records(ctx, [
@@ -1435,6 +1458,8 @@ async def record_qc_rework_outcome(
     )
     if not qc:
         raise HTTPException(404, "QC issue not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, qc, payload)
     if qc.get("severity") != "rework_required":
         raise HTTPException(409, "QC issue is not flagged rework_required")
     from services.qc_rework_cascade import record_rework_outcome
@@ -1491,6 +1516,8 @@ async def update_qc_issue(
     )
     if not before:
         raise HTTPException(404, "QC issue not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
@@ -1609,7 +1636,7 @@ async def _hash_storage_object(storage_path: str) -> Optional[str]:
         return None
 
 
-@router.post("/photos", response_model=Photo)
+@router.post("/photos", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     # The project must belong to the caller's company (404 otherwise).
@@ -1681,7 +1708,7 @@ async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)
     return Photo(**doc)
 
 
-@router.patch("/photos/{photo_id}", response_model=Photo)
+@router.patch("/photos/{photo_id}", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(require_tenant)):
     """Caption + class + tags editable. File replacement intentionally
     NOT supported (tamper-evidence). Class change emits its own audit op
@@ -1692,6 +1719,7 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     )
     if not before:
         raise HTTPException(404, "Photo not found")
+    await ensure_can_change_linked_report(ctx, before)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
@@ -1741,7 +1769,7 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     return Photo(**after)
 
 
-@router.post("/photos/{photo_id}/pin", response_model=Photo)
+@router.post("/photos/{photo_id}/pin", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def pin_photo(photo_id: str, payload: PhotoPinPayload, ctx: dict = Depends(require_tenant)):
     """Set or clear the drawing pin on a photo. Refreshes evidentiary_flag
     based on current photo_class + new pin state."""

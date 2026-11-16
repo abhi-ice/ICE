@@ -86,6 +86,54 @@ async def _guard_row(ctx: dict, coll: str, record_id, *, write: bool, tool: str 
                         write=write, tool=tool)
 
 
+# Daily-report rules for the assistant's write tools (2026-11-16). The same
+# rules as the screens: a read-only role (viewer, submittal technician,
+# scheduling engineer) may not create a report or change anything filed on
+# one, and a draft is changed only by its author, an admin or a project
+# manager. Without this the assistant was a side door around those rules.
+_REPORT_TOOLS = {"create_daily_report", "record_presence", "mark_activity_status",
+                 "create_unplanned_activity"}
+# Create tools that file the new record on the session's daily report.
+_REPORT_LINKED_CREATE_TOOLS = {"create_delay", "create_safety_event", "create_qc_issue"}
+
+
+async def _daily_report_guard(ctx: dict, tool: str, args: dict) -> Optional[dict]:
+    """None when the write tool may run, else an error dict for the tool to
+    return (nothing is changed)."""
+    from auth import ensure_daily_report_writer
+    from services.edit_permissions import ensure_can_change_linked_report
+    args = args if isinstance(args, dict) else {}
+    dr_id = ctx.get("daily_report_id") or args.get("daily_report_id")
+    try:
+        if tool == "create_daily_report":
+            ensure_daily_report_writer(ctx)
+        elif tool in _REPORT_TOOLS or tool in _REPORT_LINKED_CREATE_TOOLS:
+            if dr_id:
+                await ensure_can_change_linked_report(ctx, {"daily_report_id": dr_id})
+            elif tool in _REPORT_TOOLS:
+                ensure_daily_report_writer(ctx)
+        elif tool in ("delete_entity", "update_entity"):
+            et = args.get("entity_type")
+            if et == "photo":
+                ensure_daily_report_writer(ctx)
+            coll_name = DELETABLE_ENTITIES.get(et)
+            row = None
+            if coll_name:
+                flt = None
+                if args.get("id"):
+                    flt = {"id": args.get("id")}
+                elif et == "rfi" and args.get("rfi_number"):
+                    flt = {"rfi_number": args.get("rfi_number")}
+                if flt and all(isinstance(v, str) for v in flt.values()):
+                    row = await get_db()[coll_name].find_one(
+                        tenant_filter(ctx["tenant_id"], flt), {"_id": 0})
+            fields = args.get("fields") if isinstance(args.get("fields"), dict) else None
+            await ensure_can_change_linked_report(ctx, row, fields)
+    except HTTPException as e:
+        return {"error": str(e.detail)}
+    return None
+
+
 async def _scope(ctx: dict, q: dict, field: str = "project_id", *,
                  include_company_level: bool = False) -> dict:
     """q limited to the caller's projects (switch on; unchanged when off
@@ -1853,6 +1901,10 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                         args = {}
                     if tool in WRITE_TOOLS:
                         denied = await _guard(ctx, ctx.get("project_id"), write=True, tool=tool)
+                    if not denied and tool in WRITE_TOOLS:
+                        # Daily-report role and author rules (see
+                        # _daily_report_guard).
+                        denied = await _daily_report_guard(ctx, tool, args)
                     if not denied and args.get("project_id"):
                         denied = await _guard(ctx, args.get("project_id"),
                                               write=tool in WRITE_TOOLS, tool=tool)

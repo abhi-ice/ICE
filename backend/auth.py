@@ -495,11 +495,109 @@ def role_can_write_schedule(user_role: str) -> bool:
 def role_can_write_field_events(user_role: str) -> bool:
     """Anything in the daily-ops surface (delays, RFIs, QC,
     safety, deliveries, coord, photos, daily_reports).
-    submittal_tech + scheduling_engineer are READ-ONLY here per
-    spec."""
-    return (user_role or "").lower() in {
-        "admin", "pm", "super", "foreman",
+    submittal_tech + scheduling_engineer + viewer are READ-ONLY here per
+    spec.
+
+    2026-11-16: the older roles "px" (project executive) and "pe"
+    (professional engineer) are field writers too. The rest of the code
+    treats px like a project manager and pe like a superintendent
+    (_PROJECT_ACCESS_ROLES above, the photo tray role sets, migration 009),
+    and both could already write daily reports before this check was
+    enforced, so leaving them out would silently lock out existing users."""
+    return (user_role or "").strip().lower() in {
+        "admin", "pm", "px", "super", "pe", "foreman",
     }
+
+
+# Daily-report write guard (2026-11-16). Every request that changes a daily
+# report or something filed on one (rows, crew, events, photos, voice notes,
+# submit, delete) calls ensure_daily_report_writer or depends on
+# require_daily_report_writer. A read-only role gets a 403 whose body also
+# carries code "role_read_only" (see the handler in server.py), so a phone's
+# offline queue can tell this permanent refusal apart from a sign-in 403
+# that clears after re-login, and drop the save instead of retrying forever.
+ROLE_READ_ONLY_CODE = "role_read_only"
+DAILY_REPORT_READ_ONLY_MESSAGE = "Your role can view daily reports but not change them."
+
+
+class RoleReadOnlyError(HTTPException):
+    """403 for a role that may read daily reports but not change them."""
+
+    code = ROLE_READ_ONLY_CODE
+
+    def __init__(self, message: str = DAILY_REPORT_READ_ONLY_MESSAGE):
+        super().__init__(status.HTTP_403_FORBIDDEN, message)
+
+
+async def role_read_only_handler(request, exc: RoleReadOnlyError):
+    """Exception handler (registered in server.py). The body keeps the usual
+    {"detail": text} every page shows and adds "code", which the phone's
+    offline queue reads to drop the save instead of keeping it for a retry
+    (a sign-in 403 has no code and is kept)."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "code": exc.code},
+    )
+
+
+def _ctx_role(ctx: dict) -> str:
+    return (((ctx or {}).get("user") or {}).get("role")
+            or (ctx or {}).get("role") or "").strip().lower()
+
+
+def ensure_daily_report_writer(ctx: dict) -> None:
+    """Raise RoleReadOnlyError unless the caller's role may change daily
+    reports (role_can_write_field_events)."""
+    if not role_can_write_field_events(_ctx_role(ctx)):
+        raise RoleReadOnlyError()
+
+
+# Fields that tie a field event (delay, safety event, quality issue, RFI,
+# delivery, coordination event, photo) to a daily report.
+_DAILY_REPORT_LINK_FIELDS = (
+    "daily_report_id", "parent_daily_report_id",
+    "linked_daily_report_id", "created_from_daily_report_id",
+)
+
+
+def _as_dict(rec) -> Optional[dict]:
+    if rec is None:
+        return None
+    if isinstance(rec, dict):
+        return rec
+    try:
+        return rec.model_dump()
+    except Exception:
+        return None
+
+
+def report_link_ids(*records) -> list:
+    """The daily report ids the records (dicts or pydantic models) are filed
+    on, in order, without repeats."""
+    out: list = []
+    for rec in records:
+        rec = _as_dict(rec)
+        if not rec:
+            continue
+        for k in _DAILY_REPORT_LINK_FIELDS:
+            v = rec.get(k)
+            if v and isinstance(v, str) and v not in out:
+                out.append(v)
+    return out
+
+
+def ensure_daily_report_writer_if_linked(ctx: dict, *records) -> None:
+    """For shared field-event endpoints: refuse a read-only role only when
+    the request body or the stored record is filed on a daily report.
+    Pass both the stored record and the request body, so a record cannot be
+    created unlinked and then attached to a report by a later edit.
+    Each record may be a dict or a pydantic model; None is skipped."""
+    for rec in records:
+        rec = _as_dict(rec)
+        if rec and any(rec.get(k) for k in _DAILY_REPORT_LINK_FIELDS):
+            ensure_daily_report_writer(ctx)
+            return
 
 
 def role_can_commit_reallocation(user_role: str) -> bool:
@@ -763,4 +861,11 @@ async def get_current_user(
 async def require_tenant(ctx: dict = Depends(get_current_user)) -> dict:
     if not ctx.get("tenant_id"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No active tenant")
+    return ctx
+
+
+async def require_daily_report_writer(ctx: dict = Depends(require_tenant)) -> dict:
+    """Route dependency for daily-report write endpoints: the signed-in
+    context, or a 403 (code "role_read_only") for read-only roles."""
+    ensure_daily_report_writer(ctx)
     return ctx

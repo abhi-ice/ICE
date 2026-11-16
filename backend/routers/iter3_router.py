@@ -22,7 +22,7 @@ import asyncio
 from typing import Optional, List, Literal
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel, Photo, PhotoCreate
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from services.project_scope import require_project
 from services.project_access import check_project_access, check_record_access
 from services.storage import (
@@ -185,7 +185,7 @@ def _read_photo_meta(body: bytes, server_now) -> dict:
     return update
 
 
-@router.post("/photos/upload", response_model=Photo)
+@router.post("/photos/upload", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def upload_photo(
     project_id: str = Form(...),
     location_id: Optional[str] = Form(None),

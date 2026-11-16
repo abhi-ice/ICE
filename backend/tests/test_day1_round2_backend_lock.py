@@ -164,7 +164,10 @@ class _BG:
 
 TID = "t1"
 SUPER_A = {"tenant_id": TID, "user": {"id": "u-super-a", "role": "superintendent"}, "request_id": "req-a"}
-SUPER_B = {"tenant_id": TID, "user": {"id": "u-super-b", "role": "superintendent"}, "request_id": "req-b"}
+# Since 2026-11-16 a draft is changed only by its author, an admin or a
+# project manager, so the second person editing the same row in the
+# conflict tests is a project manager (another superintendent is refused).
+EDITOR_B = {"tenant_id": TID, "user": {"id": "u-pm-b", "role": "pm"}, "request_id": "req-b"}
 PM = {"tenant_id": TID, "user": {"id": "u-pm", "role": "pm"}, "request_id": "req-pm"}
 
 T0 = "2020-01-01T12:00:00.000000+00:00"          # old updated_at
@@ -351,7 +354,7 @@ def test_real_conflict_a_then_b(env):
     tok_b = _grid_tokens(db)["rowA"]      # super B loads the same activity
     _save("rowA", 40, tok_a, SUPER_A)
     with pytest.raises(HTTPException) as ei:
-        _save("rowA", 70, tok_b, SUPER_B)
+        _save("rowA", 70, tok_b, EDITOR_B)
     assert ei.value.status_code == 409
     detail = ei.value.detail
     assert detail["error"] == "stale_write"
@@ -366,7 +369,7 @@ def test_real_conflict_b_then_a(env):
     db = env
     tok_a = _grid_tokens(db)["rowA"]
     tok_b = _grid_tokens(db)["rowA"]
-    _save("rowA", 25, tok_b, SUPER_B)
+    _save("rowA", 25, tok_b, EDITOR_B)
     with pytest.raises(HTTPException) as ei:
         _save("rowA", 90, tok_a, SUPER_A)
     assert ei.value.status_code == 409
@@ -376,7 +379,7 @@ def test_real_conflict_b_then_a(env):
 def test_after_409_a_fresh_grid_token_saves(env):
     db = env
     stale = _grid_tokens(db)["rowA"]
-    _save("rowA", 40, stale, SUPER_B)
+    _save("rowA", 40, stale, EDITOR_B)
     with pytest.raises(HTTPException):
         _save("rowA", 70, stale, SUPER_A)
     out = _save("rowA", 70, _grid_tokens(db)["rowA"], SUPER_A)   # reload, retry
@@ -681,7 +684,7 @@ def test_legacy_token_is_still_refused_after_a_real_human_edit(env):
     legacy = "2020-01-05T00:00:00"
     for t in db.tasks.docs:
         t["updated_at"] = legacy
-    _save("rowA", 40, _grid_tokens(db)["rowA"], SUPER_B)   # someone edits after
+    _save("rowA", 40, _grid_tokens(db)["rowA"], EDITOR_B)   # someone edits after
     with pytest.raises(HTTPException) as ei:
         _save("rowA", 80, legacy, SUPER_A)
     assert ei.value.status_code == 409

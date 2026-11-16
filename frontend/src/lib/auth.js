@@ -17,6 +17,33 @@ export function getUser() {
   return v ? JSON.parse(v) : null;
 }
 
+// Fired when the saved copy of the signed-in user changes (sign-in, or a
+// refresh from /auth/me in lib/api.js), so screens that depend on the role
+// re-render without a sign-out (lib/drPermissions useCurrentUser).
+export const USER_CHANGED_EVENT = "ice-user-changed";
+
+function notifyUserChanged() {
+  try { window.dispatchEvent(new Event(USER_CHANGED_EVENT)); }
+  catch { /* non-window env */ }
+}
+
+/** Replace the saved user with a fresh copy from the server (same person
+ *  only). Returns true when something the screens use (role, name, access)
+ *  changed. Never throws. */
+export function updateStoredUser(fresh) {
+  try {
+    const cur = getUser();
+    if (!fresh || !fresh.id || !cur || cur.id !== fresh.id) return false;
+    const next = { ...cur, ...fresh };
+    if (JSON.stringify(next) === JSON.stringify(cur)) return false;
+    localStorage.setItem(USER_KEY, JSON.stringify(next));
+    notifyUserChanged();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getTenant() {
   const v = localStorage.getItem(TENANT_KEY);
   return v ? JSON.parse(v) : null;
@@ -64,6 +91,7 @@ export function setAuth({ access_token, user, tenant }) {
   localStorage.setItem(TENANT_KEY, JSON.stringify(tenant));
   localStorage.setItem(ACTIVE_TENANT_KEY, tenant.id);
   notifyAuthChanged();
+  notifyUserChanged();
 }
 
 // Sign-out leaves the offline save queues alone ON PURPOSE: they hold field

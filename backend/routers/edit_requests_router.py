@@ -23,7 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from audit import write_audit
 from database import get_db, tenant_filter
 from models import (
@@ -64,7 +64,7 @@ _EVENT_COLLECTION = {
 }
 
 
-@router.post("/edit-requests", response_model=EditRequest)
+@router.post("/edit-requests", response_model=EditRequest, dependencies=[Depends(require_daily_report_writer)])
 async def file_edit_request(
     payload: EditRequestCreate, ctx: dict = Depends(require_tenant),
 ):

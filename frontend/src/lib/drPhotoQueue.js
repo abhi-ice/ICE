@@ -40,8 +40,8 @@
 // "offline-dr-*" id can only upload after the request queue's drain has
 // created the real report and recorded the id mapping.
 import {
-  resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection,
-  queueOwnerStamp, belongsToCurrentUser,
+  resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection, announceRoleReadOnlyDrop,
+  queueOwnerStamp, belongsToCurrentUser, rejectionAction, announceHeld, RELEASE_HELD_EVENT,
 } from "./drOfflineSync";
 
 const DB_NAME = "ice-dr-photos";
@@ -289,12 +289,24 @@ export async function removePhoto(id) {
   notifyQueueChanged();
 }
 
-/** Mark a queued photo failed: bump retryCount, record the error. */
-export async function markFailed(id, errMsg) {
+/** Mark a queued photo failed: bump retryCount, record the error.
+ *  opts.held = true holds it (no automatic retries; see
+ *  drOfflineSync.rejectionAction); opts.held = false releases it. */
+export async function markFailed(id, errMsg, opts = {}) {
+  const apply = (r) => {
+    if (opts.held === undefined) {
+      r.retryCount = (r.retryCount || 0) + 1;
+      r.lastError = String(errMsg || "").slice(0, 500);
+    } else if (opts.held) {
+      r.held = true;
+      r.lastError = String(errMsg || "").slice(0, 500);
+    } else {
+      delete r.held;
+    }
+  };
   const mem = _memPending.find((r) => r.id === id);
   if (mem) {
-    mem.retryCount = (mem.retryCount || 0) + 1;
-    mem.lastError = String(errMsg || "").slice(0, 500);
+    apply(mem);
     return;
   }
   try {
@@ -306,8 +318,7 @@ export async function markFailed(id, errMsg) {
       getReq.onsuccess = () => {
         const r = getReq.result;
         if (!r) return;
-        r.retryCount = (r.retryCount || 0) + 1;
-        r.lastError = String(errMsg || "").slice(0, 500);
+        apply(r);
         store.put(r);
       };
       tx.oncomplete = () => resolve();
@@ -485,6 +496,8 @@ async function _drainAll(api) {
     if (isUnresolvedOfflineId(photo.dailyReportId)) continue;
     // A different person signed in mid-drain: leave the rest for its owner.
     if (!belongsToCurrentUser(photo)) break;
+    // Held (report started by someone else): no automatic retries.
+    if (photo.held) continue;
     try {
       await uploadOne(api, {
         ...photo,
@@ -493,17 +506,26 @@ async function _drainAll(api) {
       await removePhoto(photo.id);
       synced += 1;
     } catch (e) {
+      // Day-1 fix (2026-10-25, finding 35): only a genuine JSON rejection
+      // from the app drops the photo. 5xx, 401/403, 408/425/429 and non-JSON
+      // replies (the HTML 404 of a sleeping backend) keep it for a retry.
+      // 2026-11-16: see drOfflineSync.rejectionAction for "wait" and "hold".
+      const action = e?.permanent ? "drop" : rejectionAction(e, photo);
+      if (action === "wait") break; // unowned photo, read-only role: keep as is
       failed += 1;
-      await markFailed(photo.id, e?.response?.data?.detail || e?.message).catch(() => {});
+      const msg = e?.response?.data?.detail || e?.message;
+      if (action === "hold") {
+        await markFailed(photo.id, msg, { held: true }).catch(() => {});
+        announceHeld(e);
+        continue;
+      }
+      await markFailed(photo.id, msg).catch(() => {});
       if (!e?.response && !e?.permanent) {
         // Network-only failure: still offline — keep everything, bail out.
         break;
       }
-      // Day-1 fix (2026-10-25, finding 35): only a genuine JSON rejection
-      // from the app drops the photo. 5xx, 401/403, 408/425/429 and non-JSON
-      // replies (the HTML 404 of a sleeping backend) keep it for a retry.
-      const permanent = e?.permanent || isPermanentRejection(e);
-      if (permanent) {
+      if (action === "drop") {
+        announceRoleReadOnlyDrop(e); // read-only role: say why it was dropped
         await removePhoto(photo.id).catch(() => {});
       }
     }
@@ -530,5 +552,11 @@ export function wireAutoDrain(api) {
   // the event would be swallowed by the stale in-flight drain.
   window.addEventListener("ice-offline-remap-ready", () => {
     drainQueue(api).then(() => drainQueue(api)).catch(() => {});
+  });
+  // The user chose to retry held photos (drOfflineSync.releaseHeldSaves).
+  window.addEventListener(RELEASE_HELD_EVENT, () => {
+    listPending().then(async (rows) => {
+      for (const r of rows) if (r.held) await markFailed(r.id, null, { held: false });
+    }).then(() => drainQueue(api)).catch(() => {});
   });
 }

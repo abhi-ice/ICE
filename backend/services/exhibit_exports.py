@@ -391,9 +391,12 @@ async def gather_photo_evidence(
                 {"_id": 0, "id": 1, "ai_analysis_status": 1,
                  "ai_suggested_class": 1, "ai_suggested_caption": 1,
                  "ai_confidence_score": 1,
-                 "ai_safety_concerns_detected": 1, "phash": 1},
+                 "ai_safety_concerns_detected": 1, "phash": 1,
+                 "ai_model_version": 1, "ai_raw_response": 1},
             ).to_list(length=None)
-            tray_by_id = {t["id"]: t for t in tray_rows}
+            # Made-up dev stub results never print in an exhibit.
+            from services.photo_ai import hide_dev_stub
+            tray_by_id = {t["id"]: t for t in tray_rows if not hide_dev_stub(t)}
         for p in rows:
             t = tray_by_id.get(p.get("tray_photo_id") or "")
             if t:

@@ -1045,6 +1045,27 @@ def _json_safe_validation_errors(errors) -> list[dict]:
     return safe
 
 
+# A read-only role tried to change a daily report: same {"detail": text} body
+# every page already shows, plus code "role_read_only" for the offline queue.
+from auth import RoleReadOnlyError, role_read_only_handler  # noqa: E402
+app.add_exception_handler(RoleReadOnlyError, role_read_only_handler)
+
+# No AI key: a plain message plus code "ai_unavailable", so the offline
+# queue keeps a queued save for a later retry (services/ai_unavailable.py).
+from services.ai_unavailable import AiUnavailableError, ai_unavailable_handler  # noqa: E402
+app.add_exception_handler(AiUnavailableError, ai_unavailable_handler)
+
+# Someone other than the author tried to change or delete a draft report (or
+# a non-admin tried to delete a submitted one): plain message plus code
+# "not_report_author", so the offline queue stops retrying that save and
+# shows it to the user (services/edit_permissions.py).
+from services.edit_permissions import (  # noqa: E402
+    NotReportAuthorError, ReportNotDraftError, not_report_author_handler,
+)
+app.add_exception_handler(NotReportAuthorError, not_report_author_handler)
+app.add_exception_handler(ReportNotDraftError, not_report_author_handler)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = _json_safe_validation_errors(exc.errors())

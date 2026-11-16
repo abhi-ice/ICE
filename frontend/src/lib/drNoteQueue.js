@@ -24,8 +24,8 @@
  * signed in (see "Queue ownership" in lib/drOfflineSync).
  */
 import {
-  resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection,
-  queueOwnerStamp, belongsToCurrentUser,
+  resolveOfflineId, isUnresolvedOfflineId, announceRoleReadOnlyDrop,
+  queueOwnerStamp, belongsToCurrentUser, rejectionAction, announceHeld, RELEASE_HELD_EVENT,
 } from "./drOfflineSync";
 
 const DB_NAME = "ice-dr-voice-notes";
@@ -189,6 +189,35 @@ export async function removePendingNote(id) {
   notifyQueueChanged();
 }
 
+/** Hold (held = true) or release (false) a queued note: a held note is
+ *  kept but not retried automatically (see drOfflineSync.rejectionAction). */
+export async function setNoteHeld(id, held, errMsg = null) {
+  const apply = (r) => {
+    if (held) { r.held = true; r.lastError = String(errMsg || "").slice(0, 500); }
+    else delete r.held;
+  };
+  const mem = _memPending.find((r) => r.id === id);
+  if (mem) { apply(mem); return; }
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const r = getReq.result;
+        if (!r) return;
+        apply(r);
+        store.put(r);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    healDb();
+  }
+}
+
 /** POST one note to /voice/annotate. `api` is the authenticated axios client
  *  (injected so this module never imports lib/api). Throws on failure. */
 export async function postNote(api, dailyReportId, body, mimeType, durationSec) {
@@ -225,6 +254,7 @@ async function _drainAll(api) {
     if (isUnresolvedOfflineId(n.dailyReportId)) continue;
     // A different person signed in mid-drain: leave the rest for its owner.
     if (!belongsToCurrentUser(n)) break;
+    if (n.held) continue; // held: no automatic retries
     try {
       await postNote(api, resolveOfflineId(n.dailyReportId),
         n.bytes || n.blob, n.mimeType, n.durationSec);
@@ -238,7 +268,14 @@ async function _drainAll(api) {
       // drops; 408/425/429 and non-JSON replies (the HTML 404 of a sleeping
       // backend) are kept for the next drain.
       if (!e?.response) break;
-      if (isPermanentRejection(e)) {
+      // 2026-11-16: see drOfflineSync.rejectionAction for "wait" and "hold".
+      const action = rejectionAction(e, n);
+      if (action === "wait") break; // unowned note, read-only role: keep as is
+      if (action === "hold") {
+        await setNoteHeld(n.id, true, e?.response?.data?.detail).catch(() => {});
+        announceHeld(e);
+      } else if (action === "drop") {
+        announceRoleReadOnlyDrop(e); // read-only role: say why it was dropped
         await removePendingNote(n.id).catch(() => {});
       }
     }
@@ -255,5 +292,11 @@ export function wireAutoDrain(api) {
   try {
     window.addEventListener("online", () => { drainNotes(api).catch(() => {}); });
     window.addEventListener("ice-offline-remap-ready", () => { drainNotes(api).catch(() => {}); });
+    // The user chose to retry held notes (drOfflineSync.releaseHeldSaves).
+    window.addEventListener(RELEASE_HELD_EVENT, () => {
+      listPendingNotes().then(async (rows) => {
+        for (const r of rows) if (r.held) await setNoteHeld(r.id, false);
+      }).then(() => drainNotes(api)).catch(() => {});
+    });
   } catch { /* non-window env */ }
 }

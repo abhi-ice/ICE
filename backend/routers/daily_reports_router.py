@@ -17,7 +17,7 @@ from models import (
     EDIT_REASON_MIN_LEN,
     gen_id, utc_now, StrictModel,
 )
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from audit import write_audit
 # Per-project access (2026-11-16). Routes with a project id or a daily
 # report / activity / presence id in the URL are already checked by the
@@ -27,6 +27,10 @@ from services.project_access import (
     check_project_access, check_record_access, project_scope_filter,
 )
 from services.project_scope import require_project
+# Report ownership (2026-11-16): a draft is changed only by its author, an
+# admin or a project manager; a submitted report is deleted only by an admin
+# or project manager. See services/edit_permissions.py.
+from services.edit_permissions import ensure_can_change_draft, ensure_can_delete_report
 
 logger = logging.getLogger("ice_schedule_ops.dr")
 
@@ -263,7 +267,7 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
     return inserted
 
 
-@router.post("/daily-reports", response_model=DailyReport)
+@router.post("/daily-reports", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     # Company check (404 for an unknown project) then the per-project
@@ -280,11 +284,23 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
     if existing:
         return DailyReport(**existing)
     doc = payload.model_dump(mode="json")
+    # Report ownership (2026-11-16): the author of a draft is the only field
+    # user who may change it. An admin or project manager who opens the day
+    # first (for example "+ New" in a gallery, or the date picker) is not
+    # counted as its author: they can change any draft anyway, and counting
+    # them would lock the superintendent out of the day's only report. The
+    # draft then has no author and is open to every field writer on the
+    # project, the same as an older report; who opened it is kept in
+    # opened_by. An admin or project manager can also hand a draft to
+    # another writer (PATCH /daily-reports/{id}/author).
+    from services.edit_permissions import is_privileged
+    opener_is_privileged = is_privileged(ctx)
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "status": "draft",
-        "prepared_by": ctx["user"]["id"],
+        "prepared_by": None if opener_is_privileged else ctx["user"]["id"],
+        "opened_by": ctx["user"]["id"] if opener_is_privileged else None,
         "submitted_by": None,
         "submitted_at": None,
         "approved_by": None,
@@ -319,7 +335,7 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
     return DailyReport(**doc)
 
 
-@router.post("/daily-reports/{daily_report_id}/refresh-grid")
+@router.post("/daily-reports/{daily_report_id}/refresh-grid", dependencies=[Depends(require_daily_report_writer)])
 async def refresh_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Re-run pre-populate against the current schedule. Picks up any
     activity whose [planned_start, planned_finish] now contains the report
@@ -330,6 +346,7 @@ async def refresh_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)
         raise HTTPException(404, "Daily report not found")
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     inserted = await _prepopulate_grid(
         tenant_id=ctx["tenant_id"], project_id=dr["project_id"],
         daily_report_id=daily_report_id, report_date=date.fromisoformat(dr["report_date"]),
@@ -415,7 +432,7 @@ async def _reverse_dr_schedule_effects(db, ctx: dict, dr: dict) -> dict:
     return {"reverted": reverted, "removed": removed}
 
 
-@router.delete("/daily-reports/{daily_report_id}")
+@router.delete("/daily-reports/{daily_report_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None,
                               ctx: dict = Depends(require_tenant)):
     """Hard-delete a daily report and cascade. Submitted/approved reports
@@ -434,6 +451,10 @@ async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None
     )
     if not before:
         raise HTTPException(404, "Daily report not found")
+    # Ownership first: a submitted/approved report is deleted only by an
+    # admin or project manager (with a reason, below); a draft also by the
+    # person who started it.
+    ensure_can_delete_report(ctx, before)
     reason = (reason or "").strip()
     if before.get("status") != "draft" and len(reason) < EDIT_REASON_MIN_LEN:
         raise HTTPException(
@@ -524,6 +545,16 @@ async def get_daily_report(daily_report_id: str, ctx: dict = Depends(require_ten
     doc = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Daily report not found")
+    # The starter's name, for the "Started by ..." note another field user
+    # sees on this draft. Best-effort: a missing user leaves it empty.
+    author_id = doc.get("prepared_by") or doc.get("created_by")
+    if author_id:
+        try:
+            u = await db.users.find_one({"id": author_id}, {"_id": 0, "full_name": 1, "email": 1})
+            if u:
+                doc["prepared_by_name"] = u.get("full_name") or u.get("email")
+        except Exception:
+            pass
     return DailyReport(**doc)
 
 
@@ -681,12 +712,13 @@ class AddActivityRow(StrictModel):
     add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
-@router.post("/daily-reports/{daily_report_id}/grid", response_model=DailyReportActivity)
+@router.post("/daily-reports/{daily_report_id}/grid", response_model=DailyReportActivity, dependencies=[Depends(require_daily_report_writer)])
 async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict = Depends(require_tenant)):
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    ensure_can_change_draft(ctx, dr)
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. Tiered
     # permission + add_reason if the DR is submitted/approved.
     from services.edit_permissions import enforce_locked_dr_add_policy
@@ -755,16 +787,42 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
     return DailyReportActivity(**row)
 
 
-@router.delete("/daily-report-activities/{row_id}")
-async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant)):
+@router.delete("/daily-report-activities/{row_id}", dependencies=[Depends(require_daily_report_writer)])
+async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant),
+                          reason: Optional[str] = None,
+                          edit_reason: Optional[str] = None):
+    """Remove one activity row from a report's grid.
+
+    On a submitted or approved report this follows the same rules as
+    editing a row (enforce_locked_dr_edit_policy): a written reason is
+    required (query `reason`, or `edit_reason`), and on someone else's
+    report only an admin or project manager may do it. The removal is then
+    recorded in the audit trail with that reason."""
     db = get_db()
     row = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
     if not row:
         raise HTTPException(404, "Row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": row["daily_report_id"]}), {"_id": 0, "id": 1, "project_id": 1})
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": row["daily_report_id"]}),
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1,
+         "prepared_by": 1, "created_by": 1},
+    )
     if not dr:
         raise HTTPException(404, "Row not found")
+    ensure_can_change_draft(ctx, dr)
+    from services.edit_permissions import enforce_locked_dr_edit_policy
+    _parent_dr, is_locked_delete, effective_reason = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=row["daily_report_id"],
+        edit_reason=edit_reason or reason, event_type="activity", event_id=row_id,
+    )
     await db.daily_report_activities.delete_one({"id": row_id})
+    if is_locked_delete:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="daily_report_activities",
+            op="ACTIVITY_GRID_DELETED_POST_SUBMIT", record_id=row_id,
+            before=row, after={"reason": effective_reason},
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
     # Take back what this row put on the schedule task: its hours and
     # actual dates always; the task's current progress only when this row's
     # report is the one that set it (last_synced_from_dr points at it). It
@@ -813,7 +871,7 @@ async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
-@router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity)
+@router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity, dependencies=[Depends(require_daily_report_writer)])
 async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: dict = Depends(require_tenant)):
     """Bucket C1 Phase 1 — write-back foundation.
 
@@ -847,10 +905,11 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     dr = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}),
         {"_id": 0, "id": 1, "status": 1, "report_date": 1, "project_id": 1,
-         "submitted_by": 1, "submitted_at": 1},
+         "submitted_by": 1, "submitted_at": 1, "prepared_by": 1, "created_by": 1},
     )
     if not dr:
         raise HTTPException(404, "Row not found")
+    ensure_can_change_draft(ctx, dr)
     # Bucket D Addition 5 (2026-05-12) -- locked-DR edit policy. The
     # prior hard 403 on submitted/approved is replaced with the same
     # tiered permission flow used for event edits: 24h self-edit on
@@ -1439,13 +1498,8 @@ class SubmitPayload(StrictModel):
     no_work_note: Optional[str] = None
 
 
-# Addition 3 -- the event collections that count as "did anything
-# happen on this day". Activities are counted separately because
-# they can be auto-prepopulated from the schedule grid.
-_NO_WORK_EVENT_COLLECTIONS = (
-    "delays", "rfis", "qc_issues", "safety_events",
-    "deliveries", "photos",
-)
+# Addition 3 -- what counts as "did anything happen on this day" lives in
+# services/no_work_day.WORK_EVENT_COLLECTIONS / report_is_empty.
 _NO_WORK_REASON_VALUES = {
     "weather", "holiday", "scheduled_non_work",
     "crew_unavailable", "tenant_restriction", "other",
@@ -1454,29 +1508,14 @@ _NO_WORK_REASON_VALUES = {
 
 async def _dr_is_empty(db, daily_report_id: str, tenant_id: str) -> bool:
     """True if the DR has no activity rows AND no events. Coordination
-    events use linked_daily_report_id (different field name)."""
-    has_activities = await db.daily_report_activities.count_documents(
-        {"daily_report_id": daily_report_id}, limit=1,
-    )
-    if has_activities:
-        return False
-    for coll in _NO_WORK_EVENT_COLLECTIONS:
-        n = await db[coll].count_documents(
-            tenant_filter(tenant_id, {"daily_report_id": daily_report_id}),
-            limit=1,
-        )
-        if n:
-            return False
-    coord = await db.coordination_events.count_documents(
-        tenant_filter(tenant_id, {"linked_daily_report_id": daily_report_id}),
-        limit=1,
-    )
-    if coord:
-        return False
-    return True
+    events use linked_daily_report_id (different field name). The rule
+    lives in services/no_work_day.report_is_empty (shared with the check
+    that clears the no-work-day heading once work is added after submit)."""
+    from services.no_work_day import report_is_empty
+    return await report_is_empty(db, tenant_id, daily_report_id)
 
 
-@router.post("/daily-reports/{daily_report_id}/submit", response_model=DailyReport)
+@router.post("/daily-reports/{daily_report_id}/submit", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
@@ -1492,6 +1531,7 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
         raise HTTPException(409, _SUBMIT_APPROVED_DETAIL)
     if before.get("status") == "submitted":
         return DailyReport(**before)
+    ensure_can_change_draft(ctx, before)
 
     # Addition 3 + Test 2G follow-up (2026-05-12) -- empty DR requires
     # explicit no-work-day ack. Returns BOTH the legacy `error` key
@@ -1677,6 +1717,7 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
 @router.get("/projects/{project_id}/weekly-rollup")
 async def weekly_rollup(project_id: str, week_starting: date, ctx: dict = Depends(require_tenant)):
     """Master prompt §10.4: auto-generated from 7 days of dailies."""
+    from services.no_work_day import no_work_days_summary
     db = get_db()
     start = week_starting
     end = start + timedelta(days=6)
@@ -1713,6 +1754,9 @@ async def weekly_rollup(project_id: str, week_starting: date, ctx: dict = Depend
         "ppc": ppc,
         "activities_completed": completed_planned,
         "total_planned_activities": total_planned,
+        # Reports filed as no-work days this week, each with its heading
+        # ("No work day — Weather"), so the summary says why a day is blank.
+        "no_work_days": no_work_days_summary(drs),
     }
 
 
@@ -1755,9 +1799,13 @@ async def export_daily_pdf(daily_report_id: str, ctx: dict = Depends(require_ten
     if not signer_name:
         signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
 
+    from services.no_work_day import no_work_heading
     proj = proj or {}
+    _no_work = no_work_heading(dr)
     lines = [
         f"DAILY REPORT — {proj.get('name') or dr['project_id']}",
+        # A no-work-day report says so, with its reason, under the title.
+        *([_no_work] if _no_work else []),
         # Feature DR Header Auto-Population (2026-05-20).
         f"Client:           {proj.get('client_name') or ''}",
         f"Station:          {proj.get('station_id') or ''}",
@@ -1827,6 +1875,11 @@ async def export_dr_via_client_template(
             "PDF template export not yet supported -- please upload an "
             "xlsx template.",
         )
+    # No AI key: a plain message instead of the raw key error.
+    from services.ai_unavailable import (
+        ensure_ai_available, CLIENT_TEMPLATE_UNAVAILABLE_MESSAGE,
+    )
+    ensure_ai_available(CLIENT_TEMPLATE_UNAVAILABLE_MESSAGE)
 
     # Activity rows from the DR grid.
     activities = await db.daily_report_activities.find(
@@ -1881,7 +1934,7 @@ async def export_dr_via_client_template(
     if not signer_name:
         signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
 
-    # AI-powered injection. DrTemplateExportError -> 502 with the AI's
+    # AI-powered injection. DrTemplateExportError -> 422 with the AI's
     # error attached. No fallback to a heuristic engine (per spec).
     from services.storage import get_object
     from services.dr_template_export import (
@@ -1946,7 +1999,7 @@ _CLEARABLE_WEATHER_FIELDS = (
 )
 
 
-@router.patch("/daily-reports/{daily_report_id}", response_model=DailyReport)
+@router.patch("/daily-reports/{daily_report_id}", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
@@ -1954,6 +2007,7 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
         raise HTTPException(404, "Daily report not found")
     if before.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(before.get("status")))
+    ensure_can_change_draft(ctx, before)
     raw = payload.model_dump(mode="json")
     updates = {k: v for k, v in raw.items() if v is not None}
     # Day-1 round 2 (2026-10-25) -- the phone weather sheet clears a field
@@ -1977,6 +2031,67 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="UPDATE",
         record_id=daily_report_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return DailyReport(**after)
+
+
+class DailyReportAuthorChange(StrictModel):
+    user_id: str = Field(min_length=1, max_length=200)
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.patch("/daily-reports/{daily_report_id}/author", response_model=DailyReport,
+              dependencies=[Depends(require_daily_report_writer)])
+async def change_daily_report_author(daily_report_id: str, payload: DailyReportAuthorChange,
+                                     ctx: dict = Depends(require_tenant)):
+    """Hand a draft to another field writer (2026-11-16). For an admin or
+    project manager only: when the report was opened by the wrong person
+    (a foreman before the superintendent, say) or its author is away, the
+    new author can finish and submit it. Drafts only; a submitted report
+    keeps the person who signed it. Written to the audit log."""
+    from services.edit_permissions import is_privileged
+    from auth import role_can_write_field_events
+    if not is_privileged(ctx):
+        raise HTTPException(403, "Only an admin or project manager can hand a report to someone else.")
+    db = get_db()
+    before = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Daily report not found")
+    if before.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, "Only a draft can be handed to someone else.")
+    member = await db.tenant_users.find_one(
+        {"tenant_id": ctx["tenant_id"], "user_id": payload.user_id, "status": "active"},
+        {"_id": 0, "role": 1, "access_scope": 1},
+    )
+    if not member:
+        raise HTTPException(422, "That person is not an active member of this company.")
+    target_role = (member.get("role") or "").strip().lower()
+    if not role_can_write_field_events(target_role):
+        raise HTTPException(422, "That person's role can't change daily reports.")
+    # With per-project access switched on, the new author must be assigned
+    # to the report's project (an all-projects admin always is).
+    from services.project_access import is_enforced
+    from auth import effective_access_scope
+    if is_enforced():
+        all_projects = (target_role == "admin" and effective_access_scope(
+            target_role, member.get("access_scope")) == "all")
+        if not all_projects and not await db.project_members.find_one(
+                {"tenant_id": ctx["tenant_id"], "project_id": before.get("project_id"),
+                 "user_id": payload.user_id}, {"_id": 0, "user_id": 1}):
+            raise HTTPException(422, "That person is not assigned to this report's project.")
+    await db.daily_reports.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+        {"$set": {"prepared_by": payload.user_id, "updated_by": ctx["user"]["id"]}},
+    )
+    after = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_reports", op="REPORT_AUTHOR_CHANGED",
+        record_id=daily_report_id,
+        before={"prepared_by": before.get("prepared_by"), "created_by": before.get("created_by")},
+        after={"prepared_by": payload.user_id, "reason": payload.reason},
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     return DailyReport(**after)
@@ -2203,7 +2318,7 @@ def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
     return result
 
 
-@router.post("/daily-reports/{daily_report_id}/weather-autofill", response_model=DailyReport)
+@router.post("/daily-reports/{daily_report_id}/weather-autofill", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Geocode the project's city/state, fetch Open-Meteo forecast for the
     report_date, save into the DR doc. Idempotent — re-runs overwrite.
@@ -2241,6 +2356,7 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
         raise HTTPException(404, "Daily report not found")
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0})
     if not proj:
         raise HTTPException(404, "Project not found")
@@ -2395,7 +2511,7 @@ async def _after_presence_change(ctx: dict, daily_report_id: str, task_ids, proj
                                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
 
 
-@router.post("/daily-reports/{daily_report_id}/presence", response_model=DailyPresence)
+@router.post("/daily-reports/{daily_report_id}/presence", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
@@ -2406,6 +2522,7 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     await check_project_access(ctx, dr.get("project_id"), write=True)
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     if payload.daily_report_id != daily_report_id:
         raise HTTPException(400, "daily_report_id mismatch")
     doc = payload.model_dump(mode="json")
@@ -2481,7 +2598,7 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
 # above so the audit + denormalization + total_hours derivation stay
 # in one place. User reported 404 on this surface; URL-source confusion
 # across deploy versions was the most likely cause.
-@router.post("/daily-reports/{daily_report_id}/daily-presence", response_model=DailyPresence)
+@router.post("/daily-reports/{daily_report_id}/daily-presence", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def create_presence_alias(
     daily_report_id: str, payload: DailyPresenceCreate,
     ctx: dict = Depends(require_tenant),
@@ -2489,7 +2606,7 @@ async def create_presence_alias(
     return await create_presence(daily_report_id, payload, ctx)
 
 
-@router.post("/daily-presence", response_model=DailyPresence)
+@router.post("/daily-presence", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def create_presence_toplevel(
     payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant),
 ):
@@ -2501,15 +2618,16 @@ async def create_presence_toplevel(
     return await create_presence(payload.daily_report_id, payload, ctx)
 
 
-@router.patch("/daily-presence/{presence_id}", response_model=DailyPresence)
+@router.patch("/daily-presence/{presence_id}", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1, "prepared_by": 1, "created_by": 1})
     if dr and dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
     if updates:
@@ -2545,15 +2663,16 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     return DailyPresence(**after)
 
 
-@router.delete("/daily-presence/{presence_id}")
+@router.delete("/daily-presence/{presence_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1, "prepared_by": 1, "created_by": 1})
     if dr and dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     await db.daily_presence.delete_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}))
     await _after_presence_change(ctx, doc["daily_report_id"], [doc.get("schedule_activity_id")],
                                  (dr or {}).get("project_id") or doc.get("project_id"))
@@ -2570,7 +2689,7 @@ async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant))
 # ============================================================
 # Unplanned activity creation from the field (super)
 # ============================================================
-@router.post("/daily-reports/{daily_report_id}/unplanned-activity")
+@router.post("/daily-reports/{daily_report_id}/unplanned-activity", dependencies=[Depends(require_daily_report_writer)])
 async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActivityCreate, ctx: dict = Depends(require_tenant)):
     """Field super creates a task NOT in the master schedule — the platform
     records it with `created_in_field=true` and `requires_pm_review=true`
@@ -2580,6 +2699,7 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    ensure_can_change_draft(ctx, dr)
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. The prior
     # 409 reject on submitted DRs is replaced with the tiered add
     # policy. Unplanned activities can now be added to locked DRs

@@ -86,7 +86,8 @@ def only_anthropic_key(monkeypatch):
 
 @pytest.fixture
 def no_keys(monkeypatch):
-    for k in ("ANTHROPIC_API_KEY", "EMERGENT_LLM_KEY", "OPENAI_API_KEY"):
+    for k in ("ANTHROPIC_API_KEY", "EMERGENT_LLM_KEY", "OPENAI_API_KEY",
+              "PHOTO_AI_DEV_MODE"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -171,8 +172,14 @@ def test_photo_ai_enabled_with_only_anthropic_key(no_emergent, only_anthropic_ke
     assert photo._is_dev_mode() is False
 
 
-def test_photo_ai_dev_mode_without_keys(no_emergent, no_keys):
-    assert no_emergent["services.photo_ai"]._is_dev_mode() is True
+def test_photo_ai_unavailable_without_keys(no_emergent, no_keys):
+    # 2026-11-16: a missing key no longer means dev mode (made-up results
+    # reached users); it means AI is unavailable. Only PHOTO_AI_DEV_MODE=1
+    # turns the dev stub on.
+    photo = no_emergent["services.photo_ai"]
+    assert photo._is_dev_mode() is False
+    assert photo.ai_available() is False
+    assert photo.photo_ai_can_run() is False
 
 
 # ---------------------------------------------------------------- Claude client

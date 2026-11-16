@@ -185,6 +185,11 @@ def transcript_looks_like_coordination(transcript: str) -> bool:
 
 
 async def extract_fields(transcript: str, kind: str) -> dict:
+    # No AI key: a plain note instead of the raw key error; no fields are
+    # made up. The recording and transcript are still saved by the caller.
+    if not _llm_key():
+        from services.ai_unavailable import VOICE_NOTE_EXTRACT_UNAVAILABLE_MESSAGE
+        return {"_error": VOICE_NOTE_EXTRACT_UNAVAILABLE_MESSAGE}
     sys = EXTRACT_SYSTEMS.get(kind, EXTRACT_SYSTEMS["work_item"])
     from services.anthropic_compat import LlmChat, UserMessage
     chat = LlmChat(

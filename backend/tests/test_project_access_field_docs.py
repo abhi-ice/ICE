@@ -32,7 +32,8 @@ ROUTER_MODULES = [
     "routers.iter3_router", "routers.iter4_router", "routers.mitigations_router",
     "routers.tia_router",
 ]
-PATCH_DB = ["auth", "services.project_access", "services.project_scope"] + ROUTER_MODULES
+PATCH_DB = ["auth", "services.project_access", "services.project_scope",
+            "services.edit_permissions"] + ROUTER_MODULES
 
 NOT_ASSIGNED = "You are not assigned to this project"
 

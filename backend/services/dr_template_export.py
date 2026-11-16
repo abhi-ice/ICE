@@ -42,6 +42,7 @@ from services.anthropic_compat import LlmChat, UserMessage
 from services.llm_keys import llm_api_key
 from database import get_db
 from models import gen_id, utc_now
+from services.no_work_day import no_work_heading
 
 
 MODEL_PROVIDER = "anthropic"
@@ -419,6 +420,8 @@ def _build_dr_snapshot(
         "is_no_work_day": bool(dr.get("is_no_work_day")),
         "no_work_reason": dr.get("no_work_reason"),
         "no_work_note": dr.get("no_work_note"),
+        # "No work day — <reason>" for a no-work-day report, else None.
+        "no_work_day_heading": no_work_heading(dr),
         "project": {
             "owner_name": p.get("owner_name"),
             "address_line1": p.get("address_line1"),
@@ -629,6 +632,14 @@ VISITS, DELIVERIES AND REMARKS (every form)
   detail), then our notes. One item per line; a single box holds them all on separate
   lines. When there are more items than lines, put two short items on a line.
 - Leave a visitors or deliveries box empty when we have none that day.
+
+NO WORK DAY
+-----------
+- When no_work_day_heading is set (e.g. "No work day — Weather"), the report was
+  filed as a no-work day. Write no_work_day_heading, word for word, as the FIRST
+  line of the remarks or notes area (or, when the form has a description-of-work
+  box and no remarks, as the first line of that box). Keep weather, date and the
+  header fields as usual.
 
 GENERAL RULES
 -------------

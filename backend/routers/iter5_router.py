@@ -26,8 +26,9 @@ from pydantic import Field
 from services.anthropic_compat import LlmChat, UserMessage
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from services.project_scope import require_project, require_project_if_given
+from services.edit_permissions import ensure_can_change_draft, ensure_can_change_linked_report
 from services.project_access import (
     check_project_access, check_record_access, is_enforced,
     allowed_project_ids, project_scope_filter, require_full_admin,
@@ -537,15 +538,20 @@ class AttendanceEntry(StrictModel):
     notes: Optional[str] = None
 
 
-@router.post("/daily-report-attendance")
+@router.post("/daily-report-attendance", dependencies=[Depends(require_daily_report_writer)])
 async def add_attendance(payload: AttendanceEntry, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}), {"_id": 0, "id": 1, "project_id": 1})
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}),
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1, "prepared_by": 1, "created_by": 1},
+    )
     if not dr:
         raise HTTPException(404, "Daily report not found")
     # The report's project must be one the caller is assigned to (403 on
     # this save, so a phone keeps it queued).
     await check_project_access(ctx, dr.get("project_id"), write=True)
+    # A draft is changed only by its author, an admin or a project manager.
+    ensure_can_change_draft(ctx, dr)
     doc = payload.model_dump(mode="json")
     doc.update({"id": gen_id(), "tenant_id": ctx["tenant_id"], "created_at": utc_now().isoformat()})
     await db.daily_report_attendance.insert_one(doc.copy())
@@ -561,9 +567,19 @@ async def list_attendance(daily_report_id: str, ctx: dict = Depends(require_tena
     return docs
 
 
-@router.delete("/daily-report-attendance/{entry_id}")
+@router.delete("/daily-report-attendance/{entry_id}", dependencies=[Depends(require_daily_report_writer)])
 async def remove_attendance(entry_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    entry = await db.daily_report_attendance.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": entry_id}), {"_id": 0, "daily_report_id": 1},
+    )
+    if entry and entry.get("daily_report_id"):
+        dr = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": entry["daily_report_id"]}),
+            {"_id": 0, "status": 1, "prepared_by": 1, "created_by": 1},
+        )
+        # A draft is changed only by its author, an admin or a project manager.
+        ensure_can_change_draft(ctx, dr)
     res = await db.daily_report_attendance.delete_one(tenant_filter(ctx["tenant_id"], {"id": entry_id}))
     if not res.deleted_count:
         raise HTTPException(404)
@@ -971,6 +987,8 @@ class DeliveryUpdate(StrictModel):
 @router.post("/deliveries")
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
     # The project must belong to the caller's company (404 otherwise), and
     # (switch on) be one they are assigned to (403, so a phone keeps the
     # queued save). The daily reports named in the body are checked too.
@@ -1068,6 +1086,8 @@ async def update_delivery(
     )
     if not before:
         raise HTTPException(404, "Delivery not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}

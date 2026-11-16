@@ -44,6 +44,10 @@ async def generate_scenarios(delay_id: str, ctx: dict = Depends(require_tenant))
     )
     if not delay:
         raise HTTPException(404, "Delay not found")
+    # No AI key: plain 422 "ai_unavailable" (not a 500 that Cloudflare would
+    # replace with its own page); the current scenarios are kept.
+    from services.ai_unavailable import ensure_ai_available, MITIGATION_UNAVAILABLE_MESSAGE
+    ensure_ai_available(MITIGATION_UNAVAILABLE_MESSAGE)
 
     try:
         scenarios = await generate_mitigation_scenarios(

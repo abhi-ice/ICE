@@ -35,8 +35,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from database import get_db, tenant_filter
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from services.dr_voice_extract import extract_dr_fields
+from services.ai_unavailable import ensure_ai_available, VOICE_EXTRACT_UNAVAILABLE_MESSAGE
 
 log = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
-@router.post("/{dr_id}/voice/transcribe")
+@router.post("/{dr_id}/voice/transcribe", dependencies=[Depends(require_daily_report_writer)])
 async def voice_transcribe(
     dr_id: str,
     audio: UploadFile = File(...),
@@ -253,7 +254,43 @@ async def voice_transcribe(
     return {"transcript": transcript, "char_count": len(transcript)}
 
 
-@router.post("/{dr_id}/voice/extract")
+VOICE_NOT_DRAFT_MESSAGE = (
+    "This report was already submitted, so the voice memo was not added to it. "
+    "The recording is kept on your device."
+)
+
+
+async def _draft_for_voice(ctx: dict, dr_id: str) -> dict:
+    """The checks every voice route that writes to the report runs first,
+    cheapest first and before any audio is read or any AI is paid for:
+    the report exists (404), the caller is assigned to its project (403),
+    it is still a draft (409, code "report_not_draft", so a phone keeps the
+    queued clip and tells the user) and the caller may change it -- its
+    author, an admin or a project manager (403, code "not_report_author").
+    The same changes made by hand (PATCH /daily-reports, PATCH
+    /daily-report-activities, POST /presence) follow the same rules."""
+    db = get_db()
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": dr_id}),
+        {"_id": 0},
+    )
+    if not dr:
+        raise HTTPException(status_code=404, detail="DR not found")
+    # Per-project access (2026-11-16). The route-level dependency already
+    # checked the report id in the URL; this repeats it for callers that
+    # reach this function directly. Cached per request, and a save gets
+    # 403, never 404, so a queued clip is kept.
+    from services.project_access import check_project_access
+    await check_project_access(ctx, dr.get("project_id"), write=True)
+    from services.edit_permissions import ReportNotDraftError, ensure_can_change_draft
+    if dr.get("status") not in (None, "draft"):
+        # Mirror the manual-edit lock the rest of the UI enforces.
+        raise ReportNotDraftError(VOICE_NOT_DRAFT_MESSAGE)
+    ensure_can_change_draft(ctx, dr)
+    return dr
+
+
+@router.post("/{dr_id}/voice/extract", dependencies=[Depends(require_daily_report_writer)])
 async def voice_extract(
     dr_id: str,
     payload: dict,
@@ -268,24 +305,13 @@ async def voice_extract(
     tenant_id = ctx["tenant_id"]
     actor_id = ctx["user"]["id"]
 
-    dr = await db.daily_reports.find_one(
-        tenant_filter(tenant_id, {"id": dr_id}),
-        {"_id": 0},
-    )
-    if not dr:
-        raise HTTPException(status_code=404, detail="DR not found")
-    # Per-project access (2026-11-16). The route-level dependency already
-    # checked the report id in the URL; this repeats it for callers that
-    # reach this function directly (transcribe-and-extract). Cached per
-    # request, and a save gets 403, never 404, so a queued clip is kept.
-    from services.project_access import check_project_access
-    await check_project_access(ctx, dr.get("project_id"), write=True)
-    if dr.get("status") not in (None, "draft"):
-        # Mirror the manual-edit lock the rest of the UI enforces.
-        raise HTTPException(
-            status_code=409,
-            detail="DR is not in draft status; voice extract is draft-only",
-        )
+    dr = await _draft_for_voice(ctx, dr_id)
+    # No AI key: plain message, nothing on the report is changed. The
+    # "ai_unavailable" code keeps a queued clip on the phone for a retry.
+    # Checked after the report checks above, so a clip for a missing,
+    # submitted or someone else's report is never kept for an AI retry
+    # that could not succeed anyway.
+    ensure_ai_available(VOICE_EXTRACT_UNAVAILABLE_MESSAGE)
 
     # Pull activity grid for matching context. We need code + name +
     # trade so Claude can fuzzy-match spoken descriptions like
@@ -849,7 +875,7 @@ async def voice_extract(
     }
 
 
-@router.post("/{dr_id}/voice/transcribe-and-extract")
+@router.post("/{dr_id}/voice/transcribe-and-extract", dependencies=[Depends(require_daily_report_writer)])
 async def voice_transcribe_and_extract(
     dr_id: str,
     audio: UploadFile = File(...),
@@ -861,6 +887,13 @@ async def voice_transcribe_and_extract(
     connectivity returns; this endpoint handles transcription +
     extraction + DB writes atomically from the client's perspective.
     """
+    # Report checks first (missing, no access, not a draft, someone else's
+    # draft), before the clip is read or a transcript is paid for.
+    await _draft_for_voice(ctx, dr_id)
+    # No AI key: stop before reading the clip or paying for a transcript
+    # that can't be used. The clip stays queued on the phone (code
+    # "ai_unavailable").
+    ensure_ai_available(VOICE_EXTRACT_UNAVAILABLE_MESSAGE)
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio upload")
@@ -901,7 +934,7 @@ async def voice_transcribe_and_extract(
 # ---------------------------------------------------------------------
 # Live conversational token issuance (Route 3)
 # ---------------------------------------------------------------------
-@router.post("/{dr_id}/voice/live-token")
+@router.post("/{dr_id}/voice/live-token", dependencies=[Depends(require_daily_report_writer)])
 async def voice_live_token(
     dr_id: str, ctx: dict = Depends(require_tenant),
 ):

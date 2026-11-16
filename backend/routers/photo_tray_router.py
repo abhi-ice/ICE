@@ -37,7 +37,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, Query, Response
 
 from database import get_db, tenant_filter
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from audit import write_audit
 from models import (PhotoTray, PhotoTagCreate, EVIDENTIARY_CLASSES,
                      TenantAiBudgetUpdate,
@@ -145,7 +145,7 @@ async def _find_dedup(tenant_id: str, project_id: str,
 # ============================================================
 # Upload
 # ============================================================
-@router.post("/photo-tray", response_model=PhotoTray)
+@router.post("/photo-tray", response_model=PhotoTray, dependencies=[Depends(require_daily_report_writer)])
 async def upload_to_tray(
     project_id: str = Form(...),
     capture_source: str = Form("manual_upload"),
@@ -320,7 +320,9 @@ async def list_tray(
     docs = await db.photo_tray.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("uploaded_at", -1).to_list(length=500)
-    return docs
+    # Made-up dev stub results are never shown as real AI findings.
+    from services.photo_ai import without_dev_stub_ai
+    return [without_dev_stub_ai(d) for d in docs]
 
 
 @router.get("/photo-tray/{tray_id}")
@@ -339,7 +341,8 @@ async def get_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
          "evidentiary_flag": 1,
          **{k: 1 for k in _PHOTO_EVENT_REFS}},
     ).to_list(length=None)
-    return {"tray": doc, "tags": tags}
+    from services.photo_ai import without_dev_stub_ai
+    return {"tray": without_dev_stub_ai(doc), "tags": tags}
 
 
 @router.get("/photo-tray/{tray_id}/file")
@@ -367,7 +370,7 @@ async def stream_tray_image(tray_id: str, ctx: dict = Depends(require_tenant)):
 # ============================================================
 # Archive (status flip)
 # ============================================================
-@router.post("/photo-tray/{tray_id}/archive")
+@router.post("/photo-tray/{tray_id}/archive", dependencies=[Depends(require_daily_report_writer)])
 async def archive_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.photo_tray.find_one(
@@ -445,12 +448,24 @@ def _usable_ai_caption(tray: dict) -> Optional[str]:
     return cap
 
 
+def _raise_if_photo_ai_unavailable() -> None:
+    """Stop an AI request up front when there is no AI key (and dev mode
+    is off), with a plain message and nothing saved. 422 with code
+    "ai_unavailable", not 503 (see services/ai_unavailable.py)."""
+    from services.photo_ai import photo_ai_can_run
+    from services.ai_unavailable import (
+        AiUnavailableError, PHOTO_AI_UNAVAILABLE_MESSAGE,
+    )
+    if not photo_ai_can_run():
+        raise AiUnavailableError(PHOTO_AI_UNAVAILABLE_MESSAGE)
+
+
 # pt.31 — Hard delete of a tray entry. Allowed ONLY while the photo is
 # still untagged (no rows in the photos collection pointing at this tray
 # row). Once tagged, deletion must happen from inside the DR / Photos
 # page so the audit chain captures the reason. Returns 409 + a clear
 # message if any tag links exist.
-@router.delete("/photo-tray/{tray_id}")
+@router.delete("/photo-tray/{tray_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.photo_tray.find_one(
@@ -554,7 +569,7 @@ async def _validate_event_ref(db, tenant_id: str, daily_report_id: str,
     return ev
 
 
-@router.post("/photo-tags")
+@router.post("/photo-tags", dependencies=[Depends(require_daily_report_writer)])
 async def create_photo_tag(
     payload: PhotoTagCreate, ctx: dict = Depends(require_tenant),
 ):
@@ -575,10 +590,14 @@ async def create_photo_tag(
 
     dr = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}),
-        {"_id": 0, "id": 1, "project_id": 1, "status": 1},
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1,
+         "prepared_by": 1, "created_by": 1},
     )
     if not dr:
         raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
+    # A draft takes photos only from its author, an admin or a project manager.
+    from services.edit_permissions import ensure_can_change_draft
+    ensure_can_change_draft(ctx, dr)
     if dr.get("project_id") != tray.get("project_id"):
         raise HTTPException(
             422,
@@ -924,6 +943,11 @@ async def _create_photo_ai_field_suggestions(
     with AI guesses)."""
     if tray.get("ai_analysis_status") != "complete":
         return
+    # Made-up dev stub results (saved before 2026-11-16 with no AI key) are
+    # never turned into suggestions outside dev mode.
+    from services.photo_ai import hide_dev_stub
+    if hide_dev_stub(tray):
+        return
     confidence = tray.get("ai_confidence_score")
     if confidence is None or float(confidence) <= 0.3:
         return
@@ -1010,7 +1034,7 @@ async def list_tags_for_tray(tray_id: str, ctx: dict = Depends(require_tenant)):
     return docs
 
 
-@router.delete("/photo-tags/{photo_id}")
+@router.delete("/photo-tags/{photo_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
     """Remove a single tagging-junction row. Tray entry stays; if this
     was the last tag, tray status flips back to 'untagged'."""
@@ -1020,6 +1044,8 @@ async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not photo:
         raise HTTPException(404, "Photo tag not found")
+    from services.edit_permissions import ensure_can_change_linked_report
+    await ensure_can_change_linked_report(ctx, photo)
     tray_id = photo.get("tray_photo_id")
     await db.photos.delete_one(
         tenant_filter(ctx["tenant_id"], {"id": photo_id}),
@@ -1142,6 +1168,8 @@ async def analyze_single(
     if not tray:
         raise HTTPException(404, "Tray photo not found")
     await _enforce_tray_access(ctx, tray, _ROLE_TRIGGER_SINGLE)
+    # No AI key: say so before touching the row (nothing is changed).
+    _raise_if_photo_ai_unavailable()
     # Reset status to pending so analyze_photo's atomic flip can fire.
     await db.photo_tray.update_one(
         {"id": tray_id},
@@ -1164,7 +1192,7 @@ class _PhotoReviewPayload(_AiStrictModel):
     daily_report_id: Optional[str] = None
 
 
-@router.post("/photo-tray/review")
+@router.post("/photo-tray/review", dependencies=[Depends(require_daily_report_writer)])
 async def photo_review(
     payload: _PhotoReviewPayload, ctx: dict = Depends(require_tenant),
 ):
@@ -1178,13 +1206,16 @@ async def photo_review(
         await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
     for _tid in payload.tray_ids[:8]:
         await check_record_access(ctx, "photo_tray", _tid, write=True)
+    # No AI key: plain message, and no review is saved.
+    _raise_if_photo_ai_unavailable()
     from services.photo_ai import review_photos
     result = await review_photos(
         tenant_id=ctx["tenant_id"], tray_ids=payload.tray_ids,
         lens=payload.lens, actor_id=ctx["user"]["id"],
     )
     if not result.get("ok"):
-        raise HTTPException(422, result.get("reason") or "review_failed")
+        raise HTTPException(
+            422, result.get("message") or result.get("reason") or "review_failed")
     # pt.61: persist the review so it survives a refresh / re-open days later
     # (and we don't burn tokens re-generating it). Scoped to the daily report.
     if payload.daily_report_id:
@@ -1230,10 +1261,15 @@ async def list_photo_reviews(dr_id: str, ctx: dict = Depends(require_tenant)):
         tenant_filter(ctx["tenant_id"], {"daily_report_id": dr_id}),
         {"_id": 0},
     ).sort("created_at", -1).to_list(length=100)
+    # Made-up dev stub reviews (saved when no AI key was set) are not
+    # real findings; hide them outside dev mode.
+    from services.photo_ai import _is_dev_mode, is_dev_stub_result
+    if not _is_dev_mode():
+        docs = [d for d in docs if not is_dev_stub_result(d)]
     return docs
 
 
-@router.delete("/photo-reviews/{review_id}")
+@router.delete("/photo-reviews/{review_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_photo_review(review_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     res = await db.photo_reviews.delete_one(
@@ -1254,7 +1290,7 @@ class _AttachToDrPayload(_AiStrictModel):
     add_reason: Optional[str] = None
 
 
-@router.post("/photo-tray/attach-to-dr")
+@router.post("/photo-tray/attach-to-dr", dependencies=[Depends(require_daily_report_writer)])
 async def attach_trays_to_dr(
     payload: _AttachToDrPayload, ctx: dict = Depends(require_tenant),
 ):
@@ -1264,7 +1300,8 @@ async def attach_trays_to_dr(
     tenant_id = ctx["tenant_id"]
     dr = await db.daily_reports.find_one(
         tenant_filter(tenant_id, {"id": payload.daily_report_id}),
-        {"_id": 0, "id": 1, "project_id": 1, "status": 1},
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1,
+         "prepared_by": 1, "created_by": 1},
     )
     if not dr:
         raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
@@ -1272,6 +1309,10 @@ async def attach_trays_to_dr(
     # project (403 keeps a phone's queued attach). Each photo must be on the
     # same project (checked per photo below).
     await check_project_access(ctx, dr.get("project_id"), write=True)
+    # A draft takes photos only from its author, an admin or a project
+    # manager (the same rule as every other change to a draft).
+    from services.edit_permissions import ensure_can_change_draft
+    ensure_can_change_draft(ctx, dr)
 
     # Locked-DR add policy (mirrors create_photo_tag): admin/PM bypass,
     # everyone else needs an add_reason. Enforced once for the whole batch.
@@ -1386,6 +1427,7 @@ async def analyze_batch(
         )
         if not ok:
             raise HTTPException(404, "Project not found")
+    _raise_if_photo_ai_unavailable()
     from services.photo_ai import batch_analyze_pending
     if not payload.project_id and is_enforced(ctx) and not is_full_admin(ctx):
         # No project given, per-project access on: walk the caller's own
@@ -1524,6 +1566,25 @@ async def get_ai_analysis(
     if not tray:
         raise HTTPException(404, "Tray photo not found")
     await _enforce_tray_access(ctx, tray, _ROLE_VIEW)
+    from services.photo_ai import (
+        _is_dev_mode, photo_ai_can_run, is_dev_stub_result,
+        AI_UNAVAILABLE_REASON,
+    )
+    # Made-up dev stub results (saved before 2026-11-16 when no AI key was
+    # set) are never shown as real findings outside dev mode, and a photo
+    # waiting for AI while AI can't run says so instead of "queued". Only
+    # the answer changes; the saved row is left as it is.
+    if not _is_dev_mode() and (
+        is_dev_stub_result(tray)
+        or (not photo_ai_can_run()
+            and tray.get("ai_analysis_status") in ("pending", "analyzing"))
+    ):
+        tray = {
+            "ai_analysis_status": "failed",
+            "ai_failure_reason": AI_UNAVAILABLE_REASON,
+            "ai_user_overridden": tray.get("ai_user_overridden"),
+            "ai_user_override_reason": tray.get("ai_user_override_reason"),
+        }
     return {
         "tray_id": tray_id,
         "ai_analysis_status": tray.get("ai_analysis_status"),

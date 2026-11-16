@@ -20,6 +20,7 @@ from models import (
     gen_id, utc_now,
 )
 from auth import require_tenant
+from services.edit_permissions import ensure_can_change_linked_report
 from audit import write_audit
 from services.project_scope import require_project
 from services.project_access import check_record_access
@@ -227,6 +228,8 @@ async def _resolve_rfi_task_impacts(
 @router.post("/rfis", response_model=Rfi)
 async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
     await require_project(ctx, payload.project_id)
     await _check_linked_records(ctx, [
         ("daily_report", payload.daily_report_id),
@@ -397,6 +400,8 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
     before = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "RFI not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     # Addition 4 -- locked-DR edit policy.
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,

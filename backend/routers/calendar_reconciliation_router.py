@@ -18,6 +18,7 @@ import io
 from database import get_db, tenant_filter
 from auth import require_tenant
 from services.xlsx_safe import escape_row
+from services.no_work_day import no_work_heading
 
 
 router = APIRouter(tags=["calendar-reconciliation"])
@@ -122,6 +123,8 @@ async def _build_rows(tenant_id: str, project_id: str,
             "is_no_work_day": bool(dr.get("is_no_work_day")) if dr else False,
             "no_work_reason": (dr.get("no_work_reason") if dr else None),
             "no_work_note": (dr.get("no_work_note") if dr else None),
+            # "No work day — <reason>" (services/no_work_day), else None.
+            "no_work_heading": no_work_heading(dr),
         }
         out.append(row)
         cur += timedelta(days=1)
@@ -203,7 +206,7 @@ async def calendar_reconciliation_csv(
         "date", "is_working_day", "is_holiday", "is_building_closed",
         "is_restricted_access", "weather_conditions", "weather_impact_hours",
         "delay_hours", "production_hours", "headcount_total", "notes",
-        "daily_report_status",
+        "daily_report_status", "no_work_day",
     ])
     for r in rows:
         # escape_row: notes / weather text are typed by users; a leading
@@ -221,6 +224,7 @@ async def calendar_reconciliation_csv(
             r["headcount_total"],
             r.get("notes") or "",
             r.get("daily_report_status") or "",
+            r.get("no_work_heading") or "",
         ]))
     fname = f"calendar_reconciliation_{project_id[:8]}_{start.isoformat()}_{end.isoformat()}.csv"
     return Response(

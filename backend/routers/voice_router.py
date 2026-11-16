@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, R
 from typing import Optional
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel
-from auth import require_tenant
+from auth import require_tenant, ensure_daily_report_writer
 from services.voice_pipeline import process_voice_annotation
 from services.storage import get_object, put_object, aget_object, aput_object, make_path, record_file
 # Per-project access (2026-11-16). A voice annotation has no project of
@@ -31,6 +31,10 @@ async def voice_annotate(
 ):
     if kind not in ("delay", "safety_event", "qc_issue", "work_item", "rfi", "voice_note"):
         raise HTTPException(400, f"Unknown kind: {kind}")
+    # A voice note filed on a daily report is a daily-report change: a
+    # read-only role gets 403 role_read_only (the phone queue then drops it).
+    if kind == "voice_note" or (linked_entity_type or "").strip().lower() == "daily_report":
+        ensure_daily_report_writer(ctx)
     audio_bytes = await file.read()
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise HTTPException(413, "Audio file > 25MB; Whisper max")

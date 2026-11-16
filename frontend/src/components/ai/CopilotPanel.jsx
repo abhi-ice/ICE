@@ -212,7 +212,9 @@ export default function CopilotPanel({ open, onClose }) {
       const timedOut = e.name === "AbortError" || e.message?.includes("aborted");
       const detail = timedOut
         ? "Mason timed out after 60 seconds. The server may be slow or the tool call may have hung."
-        : "Mason error: " + (e.response?.data?.detail || e.message);
+        : e.response?.data?.code === "ai_unavailable"
+          ? e.response.data.detail // plain "AI isn't available right now" message
+          : "Mason error: " + (e.response?.data?.detail || e.message);
       setThread((t) => [...t, { role: "ai", text: detail, error: true, retry_payload: msg }]);
     } finally {
       setBusy(false);

@@ -282,8 +282,13 @@ class _BG:
         pass
 
 
+# The generic edit follows the daily report role rule for photos
+# (2026-11-16), so it runs as a real field-writer role ("super").
+_PATCH_CTX = {**CTX, "user": {**CTX["user"], "role": "super"}}
+
+
 def _patch(entity, rid, body):
-    return _run(iter8_router.crud_patch(entity, rid, body, _BG(), ctx=CTX))
+    return _run(iter8_router.crud_patch(entity, rid, body, _BG(), ctx=_PATCH_CTX))
 
 
 @pytest.mark.parametrize("bad", [

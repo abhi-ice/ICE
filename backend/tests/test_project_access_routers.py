@@ -305,6 +305,9 @@ def test_batch_analyze_without_project_walks_only_own_projects(db, enforced, mon
         calls.append(project_id)
         return {"attempted": 1, "complete": 1}
     monkeypatch.setattr(photo_ai, "batch_analyze_pending", fake_batch)
+    # AI counts as available here (no key and no dev mode now answer 422
+    # "ai_unavailable" before the batch runs; services/ai_unavailable.py).
+    monkeypatch.setattr(photo_ai, "photo_ai_can_run", lambda: True)
     out = run(pt.analyze_batch(pt._AiBatchPayload(limit=5), _ctx("admin2")))
     assert calls == [P2] and out["attempted"] == 1
     calls.clear()
