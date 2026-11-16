@@ -394,8 +394,8 @@ export function AiAgentsPage() {
     <div data-testid="agents-page" className="space-y-4">
       <div className="flex items-center gap-2"><Bot className="h-5 w-5" /><h1 className="text-2xl font-semibold">AI agents</h1></div>
       <p className="text-sm text-muted-foreground page-desc">
-        Multi-step agent workflows. SUBSTITUTION: master prompt §6 specified LangGraph; on Emergent we
-        use Anthropic via emergentintegrations.LlmChat with explicit graph-node functions.
+        Multi-step agent workflows, powered by Anthropic Claude. Each workflow runs as a
+        series of explicit steps, one after another.
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {[

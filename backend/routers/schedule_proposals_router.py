@@ -854,7 +854,8 @@ async def chat_with_proposal(
     import os
     import json
     import re
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    from services.anthropic_compat import LlmChat, UserMessage
+    from services.llm_keys import llm_api_key
 
     SYS = (
         "You are reviewing a parsed construction schedule. The user wants to mark "
@@ -872,7 +873,7 @@ async def chat_with_proposal(
         "- If the user asked a question (no mutation), return both arrays empty and answer in reply.\n"
         "- Reply must contain no #, *, |, or backtick characters."
     )
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    api_key = llm_api_key()
     if not api_key:
         return {"reply": "AI is unavailable (no API key configured). Use the checkbox toggles instead.",
                 "exclude": [], "include": [], "diff": proposal.get("diff")}

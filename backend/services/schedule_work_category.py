@@ -25,17 +25,19 @@ ROBUSTNESS: the import must never break on the AI step.
   * A task the model omits or mis-classifies -> that one task
     defaults to field_work and is flagged for review.
 
-LLM client: the app's existing Emergent gateway (emergentintegrations
-.llm.chat.LlmChat) -- the same provider services/schedule_ai_review.py
-uses. No new provider. The import is LAZY (inside _classify_via_llm)
-so this module loads even where the package is absent (e.g. unit
-tests of the pure helpers + the no-key fallback path).
+LLM client: services.anthropic_compat.LlmChat (Claude through the
+official anthropic package) -- the same client services/schedule_ai_review.py
+uses. The import is LAZY (inside _classify_via_llm) so this module loads
+even where the package is absent (e.g. unit tests of the pure helpers +
+the no-key fallback path).
 """
 from __future__ import annotations
 import json
 import os
 import re
 from typing import Optional
+
+from services.llm_keys import llm_api_key
 
 MODEL_PROVIDER = "anthropic"
 MODEL_NAME = "claude-sonnet-4-5-20250929"
@@ -383,16 +385,16 @@ def _apply_classification(
 async def _classify_via_llm(
     rows: list, project_name: str, context_note: str,
 ) -> tuple:
-    """Call Claude (Emergent gateway) to classify the task list.
+    """Call Claude to classify the task list.
 
     Returns (tag_map, model_label, ai_error). tag_map is None on any
     hard failure (no key, package missing, network error, unparseable
     response) -- the caller then defaults every task."""
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    api_key = llm_api_key()
     if not api_key:
         return None, "fallback", "AI tagging skipped: no API key configured."
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.anthropic_compat import LlmChat, UserMessage
     except Exception as e:  # package absent in this environment
         return None, "fallback", f"AI tagging unavailable: {e}"[:240]
 

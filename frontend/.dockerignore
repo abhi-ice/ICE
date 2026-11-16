@@ -1,0 +1,16 @@
+# Ignore list for frontend/Dockerfile (the Railway "web" service).
+# The build context is the frontend/ folder.
+
+# Installed packages and old builds are recreated inside the image.
+node_modules/
+build/
+
+# Local developer settings never go into the image. REACT_APP_BACKEND_URL
+# comes from the Railway build variable instead. (A plain .env is left alone
+# on purpose: other build systems may write one here before building.)
+.env.local
+.env.*.local
+
+# Logs and editor files.
+*.log
+.DS_Store

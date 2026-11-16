@@ -29,7 +29,8 @@ import os
 import re
 from datetime import datetime, date, timezone, timedelta
 from typing import Optional, Any
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
+from services.llm_keys import llm_api_key
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
 from services.site_time import project_today_for, project_today_iso_for
@@ -1577,7 +1578,7 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
             {"_id": 0, "id": 1, "storage_path": 1, "caption": 1, "captured_at": 1},
         ).sort("captured_at", -1).limit(6).to_list(6)
         if photos:
-            from emergentintegrations.llm.chat import ImageContent  # type: ignore
+            from services.anthropic_compat import ImageContent
             from services.storage import get_object
             import base64 as _b64
             for p in photos:
@@ -1612,7 +1613,7 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
         user_text = f"User request: {message}"
 
     chat = LlmChat(
-        api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+        api_key=llm_api_key() or "",
         session_id=session_id,
         system_message=SYSTEM_PROMPT,
     ).with_model(MODEL_PROVIDER, MODEL_NAME)

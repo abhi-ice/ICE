@@ -1,3 +1,11 @@
+# Root ignore list. Used by builds whose context is the repo root and that
+# have no Dockerfile-specific ignore file (for example the Emergent build).
+# The Railway api image is built with backend/Dockerfile, which has its own
+# list (backend/Dockerfile.dockerignore) that brings worker/ back as plain
+# files. Keep worker/ left out HERE so the Emergent build stays unchanged.
+# Do not add .env rules here either: Emergent may write .env files into the
+# build folder before it builds.
+#
 # Windows-only worker package — must NOT be included in the Linux container
 # image. Its requirements.txt lists pywin32 which fails pip install on Linux
 # and blocks k8s deployment readiness (Jul 5 2026 outage).

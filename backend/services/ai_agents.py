@@ -1,8 +1,8 @@
 """AI agents.
 
 SUBSTITUTION: master prompt §6 specified LangGraph multi-agent topology.
-Emergent runtime uses emergentintegrations.LlmChat (Anthropic via universal
-key). We preserve the multi-step "graph node" pattern as named functions
+We use services.anthropic_compat.LlmChat (Claude through the official
+anthropic package; key order in services/llm_keys.py). We preserve the multi-step "graph node" pattern as named functions
 with explicit retrieval -> reasoning -> validation phases. Token usage
 tracked in ai_usage_tracking.
 
@@ -20,7 +20,8 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
+from services.llm_keys import llm_api_key
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
 
@@ -29,7 +30,8 @@ MODEL_NAME = "claude-sonnet-4-5-20250929"
 
 
 def _key() -> str:
-    return os.environ.get("EMERGENT_LLM_KEY", "")
+    # ANTHROPIC_API_KEY first, then EMERGENT_LLM_KEY (see services/llm_keys.py).
+    return llm_api_key() or ""
 
 
 def _new_chat(session_id: str, system_message: str) -> LlmChat:

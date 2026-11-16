@@ -5,11 +5,12 @@ Emergent runtime):
 - PostgreSQL/pgvector → MongoDB; tenant isolation enforced at app layer
   via tenant_filter() in every query.
 - Celery + Redis → FastAPI BackgroundTasks (heavy jobs deferred).
-- LangGraph → emergentintegrations.LlmChat with multi-step prompt chains
-  (see services/ai_agents.py).
+- LangGraph → services.anthropic_compat.LlmChat (official Anthropic SDK)
+  with multi-step prompt chains (see services/ai_agents.py).
 - Clerk → JWT (HS256) with bcrypt; X-Tenant-ID header for tenant switch.
-- DOCKER COMPOSE & MinIO/S3 → not used; supervisor manages backend on
-  0.0.0.0:8001 per Emergent platform constraints.
+- File storage: S3-compatible bucket (STORAGE_BACKEND=s3, e.g. Railway)
+  or the Emergent object store; see services/storage.py. On Emergent,
+  supervisor runs the backend on 0.0.0.0:8001; on Railway, backend/Dockerfile.
 """
 import os
 import logging
@@ -24,29 +25,10 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-# === Anthropic direct-SDK shim (2026-05-18) =========================
-# Customer uses their own ANTHROPIC_API_KEY (set in .env) rather than
-# routing Claude through Emergent's gateway. We register a compat
-# module BEFORE any router imports emergentintegrations.llm.chat, so
-# all existing `from emergentintegrations.llm.chat import ...` lines
-# resolve to our shim and call api.anthropic.com directly.
-# Whisper STT (.llm.openai) and Stripe (.payments.stripe) keep using
-# EMERGENT_LLM_KEY -- they are NOT intercepted here.
-import sys  # noqa: E402
-if os.environ.get("ANTHROPIC_API_KEY"):
-    try:
-        from services import anthropic_compat as _anthropic_compat  # noqa: E402
-        sys.modules["emergentintegrations.llm.chat"] = _anthropic_compat
-        logging.getLogger("ice_schedule_ops").info(
-            "Anthropic direct-SDK shim active: emergentintegrations.llm.chat "
-            "-> services.anthropic_compat (ANTHROPIC_API_KEY)."
-        )
-    except Exception as _exc:  # pragma: no cover -- non-fatal boot
-        logging.getLogger("ice_schedule_ops").warning(
-            "Anthropic direct-SDK shim FAILED to load (%s); falling back "
-            "to Emergent gateway for Claude calls.", _exc,
-        )
-# ====================================================================
+# 2026-11-15 (Railway move): the old swap that pointed
+# emergentintegrations.llm.chat at services.anthropic_compat is gone. Every
+# AI module now imports services.anthropic_compat directly, so the app no
+# longer needs the emergentintegrations package to start.
 
 from database import get_db, close_db, tenant_filter  # noqa: E402
 from auth import require_tenant  # noqa: E402
@@ -446,6 +428,30 @@ def _warn_if_platform_admins_unset() -> bool:
     return True
 
 
+def _log_startup_config() -> str:
+    """Log one line naming the file store in use and which AI keys are set.
+    Only names and yes/no are logged, never a value. Returns the line."""
+    try:
+        from services.storage import storage_backend
+        backend = storage_backend()
+    except Exception as exc:  # pragma: no cover -- never block startup
+        backend = f"unknown ({type(exc).__name__})"
+
+    def _present(name: str) -> str:
+        return "yes" if (os.environ.get(name) or "").strip() else "no"
+
+    line = (
+        f"Startup config: storage backend={backend}; "
+        f"ANTHROPIC_API_KEY set={_present('ANTHROPIC_API_KEY')}; "
+        f"EMERGENT_LLM_KEY set={_present('EMERGENT_LLM_KEY')}; "
+        f"OPENAI_API_KEY set={_present('OPENAI_API_KEY')}; "
+        f"STRIPE_API_KEY set={_present('STRIPE_API_KEY')}; "
+        f"STRIPE_WEBHOOK_SECRET set={_present('STRIPE_WEBHOOK_SECRET')}"
+    )
+    logger.info(line)
+    return line
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Lifespan: entering startup")
@@ -523,18 +529,24 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning("bcrypt runtime self-test: errored out: %s", e)
+    # Say which file store and which AI key this server uses (names only,
+    # never values), so a wrong setup is obvious in the deploy log.
+    _log_startup_config()
     # Init Emergent object storage (best-effort — voice/upload work even if it fails)
     # 2026-07-06 (prod-deploy-fix) -- init_storage() is a SYNC requests.post
     # with a 30s timeout to integrations.emergentagent.com. Run it in a
     # thread + shorter deadline so a slow init endpoint can't block the
     # k8s readiness probe. Uploads lazily re-init if _storage_key is None.
+    # 2026-11-15 (Railway move): only when the Emergent store is the one in
+    # use; the S3 bucket needs no start-up step.
     try:
-        from services.storage import init_storage
-        try:
-            await _asyncio.wait_for(_asyncio.to_thread(init_storage), timeout=8.0)
-            logger.info("Object storage initialized")
-        except _asyncio.TimeoutError:
-            logger.warning("Object storage init timed out (will re-init on first upload)")
+        from services.storage import init_storage, is_emergent_backend
+        if is_emergent_backend():
+            try:
+                await _asyncio.wait_for(_asyncio.to_thread(init_storage), timeout=8.0)
+                logger.info("Object storage initialized")
+            except _asyncio.TimeoutError:
+                logger.warning("Object storage init timed out (will re-init on first upload)")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
     # Bucket F Phase 3 -- pending-row sweeper on startup. Catches photos
@@ -988,6 +1000,23 @@ async def health():
     return {"status": "ok", "service": "ice-schedule-ops"}
 
 
+@api_router.get("/health/deep")
+async def health_deep():
+    """Like /api/health, but also checks the database answers within 3
+    seconds. 200 when it does, 503 when it does not. For an outside uptime
+    monitor; the platform health check stays on /api/health."""
+    import asyncio as _asyncio_health
+    try:
+        await _asyncio_health.wait_for(get_db().command("ping"), timeout=3.0)
+    except Exception as exc:
+        logger.warning("deep health check: database ping failed (%s)", type(exc).__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "service": "ice-schedule-ops", "database": "unreachable"},
+        )
+    return {"status": "ok", "service": "ice-schedule-ops", "database": "ok"}
+
+
 # Tenant info endpoint
 @api_router.get("/tenants/current")
 async def current_tenant(ctx: dict = Depends(require_tenant)):
@@ -1037,6 +1066,11 @@ api_router.include_router(schedule_review_router)
 api_router.include_router(ws_router)
 
 app.include_router(api_router)
+
+# Write-freeze switch for the server move (services/write_freeze.py). Added
+# BEFORE the CORS middleware so CORS wraps it and browsers can read the 503.
+from services.write_freeze import WriteFreezeMiddleware  # noqa: E402
+app.add_middleware(WriteFreezeMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

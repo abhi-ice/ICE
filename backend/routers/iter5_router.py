@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta, date
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from typing import Optional, Literal, List
 from pydantic import Field
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant

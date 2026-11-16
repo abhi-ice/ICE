@@ -10,7 +10,7 @@ Replaces the prior keyword-scanning heuristic engine. The new pipeline:
      (project header, date, weather, signer, activities, crew
      presence, delays, notes).
   3. Send both to Anthropic's claude-sonnet-4-5-20250929 via the same
-     emergentintegrations LlmChat shim used by every other AI feature
+     services.anthropic_compat LlmChat used by every other AI feature
      in this codebase (services/ai_agents.py). The model returns a
      JSON object shaped:
          {"<sheet_name>": {"<cell_address>": <value>, ...}, ...}
@@ -38,7 +38,8 @@ from datetime import datetime, date as date_cls, timezone
 from io import BytesIO
 from typing import Any, Optional
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
+from services.llm_keys import llm_api_key
 from database import get_db
 from models import gen_id, utc_now
 
@@ -54,12 +55,13 @@ class DrTemplateExportError(RuntimeError):
 
 
 def _key() -> str:
-    return os.environ.get("EMERGENT_LLM_KEY", "")
+    # ANTHROPIC_API_KEY first, then EMERGENT_LLM_KEY (see services/llm_keys.py).
+    return llm_api_key() or ""
 
 
 def _new_chat(session_id: str, system_message: str) -> LlmChat:
     """Same _new_chat shape as services/ai_agents.py so the export
-    inherits the existing emergentintegrations -> Anthropic shim."""
+    uses the same Claude client and key order."""
     return LlmChat(
         api_key=_key(),
         session_id=session_id,

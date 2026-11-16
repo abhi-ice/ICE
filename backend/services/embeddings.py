@@ -12,7 +12,8 @@ Enable (Railway env):
   SPEC_EMBEDDINGS=neural
   EMBED_MODEL=text-embedding-3-small         # default
   EMBED_API_BASE=<OpenAI-compatible base>    # optional (e.g. the gateway)
-  EMBED_API_KEY=<key>                         # falls back to EMERGENT_LLM_KEY
+  EMBED_API_KEY=<key>                         # falls back to OPENAI_API_KEY,
+                                              # then EMERGENT_LLM_KEY (old setup)
 
 litellm (already a dependency) is the transport; it speaks the OpenAI embeddings
 protocol against whatever base/key are configured.
@@ -34,6 +35,22 @@ def embed_model() -> str:
     return os.environ.get("EMBED_MODEL", "text-embedding-3-small")
 
 
+def embed_api_key():
+    """The key for the embeddings endpoint: EMBED_API_KEY first, then
+    OPENAI_API_KEY (the default model is an OpenAI one), then the old
+    EMERGENT_LLM_KEY as a last fallback. None when none is set; litellm
+    then uses whatever its own environment provides."""
+    order = ("EMBED_API_KEY", "OPENAI_API_KEY", "EMERGENT_LLM_KEY")
+    if (os.environ.get("EMBED_API_BASE") or "").strip():
+        # A custom base was the old Emergent gateway setup: its key, not OpenAI's.
+        order = ("EMBED_API_KEY", "EMERGENT_LLM_KEY", "OPENAI_API_KEY")
+    for name in order:
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            return val
+    return None
+
+
 async def embed_texts(texts):
     """Return list[list[float]] aligned to `texts`, or None when neural
     embeddings are disabled/unavailable. NEVER raises — callers fall back to
@@ -47,7 +64,7 @@ async def embed_texts(texts):
         import litellm
         kwargs = {"model": embed_model(), "input": items}
         base = os.environ.get("EMBED_API_BASE")
-        key = os.environ.get("EMBED_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
+        key = embed_api_key()
         if base:
             kwargs["api_base"] = base
         if key:

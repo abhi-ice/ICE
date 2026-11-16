@@ -47,6 +47,11 @@ FLAG_META = [
         "label": "Microsoft Project connector",
         "help": "Allows projects to be scheduled by Microsoft Project through the ICE worker running on a Windows machine. Each project still opts in via its Schedule engine setting.",
     },
+    {
+        "key": "FF_WRITE_FREEZE",
+        "label": "Pause saving (server move)",
+        "help": "While on, the server refuses every change and phones keep their saves queued until users move to the new server. Sign-in and this settings page still work. Turn on only during the move.",
+    },
 ]
 
 _ALLOWED = {m["key"] for m in FLAG_META}
@@ -126,7 +131,7 @@ async def rotate_msp_token(ctx: dict = Depends(require_tenant)):
 async def download_worker(ctx: dict = Depends(require_tenant)):
     require_platform_admin(ctx)
     worker_dir = Path(__file__).resolve().parents[2] / "worker"
-    if not worker_dir.is_dir():
+    if not (worker_dir / "msp_worker.py").is_file():
         raise HTTPException(status_code=404, detail="Worker package not found on this deployment")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

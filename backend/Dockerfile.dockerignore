@@ -1,0 +1,48 @@
+# Ignore list for backend/Dockerfile (the Railway "api" service).
+#
+# The build context is the REPO ROOT. Builders that support Dockerfile-specific
+# ignore files (BuildKit) use this file INSTEAD of the root .dockerignore.
+# It is written as an allow-list: leave everything out, then bring back only
+# what the api image needs.
+#
+# Unlike the root .dockerignore, worker/ is brought back here, as plain files,
+# so the admin "download worker" button has something to zip. The Dockerfile
+# never pip-installs worker/requirements.txt (pywin32 is Windows-only).
+
+# Leave everything out by default.
+*
+
+# The backend app.
+!backend/
+!backend/**
+
+# The Windows worker package (plain files only).
+!worker/
+!worker/**
+
+# Never ship secrets, local settings, logs or caches, even inside the folders above.
+**/.env
+**/.env.*
+**/*.env.local
+worker/worker.env
+worker/cache/
+worker/projects/
+worker/**/*.log
+worker/**/*.log.*
+**/*.log
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+**/node_modules/
+
+# Tests are not needed in the running image.
+backend/tests/
+
+# The Dockerfile and this ignore file are read by the builder directly.
+backend/Dockerfile
+backend/Dockerfile.dockerignore

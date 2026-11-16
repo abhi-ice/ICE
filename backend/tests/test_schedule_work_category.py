@@ -156,10 +156,11 @@ def test_retag_preserves_user_overrides_unless_redo_all():
 # --- 3. AI-failure path: import still completes, default field_work --------
 
 def test_ai_failure_defaults_all_to_field_work():
-    """With no EMERGENT_LLM_KEY the LLM cannot be reached.
+    """With no AI key (ANTHROPIC_API_KEY or EMERGENT_LLM_KEY) the LLM cannot be reached.
     tag_work_categories must NOT raise -- it returns normally with every
     task defaulted to field_work and flagged for review (ai_error set)."""
     os.environ.pop("EMERGENT_LLM_KEY", None)
+    os.environ.pop("ANTHROPIC_API_KEY", None)
     rows = _rows()
     result = asyncio.run(
         swc.tag_work_categories(rows, project_name="Test Project"),
@@ -399,6 +400,7 @@ def test_the_project_title_row_is_not_a_section():
 
 def test_headings_label_bare_names_even_when_the_ai_is_unavailable(monkeypatch):
     monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     rows = swc.attach_section_paths(_va6b_like_rows())
     real = [r for r in rows if not r.get("excluded_as_summary")]
     asyncio.run(swc.tag_work_categories(real))

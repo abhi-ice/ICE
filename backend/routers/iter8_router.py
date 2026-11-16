@@ -323,7 +323,8 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
     """Render the plan PDF page, send to Claude vision, ask it to identify
     every room (label + polygon points). Optionally create a Location per
     detected room. Master prompt §22 — drawing_ingest agent."""
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    from services.anthropic_compat import LlmChat, UserMessage, ImageContent
+    from services.llm_keys import llm_api_key
     import pdf2image
     from PIL import Image
 
@@ -372,7 +373,7 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
         "labelled name (e.g. 'Conference Rm A') use that as 'name', otherwise "
         '"Room <code>". Skip rooms whose polygon would be smaller than 60 pixels.'
     )
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    api_key = llm_api_key() or ""
     chat = LlmChat(
         api_key=api_key,
         session_id=f"rooms-{payload.drawing_revision_id}-{payload.floor_id}",

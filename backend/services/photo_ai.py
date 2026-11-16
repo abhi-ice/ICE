@@ -55,6 +55,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from database import get_db, tenant_filter
+from services.llm_keys import has_llm_key, llm_api_key
 
 log = logging.getLogger("photo_ai")
 
@@ -80,18 +81,18 @@ except Exception as _heif_exc:
 # the posture obvious. Anthropic SDK is also import-probed here so any
 # version mismatch (e.g. v0.40 breaking changes vs. our pinned 0.39)
 # surfaces before the first photo upload rather than after.
-# Federal-contractor compliance follow-up (2026-05-12): ALL Claude Vision
-# traffic now flows through Emergent's LLM gateway via EMERGENT_LLM_KEY,
-# NOT api.anthropic.com directly. No separate Anthropic Console account
-# is maintained. The boot-time probe verifies emergentintegrations is
-# importable AND a gateway key is configured before the first analyze.
-_HAS_EMERGENT_LLM_KEY = bool(os.environ.get("EMERGENT_LLM_KEY"))
+# Key (2026-11-15, Railway move): Claude Vision uses ANTHROPIC_API_KEY,
+# or EMERGENT_LLM_KEY when that is the only key (services/llm_keys.py).
+# This boot check only logs; the real decision is made per call in
+# _is_dev_mode(), so a key added later is picked up after a restart.
+_HAS_LLM_KEY = has_llm_key()
+_HAS_EMERGENT_LLM_KEY = _HAS_LLM_KEY  # old name, kept for any outside reader
 _PHOTO_AI_DEV_OVERRIDE = os.environ.get("PHOTO_AI_DEV_MODE") == "1"
-if not _HAS_EMERGENT_LLM_KEY:
+if not _HAS_LLM_KEY:
     log.warning(
-        "Photo AI: EMERGENT_LLM_KEY not set -- falling back to "
-        "deterministic dev stub. Real Claude Vision will NOT be "
-        "called. Set EMERGENT_LLM_KEY to enable.",
+        "Photo AI: no AI key set (ANTHROPIC_API_KEY or EMERGENT_LLM_KEY) "
+        "-- falling back to deterministic dev stub. Real Claude Vision "
+        "will NOT be called. Set ANTHROPIC_API_KEY to enable.",
     )
 elif _PHOTO_AI_DEV_OVERRIDE:
     log.warning(
@@ -100,32 +101,31 @@ elif _PHOTO_AI_DEV_OVERRIDE:
     )
 else:
     log.info(
-        "Photo AI: Emergent LLM gateway path enabled "
-        "(EMERGENT_LLM_KEY present).",
+        "Photo AI: Claude Vision enabled (AI key present).",
     )
 
-# Probe the emergentintegrations SDK at module load. If the import
-# fails we want to know now, not on the first analyze call. The
-# gateway client (LlmChat + ImageContent + UserMessage) lives in
-# emergentintegrations.llm.chat.
+# Check the Claude client loads at module load. If the import fails we
+# want to know now, not on the first analyze call. The client (LlmChat +
+# ImageContent + UserMessage) lives in services.anthropic_compat, built on
+# the official anthropic package.
 _GATEWAY_SDK_OK = False
 try:
-    from emergentintegrations.llm.chat import (  # noqa: F401
+    from services.anthropic_compat import (  # noqa: F401
         LlmChat as _ProbeLlmChat,
         UserMessage as _ProbeUserMessage,
         ImageContent as _ProbeImageContent,
     )
     _GATEWAY_SDK_OK = True
-    log.info("Photo AI: emergentintegrations gateway SDK import OK")
+    log.info("Photo AI: Claude client (services.anthropic_compat) import OK")
 except ImportError as _gw_exc:
     log.warning(
-        "Photo AI: gateway client init failed: emergentintegrations "
+        "Photo AI: Claude client init failed: anthropic package "
         "not installed (%s) -- dev stub will be used.",
         _gw_exc,
     )
 except Exception as _gw_exc:
     log.warning(
-        "Photo AI: gateway client init failed: %s -- dev stub will be used.",
+        "Photo AI: Claude client init failed: %s -- dev stub will be used.",
         _gw_exc,
     )
 
@@ -608,25 +608,24 @@ async def find_dedup_source(
 # =====================================================================
 
 def _is_dev_mode() -> bool:
-    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no Emergent gateway
-    key OR gateway SDK import failed. Real Vision requires
-    EMERGENT_LLM_KEY (federal-contractor compliance: no direct
-    Anthropic Console account). When dev mode is on, _stub_analysis
+    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no AI key OR the
+    Claude client failed to import. Real Vision needs ANTHROPIC_API_KEY
+    (or EMERGENT_LLM_KEY as a fallback, see services/llm_keys.py).
+    When dev mode is on, _stub_analysis
     returns deterministic mock data without any network call.
     """
     if os.environ.get("PHOTO_AI_DEV_MODE") == "1":
         return True
     if not _GATEWAY_SDK_OK:
         return True
-    return not os.environ.get("EMERGENT_LLM_KEY")
+    return not has_llm_key()
 
 
 def _anthropic_api_key() -> Optional[str]:
-    """Returns the Emergent LLM gateway key. Name preserved for
-    back-compat with older callers; all Vision traffic now routes
-    through Emergent's gateway, not api.anthropic.com directly.
+    """Returns the AI key: ANTHROPIC_API_KEY, else EMERGENT_LLM_KEY,
+    else None. Name kept for older callers.
     """
-    return os.environ.get("EMERGENT_LLM_KEY") or None
+    return llm_api_key()
 
 
 # =====================================================================
@@ -837,9 +836,8 @@ async def _call_anthropic_vision(
     VisionTimeoutError / VisionApiError / VisionMalformedJsonError so
     the retry loop can distinguish failure classes.
 
-    Federal-contractor compliance refactor (2026-05-12): the underlying
-    transport is now Emergent's LLM gateway (via emergentintegrations
-    LlmChat) instead of direct api.anthropic.com. The 7-stage exception
+    Transport: services.anthropic_compat.LlmChat (official anthropic
+    package; see services/llm_keys.py for the key order). The 7-stage exception
     classification (sdk/client_init/payload_encode/api_error subtypes/
     response_parse/vision_malformed_json/usage_metadata) is preserved
     so audit-log triage flows are unchanged. Function name kept for
@@ -848,22 +846,22 @@ async def _call_anthropic_vision(
     api_key = _anthropic_api_key()
     if not api_key:
         raise VisionApiError(
-            "no EMERGENT_LLM_KEY configured", subtype="no_api_key",
+            "no AI key configured (set ANTHROPIC_API_KEY)", subtype="no_api_key",
         )
 
     # --- Stage 1: SDK import ----------------------------------------
     try:
-        from emergentintegrations.llm.chat import (
+        from services.anthropic_compat import (
             LlmChat, UserMessage, ImageContent,
         )
     except ImportError as exc:
         raise VisionApiError(
-            f"emergentintegrations not installed: {exc}",
+            f"anthropic client not installed: {exc}",
             subtype="sdk_unavailable",
         ) from exc
     except Exception as exc:
         raise VisionApiError(
-            f"emergentintegrations import errored "
+            f"anthropic client import errored "
             f"({type(exc).__name__}): {exc}",
             subtype="sdk_unavailable",
         ) from exc
@@ -886,7 +884,7 @@ async def _call_anthropic_vision(
         raise VisionApiError(
             f"LlmChat constructor rejected kwargs "
             f"({type(exc).__name__}: {exc}). Likely SDK version drift "
-            f"-- check `pip show emergentintegrations`.",
+            f"-- check `pip show anthropic`.",
             subtype="client_init_failed",
         ) from exc
     except Exception as exc:
@@ -920,8 +918,8 @@ async def _call_anthropic_vision(
             f"timeout after {timeout_seconds}s", subtype="api_timeout",
         ) from exc
     except Exception as exc:
-        # Classify by error string content. emergentintegrations passes
-        # gateway HTTP errors through; we look for status-code hints
+        # Classify by error string content. anthropic_compat puts the
+        # HTTP status in the error text; we look for status-code hints
         # in the message to set a useful subtype.
         cls = type(exc).__name__
         msg_str = str(exc)[:200]
@@ -947,7 +945,7 @@ async def _call_anthropic_vision(
         raise VisionApiError(msg, subtype=subtype) from exc
 
     # --- Stage 5: text extraction from gateway response -------------
-    # emergentintegrations.send_message returns a string of the
+    # LlmChat.send_message returns a string of the
     # assistant's text. Defensive cast in case a future SDK version
     # returns a richer object.
     try:
@@ -970,7 +968,7 @@ async def _call_anthropic_vision(
     data = _parse_vision_json(text)
 
     # --- Stage 7: usage / model metadata ----------------------------
-    # emergentintegrations.send_message does not currently surface
+    # LlmChat.send_message does not currently surface
     # per-call token usage as a structured object. Estimate from the
     # round-trip payload sizes so the cost dashboard at Settings ->
     # AI Usage still rolls up sensible numbers. (1 token ~= 4 chars
@@ -1483,7 +1481,7 @@ def _parse_review_json(text: str) -> dict:
 
 
 def _stub_review(lens: str, n: int) -> dict:
-    """Dev-mode (no EMERGENT_LLM_KEY) deterministic stub so the UI flow
+    """Dev-mode (no AI key) deterministic stub so the UI flow
     works end-to-end locally without spending tokens."""
     if lens == "combined":
         return {"ok": True, "lens": "combined", "photo_count": n,
@@ -1491,7 +1489,7 @@ def _stub_review(lens: str, n: int) -> dict:
                 "text": ("(Dev stub) Foreman would describe the work, then flag "
                          "any safety items — e.g. a worker without fall protection "
                          "near an open edge (OSHA 1926.501) — and any QC items, e.g. "
-                         "uneven support spacing. Set EMERGENT_LLM_KEY to run the real "
+                         "uneven support spacing. Set ANTHROPIC_API_KEY to run the real "
                          "combined review."),
                 "safety_findings": [{"issue": "(stub) missing fall protection near open edge",
                                      "osha_code": "1926.501", "severity": "major"}],
@@ -1500,12 +1498,12 @@ def _stub_review(lens: str, n: int) -> dict:
         return {"ok": True, "lens": "safety", "photo_count": n,
                 "severity": "moderate", "label": f"{n} concern{'s' if n != 1 else ''}",
                 "text": ("(Dev stub) Foreman would flag visible safety items here — "
-                         "fall protection, PPE, and housekeeping. Set EMERGENT_LLM_KEY "
+                         "fall protection, PPE, and housekeeping. Set ANTHROPIC_API_KEY "
                          "to run the real review.")}
     return {"ok": True, "lens": "qc", "photo_count": n,
             "severity": "minor", "label": "1 concern",
             "text": ("(Dev stub) Foreman would assess workmanship against spec — "
-                     "spacing, supports, and seams. Set EMERGENT_LLM_KEY to run the "
+                     "spacing, supports, and seams. Set ANTHROPIC_API_KEY to run the "
                      "real review.")}
 
 
@@ -1519,8 +1517,8 @@ async def _call_vision_review(
     images and the review system prompt."""
     api_key = _anthropic_api_key()
     if not api_key:
-        raise VisionApiError("no EMERGENT_LLM_KEY configured", subtype="no_api_key")
-    from emergentintegrations.llm.chat import (
+        raise VisionApiError("no AI key configured (set ANTHROPIC_API_KEY)", subtype="no_api_key")
+    from services.anthropic_compat import (
         LlmChat, UserMessage, ImageContent,
     )
     session_id = f"photo-review-{int(asyncio.get_event_loop().time()*1000)}"

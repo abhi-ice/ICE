@@ -6,7 +6,7 @@
 3. Master document with project-type gating (new vs renovation) — feeds
    different system prompts into AI agents
 4. NIST 800-171 control mapping + audit-log integrity verifier
-5. Polygon suggester (Claude vision via emergentintegrations)
+5. Polygon suggester (Claude vision via services.anthropic_compat)
 6. Drawing OCR (pytesseract → sheet number / title / scale auto-extract)
 7. Voice PIN auth (numeric PIN issued by admin → JWT for capture-only role)
 8. Schedule integration of marketplace milestones (linked to schedule
@@ -18,12 +18,14 @@ WebSockets are exposed in a sibling module (ws_router.py).
 import asyncio
 import io
 import json
+import logging
 import os
 import random
 import re
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional, Literal, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Form, Header
+from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from database import get_db, tenant_filter
@@ -31,12 +33,84 @@ from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant, create_access_token
 
 router = APIRouter(tags=["iter7"])
+_stripe_log = logging.getLogger("ice_schedule_ops.stripe")
 
 
 # ============================================================
 # 1. Stripe Connect — escrow-lite for marketplace
 # ============================================================
 PLATFORM_FEE_PCT = 0.05  # 5% platform fee on accepted bids
+
+
+# Stripe client (2026-11-15, Railway move). Calls go through the official
+# `stripe` package with STRIPE_API_KEY. Emergent hands out a test key that
+# only works through its own proxy library; when STRIPE_API_KEY is one of
+# those and emergentintegrations is installed, the old library is used so
+# this branch still runs unchanged on Emergent.
+def _stripe_api_key() -> str:
+    return (os.environ.get("STRIPE_API_KEY") or "").strip()
+
+
+def _emergent_stripe_classes():
+    """(StripeCheckout, CheckoutSessionRequest) from Emergent's library when
+    STRIPE_API_KEY is an Emergent proxy key and the library is installed;
+    otherwise None."""
+    if "emergent" not in _stripe_api_key().lower():
+        return None
+    try:
+        from emergentintegrations.payments.stripe.checkout import (
+            StripeCheckout, CheckoutSessionRequest,
+        )
+    except Exception:
+        return None
+    return StripeCheckout, CheckoutSessionRequest
+
+
+def _sget(obj: Any, key: str, default: Any = None) -> Any:
+    """Read a field from a Stripe object or a plain dict. Stripe objects
+    support obj[key] but not obj.get(key)."""
+    if obj is None:
+        return default
+    try:
+        val = obj[key]
+    except (KeyError, TypeError, IndexError, AttributeError):
+        val = getattr(obj, key, default) if not isinstance(obj, dict) else default
+    return default if val is None else val
+
+
+async def _stripe_create_checkout(api_key: str, *, amount_usd: float, currency: str,
+                                  success_url: str, cancel_url: str,
+                                  metadata: dict, product_name: str) -> tuple:
+    """Create a one-off Stripe Checkout payment. Returns (session_id, url)."""
+    import stripe
+    session = await asyncio.to_thread(
+        stripe.checkout.Session.create,
+        api_key=api_key,
+        mode="payment",
+        payment_method_types=["card"],
+        line_items=[{
+            "price_data": {
+                "currency": currency,
+                "product_data": {"name": product_name},
+                # Stripe takes the amount in cents.
+                "unit_amount": int(round(float(amount_usd) * 100)),
+            },
+            "quantity": 1,
+        }],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+    )
+    return _sget(session, "id"), _sget(session, "url")
+
+
+async def _stripe_get_status(api_key: str, session_id: str) -> tuple:
+    """Look up a Checkout session. Returns (status, payment_status)."""
+    import stripe
+    session = await asyncio.to_thread(
+        stripe.checkout.Session.retrieve, session_id, api_key=api_key,
+    )
+    return _sget(session, "status"), _sget(session, "payment_status")
 
 
 class AcceptBidRequest(StrictModel):
@@ -52,7 +126,6 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
     bid amount; the platform funds escrow (held until milestone reached).
     The bid response is bound to a schedule activity at acceptance, so the
     payment release condition is auditable from the schedule."""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
     db = get_db()
 
     resp = await db.marketplace_responses.find_one({"id": payload.response_id}, {"_id": 0})
@@ -68,11 +141,10 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
     bid = float(resp["bid_amount_usd"])
     fee = round(bid * PLATFORM_FEE_PCT, 2)
 
-    api_key = os.environ.get("STRIPE_API_KEY")
+    api_key = _stripe_api_key()
     if not api_key:
         raise HTTPException(500, "STRIPE_API_KEY missing")
     host_url = str(request.base_url).rstrip("/")
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
 
     success_url = f"{payload.origin_url.rstrip('/')}/marketplace?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{payload.origin_url.rstrip('/')}/marketplace"
@@ -87,15 +159,26 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
         "bid_usd": f"{bid:.2f}",
         "kind": "escrow_fund",
     }
-    session = await stripe_checkout.create_checkout_session(CheckoutSessionRequest(
-        amount=bid, currency="usd",
-        success_url=success_url, cancel_url=cancel_url, metadata=metadata,
-    ))
+    legacy = _emergent_stripe_classes()
+    if legacy:
+        StripeCheckout, CheckoutSessionRequest = legacy
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
+        session = await stripe_checkout.create_checkout_session(CheckoutSessionRequest(
+            amount=bid, currency="usd",
+            success_url=success_url, cancel_url=cancel_url, metadata=metadata,
+        ))
+        checkout_session_id, checkout_url = session.session_id, session.url
+    else:
+        checkout_session_id, checkout_url = await _stripe_create_checkout(
+            api_key, amount_usd=bid, currency="usd",
+            success_url=success_url, cancel_url=cancel_url, metadata=metadata,
+            product_name=(posting.get("title") or "Marketplace bid")[:200],
+        )
 
     txn = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
-        "session_id": session.session_id,
+        "session_id": checkout_session_id,
         "amount_usd": bid,
         "platform_fee_usd": fee,
         "currency": "usd",
@@ -112,7 +195,7 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
         "created_at": utc_now().isoformat(),
     }
     await db.payment_transactions.insert_one(txn.copy())
-    return {"url": session.url, "session_id": session.session_id}
+    return {"url": checkout_url, "session_id": checkout_session_id}
 
 
 @router.get("/marketplace/checkout-status/{session_id}")
@@ -120,7 +203,6 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
     """Frontend polls this after Stripe redirect to confirm payment + flip the
     bid response to 'accepted'. Idempotent — does not double-credit if called
     multiple times (we check txn.status first)."""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
     db = get_db()
     txn = await db.payment_transactions.find_one(
         tenant_filter(ctx["tenant_id"], {"session_id": session_id}), {"_id": 0},
@@ -130,17 +212,24 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
     if txn["status"] in ("paid", "expired"):
         return {"payment_status": txn["payment_status"], "status": txn["status"], "amount_usd": txn["amount_usd"]}
 
-    api_key = os.environ.get("STRIPE_API_KEY")
-    host_url = str(request.base_url).rstrip("/")
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
-    status_obj = await stripe_checkout.get_checkout_status(session_id)
-    payment_status = status_obj.payment_status
-    new_status = "paid" if payment_status == "paid" else ("expired" if status_obj.status == "expired" else "pending")
+    api_key = _stripe_api_key()
+    if not api_key:
+        raise HTTPException(500, "STRIPE_API_KEY missing")
+    legacy = _emergent_stripe_classes()
+    if legacy:
+        StripeCheckout = legacy[0]
+        host_url = str(request.base_url).rstrip("/")
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
+        status_obj = await stripe_checkout.get_checkout_status(session_id)
+        stripe_status, payment_status = status_obj.status, status_obj.payment_status
+    else:
+        stripe_status, payment_status = await _stripe_get_status(api_key, session_id)
+    new_status = "paid" if payment_status == "paid" else ("expired" if stripe_status == "expired" else "pending")
 
     await db.payment_transactions.update_one(
         {"id": txn["id"]},
         {"$set": {"payment_status": payment_status, "status": new_status,
-                  "stripe_status": status_obj.status,
+                  "stripe_status": stripe_status,
                   "completed_at": utc_now().isoformat() if new_status == "paid" else None}},
     )
 
@@ -175,24 +264,62 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
 
 @router.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
-    """Stripe-signed webhook. Exposed as /api/webhook/stripe per playbook."""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
-    api_key = os.environ.get("STRIPE_API_KEY")
-    host_url = str(request.base_url).rstrip("/")
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
+    """Stripe-signed webhook. Exposed as /api/webhook/stripe per playbook.
+
+    The signature is checked with STRIPE_WEBHOOK_SECRET. If that secret is
+    not set, the event is accepted unsigned (as before) and a warning is
+    logged; set the secret in production."""
     body = await request.body()
     sig = request.headers.get("Stripe-Signature", "")
-    try:
-        evt = await stripe_checkout.handle_webhook(body, sig)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    legacy = _emergent_stripe_classes()
+    if legacy:
+        StripeCheckout = legacy[0]
+        host_url = str(request.base_url).rstrip("/")
+        stripe_checkout = StripeCheckout(api_key=_stripe_api_key(), webhook_url=f"{host_url}/api/webhook/stripe")
+        try:
+            evt = await stripe_checkout.handle_webhook(body, sig)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        session_id = evt.session_id
+        payment_status = evt.payment_status
+        event_type = evt.event_type
+        event_id = evt.event_id
+    else:
+        secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+        if not secret and (_stripe_api_key() or "").startswith("sk_live_"):
+            # A live key with no secret would accept forged events.
+            _stripe_log.error("Stripe webhook: live key in use but STRIPE_WEBHOOK_SECRET is not set; event refused.")
+            return JSONResponse(status_code=400, content={"ok": False, "error": "webhook secret not configured"})
+        try:
+            if secret:
+                import stripe
+                # Raises if the signature does not match. Once it passes,
+                # the body itself is trusted and read as plain JSON below.
+                stripe.Webhook.construct_event(body, sig, secret)
+            else:
+                _stripe_log.warning(
+                    "Stripe webhook: STRIPE_WEBHOOK_SECRET is not set, so the "
+                    "event signature was NOT checked. Set it in production."
+                )
+            event = json.loads(body or b"{}")
+        except Exception as e:
+            # A 4xx makes Stripe retry and show the failure, instead of
+            # quietly treating the event as delivered.
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+        event_type = _sget(event, "type")
+        event_id = _sget(event, "id")
+        obj = _sget(_sget(event, "data", {}), "object", {})
+        # Only Checkout session events carry the session id we stored.
+        is_session = _sget(obj, "object") == "checkout.session"
+        session_id = _sget(obj, "id") if is_session else None
+        payment_status = _sget(obj, "payment_status") if is_session else None
     db = get_db()
-    if evt.session_id:
+    if session_id:
         await db.payment_transactions.update_one(
-            {"session_id": evt.session_id},
-            {"$set": {"payment_status": evt.payment_status,
-                      "webhook_event_type": evt.event_type,
-                      "webhook_event_id": evt.event_id}},
+            {"session_id": session_id},
+            {"$set": {"payment_status": payment_status,
+                      "webhook_event_type": event_type,
+                      "webhook_event_id": event_id}},
         )
     return {"ok": True}
 
@@ -587,7 +714,8 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
 
     Master prompt §22 — polygon_suggester agent.
     """
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    from services.anthropic_compat import LlmChat, UserMessage, ImageContent
+    from services.llm_keys import llm_api_key
     import base64
     from PIL import Image
     import pdf2image
@@ -626,7 +754,7 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
     img.save(buf, format="PNG")
     img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    api_key = llm_api_key() or ""
     chat = LlmChat(
         api_key=api_key, session_id=f"poly-{payload.drawing_revision_id}",
         system_message=(

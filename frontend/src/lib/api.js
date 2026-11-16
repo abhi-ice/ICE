@@ -1,7 +1,10 @@
 import axios from "axios";
 import { getToken, getActiveTenantId, clearAuth } from "./auth";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// Full site address baked in at build time (for example https://app.example.com).
+// If it is missing, fall back to the same site the page came from ("/api"),
+// instead of the broken "undefined/api". A trailing slash is trimmed.
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 export const API = `${BACKEND_URL}/api`;
 
 // Bearer-JWT only. The Google-OAuth cookie path was removed in the

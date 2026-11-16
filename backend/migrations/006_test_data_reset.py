@@ -114,7 +114,8 @@ PRESERVED_COLLECTIONS: list[str] = [
 ]
 
 
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+# Stored files are deleted through services.storage.remove_object, which
+# talks to whichever file store this server uses (S3 bucket or Emergent).
 
 
 # =====================================================================
@@ -190,20 +191,12 @@ def _delete_storage_object(path: str) -> tuple[bool, str]:
     """Best-effort delete of a single storage object. Returns
     (success, reason). 404 counts as success (already gone)."""
     try:
-        import requests
-        from services.storage import init_storage
-        key = init_storage()
-        resp = requests.delete(
-            f"{STORAGE_URL}/objects/{path}",
-            headers={"X-Storage-Key": key},
-            timeout=30,
-        )
-        if resp.status_code in (200, 204):
-            return True, "deleted"
-        if resp.status_code == 404:
-            return True, "already_gone"
-        return False, f"http_{resp.status_code}"
+        from services.storage import remove_object
+        return True, remove_object(path)
     except Exception as e:
+        reason = str(e)
+        if reason.startswith("http_"):
+            return False, reason
         return False, f"exception:{type(e).__name__}"
 
 

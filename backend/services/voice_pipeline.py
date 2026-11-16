@@ -1,10 +1,11 @@
 """Voice annotation pipeline. Master prompt §11.
 
 Two stages:
-  1. Whisper transcribe (OpenAI whisper-1 via emergentintegrations) — audio bytes → transcript
+  1. Whisper transcribe (OpenAI whisper-1 via the official openai package,
+     OPENAI_API_KEY) — audio bytes → transcript
   2. Claude structured-field extraction — transcript → entity-shaped JSON
 
-Audio file persisted to Emergent object storage under voice/{tenant_id}/.
+Audio file persisted to object storage (services/storage.py) under voice/{tenant_id}/.
 Voice annotation row saved to `voice_annotations` collection.
 """
 import os
@@ -14,33 +15,82 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from typing import Optional
-# 2026-07-06 (prod-deploy-fix) -- emergentintegrations.llm.openai and
-# emergentintegrations.llm.chat both pull in litellm, which adds ~160MB
-# to boot RSS via 900+ transitive imports. voice_router imports this
-# service at module load, so lazy the SDK to endpoint-time to keep the
-# cold pod under any reasonable k8s memory limit.
-# from emergentintegrations.llm.openai import OpenAISpeechToText   # moved inside transcribe_audio
-# from emergentintegrations.llm.chat import LlmChat, UserMessage    # moved inside call sites
+# 2026-07-06 (prod-deploy-fix) -- the AI client packages are imported
+# inside the functions that use them, not at module load, so the
+# voice router stays light at boot.
 from database import get_db
 from models import gen_id, utc_now
 from services.storage import put_object, aput_object, make_path, record_file
+from services.llm_keys import llm_api_key
 
 WHISPER_MODEL = "whisper-1"
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 
 
 def _llm_key() -> str:
-    return os.environ.get("EMERGENT_LLM_KEY", "")
+    # Claude key: ANTHROPIC_API_KEY first, then EMERGENT_LLM_KEY.
+    return llm_api_key() or ""
+
+
+def _openai_key() -> str:
+    """OpenAI key for Whisper speech-to-text."""
+    return (os.environ.get("OPENAI_API_KEY") or "").strip()
+
+
+def _emergent_stt_class():
+    """Emergent's old Whisper client, or None when it is not installed.
+    Only used when OPENAI_API_KEY is missing, so the app still works
+    unchanged if this branch is deployed on Emergent."""
+    try:
+        from emergentintegrations.llm.openai import OpenAISpeechToText
+    except Exception:
+        return None
+    return OpenAISpeechToText
+
+
+def _audio_suffix(ext: str) -> str:
+    suffix = f".{(ext or '').lstrip('.').lower()}"
+    if suffix not in (".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"):
+        suffix = ".webm"
+    return suffix
 
 
 async def transcribe_audio(audio_bytes: bytes, ext: str = "webm", language: str | None = "en") -> dict:
-    """Whisper-1 transcription. Returns {text, language, duration?}."""
-    from emergentintegrations.llm.openai import OpenAISpeechToText
-    stt = OpenAISpeechToText(api_key=_llm_key())
-    # The lib expects a file-like; use a NamedTemporaryFile so it has a name+ext
-    suffix = f".{ext.lstrip('.').lower()}"
-    if suffix not in (".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"):
-        suffix = ".webm"
+    """Whisper-1 transcription. Returns {text, language, duration?}.
+
+    Uses the official openai package with OPENAI_API_KEY. If that key is
+    missing, falls back to Emergent's client when it is installed (and
+    EMERGENT_LLM_KEY is set); otherwise raises a 422 that says what to set."""
+    suffix = _audio_suffix(ext)
+    openai_key = _openai_key()
+    if openai_key:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=openai_key)
+        kwargs = {
+            "model": WHISPER_MODEL,
+            # A (filename, bytes) pair: the file name tells Whisper the format.
+            "file": (f"voice{suffix}", audio_bytes),
+            "response_format": "json",
+        }
+        if language:
+            kwargs["language"] = language
+        resp = await client.audio.transcriptions.create(**kwargs)
+        text = getattr(resp, "text", None) or (resp.get("text") if isinstance(resp, dict) else None) or ""
+        return {"text": text, "language": language}
+
+    OpenAISpeechToText = _emergent_stt_class()
+    emergent_key = (os.environ.get("EMERGENT_LLM_KEY") or "").strip()
+    if OpenAISpeechToText is None or not emergent_key:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Speech-to-text is not set up: OPENAI_API_KEY is not set. "
+                "Ask an administrator to add it, or type the note instead."
+            ),
+        )
+    stt = OpenAISpeechToText(api_key=emergent_key)
+    # The old client expects a file-like; use a NamedTemporaryFile so it has a name+ext
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp.flush()
@@ -136,7 +186,7 @@ def transcript_looks_like_coordination(transcript: str) -> bool:
 
 async def extract_fields(transcript: str, kind: str) -> dict:
     sys = EXTRACT_SYSTEMS.get(kind, EXTRACT_SYSTEMS["work_item"])
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    from services.anthropic_compat import LlmChat, UserMessage
     chat = LlmChat(
         api_key=_llm_key(),
         session_id=f"voice-extract-{gen_id()}",

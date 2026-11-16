@@ -20,6 +20,7 @@ from datetime import date
 from typing import Optional
 
 from database import tenant_filter
+from services.llm_keys import llm_api_key
 from models import gen_id, utc_now, pred_code, pred_relationship
 
 log = logging.getLogger(__name__)
@@ -113,11 +114,11 @@ async def open_delays_for_task(db, tenant_id: str, task_id: str) -> list:
 
 # ---------------------------------------------------------------- AI helper
 async def _ask_ai(system: str, text: str) -> Optional[dict]:
-    key = os.environ.get("EMERGENT_LLM_KEY")
+    key = llm_api_key()
     if not key:
         return None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.anthropic_compat import LlmChat, UserMessage
         chat = LlmChat(api_key=key, session_id=f"sched-fb-{gen_id()}",
                        system_message=system).with_model("anthropic", "claude-sonnet-4-5-20250929")
         raw = str(await chat.send_message(UserMessage(text=text))).strip()
