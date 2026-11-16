@@ -323,6 +323,11 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks = N
     # checks (same value as updated_at). Schedule recomputes never touch it.
     if any(k in updates and updates[k] != before.get(k) for k in _PROGRESS_LOCK_FIELDS):
         updates["progress_lock_at"] = updates["updated_at"]
+    # Actual dates a person set by hand on the schedule are theirs: mark
+    # them so recomputing actual dates from the daily reports (on submit,
+    # approve or a later row save) never overwrites them (2026-11-16).
+    if any(k in updates and updates[k] != before.get(k) for k in ("actual_start", "actual_finish")):
+        updates["actuals_source"] = "manual"
 
     await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"$set": updates})
     after = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
@@ -527,30 +532,124 @@ async def lookahead(
 ):
     """Master prompt §3: '2WLA is a date-bounded query, not a separate table.'"""
     db = get_db()
-    start_d = start or project_today()
+    # The window starts on the PROJECT's site-clock today (same as the
+    # look-ahead export), not the server default timezone.
+    from services.site_time import project_tz
+    start_d = start or project_today(await project_tz(db, ctx["tenant_id"], project_id))
     end_d = start_d + timedelta(days=days)
     # pt.72: slip-aware look-ahead window — a task whose EFFECTIVE window
     # (projected when slipped, else planned) overlaps [start_d, end_d] is in
     # the 2WLA, so slipped tasks move into the right week instead of staying
-    # on their original planned dates. Replaces the verbose planned_* $or.
-    from services.schedule_filters import effective_schedule_overlap
-    docs = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-            "$expr": effective_schedule_overlap(start_d.isoformat(), end_d.isoformat()),
-        }),
-        {"_id": 0},
-    ).sort("planned_start", 1).to_list(500)
-    # Mark them in_window for downstream consumers
-    for d in docs:
-        if d.get("lookahead_status") != "in_window":
-            await db.tasks.update_one(
-                tenant_filter(ctx["tenant_id"], {"id": d["id"]}),
-                {"$set": {"lookahead_status": "in_window"}},
-            )
-            d["lookahead_status"] = "in_window"
+    # on their original planned dates. Overdue unfinished tasks (planned
+    # finish before the window, still not done) are kept too, flagged and
+    # listed first. Two separately capped queries, so overdue rows can never
+    # push in-window work out of the list (see find_window_and_overdue).
+    from services.schedule_filters import find_window_and_overdue
+    start_iso, end_iso = start_d.isoformat(), end_d.isoformat()
+    docs, window_ids = await find_window_and_overdue(
+        db, tenant_filter(ctx["tenant_id"], {"project_id": project_id,
+                                             "status": {"$ne": "deleted"}}),
+        start_iso, end_iso)
+    # Mark the in-window rows in_window for downstream consumers, in one
+    # write. Overdue rows outside the window are not marked.
+    to_mark = [d["id"] for d in docs
+               if d["id"] in window_ids and d.get("lookahead_status") != "in_window"]
+    if to_mark:
+        await db.tasks.update_many(
+            tenant_filter(ctx["tenant_id"], {"id": {"$in": to_mark}}),
+            {"$set": {"lookahead_status": "in_window"}},
+        )
+        for d in docs:
+            if d["id"] in to_mark:
+                d["lookahead_status"] = "in_window"
     return [Task(**d) for d in docs]
+
+
+# Dashboard "Active project" table (2026-11-16). The dashboard used to
+# download EVERY task through GET /projects/{id}/tasks -- which also re-checks
+# each task's status one by one (several database round trips per task), so a
+# few hundred activities took around 10 seconds -- and then showed the first 8
+# by import order, mostly finished paperwork. This endpoint returns only the
+# rows that matter this week, in priority order, from three small queries:
+#   1. overdue unfinished work (same rule as the look-ahead, see
+#      services/schedule_filters.overdue_unfinished), oldest planned finish first;
+#   2. work in progress (started, under 100%, not complete), earliest finish
+#      first;
+#   3. not-started work whose effective window reaches into the next `days`
+#      days (a late start comes first, then by effective start).
+# Each task appears once, in the first group it matches. Read-only: nothing
+# is written to the database.
+_DASHBOARD_FIELDS = {
+    "_id": 0, "id": 1, "activity_code": 1, "description": 1, "display_name": 1,
+    "status": 1, "computed_status": 1, "pct_complete": 1,
+    "planned_start": 1, "planned_finish": 1, "actual_start": 1,
+    "projected_start_date": 1, "projected_finish_date": 1,
+}
+
+
+@router.get("/projects/{project_id}/dashboard-activities")
+async def dashboard_activities(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    limit: int = Query(default=8, ge=1, le=50),
+    ctx: dict = Depends(require_tenant),
+):
+    db = get_db()
+    from services.site_time import project_tz
+    from services.schedule_filters import effective_schedule_overlap, overdue_unfinished
+    start_d = project_today(await project_tz(db, ctx["tenant_id"], project_id))
+    start_iso = start_d.isoformat()
+    end_iso = (start_d + timedelta(days=days)).isoformat()
+    eff_start = {"$ifNull": ["$projected_start_date", "$planned_start"]}
+    eff_finish = {"$ifNull": ["$projected_finish_date", "$planned_finish"]}
+    open_work = {"status": {"$nin": ["complete", "deleted"]}}
+    started = {"$or": [
+        {"status": "in_progress"},
+        {"pct_complete": {"$gt": 0}},
+        {"actual_start": {"$ne": None}},
+    ]}
+    groups = [
+        # (group name, extra filter, sort expression)
+        ("overdue", {"$expr": overdue_unfinished(start_iso, end_iso)}, "$planned_finish"),
+        ("in_progress", {"$and": [
+            started,
+            {"$or": [{"pct_complete": {"$lt": 100}}, {"pct_complete": None}]},
+            {"$or": [{"actual_finish": None}, {"actual_finish": {"$exists": False}}]},
+        ]}, eff_finish),
+        ("starting_soon", {"$and": [
+            {"$or": [{"pct_complete": {"$in": [0, None]}}, {"pct_complete": {"$exists": False}}]},
+            {"$or": [{"actual_start": None}, {"actual_start": {"$exists": False}}]},
+            {"status": {"$ne": "in_progress"}},
+            {"$expr": effective_schedule_overlap(start_iso, end_iso)},
+        ]}, eff_start),
+    ]
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for name, extra, sort_expr in groups:
+        remaining = limit - len(rows)
+        if remaining <= 0:
+            break
+        match = tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id, **open_work, **extra,
+            "id": {"$nin": list(seen)},
+        })
+        pipeline = [
+            {"$match": match},
+            {"$addFields": {"_sort_date": sort_expr}},
+            {"$sort": {"_sort_date": 1, "activity_code": 1}},
+            {"$limit": remaining},
+            {"$project": _DASHBOARD_FIELDS},
+        ]
+        async for d in db.tasks.aggregate(pipeline):
+            seen.add(d["id"])
+            for k in ("planned_start", "planned_finish", "actual_start",
+                      "projected_start_date", "projected_finish_date"):
+                if d.get(k) is not None and not isinstance(d[k], str):
+                    d[k] = str(d[k])[:10]
+            d["group"] = name
+            d["overdue"] = name == "overdue"
+            rows.append(d)
+    return {"window_start": start_iso, "window_end": end_iso, "items": rows}
 
 
 # =====================================================================

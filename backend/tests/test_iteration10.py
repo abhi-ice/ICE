@@ -158,7 +158,7 @@ class TestUnplannedActivity:
         assert r.status_code == 200, r.text
         body = r.json()
         task = body["task"]
-        assert task["activity_code"].startswith("AF"), task["activity_code"]
+        assert task["activity_code"].startswith("FW-"), task["activity_code"]
         assert task["created_in_field"] is True
         assert task["requires_pm_review"] is True
         assert task["created_from_daily_report_id"] == dr["id"]
@@ -304,8 +304,8 @@ class TestCopilotDR:
         assert "created" in result
         # Verify task created with requires_pm_review = true
         ctx = api.get(f"{BASE_URL}/api/daily-reports/{dr['id']}/context").json()
-        af_codes = [g.get("activity_code") for g in ctx["grid"] if (g.get("activity_code") or "").startswith("AF")]
-        assert af_codes, "no AF-prefixed activity in grid"
+        af_codes = [g.get("activity_code") for g in ctx["grid"] if (g.get("activity_code") or "").startswith("FW-")]
+        assert af_codes, "no FW-prefixed activity in grid"
 
     def test_copilot_mark_activity_status_tool(self, api, dr):
         # Pick an existing AF code or any code from grid

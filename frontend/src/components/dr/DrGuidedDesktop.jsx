@@ -26,6 +26,7 @@ import GuidedDialog from "./GuidedDialog";
 import { COMMON_TRADES, LockedReasonCard, isFlowReasonValid } from "./drFlowShared";
 import "./drGuidedDesktop.css";
 import { sectionLabel } from "../../lib/sectionLabel";
+import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
 
 /* ================= option lists — mockup labels, real enum values ================= */
 const opt = (pairs) => pairs.map(([label, value]) => ({ label, value }));
@@ -254,10 +255,10 @@ export default function DrGuidedDesktop({
 
   /* ---------- per-activity model ---------- */
   const activities = useMemo(() => (grid || []).filter((r) => gridSectionOf(r.work_category) === 2), [grid]);
-  const unplannedRows = useMemo(() => activities.filter((r) => (r.activity_code || "").startsWith("AF")), [activities]);
+  const unplannedRows = useMemo(() => activities.filter((r) => isFieldCreatedCode(r.activity_code)), [activities]);
   // Mockup containment: unplanned items live ONLY in the Unplanned work
   // card — they are not activity cards and don't count toward "N of M".
-  const cardRows = useMemo(() => activities.filter((r) => !(r.activity_code || "").startsWith("AF")), [activities]);
+  const cardRows = useMemo(() => activities.filter((r) => !isFieldCreatedCode(r.activity_code)), [activities]);
   const voiceNotes = useMemo(() => (voiceAnnotations || []).filter((v) => v.kind === "voice_note"), [voiceAnnotations]);
   const issueBags = { delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents };
 
@@ -401,6 +402,14 @@ export default function DrGuidedDesktop({
         // clock value; use it so a chained commit never self-409s.
         const fresh = res?.data?.task_updated_at || res?.data?.last_sync_at;
         if (fresh) gridStamps.current[m.row.id] = fresh;
+        // Back-dated report: a later report already set this activity's
+        // current progress, so this save only records history.
+        const keptFrom = res?.data?.task_progress_kept_from;
+        if (keptFrom) {
+          const [, mm, dd] = String(keptFrom).split("-");
+          toast.info(`A later report (${mm}/${dd}) already set this activity's progress; this report records history only.`,
+            { id: `kept-${m.row.id}` });
+        }
         await reload(); // the [grid] effect dissolves the draft on confirm
       } catch (e) {
         clearDraftIf(m.row.id, n); // revert only if this commit still owns the draft
@@ -536,7 +545,9 @@ export default function DrGuidedDesktop({
       if (!okToLog) throw new Error("cancelled");
       const res = await api.post(`/delays`, {
         project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
-        description: a.what.trim(), severity: a.dsev, status: a.dstat || "open",
+        // "Is it fixed yet?": send the picked status as-is (Open stays open).
+        // Skipped -> no status, and the server picks its default.
+        description: a.what.trim(), severity: a.dsev, ...(a.dstat ? { status: a.dstat } : {}),
         cause_class: a.cause, reason_category: a.cause,
         owner_attribution: a.owner || "none",
         linked_task_ids: picked.map((x) => x.id),

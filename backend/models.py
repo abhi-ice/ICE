@@ -1040,6 +1040,9 @@ class Task(ReadModel):
     # instead of recomputing.
     slip_days: Optional[int] = None
     lookahead_status: LookaheadStatus = "not_in_window"
+    # Set only by the look-ahead endpoint: the task finished (effectively)
+    # before the window start but is still not done. Never stored.
+    overdue: bool = False
     # CPM Part A (2026-05-15) -- read model accepts both legacy bare-
     # string predecessors and the new dict form. Migration 018 converts
     # all stored data to dicts; the validator handles in-flight rows
@@ -1314,6 +1317,9 @@ class DailyReportActivity(ReadModel):
     # Phase E — FK to daily_presence row picked from the grid dropdown.
     linked_crew_id: Optional[str] = None
     hours_worked: float = 0
+    # True while hours_worked / crew_count come from the crew rows logged on
+    # this activity (headcount x hours each); False once a person types hours.
+    hours_from_presence: bool = False
     delay_minutes: int = 0
     delay_reason: Optional[str] = None
     weather_impact_minutes: int = 0
@@ -1362,6 +1368,11 @@ class DailyReportActivity(ReadModel):
     #    binding_pred_code: str|None, reason: str}
     # VIEW ONLY -- never persisted to mongo, never read by the CPM engine.
     slider_gate: Optional[dict] = None
+    # Back-dated reports (2026-11-16) -- set only on a row-save response:
+    # the date (YYYY-MM-DD) of a LATER report that already set this
+    # activity's current progress, so this save recorded history only.
+    # Response-only; never persisted to mongo.
+    task_progress_kept_from: Optional[str] = None
     # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
     # the gating entity that's blocking this row, or free-text "other").
     # constraint_auto_filled marks rows where the system pre-populated

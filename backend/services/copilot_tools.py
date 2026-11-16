@@ -1495,16 +1495,9 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
     denied = await _guard(ctx, dr.get("project_id"), write=True, tool="create_unplanned_activity")
     if denied:
         return denied
-    last = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": dr["project_id"]}),
-        {"_id": 0, "activity_code": 1},
-    ).sort("activity_code", -1).limit(50).to_list(50)
-    next_n = 1
-    for r in last:
-        m = re.search(r"(\d+)$", r.get("activity_code", "") or "")
-        if m:
-            next_n = max(next_n, int(m.group(1)) + 1)
-    activity_code = f"AF{next_n:04d}"
+    # Same unique per-project field-work code as the daily report screen.
+    from services.field_activity_codes import next_field_activity_code
+    activity_code = await next_field_activity_code(db, ctx["tenant_id"], dr["project_id"])
     today_iso = dr["report_date"]
     dur = float(args.get("duration_days") or 1)
     finish = (date.fromisoformat(today_iso) + timedelta(days=int(dur))).isoformat()
@@ -1517,7 +1510,7 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
         "trade_code": args.get("trade_code"),
         "location_id": args.get("location_id"),
         "crew_id": args.get("crew_id"),
-        "status": "in_progress",
+        "status": "not_started",  # 0% and no actual start yet
         "planned_start": today_iso,
         "planned_finish": finish,
         "duration_days": dur,
@@ -1552,7 +1545,7 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
         "delay_reason": None,
         "weather_impact_minutes": 0,
         "notes": None,
-        "status_at_end_of_day": "in_progress",
+        "status_at_end_of_day": "not_started",
         "activity_code": activity_code,
         "activity_description": args["description"],
         "location_name": None,

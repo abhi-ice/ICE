@@ -521,18 +521,27 @@ async def compute_projected_finish_dates(
     # writeback. Skip it. The check is gated by enterprise_cpm_enabled() so
     # with the flag OFF there is NO extra query and this is byte-identical to
     # before.
-    from services.feature_flags import enterprise_cpm_enabled, schedule_engine_for_project
-    if enterprise_cpm_enabled():
+    from services.feature_flags import (
+        enterprise_cpm_enabled, schedule_engine_for_project,
+        schedule_mode_2_enabled, schedule_mode_for_project,
+    )
+    # Forecast from the data date (2026-11-16) -- on by default for the
+    # impact-days engine. Turned off only for a project that Microsoft
+    # Project drives (Mode 2, flag on): that engine forecasts on its own.
+    forecast_from_data_date = True
+    if enterprise_cpm_enabled() or schedule_mode_2_enabled():
         _proj = await db.projects.find_one(
             tenant_filter(tenant_id, {"id": project_id}),
-            {"_id": 0, "schedule_engine": 1},
+            {"_id": 0, "schedule_engine": 1, "schedule_mode": 1},
         ) or {}
-        if schedule_engine_for_project(_proj) == "enterprise":
+        if enterprise_cpm_enabled() and schedule_engine_for_project(_proj) == "enterprise":
             return {"recomputed": 0, "changed": [], "skipped": "enterprise_engine"}
+        if schedule_mode_2_enabled() and schedule_mode_for_project(_proj) == "mode2":
+            forecast_from_data_date = False
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
-         "duration_days": 1,
+         "duration_days": 1, "pct_complete": 1, "status": 1, "work_category": 1,
          "planned_start": 1, "planned_finish": 1,
          # CPM Cruft 3.G -- slip_days pulled so the idempotent
          # skip-if-unchanged check below can compare it.
@@ -555,6 +564,15 @@ async def compute_projected_finish_dates(
     # files stay free of DR view-metadata tokens: this function never reads
     # those view fields itself. It only consumes a {task_id -> working-day
     # shift} map.
+    # Data date: the project's site-clock today unless a caller (tests, a
+    # what-if) pins one. Unfinished work is forecast from this date: work
+    # that should already have happened but has not is moved to start no
+    # earlier than the data date (see the two forecast steps in compute()).
+    data_date_for_forecast = (
+        (data_date or await project_today_for(db, tenant_id, project_id))
+        if forecast_from_data_date else None
+    )
+
     progress_shift: dict[str, int] = {}
     if progress_cascade_enabled():
         from services.progress_cascade import build_progress_shift_map_from_db
@@ -599,6 +617,37 @@ async def compute_projected_finish_dates(
             return date.fromisoformat(str(v)[:10])
         except Exception:
             return None
+
+    # First working day on or after the data date (the data date itself
+    # when it is a working day). None when forecasting is off.
+    dd_first_day = (add_working_days(data_date_for_forecast, 0)
+                    if data_date_for_forecast is not None else None)
+
+    def _pct(task: dict) -> float:
+        try:
+            return max(0.0, min(100.0, float(task.get("pct_complete") or 0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _finish_from_remaining(ps, pf, pct) -> date:
+        """Earliest finish for the work left: remaining = planned working
+        days x share not yet done (at least 1 working day), counted with
+        the data date as day 1 when it is a working day."""
+        span = working_days_between(ps, pf + timedelta(days=1))
+        # Integer math (percent kept to 2 decimal places, as hundredths):
+        # floating point turns 10 x (1 - 0.70) into 3.0000000000000004,
+        # which rounded up to a phantom 4th day.
+        left = 10000 - int(round(pct * 100))
+        remaining = max(1, -(-span * left // 10000))
+        return add_working_days(dd_first_day, remaining - 1)
+
+    def _forecast_skipped(task: dict) -> bool:
+        """Work the data-date forecast leaves alone: complete work, and
+        paperwork (driven from the Submittals & Paperwork page, which sets
+        'in progress' with no percent -- the same tasks the progress
+        cascade skips)."""
+        return (task.get("status") == "complete"
+                or task.get("work_category") in PAPERWORK_CATEGORIES)
 
     # Memoized recursion. computed[task_id] = (impacted_start: date|None,
     # impacted_finish: date|None, total_shift: int).
@@ -645,6 +694,15 @@ async def compute_projected_finish_dates(
                 base = add_working_days(a_start, working_days_between(ps, pf))
                 imp_finish = max(add_working_days(base, own_after),
                                  add_working_days(pf, progress_shift.get(tid, 0)))
+                # Forecast from the data date: the work left cannot finish
+                # before it can be done. remaining = planned working days x
+                # share not yet done (at least 1), counted with the data
+                # date as day 1 when it is a working day. Never earlier than
+                # the formula above. A task at 100% keeps the formula.
+                # Complete (status) and paperwork tasks keep the formula.
+                pct = _pct(task)
+                if dd_first_day is not None and pct < 100 and not _forecast_skipped(task):
+                    imp_finish = max(imp_finish, _finish_from_remaining(ps, pf, pct))
             result = (a_start, imp_finish, working_days_between(pf, imp_finish))
             computed[tid] = result
             return result
@@ -711,6 +769,34 @@ async def compute_projected_finish_dates(
             # II == IP for this task (shift_from_P == 0).
             imp_start = ps
             imp_finish = pf
+
+        # Forecast from the data date (no actual start on record here).
+        #  * Complete (100% or status complete) and paperwork: unchanged.
+        #  * Progress entered but no actual start (for example percent
+        #    synced from Microsoft Project): the work left is forecast the
+        #    same way as a started task; the start is not moved.
+        #  * Not started: it cannot start in the past. When its start
+        #    (planned or pushed) is before the data date it starts on the
+        #    first working day on or after the data date and keeps its
+        #    planned working-day length plus any open delay days.
+        # Never earlier than the formula above. Successors pick the new
+        # dates up through the same cascade as any other move.
+        pct = _pct(task)
+        if (dd_first_day is not None and ps is not None and pf is not None
+                and imp_start is not None and imp_finish is not None
+                and pct < 100 and not _forecast_skipped(task)):
+            if pct > 0 or task.get("status") == "in_progress":
+                fc_finish = _finish_from_remaining(ps, pf, pct)
+                if fc_finish > imp_finish:
+                    imp_finish = fc_finish
+                    total_shift = working_days_between(pf, imp_finish)
+            elif imp_start < dd_first_day:
+                open_days = max(0, int(round(own_impact.get(tid, 0.0))))
+                fc_finish = add_working_days(
+                    dd_first_day, working_days_between(ps, pf) + open_days)
+                imp_start = dd_first_day
+                imp_finish = max(imp_finish, fc_finish)
+                total_shift = working_days_between(pf, imp_finish)
 
         result = (imp_start, imp_finish, total_shift)
         computed[tid] = result

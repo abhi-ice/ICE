@@ -505,6 +505,7 @@ async def voice_extract(
          (p.get("company_name") or "").strip().lower())
         for p in existing_presence
     }
+    crew_task_ids: list = []  # activities that got a crew row (synced below)
     for cp in (parsed.get("crew_presence") or []):
         if not isinstance(cp, dict) or not cp.get("trade_code"):
             continue
@@ -538,6 +539,16 @@ async def voice_extract(
             "created_by": actor_id,
         })
         applied["crew_presence"] += 1
+        if linked_task:
+            crew_task_ids.append(linked_task)
+
+    # Crew logged by voice counts toward its activity, the same as a crew
+    # row added by hand (2026-11-16): report row hours and crew, the task's
+    # hours to date, actual dates and status. Best effort (logged inside).
+    if crew_task_ids:
+        from services.schedule_feedback import after_presence_change
+        await after_presence_change(db, tenant_id, dr_id, crew_task_ids, dr.get("project_id"),
+                                    actor_id=actor_id, request_id=_new_id())
 
     # 4. Delays / Safety / QC / Deliveries / Coordination -- append-only
     #    inserts that re-use the same enums the manual UI accepts.

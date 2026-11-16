@@ -450,11 +450,14 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     # from DelayCreate's model dump above and is persisted as-is. Absent ->
     # None, and every anchor consumer falls back to the log date.
     _has_impact = any(float(i.get("projected_impact_days") or 0) > 0 for i in (impacts or []))
+    # Status the person picked (for example "Is it fixed yet?" -> Open) is
+    # saved exactly as picked (2026-11-16). Only when no status was sent does
+    # a delay with impact days default to In progress (it is actively pushing).
+    _status_picked = "status" in payload.model_fields_set and doc.get("status")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
-        # A delay with impact days is actively pushing -> In progress.
-        "status": ("in_progress" if _has_impact and (doc.get("status") or "open") == "open"
-                   else doc.get("status") or "open"),
+        "status": (doc["status"] if _status_picked
+                   else "in_progress" if _has_impact else "open"),
         # Exact-push model: once resolved, the real days keep pushing until
         # Daily Report actual dates take over (task_status engine).
         "push_model": "exact",

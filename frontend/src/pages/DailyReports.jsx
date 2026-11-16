@@ -104,6 +104,7 @@ import ActivityPickerDialog from "../components/dr/ActivityPickerDialog";
 import { previewDelayThenConfirm } from "../lib/delayPreview";
 import CarriedDelaysCard from "../components/dr/CarriedDelaysCard";
 import { sectionLabel } from "../lib/sectionLabel";
+import { isFieldCreatedCode } from "../lib/fieldActivityCode";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
@@ -2929,7 +2930,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
                    dailyReportId, reload }) {
   const delta = (r.pct_complete_end_of_day || 0) - (r.pct_complete_start_of_day || 0);
   const variance = delta < 0 ? "neg" : delta === 0 ? "zero" : "pos";
-  const isUnplanned = (r.activity_code || "").startsWith("AF");
+  const isUnplanned = isFieldCreatedCode(r.activity_code);
   const isStale = staleRows.has(r.id);
   const isProvisional = r.sync_state === "provisional";
   const rowErrs = submitRowErrors[r.id] || [];
@@ -5625,7 +5626,7 @@ function GuidedDrFlow({
 }) {
   // Editable "today's planned" activities (Field Work section) in grid order.
   const activities = (grid || []).filter((r) => gridSectionOf(r.work_category) === 2);
-  const unplannedRows = activities.filter((r) => (r.activity_code || "").startsWith("AF"));
+  const unplannedRows = activities.filter((r) => isFieldCreatedCode(r.activity_code));
   // Screens: 0..N-1 activities, then "unplanned", then "review".
   const N = activities.length;
   const UNPLANNED = N;

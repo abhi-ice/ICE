@@ -46,10 +46,12 @@ export default function Lookahead() {
     const filtered = showOnlyImpacted
       ? enriched.filter((t) => t._slip > 0)
       : enriched;
-    if (sortBySlipDesc) {
-      return [...filtered].sort((a, b) => b._slip - a._slip);
-    }
-    return filtered;
+    const sorted = sortBySlipDesc
+      ? [...filtered].sort((a, b) => b._slip - a._slip)
+      : filtered;
+    // Overdue unfinished work (finish date passed, not complete) always
+    // lists first; the stable sort keeps the order inside each group.
+    return [...sorted].sort((a, b) => (b.overdue ? 1 : 0) - (a.overdue ? 1 : 0));
   }, [rows, sortBySlipDesc, showOnlyImpacted]);
 
   // MS Project file pipeline (2026-07-02) -- Mode-2 projects recalculate
@@ -155,6 +157,7 @@ export default function Lookahead() {
         <div className="surface overflow-hidden">
           <table className="dense-table">
             <thead><tr>
+              <th title="Planned finish has passed but the activity is not complete.">Overdue</th>
               <th>Code</th><th>Description</th><th>Trade</th>
               <th>Plan start</th><th>Plan finish</th>
               {/* CPM Part F (2026-05-15) -- the single "Projected"
@@ -216,6 +219,13 @@ export default function Lookahead() {
                   : cs.replace(/_/g, " ");
                 return (
                   <tr key={t.id} data-testid={`lookahead-row-${t.activity_code}`} className={tint}>
+                    <td>
+                      {t.overdue
+                        ? <span data-testid={`lookahead-overdue-${t.activity_code}`}
+                            className="pill pill-red"
+                            title="Planned finish has passed but the activity is not complete.">overdue</span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="font-mono text-xs">{t.activity_code}</td>
                     <td>{t.description}</td>
                     <td>{t.trade_code || "—"}</td>
@@ -290,11 +300,11 @@ export default function Lookahead() {
                 );
               })}
               {!displayRows.length && rows.length > 0 && (
-                <tr><td colSpan="11" className="text-center py-8 text-sm text-slate-500">
+                <tr><td colSpan="12" className="text-center py-8 text-sm text-slate-500">
                   No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.
                 </td></tr>
               )}
-              {!rows.length && <tr><td colSpan="11" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
+              {!rows.length && <tr><td colSpan="12" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -345,6 +355,10 @@ function GanttView({ rows, days, onRefresh }) {
   };
 
   const onMouseDown = (e, t) => {
+    // Overdue bars are drawn pinned at the window start, not at their
+    // planned dates, so a drag offset would move the planned dates
+    // relative to a spot the user never saw. They cannot be dragged.
+    if (t.overdue) return;
     dragRef.current = {
       taskId: t.id,
       activityCode: t.activity_code,
@@ -408,8 +422,11 @@ function GanttView({ rows, days, onRefresh }) {
           {rows.map((t) => {
             const sIdx = dayIndex(t.planned_start);
             const fIdx = dayIndex(t.planned_finish);
-            const left = LABEL_W + sIdx * DAY_PX;
-            const width = Math.max(DAY_PX, (fIdx - sIdx + 1) * DAY_PX);
+            // Overdue work finished (on paper) before the window; pin a short
+            // bar at the window start instead of drawing it under
+            // the label column.
+            const left = t.overdue ? LABEL_W : LABEL_W + sIdx * DAY_PX;
+            const width = t.overdue ? DAY_PX * 2 : Math.max(DAY_PX, (fIdx - sIdx + 1) * DAY_PX);
             const isCP = t.is_critical_path;
             // Bucket C1 Phase 4 — bar color reflects computed_status when
             // it's worse than CP; amber/red overrides regardless of CP.
@@ -419,6 +436,7 @@ function GanttView({ rows, days, onRefresh }) {
               : "bg-slate-400";
             if (cs === "blocked") barClass = "bg-red-700";
             else if (cs === "behind") barClass = "bg-amber-500";
+            if (t.overdue) barClass = "bg-red-700";
             // Projected_finish overlay — extension after the planned bar
             // showing how far the open delays push the finish.
             const projShiftDays = t.projected_finish_date && t.planned_finish && t.projected_finish_date > t.planned_finish
@@ -434,14 +452,15 @@ function GanttView({ rows, days, onRefresh }) {
                   data-testid={`gantt-bar-${t.activity_code}`}
                   onMouseDown={(e) => onMouseDown(e, t)}
                   style={{ position: "absolute", left, top: 4, width, height: ROW_H - 8 }}
-                  className={`rounded text-white text-xs flex items-center px-2 cursor-grab select-none transition-transform ${barClass}`}
-                  title={cs === "blocked" ? "Blocked — open delay/RFI/work-item linked"
+                  className={`rounded text-white text-xs flex items-center px-2 ${t.overdue ? "cursor-default" : "cursor-grab"} select-none transition-transform ${barClass}`}
+                  title={t.overdue ? "Overdue: planned finish has passed but the activity is not complete. Change its dates on the Tasks page."
+                    : cs === "blocked" ? "Blocked — open delay/RFI/work-item linked"
                     : cs === "behind" ? "Behind planned %"
                     : isCP ? "Critical path" : ""}
                 >
                   <span className="truncate">{t.description} · {t.pct_complete}%</span>
                 </div>
-                {projWidth > 0 && (
+                {projWidth > 0 && !t.overdue && (
                   <div
                     title={`Projected slip +${projShiftDays}d → ${t.projected_finish_date}`}
                     style={{ position: "absolute", left: left + width, top: 4, width: projWidth, height: ROW_H - 8 }}

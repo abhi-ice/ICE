@@ -109,6 +109,10 @@ async def _ensure_indexes():
     await _safe_create_index(db.tasks, [("tenant_id", 1), ("project_id", 1), ("planned_start", 1)])
     await _safe_create_index(db.daily_reports, [("tenant_id", 1), ("project_id", 1), ("report_date", 1)], unique=True)
     await _safe_create_index(db.daily_report_activities, [("daily_report_id", 1), ("position", 1)])
+    # 2026-11-16: per-task report history (actual dates, back-dated reports,
+    # hours to date) and the earliest progress event per task.
+    from services.schedule_feedback import ensure_history_indexes
+    await ensure_history_indexes(db, _safe_create_index)
     await _safe_create_index(db.audit_log, [("tenant_id", 1), ("created_at", -1)])
     await _safe_create_index(db.audit_log, [("tenant_id", 1), ("table_name", 1), ("record_id", 1), ("created_at", -1)])
     await _safe_create_index(db.approvals, [("tenant_id", 1), ("status", 1)])
@@ -949,6 +953,30 @@ async def lifespan(app: FastAPI):
     app.state.msp_impact_refresh_task = _asyncio.create_task(
         _periodic_msp_impact_refresh(),
     )
+
+    # Daily forecast refresh (2026-11-16). The impact-days forecast starts
+    # unfinished work no earlier than the project's today, so its stored
+    # dates go stale as days pass with no events. Every hour, each active
+    # impact-days project whose forecast was not yet refreshed on its own
+    # site-clock today is recomputed once (services/forecast_refresh.py).
+    # Microsoft Project (Mode 2) and enterprise projects are skipped.
+    async def _periodic_forecast_refresh():
+        from services.forecast_refresh import refresh_due_forecasts
+        first_pass = True
+        while True:
+            try:
+                # Short first sleep so the settings cache (feature flags)
+                # is loaded before the first pass decides each engine.
+                await _asyncio.sleep(120 if first_pass else 3600)
+                first_pass = False
+                await refresh_due_forecasts(get_db())
+            except _asyncio.CancelledError:
+                logger.info("forecast refresh task cancelled")
+                raise
+            except Exception as exc:
+                logger.warning("forecast refresh tick failed (non-fatal): %s", exc)
+
+    app.state.forecast_refresh_task = _asyncio.create_task(_periodic_forecast_refresh())
     logger.info("Lifespan: startup complete, yielding to app")
     yield
     # Cancel the recurring tasks before closing the DB so the next
@@ -965,6 +993,7 @@ async def lifespan(app: FastAPI):
         "submittal_sla_breach_task",
         "friday_recovery_task",
         "msp_impact_refresh_task",
+        "forecast_refresh_task",
         "runtime_settings_refresh_task",
     ):
         task = getattr(app.state, attr, None)
