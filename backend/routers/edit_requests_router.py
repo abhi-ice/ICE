@@ -33,6 +33,13 @@ from models import (
 from services.edit_permissions import (
     APPROVED_EDIT_WINDOW_HOURS, PRIVILEGED_ROLES,
 )
+# Per-project access (2026-11-16). approve/deny carry the request id in
+# the URL, which the route-level dependency resolves to the report's
+# project. Filing a request names the report in the body and the lists
+# span the company, so those are handled here. Approving stays a
+# project-level power: a pm, or an admin limited to some projects, may
+# approve on the projects they are assigned to.
+from services.project_access import check_project_access, project_scope_filter
 
 
 router = APIRouter(tags=["edit-requests"])
@@ -71,6 +78,9 @@ async def file_edit_request(
     )
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    # The report id came in the body: check its project (403 on a save,
+    # never 404, so a queued request on a phone is kept).
+    await check_project_access(ctx, dr.get("project_id"), write=True)
     if dr.get("status") not in ("submitted", "approved"):
         raise HTTPException(
             422,
@@ -177,6 +187,8 @@ async def list_edit_requests(
         f["requested_by"] = ctx["user"]["id"]
     elif requested_by:
         f["requested_by"] = requested_by
+    # Only requests on projects the caller may see (switch ON).
+    f = await project_scope_filter(ctx, f)
     docs = await db.edit_requests.find(f, {"_id": 0}).sort("requested_at", -1).to_list(500)
     return [EditRequest(**d) for d in docs]
 
@@ -276,5 +288,7 @@ async def pending_count(ctx: dict = Depends(require_tenant)):
     role = (ctx["user"].get("role") or "").lower()
     if role not in PRIVILEGED_ROLES:
         f["requested_by"] = ctx["user"]["id"]
+    # Badge counts only the caller's projects (switch ON).
+    f = await project_scope_filter(ctx, f)
     n = await db.edit_requests.count_documents(f)
     return {"pending": int(n)}

@@ -31,8 +31,19 @@ from pydantic import Field
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant, create_access_token
+from services.project_access import (
+    check_project_access, check_record_access, filter_rows, is_enforced,
+    allowed_project_ids, project_scope_filter, require_full_admin,
+)
 
 router = APIRouter(tags=["iter7"])
+
+# Per-project access (2026-11-16). Routes with a project id or a project
+# record id in the URL (/projects/{project_id}/..., /marketplace/release-
+# payment/{response_id}) are checked by the route-level dependency
+# (services/project_access.enforce_project_scope). The handlers below add
+# the checks for ids sent in the body and limit the cross-project lists.
+# Routes marked "# project-scope: tenant-level" are company-wide on purpose.
 _stripe_log = logging.getLogger("ice_schedule_ops.stripe")
 
 
@@ -136,6 +147,11 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
     )
     if not posting:
         raise HTTPException(403, "You do not own this posting")
+    # The posting's project, and the activity the payment is tied to, must
+    # be ones the caller is assigned to.
+    await check_project_access(ctx, posting.get("project_id"), write=True)
+    if payload.schedule_activity_id:
+        await check_record_access(ctx, "task", payload.schedule_activity_id, write=True)
     if not resp.get("bid_amount_usd"):
         raise HTTPException(400, "Response has no bid amount")
     bid = float(resp["bid_amount_usd"])
@@ -209,6 +225,10 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
     )
     if not txn:
         raise HTTPException(404, "Transaction not found")
+    # The posting the payment belongs to must be on one of the caller's
+    # projects (or have no project).
+    if txn.get("posting_id"):
+        await check_record_access(ctx, "marketplace_posting", txn["posting_id"], write=False)
     if txn["status"] in ("paid", "expired"):
         return {"payment_status": txn["payment_status"], "status": txn["status"], "amount_usd": txn["amount_usd"]}
 
@@ -262,6 +282,7 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
     return {"payment_status": payment_status, "status": new_status, "amount_usd": txn["amount_usd"]}
 
 
+# project-scope: tenant-level (Stripe-signed webhook, no user)
 @router.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
     """Stripe-signed webhook. Exposed as /api/webhook/stripe per playbook.
@@ -407,6 +428,21 @@ async def escrow_summary(ctx: dict = Depends(require_tenant)):
     db = get_db()
     cursor = db.payment_transactions.find(tenant_filter(ctx["tenant_id"]), {"_id": 0})
     rows = await cursor.to_list(500)
+    # Per-project access (switch on): only payments for postings on the
+    # caller's projects, or postings with no project. Payment rows carry
+    # the posting id, not the project id, so the postings are looked up.
+    if is_enforced(ctx):
+        allowed = await allowed_project_ids(ctx)
+        if allowed is not None:
+            posting_ids = list({r.get("posting_id") for r in rows if r.get("posting_id")})
+            postings = await db.marketplace_postings.find(
+                tenant_filter(ctx["tenant_id"], {"id": {"$in": posting_ids}}),
+                {"_id": 0, "id": 1, "project_id": 1},
+            ).to_list(length=None)
+            project_of = {p["id"]: p.get("project_id") for p in postings}
+            rows = [r for r in rows
+                    if not project_of.get(r.get("posting_id"))
+                    or project_of.get(r.get("posting_id")) in allowed]
     funded = sum(r["amount_usd"] for r in rows if r["kind"] == "escrow_fund" and r.get("status") == "paid")
     released = sum(r["amount_usd"] for r in rows if r["kind"] == "payout" and r.get("status") == "released")
     in_escrow = funded - released
@@ -455,11 +491,18 @@ async def kb_create(payload: KbEntryCreate, ctx: dict = Depends(require_tenant))
 @router.get("/kb/entries")
 async def kb_list(ctx: dict = Depends(require_tenant), q: Optional[str] = None, limit: int = 50):
     db = get_db()
+    # Per-project access (switch on): entries from the caller's projects
+    # plus company-wide entries (no project), which were always shared.
     if q:
         from services.kb_search import search_kb
-        return await search_kb(ctx["tenant_id"], q, limit)
+        hits = await search_kb(ctx["tenant_id"], q, limit)
+        if isinstance(hits, list):
+            return await filter_rows(ctx, hits, include_company_level=True)
+        return hits
+    f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]),
+                                   include_company_level=True)
     docs = await db.kb_entries.find(
-        tenant_filter(ctx["tenant_id"]), {"_id": 0},
+        f, {"_id": 0},
     ).sort("created_at", -1).limit(limit).to_list(limit)
     return docs
 
@@ -471,9 +514,10 @@ async def kb_ingest_historical(ctx: dict = Depends(require_tenant)):
     db = get_db()
     count = 0
 
+    # Per-project access (switch on): only the caller's projects are read.
     # Closed RFIs
     rfis = await db.rfis.find(
-        tenant_filter(ctx["tenant_id"], {"status": "answered"}),
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": "answered"})),
         {"_id": 0},
     ).to_list(500)
     for r in rfis:
@@ -499,7 +543,7 @@ async def kb_ingest_historical(ctx: dict = Depends(require_tenant)):
 
     # Resolved work items
     wis = await db.work_items.find(
-        tenant_filter(ctx["tenant_id"], {"status": {"$in": ["resolved", "closed"]}}),
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": {"$in": ["resolved", "closed"]}})),
         {"_id": 0},
     ).to_list(500)
     for w in wis:
@@ -556,9 +600,9 @@ async def upsert_master_doc(project_id: str, payload: MasterDocUpsert, ctx: dict
     db = get_db()
     if payload.project_id != project_id:
         raise HTTPException(400, "project_id mismatch")
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Shared company + assignment check (404 unknown, 403 not assigned).
+    from services.project_scope import require_project
+    await require_project(ctx, project_id)
     doc = {
         "id": f"masterdoc_{project_id}",
         "tenant_id": ctx["tenant_id"],
@@ -657,6 +701,7 @@ NIST_800_171 = [
 ]
 
 
+# project-scope: tenant-level (static control list)
 @router.get("/compliance/nist-800-171")
 async def nist_controls(ctx: dict = Depends(require_tenant)):
     """Return the full NIST 800-171 control mapping with implementation status.
@@ -676,15 +721,17 @@ async def nist_controls(ctx: dict = Depends(require_tenant)):
     }
 
 
+# project-scope: tenant-level (company-wide audit log; all-projects admins only)
 @router.get("/audit-log/verify-chain")
 async def verify_audit_chain(ctx: dict = Depends(require_tenant), limit: int = 5000):
     """Walk the audit-log hash chain forwards. Each row's stored hash must
     equal SHA-256(prev_hash + canonical_payload). Returns first divergence
     (if any) plus total verified count.
 
-    Admins only (2026-11-16), like /audit-log and /audit-log/verify."""
-    from auth import role_required
-    role_required(ctx, ["admin"])
+    Admins only (2026-11-16), like /audit-log and /audit-log/verify. The
+    chain covers every project in the company, so an admin limited to
+    specific projects cannot run it."""
+    require_full_admin(ctx)
     import hashlib
     db = get_db()
     rows = await db.audit_logs.find(
@@ -732,6 +779,9 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
     import pdf2image
 
     db = get_db()
+    # The drawing revision (body) must be on a project the caller is
+    # assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id, write=True)
     rev = await db.drawing_revisions.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.drawing_revision_id}), {"_id": 0},
     )
@@ -834,6 +884,9 @@ async def drawing_ocr(payload: DrawingOcrRequest, ctx: dict = Depends(require_te
     import pdf2image
     import pytesseract
     db = get_db()
+    # The drawing revision (body) must be on a project the caller is
+    # assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id, write=True)
     rev = await db.drawing_revisions.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.drawing_revision_id}), {"_id": 0},
     )
@@ -914,6 +967,11 @@ async def issue_voice_pin(payload: IssueVoicePinRequest, ctx: dict = Depends(req
     ttl_hours. The pin → JWT exchange is on /auth/voice-pin/exchange."""
     from auth import role_required
     role_required(ctx, ["admin", "pm"])
+    # The PIN is for one project: with the switch on, the caller must be
+    # assigned to it (403). An admin limited to specific projects can issue
+    # PINs for those projects. (/api/auth/ paths are skipped by the
+    # route-level check, so it is done here.)
+    await check_project_access(ctx, payload.project_id, write=True)
     db = get_db()
     # 2026-11 security round: PINs come from the operating system's secure
     # random source, not the predictable `random` module.
@@ -941,6 +999,7 @@ class ExchangePinRequest(StrictModel):
     tenant_slug: str
 
 
+# project-scope: tenant-level (public sign-in with a PIN)
 @router.post("/auth/voice-pin/exchange")
 async def exchange_voice_pin(payload: ExchangePinRequest, request: Request):
     """Public — voice user keys in their PIN, gets a 'voice' scope JWT.
@@ -948,30 +1007,41 @@ async def exchange_voice_pin(payload: ExchangePinRequest, request: Request):
     2026-11 security round:
       * an unknown company and a wrong PIN get the same 401 reply, so the
         endpoint cannot be used to discover company slugs;
-      * wrong tries are throttled (20 per company and 50 per client
-        address in 15 minutes, then 429 with Retry-After);
-      * only the company's id, display name and slug are returned."""
+      * wrong tries are throttled, then 429 with Retry-After;
+      * only the company's id, display name and slug are returned.
+
+    2026-11-16:
+      * the throttle is 20 wrong tries per (company, client address) and 200
+        per company from all addresses (it was 20 per company, so one person
+        guessing could lock every PIN in the company), plus 50 per address;
+      * a PIN is used up in the same database step that checks it
+        (find_one_and_update on "not yet used and not expired"), so two
+        simultaneous requests can no longer both redeem one PIN."""
     from auth import (check_throttle, record_failure, client_ip, IP_FAILURE_LIMIT,
                       reserve_attempt, release_attempt)
     db = get_db()
-    slug_key = f"voicepin:slug:{(payload.tenant_slug or '').strip().lower()}"
-    ip_key = f"voicepin:ip:{client_ip(request)}"
+    ip = client_ip(request)
+    slug = (payload.tenant_slug or '').strip().lower()
+    slug_key = f"voicepin:slug:{slug}"
+    slug_ip_key = f"voicepin:slugip:{slug}|{ip}"
+    ip_key = f"voicepin:ip:{ip}"
     await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
-    # The company's row is written before the PIN check, so simultaneous
-    # guesses cannot all slip past the limit; a good PIN removes it below.
-    rid = await reserve_attempt([(slug_key, 20)])
+    # The company's rows are written before the PIN check, so simultaneous
+    # guesses cannot all slip past the limits; a good PIN removes them below.
+    rid = await reserve_attempt([(slug_ip_key, 20), (slug_key, 200)])
     tenant = await db.tenants.find_one({"slug": payload.tenant_slug}, {"_id": 0})
     rec = None
     if tenant:
-        rec = await db.voice_pins.find_one(
-            {"tenant_id": tenant["id"], "pin": payload.pin, "redeemed_at": None}, {"_id": 0},
+        now_iso = utc_now().isoformat()
+        rec = await db.voice_pins.find_one_and_update(
+            {"tenant_id": tenant["id"], "pin": payload.pin, "redeemed_at": None,
+             "expires_at": {"$gt": now_iso}},
+            {"$set": {"redeemed_at": now_iso}},
+            projection={"_id": 0},
         )
     if not rec:
         await record_failure([ip_key])
         raise HTTPException(401, "Invalid PIN")
-    if rec["expires_at"] < utc_now().isoformat():
-        await record_failure([ip_key])
-        raise HTTPException(401, "PIN expired")
     await release_attempt(rid)
     user = {
         "id": f"voicepin_{rec['id']}",
@@ -982,9 +1052,6 @@ async def exchange_voice_pin(payload: ExchangePinRequest, request: Request):
         "active_project_id": rec["project_id"],
     }
     token = create_access_token(user)
-    await db.voice_pins.update_one(
-        {"id": rec["id"]}, {"$set": {"redeemed_at": utc_now().isoformat()}},
-    )
     tenant_view = {k: tenant.get(k) for k in ("id", "display_name", "slug")}
     return {"access_token": token, "token_type": "bearer", "user": user, "tenant": tenant_view}
 
@@ -999,6 +1066,10 @@ async def check_escrow_releases(project_id: str, ctx: dict = Depends(require_ten
     milestone %, auto-release the payment.
 
     Non-fatal: errors are returned per-row, never raised."""
+    # /api/internal/ paths are skipped by the route-level check (they are
+    # meant for the worker), but this one takes a user sign-in, so the
+    # project is checked here.
+    await check_project_access(ctx, project_id, write=True)
     db = get_db()
     funded = await db.marketplace_responses.find(
         {"escrow_status": "funded", "schedule_activity_id": {"$ne": None}}, {"_id": 0},
@@ -1036,8 +1107,10 @@ async def seed_recovery(ctx: dict = Depends(require_tenant)):
     from auth import role_required
     role_required(ctx, ["admin"])
     db = get_db()
+    # An admin limited to specific projects only seeds on those projects
+    # (switch on).
     task = await db.tasks.find_one(
-        tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]}}),
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]}})),
         {"_id": 0}, sort=[("planned_start", -1)],
     )
     if not task:

@@ -34,6 +34,65 @@ from services.llm_keys import llm_api_key
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
 from services.site_time import project_today_for, project_today_iso_for
+from fastapi import HTTPException
+
+
+# ---- Per-project access (2026-11-16) -----------------------------------
+# Every tool runs with the caller's own sign-in (ctx["_access"], set by
+# execute_copilot_turn from the request). The model only chooses tool
+# ARGUMENTS; it cannot change ctx, so it cannot widen what the caller may
+# see or change:
+#   * a project named in the arguments, or the project of a record a tool
+#     reads or changes, is checked with services.project_access
+#     (switch off: recorded in project_access_watch only; on: refused);
+#   * lists without a project are limited to the caller's projects while
+#     the switch is on.
+def _access_ctx(ctx: dict) -> dict:
+    """The caller's request context. Tools called directly (tests, older
+    code) pass a request-like ctx themselves, which is used as is."""
+    a = (ctx or {}).get("_access")
+    return a if isinstance(a, dict) else ctx
+
+
+async def _guard(ctx: dict, project_id, *, write: bool, tool: str = "") -> Optional[dict]:
+    """None when the caller may use project_id (or it is empty/unknown),
+    else an error dict for the tool to return."""
+    if not isinstance(project_id, str) or not project_id:
+        return None
+    from services.project_access import check_project_access
+    try:
+        await check_project_access(_access_ctx(ctx), project_id, write=write,
+                                   route=f"copilot:{tool}" if tool else "copilot")
+    except HTTPException as e:
+        return {"error": str(e.detail)}
+    return None
+
+
+async def _guard_row(ctx: dict, coll: str, record_id, *, write: bool, tool: str = "") -> Optional[dict]:
+    """Guard the project of one record of `coll` (its project_id, or a
+    crew's home_project_id)."""
+    if not isinstance(record_id, str) or not record_id:
+        return None
+    try:
+        row = await get_db()[coll].find_one(
+            tenant_filter(ctx["tenant_id"], {"id": record_id}),
+            {"_id": 0, "project_id": 1, "home_project_id": 1},
+        )
+    except Exception:
+        row = None
+    if not row:
+        return None
+    return await _guard(ctx, row.get("project_id") or row.get("home_project_id"),
+                        write=write, tool=tool)
+
+
+async def _scope(ctx: dict, q: dict, field: str = "project_id", *,
+                 include_company_level: bool = False) -> dict:
+    """q limited to the caller's projects (switch on; unchanged when off
+    or for an all-projects admin)."""
+    from services.project_access import project_scope_filter
+    return await project_scope_filter(_access_ctx(ctx), q, field,
+                                      include_company_level=include_company_level)
 
 MODEL_PROVIDER = "anthropic"
 MODEL_NAME = "claude-sonnet-4-5-20250929"
@@ -178,7 +237,8 @@ async def _tool_search(ctx: dict, args: dict) -> dict:
     # "cannot import name 'search'". Also fixed the call signature:
     # global_search(q: str, limit: int = 10, ctx: dict). pt.27 fix.
     from routers.iter5_router import global_search as _search  # type: ignore
-    res = await _search(q=args.get("query", ""), ctx=ctx)  # type: ignore
+    # The caller's own sign-in, so the search is limited to their projects.
+    res = await _search(q=args.get("query", ""), ctx=_access_ctx(ctx))  # type: ignore
     return {"results": (res.get("results") or [])[:10]}
 
 
@@ -192,6 +252,9 @@ async def _tool_search_specs(ctx: dict, args: dict) -> dict:
     project_id = ctx.get("project_id")
     if not project_id:
         return {"error": "no active project — select a project first"}
+    denied = await _guard(ctx, project_id, write=False, tool="search_specs")
+    if denied:
+        return denied
     q = (args.get("query") or args.get("q") or "").strip()
     if not q:
         return {"error": "query arg is required"}
@@ -279,8 +342,13 @@ async def _tool_get_daily_report(ctx: dict, args: dict) -> dict:
         dr = await db.daily_reports.find_one(tenant_filter(tenant_id, q), {"_id": 0})
         if not dr:
             # Fall back: look up by date only across all projects in tenant
+            # (only the caller's projects while per-project access is on).
             dr = await db.daily_reports.find_one(
-                tenant_filter(tenant_id, {"report_date": iso}), {"_id": 0})
+                await _scope(ctx, tenant_filter(tenant_id, {"report_date": iso})), {"_id": 0})
+        if dr:
+            denied = await _guard(ctx, dr.get("project_id"), write=False, tool="get_daily_report")
+            if denied:
+                return denied
         if not dr:
             return {
                 "error": f"no daily report found for {iso}",
@@ -291,8 +359,12 @@ async def _tool_get_daily_report(ctx: dict, args: dict) -> dict:
         return await _hydrate_dr(db, tenant_id, dr)
     # No date — return 10 most recent
     q = {"project_id": project_id} if project_id else {}
+    if project_id:
+        denied = await _guard(ctx, project_id, write=False, tool="get_daily_report")
+        if denied:
+            return denied
     recent = await db.daily_reports.find(
-        tenant_filter(tenant_id, q),
+        await _scope(ctx, tenant_filter(tenant_id, q)),
         {"_id": 0, "id": 1, "report_date": 1, "status": 1, "project_id": 1},
     ).sort("report_date", -1).limit(10).to_list(10)
     return {"recent_daily_reports": recent}
@@ -335,8 +407,10 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
     # in ALLOWED and must stay out. Every returned row is also passed
     # through auth.redact_secrets below.
     ADMIN_ONLY = {"audit_log", "copilot_messages"}
-    _role = (((ctx.get("user") or {}).get("role")) or "").strip().lower()
-    if _role != "admin":
+    # 2026-11-16: both cover every project in the company, so only an admin
+    # with access to all projects may query them.
+    from services.project_access import is_full_admin
+    if not is_full_admin(_access_ctx(ctx)):
         ALLOWED = ALLOWED - ADMIN_ONLY
     collection = args.get("collection") or args.get("entity_type")
     if not collection:
@@ -360,6 +434,10 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
     db = get_db()
     tenant_id = ctx["tenant_id"]
     project_id = args.get("project_id") or ctx.get("project_id")
+    # A project the model names must be one the caller may see.
+    denied = await _guard(ctx, project_id, write=False, tool="query")
+    if denied:
+        return denied
     # Build query: always tenant-scoped, optionally project-scoped (for
     # collections that have a project_id). Tenant-wide collections like
     # subcontractors/suppliers/kb_entries/audit_log are NOT project-scoped.
@@ -400,6 +478,21 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
     q["tenant_id"] = str(tenant_id)
     if project_id and collection not in NOT_PROJECT_SCOPED:
         q["project_id"] = project_id
+    # Per-project access (switch on): rows of other projects are never
+    # returned, whatever filter the model wrote. Applied last so it is
+    # AND-ed with everything above.
+    COMPANY_LEVEL = {"subcontractors", "suppliers", "people", "equipment",
+                     "crews", "audit_log", "copilot_messages"}
+    if collection == "projects":
+        q = await _scope(ctx, q, field="id")
+    elif collection == "spec_sections":
+        from routers.iter5_router import _spec_section_scope  # type: ignore
+        q = await _spec_section_scope(_access_ctx(ctx), q)
+    elif collection in ("kb_entries", "ai_kb_recommendations"):
+        # Entries with no project were always company-wide.
+        q = await _scope(ctx, q, include_company_level=True)
+    elif collection not in COMPANY_LEVEL and not (project_id and collection not in NOT_PROJECT_SCOPED):
+        q = await _scope(ctx, q)
     # Sort: support "field" (asc) or "-field" (desc)
     sort_arg = args.get("sort")
     cursor = db[collection].find(q, {"_id": 0})
@@ -435,11 +528,16 @@ async def _tool_get_project_context(ctx: dict, args: dict) -> dict:
     tenant_id = ctx["tenant_id"]
     project_id = args.get("project_id") or ctx.get("project_id")
     if not project_id:
-        # No active project — list projects to choose from
+        # No active project — list projects to choose from (the caller's
+        # projects only while per-project access is on).
         projects = await db.projects.find(
-            tenant_filter(tenant_id), {"_id": 0, "id": 1, "name": 1, "status": 1},
+            await _scope(ctx, tenant_filter(tenant_id), field="id"),
+            {"_id": 0, "id": 1, "name": 1, "status": 1},
         ).sort("name", 1).limit(20).to_list(20)
         return {"error": "no active project", "available_projects": projects}
+    denied = await _guard(ctx, project_id, write=False, tool="get_project_context")
+    if denied:
+        return denied
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}), {"_id": 0})
     if not proj:
@@ -495,6 +593,9 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
     project_id = args.get("project_id") or ctx.get("project_id")
     if not project_id:
         return {"error": "no active project"}
+    denied = await _guard(ctx, project_id, write=False, tool="get_schedule_analysis")
+    if denied:
+        return denied
     view = (args.get("view") or "summary").lower()
     base = tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}})
     proj_fields = {"_id": 0, "activity_code": 1, "description": 1,
@@ -609,6 +710,12 @@ async def _tool_get_status(ctx: dict, args: dict) -> dict:
     db = get_db()
     et = args.get("entity_type", "tasks")
     f = tenant_filter(ctx["tenant_id"], {"project_id": ctx.get("project_id")} if ctx.get("project_id") else {})
+    if ctx.get("project_id"):
+        denied = await _guard(ctx, ctx.get("project_id"), write=False, tool="get_status")
+        if denied:
+            return denied
+    else:
+        f = await _scope(ctx, f)
     if et == "tasks":
         docs = await db.tasks.find(f, {"_id": 0, "activity_code": 1, "description": 1,
                                         "pct_complete": 1, "status": 1, "planned_finish": 1}
@@ -981,6 +1088,9 @@ async def _tool_create_location(ctx: dict, args: dict) -> dict:
     floor = await db.floors.find_one(tenant_filter(ctx["tenant_id"], {"id": args["floor_id"]}), {"_id": 0})
     if not floor:
         return {"error": f"floor {args['floor_id']} not found"}
+    denied = await _guard(ctx, floor.get("project_id"), write=True, tool="create_location")
+    if denied:
+        return denied
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -1192,6 +1302,10 @@ async def _tool_delete_entity(ctx: dict, args: dict) -> dict:
             if d: target_id = d["id"]
     if not target_id:
         return {"error": "id (or activity_code/rfi_number/submittal_number) required"}
+    # The record's project must be one the caller is assigned to.
+    denied = await _guard_row(ctx, coll_name, target_id, write=True, tool="delete_entity")
+    if denied:
+        return denied
     res = await coll.update_one(
         tenant_filter(ctx["tenant_id"], {"id": target_id}),
         {"$set": {"status": "deleted",
@@ -1231,8 +1345,18 @@ async def _tool_update_entity(ctx: dict, args: dict) -> dict:
             if not isinstance(_pv, str) or not await get_db().projects.find_one(
                     tenant_filter(ctx["tenant_id"], {"id": _pv}), {"_id": 0, "id": 1}):
                 fields.pop(_pk, None)
+            else:
+                # Moving a record onto a project: the caller must be
+                # assigned to it.
+                denied = await _guard(ctx, _pv, write=True, tool="update_entity")
+                if denied:
+                    return denied
     if not fields:
         return {"error": "fields required"}
+    # The record's current project must be one the caller is assigned to.
+    denied = await _guard_row(ctx, coll_name, target_id, write=True, tool="update_entity")
+    if denied:
+        return denied
     fields["updated_at"] = utc_now().isoformat()
     fields["updated_by"] = ctx["user"]["id"]
     res = await coll.update_one(
@@ -1277,9 +1401,12 @@ async def _tool_record_presence(ctx: dict, args: dict) -> dict:
     if not dr_id:
         return {"error": "no active daily_report_id"}
     db = get_db()
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0, "status": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0, "status": 1, "project_id": 1})
     if not dr:
         return {"error": f"daily report {dr_id} not found"}
+    denied = await _guard(ctx, dr.get("project_id"), write=True, tool="record_presence")
+    if denied:
+        return denied
     if dr.get("status") == "submitted":
         return {"error": "daily report locked"}
     doc = {
@@ -1311,6 +1438,9 @@ async def _tool_mark_activity_status(ctx: dict, args: dict) -> dict:
     if not dr_id:
         return {"error": "no active daily_report_id"}
     db = get_db()
+    denied = await _guard_row(ctx, "daily_reports", dr_id, write=True, tool="mark_activity_status")
+    if denied:
+        return denied
     row = await db.daily_report_activities.find_one(
         {"daily_report_id": dr_id, "activity_code": code}, {"_id": 0},
     )
@@ -1362,6 +1492,9 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
         return {"error": f"daily report {dr_id} not found"}
     if dr.get("status") == "submitted":
         return {"error": "daily report locked"}
+    denied = await _guard(ctx, dr.get("project_id"), write=True, tool="create_unplanned_activity")
+    if denied:
+        return denied
     last = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {"project_id": dr["project_id"]}),
         {"_id": 0, "activity_code": 1},
@@ -1511,7 +1644,8 @@ SYSTEM_PROMPT = (
 async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                                 user_id: str, user_role: str, session_id: str,
                                 message: str,
-                                daily_report_id: Optional[str] = None) -> dict:
+                                daily_report_id: Optional[str] = None,
+                                access_ctx: Optional[dict] = None) -> dict:
     """Single turn: parse → execute tools → format reply.
 
     1. Inject project context (master-doc + KB + lookahead + RFIs)
@@ -1655,9 +1789,17 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
     ).with_model(MODEL_PROVIDER, MODEL_NAME)
     started = datetime.now(timezone.utc)
 
+    # access_ctx is the caller's request context (role and project access
+    # in the active company). Older callers that do not pass it get one
+    # built from the user id and role; an admin with nothing saved counts
+    # as an all-projects admin, as before.
+    if not isinstance(access_ctx, dict):
+        access_ctx = {"tenant_id": tenant_id, "role": user_role,
+                      "user": {"id": user_id, "role": user_role}}
     ctx = {"tenant_id": tenant_id, "project_id": project_id,
            "daily_report_id": daily_report_id,
-           "user": {"id": user_id, "role": user_role}}
+           "user": {"id": user_id, "role": user_role},
+           "_access": access_ctx}
 
     # pt.28 AGENTIC LOOP: keep round-tripping with the LLM until either
     # it returns no more tool calls (final reply) or we hit the safety
@@ -1709,7 +1851,19 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                 rec = {"tool": tool, "error": "unknown tool"}
             else:
                 try:
-                    res = await impl(ctx, args)
+                    # Every write tool acts on the session's project (or a
+                    # project in its arguments): the caller must be
+                    # assigned to it. Tools that touch other records check
+                    # those records' projects themselves.
+                    denied = None
+                    if not isinstance(args, dict):
+                        args = {}
+                    if tool in WRITE_TOOLS:
+                        denied = await _guard(ctx, ctx.get("project_id"), write=True, tool=tool)
+                    if not denied and args.get("project_id"):
+                        denied = await _guard(ctx, args.get("project_id"),
+                                              write=tool in WRITE_TOOLS, tool=tool)
+                    res = denied if denied else await impl(ctx, args)
                     rec = {"tool": tool, "args": args, "result": res}
                 except Exception as e:
                     rec = {"tool": tool, "args": args, "error": str(e)}
@@ -1754,6 +1908,8 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
         "tenant_id": tenant_id,
         "user_id": user_id,
         "session_id": session_id,
+        # The project the turn ran in (2026-11-16; older rows have none).
+        "project_id": project_id,
         "request_text": message,
         "reply_text": reply,
         "actions": actions,

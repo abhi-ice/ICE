@@ -5,6 +5,14 @@
 - generic entity GET for pin deep-link
 
 All endpoints respect tenant isolation via tenant_filter().
+
+Per-project access (2026-11-16): ids in the URL (project, voice annotation,
+submittal, location, and the generic /entities/{entity_type}/{entity_id})
+are checked by the route-level dependency
+(services/project_access.enforce_project_scope). Project and record ids in
+request bodies are checked here as writes (a refusal is a 403, which a
+phone keeps queued): the submittal's project, a voice note's new link, the
+spatial metadata's drawing revision and floor.
 """
 import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -13,6 +21,8 @@ from pydantic import Field, field_validator
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
+from services.project_scope import require_project
+from services.project_access import check_record_access
 
 # CPM Part K-1 (2026-05-15) -- module-level logger for the per-task
 # impacts normalizer's "drop with log warning" semantics on malformed
@@ -39,6 +49,11 @@ async def patch_voice_annotation(
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:
         raise HTTPException(400, "No fields")
+    # The note itself is checked from the URL; the record it is being
+    # linked to must also be on a project the caller is assigned to.
+    if updates.get("linked_entity_type") and updates.get("linked_entity_id"):
+        await check_record_access(ctx, updates["linked_entity_type"], updates["linked_entity_id"],
+                                  write=True, route="/api/voice-annotations/{annotation_id}")
     res = await db.voice_annotations.update_one(
         tenant_filter(ctx["tenant_id"], {"id": annotation_id}),
         {"$set": updates},
@@ -346,9 +361,10 @@ async def create_submittal(
             f"(submittal_tech / pm / admin only)",
         )
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0, "id": 1})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Company check (404 for an unknown project, as before), then the
+    # per-project access rule (403 for a project the caller is not
+    # assigned to).
+    await require_project(ctx, payload.project_id)
     sub_no = await _next_submittal_number(db, ctx["tenant_id"], payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
@@ -738,6 +754,13 @@ async def upsert_spatial_meta(payload: SpatialMetaUpsert, ctx: dict = Depends(re
     )
     if not rev:
         raise HTTPException(404, "Drawing revision not found")
+    # The revision (and the floor, when given) come from the body, so the
+    # route-level dependency cannot see them.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id,
+                              write=True, route="/api/drawings-spatial-metadata")
+    if payload.floor_id:
+        await check_record_access(ctx, "floor", payload.floor_id,
+                                  write=True, route="/api/drawings-spatial-metadata")
     # find existing for (revision, page)
     existing = await db.drawings_spatial_metadata.find_one(
         tenant_filter(ctx["tenant_id"], {

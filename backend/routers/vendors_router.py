@@ -144,41 +144,49 @@ async def _delete_kind(kind: str, vid: str, ctx: dict) -> dict:
     return {"ok": True, "id": vid}
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.get("/subcontractors")
 async def list_subs(ctx: dict = Depends(require_tenant)):
     return await _list_kind("subcontractor", ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.post("/subcontractors")
 async def create_sub(payload: VendorIn, ctx: dict = Depends(require_tenant)):
     return await _create_kind("subcontractor", payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.patch("/subcontractors/{vid}")
 async def patch_sub(vid: str, payload: dict, ctx: dict = Depends(require_tenant)):
     return await _patch_kind("subcontractor", vid, payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.delete("/subcontractors/{vid}")
 async def delete_sub(vid: str, ctx: dict = Depends(require_tenant)):
     return await _delete_kind("subcontractor", vid, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.get("/suppliers")
 async def list_suppliers(ctx: dict = Depends(require_tenant)):
     return await _list_kind("supplier", ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.post("/suppliers")
 async def create_supplier(payload: VendorIn, ctx: dict = Depends(require_tenant)):
     return await _create_kind("supplier", payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.patch("/suppliers/{vid}")
 async def patch_supplier(vid: str, payload: dict, ctx: dict = Depends(require_tenant)):
     return await _patch_kind("supplier", vid, payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.delete("/suppliers/{vid}")
 async def delete_supplier(vid: str, ctx: dict = Depends(require_tenant)):
     return await _delete_kind("supplier", vid, ctx)

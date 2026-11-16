@@ -32,6 +32,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 from database import get_db, close_db, tenant_filter  # noqa: E402
 from auth import require_tenant  # noqa: E402
+from services.project_access import enforce_project_scope  # noqa: E402
 from routers.auth_router import router as auth_router, team_router  # noqa: E402
 from routers.projects_router import router as projects_router  # noqa: E402
 from routers.tasks_router import router as tasks_router  # noqa: E402
@@ -413,6 +414,37 @@ async def _ensure_indexes():
     # index. Safe to repeat; never raises (a failure is only logged).
     from auth import ensure_auth_attempt_indexes
     await ensure_auth_attempt_indexes(db)
+    # Per-project access (2026-11-16). project_members is read on every
+    # request that names a project, so its indexes are created here too
+    # (same definitions and names as migration 009, so nothing changes on a
+    # database that already has them). project_access_watch holds one row
+    # per (company, user, project, route, method).
+    await _safe_create_index(db.project_members,
+        [("tenant_id", 1), ("project_id", 1), ("user_id", 1)],
+        unique=True, name="pm_tenant_project_user_unique",
+    )
+    await _safe_create_index(db.project_members,
+        [("tenant_id", 1), ("user_id", 1)], name="pm_tenant_user",
+    )
+    await _safe_create_index(db.project_members,
+        [("tenant_id", 1), ("project_id", 1)], name="pm_tenant_project",
+    )
+    await _safe_create_index(db.project_access_watch,
+        [("tenant_id", 1), ("user_id", 1), ("project_id", 1), ("route", 1), ("method", 1)],
+        unique=True, name="paw_tenant_user_project_route_method",
+    )
+    await _safe_create_index(db.project_access_watch,
+        [("tenant_id", 1), ("last_at", -1)], name="paw_tenant_last_at",
+    )
+    # The route-level project check looks up the record named in the URL by
+    # its id alone (daily report, activity row, presence row, tray photo,
+    # voice note) to find its project. These collections had no index on id,
+    # so each lookup scanned the collection. Plain (not unique) indexes keep
+    # every daily-report save to one cheap lookup per step; the existing
+    # handlers' own lookups by id get faster too.
+    for coll in ("daily_reports", "daily_report_activities", "daily_presence",
+                 "photo_tray", "voice_annotations"):
+        await _safe_create_index(db[coll], [("id", 1)], name=f"{coll}_id")
 
 
 def _warn_if_platform_admins_unset() -> bool:
@@ -1036,7 +1068,9 @@ api_router.include_router(projects_router)
 api_router.include_router(tasks_router)
 api_router.include_router(daily_reports_router)
 # dr_voice_router declares its own /api prefix, mount on the app root.
-app.include_router(dr_voice_router)
+# Per-project access check (services/project_access) on every route, the
+# same as the /api routes below.
+app.include_router(dr_voice_router, dependencies=[Depends(enforce_project_scope)])
 api_router.include_router(resources_router)
 api_router.include_router(field_events_router)
 api_router.include_router(docs_router)
@@ -1070,7 +1104,12 @@ api_router.include_router(admin_settings_router)
 api_router.include_router(schedule_review_router)
 api_router.include_router(ws_router)
 
-app.include_router(api_router)
+# Per-project access (2026-11-16): one route-level check for every /api
+# route. It looks at project ids (and ids of records that belong to a
+# project) in the path and the project_id query parameter. Watch only while
+# FF_PROJECT_ACCESS is off; worker, cron, webhook, sign-in and health routes
+# are never checked (services/project_access.EXEMPT_PREFIXES).
+app.include_router(api_router, dependencies=[Depends(enforce_project_scope)])
 
 # Write-freeze switch for the server move (services/write_freeze.py). Added
 # BEFORE the CORS middleware so CORS wraps it and browsers can read the 503.

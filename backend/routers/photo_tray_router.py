@@ -165,11 +165,11 @@ async def upload_to_tray(
     capture_source values: mobile_camera | manual_upload | drawing_pin.
     """
     db = get_db()
-    proj = await db.projects.find_one(
-        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
-    )
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # The project comes in the form: unknown -> 404 (as before); not
+    # assigned with per-project access on -> 403, so a phone keeps the
+    # queued photo and retries it once the assignment is fixed.
+    from services.project_scope import require_project
+    await require_project(ctx, project_id, projection={"_id": 0, "id": 1})
     if capture_source not in ("mobile_camera", "manual_upload", "drawing_pin"):
         capture_source = "manual_upload"
 
@@ -584,6 +584,9 @@ async def create_photo_tag(
             422,
             "Tray entry and daily report must belong to the same project",
         )
+    # Both ids come in the body and share one project (checked just above):
+    # the caller must be assigned to it (403 keeps a phone's queued tag).
+    await check_project_access(ctx, dr.get("project_id"), write=True)
 
     # Bug #30 fix (2026-05-13): idempotency gate on (tenant, tray,
     # ref_field, ref_id). Same dedup pattern as field_suggestions
@@ -1051,6 +1054,10 @@ async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
 # Cross-tenant URL -> 404 (leak-resistant; never 403).
 
 from auth import has_project_access, can_manage_project_members  # noqa: E402
+from services.project_access import (  # noqa: E402
+    check_project_access, check_record_access, is_enforced, is_full_admin,
+    allowed_project_ids, require_full_admin,
+)
 from models import StrictModel as _AiStrictModel  # alias to avoid name clash
 from pydantic import Field as _AiField
 
@@ -1105,7 +1112,10 @@ async def _enforce_tray_access(ctx: dict, tray: dict,
             403,
             f"Role {role!r} cannot perform this action on AI suggestions",
         )
-    if role == "admin":
+    # 2026-11-16: only an admin with access to all projects skips the
+    # project check; an admin limited to specific projects is checked
+    # like everyone else (auth.has_project_access knows their projects).
+    if is_full_admin(ctx):
         return
     ok = await has_project_access(
         tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
@@ -1162,6 +1172,12 @@ async def photo_review(
         raise HTTPException(400, "lens must be 'combined', 'safety', or 'qc'")
     if not payload.tray_ids:
         raise HTTPException(400, "Pin at least one photo to review")
+    # Ids in the body: the daily report and every pinned photo must be on
+    # projects the caller is assigned to.
+    if payload.daily_report_id:
+        await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
+    for _tid in payload.tray_ids[:8]:
+        await check_record_access(ctx, "photo_tray", _tid, write=True)
     from services.photo_ai import review_photos
     result = await review_photos(
         tenant_id=ctx["tenant_id"], tray_ids=payload.tray_ids,
@@ -1252,6 +1268,10 @@ async def attach_trays_to_dr(
     )
     if not dr:
         raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
+    # The daily report is in the body: the caller must be assigned to its
+    # project (403 keeps a phone's queued attach). Each photo must be on the
+    # same project (checked per photo below).
+    await check_project_access(ctx, dr.get("project_id"), write=True)
 
     # Locked-DR add policy (mirrors create_photo_tag): admin/PM bypass,
     # everyone else needs an add_reason. Enforced once for the whole batch.
@@ -1357,8 +1377,9 @@ async def analyze_batch(
         raise HTTPException(
             403, f"Role {role!r} cannot run batch AI analysis (admin/pm only)",
         )
-    # Per-project RBAC if project_id is specified.
-    if payload.project_id and role != "admin":
+    # Per-project RBAC if project_id is specified. Only an admin with
+    # access to all projects skips it (2026-11-16).
+    if payload.project_id and not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=payload.project_id,
@@ -1366,6 +1387,26 @@ async def analyze_batch(
         if not ok:
             raise HTTPException(404, "Project not found")
     from services.photo_ai import batch_analyze_pending
+    if not payload.project_id and is_enforced(ctx) and not is_full_admin(ctx):
+        # No project given, per-project access on: walk the caller's own
+        # projects only, up to the same total limit.
+        allowed = await allowed_project_ids(ctx) or frozenset()
+        totals: dict = {"attempted": 0, "complete": 0, "skipped": 0,
+                        "budget_paused": 0, "failed": 0, "phash_reused": 0}
+        left = payload.limit
+        for pid in sorted(allowed):
+            if left <= 0:
+                break
+            part = await batch_analyze_pending(
+                tenant_id=ctx["tenant_id"], project_id=pid, limit=left,
+            )
+            for k in totals:
+                totals[k] += int(part.get(k) or 0)
+            left -= int(part.get("attempted") or 0)
+            if part.get("stopped_at_budget"):
+                totals["stopped_at_budget"] = True
+                break
+        return totals
     result = await batch_analyze_pending(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id, limit=payload.limit,
@@ -1524,7 +1565,8 @@ async def get_project_ai_stats(
     )
     if not proj:
         raise HTTPException(404, "Project not found")
-    if role != "admin":
+    # Only an admin with access to all projects skips the check (2026-11-16).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -1541,12 +1583,15 @@ async def get_project_ai_stats(
 
 
 # (7) GET /api/tenants/current/ai-budget (admin)
+# project-scope: tenant-level (company AI budget; all-projects admins only)
 @router.get("/tenants/current/ai-budget")
 async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
     if _user_role(ctx) not in _ROLE_BUDGET:
         raise HTTPException(
             403, "Admins only -- AI budget surfaces tenant-level spend",
         )
+    # Company setting: an admin limited to specific projects cannot see it.
+    require_full_admin(ctx)
     from services.photo_ai import check_budget
     return await check_budget(tenant_id=ctx["tenant_id"])
 
@@ -1558,6 +1603,7 @@ async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
 # PATCH /tenants/current/ai-budget (admin) -- raise/lower the monthly
 # cap or flip ai_enabled. Writes a PHOTO_AI_BUDGET_UPDATED audit entry
 # so compliance can trace who changed the cap.
+# project-scope: tenant-level (company AI budget; all-projects admins only)
 @router.patch("/tenants/current/ai-budget")
 async def update_tenant_ai_budget(
     # Bug #44-final (2026-05-14) -- unquote the payload annotation and
@@ -1577,6 +1623,8 @@ async def update_tenant_ai_budget(
         raise HTTPException(
             403, "Admins only -- only admins can modify AI budget",
         )
+    # Company setting: all-projects admins only (2026-11-16).
+    require_full_admin(ctx)
     db = get_db()
     updates: dict = {}
     if payload.ai_enabled is not None:
@@ -1604,6 +1652,7 @@ async def update_tenant_ai_budget(
 
 # GET /tenants/current/photo-ai-cost-dashboard (admin)
 # Per-day spend buckets, top-10 expensive trays, model split, budget.
+# project-scope: tenant-level (company AI spend; all-projects admins only)
 @router.get("/tenants/current/photo-ai-cost-dashboard")
 async def get_cost_dashboard_endpoint(
     days: int = 30, ctx: dict = Depends(require_tenant),
@@ -1612,6 +1661,7 @@ async def get_cost_dashboard_endpoint(
         raise HTTPException(
             403, "Admins only -- cost dashboard surfaces tenant spend",
         )
+    require_full_admin(ctx)
     if days < 1 or days > 365:
         raise HTTPException(422, "days must be 1..365")
     from services.photo_ai import get_cost_dashboard
@@ -1620,6 +1670,7 @@ async def get_cost_dashboard_endpoint(
 
 # GET /tenants/current/photo-ai-timings (admin)
 # P50/P95/P99 call timings for the dashboard performance card.
+# project-scope: tenant-level (company AI timings; all-projects admins only)
 @router.get("/tenants/current/photo-ai-timings")
 async def get_timings_endpoint(
     days: int = 7, ctx: dict = Depends(require_tenant),
@@ -1628,6 +1679,7 @@ async def get_timings_endpoint(
         raise HTTPException(
             403, "Admins only -- timings expose ops latency data",
         )
+    require_full_admin(ctx)
     if days < 1 or days > 90:
         raise HTTPException(422, "days must be 1..90")
     from services.photo_ai import get_call_timing_percentiles
@@ -1639,6 +1691,7 @@ async def get_timings_endpoint(
 # GET /tenants/current/cui-compliance-report (admin)
 # Compliance evidence for federal auditors. Writes an audit op every
 # time it's pulled so the access itself is auditable.
+# project-scope: tenant-level (company compliance report; all-projects admins only)
 @router.get("/tenants/current/cui-compliance-report")
 async def get_cui_compliance_report_endpoint(
     days: int = 90, ctx: dict = Depends(require_tenant),
@@ -1647,6 +1700,7 @@ async def get_cui_compliance_report_endpoint(
         raise HTTPException(
             403, "Admins only -- compliance reports are admin-restricted",
         )
+    require_full_admin(ctx)
     if days < 1 or days > 365:
         raise HTTPException(422, "days must be 1..365")
     from services.photo_ai import get_cui_compliance_report
@@ -1896,7 +1950,8 @@ async def list_photos_flagged_by_ai(
     if not proj:
         raise HTTPException(404, "Project not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # Only an admin with access to all projects skips the check (2026-11-16).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -1939,6 +1994,7 @@ async def list_photos_flagged_by_ai(
 # Surfaces the calibration corpus for future fine-tuning work. Paginated
 # by cursor (created_at desc). Returns the raw (original_ai, user_
 # correction, reason, kind) tuples.
+# project-scope: tenant-level (company AI feedback; all-projects admins only)
 @router.get("/tenants/current/photo-ai-calibration")
 async def list_calibration_corpus(
     limit: int = 100, cursor: Optional[str] = None,
@@ -1948,6 +2004,7 @@ async def list_calibration_corpus(
         raise HTTPException(
             403, "Admins only -- calibration corpus contains user feedback",
         )
+    require_full_admin(ctx)
     if limit < 1 or limit > 500:
         limit = 100
     db = get_db()
@@ -1969,6 +2026,7 @@ async def list_calibration_corpus(
 
 # Bucket F Phase 3 -- pending-row sweeper. Admin-only manual trigger.
 # A lifespan-startup task in server.py also runs this on boot.
+# project-scope: tenant-level (company-wide sweep; all-projects admins only)
 @router.post("/photo-tray/sweep-stuck-pending")
 async def sweep_stuck_pending_endpoint(
     older_than_minutes: int = 5, limit: int = 100,
@@ -1978,6 +2036,8 @@ async def sweep_stuck_pending_endpoint(
         raise HTTPException(
             403, "Admins only -- this resets stuck-pending rows tenant-wide",
         )
+    # Resets rows in every project, so all-projects admins only.
+    require_full_admin(ctx)
     from services.photo_ai import sweep_stuck_pending
     result = await sweep_stuck_pending(
         tenant_id=ctx["tenant_id"],

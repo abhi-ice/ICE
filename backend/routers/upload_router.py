@@ -1,4 +1,10 @@
-"""Spec PDF upload + Drawing PDF upload routes."""
+"""Spec PDF upload + Drawing PDF upload routes.
+
+Per-project access (2026-11-16): the spec and drawing revision ids in the
+URL are checked by the route-level dependency
+(services/project_access.enforce_project_scope). The drawing revision
+upload names its drawing in a form field, which the dependency cannot see,
+so it is checked here (a write: a refusal is a 403)."""
 import asyncio
 import io
 import logging
@@ -8,6 +14,7 @@ import pdfplumber
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, ProjectSpec, Drawing, StrictModel
 from auth import require_tenant
+from services.project_access import check_project_access
 from services.spec_ingest import ingest_spec_pdf
 from services.storage import put_object, aput_object, make_path, record_file
 
@@ -191,6 +198,9 @@ async def upload_drawing_revision(
     drawing = await db.drawings.find_one(tenant_filter(ctx["tenant_id"], {"id": drawing_id}), {"_id": 0})
     if not drawing:
         raise HTTPException(404, "Drawing not found")
+    # The drawing id arrives as a form field, so check its project here.
+    await check_project_access(ctx, drawing.get("project_id"), write=True,
+                               route="/api/drawing-revisions/upload")
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "PDF required")
     pdf_bytes = await file.read()

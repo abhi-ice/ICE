@@ -11,6 +11,12 @@ from models import (
 )
 from auth import require_tenant, can_manage_project_members
 from audit import write_audit
+from services.project_access import (
+    is_full_admin, is_enforced, allowed_project_ids,
+    check_project_access, check_record_access,
+)
+from services.project_scope import require_project
+
 
 router = APIRouter(tags=["projects"])
 
@@ -103,6 +109,21 @@ async def create_project(payload: ProjectCreate, ctx: dict = Depends(require_ten
         "created_by": ctx["user"]["id"],
     })
     await db.projects.insert_one(doc.copy())
+    # Per-project access (2026-11-16): whoever creates a project is assigned
+    # to it, so a project manager (or an admin limited to specific projects)
+    # can keep using the project they just made. All-projects admins see
+    # every project anyway and get no row.
+    if not is_full_admin(ctx):
+        try:
+            await db.project_members.insert_one({
+                "id": gen_id(), "tenant_id": ctx["tenant_id"], "project_id": doc["id"],
+                "user_id": ctx["user"]["id"], "role_on_project": "pm",
+                "added_at": utc_now().isoformat(), "added_by": ctx["user"]["id"],
+            })
+            ctx.pop("_pa_allowed", None)  # this request's cached project list is stale now
+        except Exception:
+            # A duplicate (unique index) means the row is already there.
+            pass
     # UI engine dropdown (2026-07-02): same one-action contract as the PATCH
     # path -- picking an engine at creation also enables its global AND-gate.
     from services import runtime_settings
@@ -156,10 +177,17 @@ async def list_projects(
     status_filter: Optional[str] = None,
     ctx: dict = Depends(require_tenant),
 ):
+    """Per-project access (2026-11-16): with FF_PROJECT_ACCESS on, only the
+    projects the caller is assigned to (all-projects admins: every project).
+    With it off the list is unchanged and nothing is recorded."""
     db = get_db()
     f = tenant_filter(ctx["tenant_id"])
     if status_filter:
         f["status"] = status_filter
+    if is_enforced(ctx):
+        allowed = await allowed_project_ids(ctx)
+        if allowed is not None:
+            f["id"] = {"$in": sorted(allowed)}
     docs = await db.projects.find(f, {"_id": 0}).sort("created_at", 1).to_list(500)
     return [Project(**d) for d in docs]
 
@@ -268,6 +296,18 @@ async def delete_project(project_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not project:
         raise HTTPException(404, "Project not found")
+    # 2026-11-16: deleting cannot be undone, so an admin limited to specific
+    # projects may only delete a project they are assigned to, whatever the
+    # FF_PROJECT_ACCESS switch says (no admin was limited before this date,
+    # so nobody loses anything). 403, never 404, for a refused write.
+    if not is_full_admin(ctx):
+        own = await db.project_members.find_one(
+            {"tenant_id": ctx["tenant_id"], "project_id": project_id,
+             "user_id": ctx["user"]["id"]},
+            {"_id": 0, "id": 1},
+        )
+        if not own:
+            raise HTTPException(403, "You are not assigned to this project")
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="projects", op="DELETE_PROJECT",
         record_id=project_id, before=project, after={},
@@ -445,10 +485,9 @@ async def get_dr_template_meta(
 @router.post("/floors", response_model=Floor)
 async def create_floor(payload: FloorCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    # ensure project belongs to tenant
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # ensure project belongs to tenant, and (2026-11-16) that the caller is
+    # assigned to it (services/project_access; watch only while the switch is off)
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({"id": gen_id(), "tenant_id": ctx["tenant_id"], "created_at": utc_now().isoformat()})
     await db.floors.insert_one(doc.copy())
@@ -468,9 +507,8 @@ async def list_floors(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.post("/locations", response_model=Location)
 async def create_location(payload: LocationCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Same company + assignment check as create_floor.
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({"id": gen_id(), "tenant_id": ctx["tenant_id"], "created_at": utc_now().isoformat()})
     await db.locations.insert_one(doc.copy())
@@ -494,6 +532,13 @@ async def update_location(location_id: str, payload: LocationCreate, ctx: dict =
     before = await db.locations.find_one(tenant_filter(ctx["tenant_id"], {"id": location_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Location not found")
+    # The location's current project is checked from the URL. The body can
+    # also move it onto another project or floor, so that destination must
+    # be one the caller is assigned to as well (403 on refusal, never 404).
+    if updates.get("project_id") and updates["project_id"] != before.get("project_id"):
+        await check_project_access(ctx, updates["project_id"], write=True)
+    if updates.get("floor_id") and updates["floor_id"] != before.get("floor_id"):
+        await check_record_access(ctx, "floor", updates["floor_id"], write=True)
     await db.locations.update_one(tenant_filter(ctx["tenant_id"], {"id": location_id}), {"$set": updates})
     after = await db.locations.find_one(tenant_filter(ctx["tenant_id"], {"id": location_id}), {"_id": 0})
     return Location(**after)

@@ -115,6 +115,11 @@ def db(monkeypatch):
     d.projects.docs.append({"id": "p-other", "tenant_id": OTHER})
     for mod in (iter3_router, iter8_router, photo_tray_router):
         monkeypatch.setattr(mod, "get_db", lambda: d)
+    # The photo upload now uses the shared project check (company, then
+    # per-project access), which reads the database through these modules.
+    from services import project_scope, project_access
+    monkeypatch.setattr(project_scope, "get_db", lambda: d)
+    monkeypatch.setattr(project_access, "get_db", lambda: d)
     return d
 
 

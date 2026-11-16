@@ -28,9 +28,21 @@ from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
 from services.project_scope import require_project, require_project_if_given
+from services.project_access import (
+    check_project_access, check_record_access, is_enforced,
+    allowed_project_ids, project_scope_filter, require_full_admin,
+    resolve_project_id,
+)
 from services.ai_agents import _new_chat, MODEL_NAME, MODEL_PROVIDER, _track_usage
 
 router = APIRouter(tags=["iter5"])
+
+# Per-project access (2026-11-16). Routes with a project id or a project
+# record id in the URL are checked by the route-level dependency
+# (services/project_access.enforce_project_scope). The handlers below add
+# the checks the URL cannot carry: project ids and record ids sent in the
+# request body, and lists that span several projects. Routes marked
+# "# project-scope: tenant-level" hold company-wide data on purpose.
 
 
 # ============================================================
@@ -45,6 +57,9 @@ class Notification(ReadModel):
     body: Optional[str] = None
     entity_type: Optional[str] = None
     entity_id: Optional[str] = None
+    # The project the notification is about (2026-11-16). Older rows have
+    # none; they stay visible to everyone they were addressed to.
+    project_id: Optional[str] = None
     read_at: Optional[str] = None
     created_at: str
 
@@ -52,13 +67,27 @@ class Notification(ReadModel):
 async def emit_notification(
     *, tenant_id: str, user_id: Optional[str], kind: str, title: str,
     body: Optional[str] = None, entity_type: Optional[str] = None,
-    entity_id: Optional[str] = None,
+    entity_id: Optional[str] = None, project_id: Optional[str] = None,
 ):
+    """Store an in-app notification and push it to open sockets.
+
+    project_id (2026-11-16): the project the notification is about. When the
+    caller does not pass it, it is worked out from entity_type / entity_id
+    when that record belongs to a project. With per-project access on, a
+    notification about a project is only listed for, and only pushed to,
+    people who may see that project. A notification with no project stays
+    visible as before."""
     db = get_db()
+    if not project_id and entity_type and entity_id:
+        try:
+            project_id = await resolve_project_id({}, entity_type, entity_id)
+        except Exception:
+            project_id = None
     doc = {
         "id": gen_id(), "tenant_id": tenant_id, "user_id": user_id,
         "kind": kind, "title": title, "body": body,
         "entity_type": entity_type, "entity_id": entity_id,
+        "project_id": project_id,
         "read_at": None, "created_at": utc_now().isoformat(),
     }
     await db.notifications.insert_one(doc.copy())
@@ -79,6 +108,8 @@ async def list_notifications(unread_only: bool = False, limit: int = 50, ctx: di
     })
     if unread_only:
         f["read_at"] = None
+    # Notifications with no project stay visible (company-wide before).
+    f = await project_scope_filter(ctx, f, include_company_level=True)
     docs = await db.notifications.find(f, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
     return [Notification(**d) for d in docs]
 
@@ -91,10 +122,13 @@ async def unread_count(ctx: dict = Depends(require_tenant)):
     hiccup shouldn't fill the user's console with errors."""
     try:
         db = get_db()
-        n = await db.notifications.count_documents(tenant_filter(ctx["tenant_id"], {
+        f = tenant_filter(ctx["tenant_id"], {
             "$or": [{"user_id": ctx["user"]["id"]}, {"user_id": None}],
             "read_at": None,
-        }))
+        })
+        # Same rule as the list: notifications with no project stay counted.
+        f = await project_scope_filter(ctx, f, include_company_level=True)
+        n = await db.notifications.count_documents(f)
         return {"count": n}
     except Exception:
         return {"count": 0}
@@ -113,9 +147,14 @@ async def mark_notif_read(notification_id: str, ctx: dict = Depends(require_tena
 @router.post("/notifications/mark-all-read")
 async def mark_all_read(ctx: dict = Depends(require_tenant)):
     db = get_db()
-    res = await db.notifications.update_many(
+    # Only the notifications this person can see are marked.
+    f = await project_scope_filter(
+        ctx,
         tenant_filter(ctx["tenant_id"], {"$or": [{"user_id": ctx["user"]["id"]}, {"user_id": None}], "read_at": None}),
-        {"$set": {"read_at": utc_now().isoformat()}},
+        include_company_level=True,
+    )
+    res = await db.notifications.update_many(
+        f, {"$set": {"read_at": utc_now().isoformat()}},
     )
     return {"updated": res.modified_count}
 
@@ -150,6 +189,7 @@ class CostRateCategory(ReadModel):
     created_at: str
 
 
+# project-scope: tenant-level (company cost rate library)
 @router.post("/cost-rates", response_model=CostRateCategory)
 async def create_rate(payload: CostRateCategoryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -164,6 +204,7 @@ async def create_rate(payload: CostRateCategoryCreate, ctx: dict = Depends(requi
     return CostRateCategory(**doc)
 
 
+# project-scope: tenant-level (company cost rate library)
 @router.get("/cost-rates", response_model=list[CostRateCategory])
 async def list_rates(ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -178,6 +219,7 @@ class CostRateUpdate(StrictModel):
     notes: Optional[str] = None
 
 
+# project-scope: tenant-level (company cost rate library)
 @router.patch("/cost-rates/{rate_id}", response_model=CostRateCategory)
 async def update_rate(rate_id: str, payload: CostRateUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -200,9 +242,8 @@ class CostEstimateRequest(StrictModel):
 @router.post("/cost-estimates")
 async def estimate_cost(payload: CostEstimateRequest, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Unknown project: 404 as before. Not assigned (switch on): 403.
+    proj = await require_project(ctx, payload.project_id, projection={"_id": 0})
     apply_pw = payload.apply_prevailing_wage or bool(proj.get("prevailing_wage_required"))
     lines: list[dict] = []
     total = 0.0
@@ -241,7 +282,10 @@ async def productivity_rates(project_id: Optional[str] = None, days: int = 90, c
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
     f = tenant_filter(ctx["tenant_id"], {"date": {"$gte": cutoff}})
     if project_id:
+        # Checked by the route-level dependency (project_id query parameter).
         f["project_id"] = project_id
+    else:
+        f = await project_scope_filter(ctx, f)
     pipeline = [
         {"$match": f},
         {"$group": {
@@ -291,7 +335,8 @@ async def aging_summary(ctx: dict = Depends(require_tenant)):
     Approvals stay sourced from approvals collection -- they're not
     yet wrapped in gating_entities."""
     db = get_db()
-    f = tenant_filter(ctx["tenant_id"])
+    # Only the caller's projects are counted (switch on).
+    f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]))
     now = datetime.now(timezone.utc)
 
     # Fast path -- pull all open gating_entities once and bucket by type.
@@ -398,6 +443,9 @@ async def list_cal(project_id: Optional[str] = None, ctx: dict = Depends(require
     f = tenant_filter(ctx["tenant_id"])
     if project_id:
         f["$or"] = [{"project_id": project_id}, {"project_id": None}]
+    else:
+        # Company-wide calendars (no project) stay listed.
+        f = await project_scope_filter(ctx, f, include_company_level=True)
     docs = await db.calendars.find(f, {"_id": 0}).to_list(100)
     return docs
 
@@ -435,6 +483,8 @@ async def list_crew_assign(project_id: Optional[str] = None, ctx: dict = Depends
     f = tenant_filter(ctx["tenant_id"])
     if project_id:
         f["project_id"] = project_id
+    else:
+        f = await project_scope_filter(ctx, f)
     docs = await db.crew_assignments.find(f, {"_id": 0}).to_list(2000)
     return docs
 
@@ -468,6 +518,8 @@ async def list_equip_assign(project_id: Optional[str] = None, ctx: dict = Depend
     f = tenant_filter(ctx["tenant_id"])
     if project_id:
         f["project_id"] = project_id
+    else:
+        f = await project_scope_filter(ctx, f)
     docs = await db.equipment_assignments.find(f, {"_id": 0}).to_list(2000)
     return docs
 
@@ -488,9 +540,12 @@ class AttendanceEntry(StrictModel):
 @router.post("/daily-report-attendance")
 async def add_attendance(payload: AttendanceEntry, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}), {"_id": 0, "id": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}), {"_id": 0, "id": 1, "project_id": 1})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    # The report's project must be one the caller is assigned to (403 on
+    # this save, so a phone keeps it queued).
+    await check_project_access(ctx, dr.get("project_id"), write=True)
     doc = payload.model_dump(mode="json")
     doc.update({"id": gen_id(), "tenant_id": ctx["tenant_id"], "created_at": utc_now().isoformat()})
     await db.daily_report_attendance.insert_one(doc.copy())
@@ -609,6 +664,7 @@ async def update_work_item(wi_id: str, payload: WorkItemUpdate, ctx: dict = Depe
 # ============================================================
 # WEATHER (Open-Meteo proxy — substitute for NOAA per master prompt §10)
 # ============================================================
+# project-scope: tenant-level (public weather lookup by coordinates)
 @router.get("/weather/now")
 async def weather_now(lat: float, lng: float, ctx: dict = Depends(require_tenant)):
     """Open-Meteo (no API key) — current weather for daily report auto-fill."""
@@ -664,28 +720,53 @@ async def global_search(q: str, limit: int = 10, ctx: dict = Depends(require_ten
     rgx = re.compile(re.escape(q.strip()), re.IGNORECASE)
     f = tenant_filter(ctx["tenant_id"])
     out = []
+    # Per-project access: with the switch on, only the caller's projects
+    # (and their records) are searched. Unchanged when off.
+    pf = await project_scope_filter(ctx, f)                 # records with project_id
+    projf = await project_scope_filter(ctx, f, field="id")  # the projects themselves
+    specf = await _spec_section_scope(ctx, f)               # spec sections (keyed by spec)
 
-    projects = await db.projects.find({**f, "name": rgx}, {"_id": 0, "id": 1, "name": 1}).limit(limit).to_list(limit)
+    projects = await db.projects.find({**projf, "name": rgx}, {"_id": 0, "id": 1, "name": 1}).limit(limit).to_list(limit)
     out.extend([{"type": "project", "id": p["id"], "label": p["name"], "route": "/projects"} for p in projects])
 
-    tasks = await db.tasks.find({**f, "$or": [{"description": rgx}, {"activity_code": rgx}]}, {"_id": 0, "id": 1, "activity_code": 1, "description": 1}).limit(limit).to_list(limit)
+    tasks = await db.tasks.find({**pf, "$or": [{"description": rgx}, {"activity_code": rgx}]}, {"_id": 0, "id": 1, "activity_code": 1, "description": 1}).limit(limit).to_list(limit)
     out.extend([{"type": "task", "id": t["id"], "label": f"[{t['activity_code']}] {t['description']}", "route": "/tasks"} for t in tasks])
 
-    rfis = await db.rfis.find({**f, "$or": [{"subject": rgx}, {"rfi_number": rgx}]}, {"_id": 0, "id": 1, "rfi_number": 1, "subject": 1}).limit(limit).to_list(limit)
+    rfis = await db.rfis.find({**pf, "$or": [{"subject": rgx}, {"rfi_number": rgx}]}, {"_id": 0, "id": 1, "rfi_number": 1, "subject": 1}).limit(limit).to_list(limit)
     out.extend([{"type": "rfi", "id": r["id"], "label": f"{r['rfi_number']} {r['subject']}", "route": "/rfis"} for r in rfis])
 
-    wis = await db.work_items.find({**f, "$or": [{"title": rgx}, {"description": rgx}]}, {"_id": 0, "id": 1, "title": 1}).limit(limit).to_list(limit)
+    wis = await db.work_items.find({**pf, "$or": [{"title": rgx}, {"description": rgx}]}, {"_id": 0, "id": 1, "title": 1}).limit(limit).to_list(limit)
     out.extend([{"type": "work_item", "id": w["id"], "label": w["title"], "route": "/work-items"} for w in wis])
 
-    specs = await db.spec_sections.find({**f, "$or": [{"section_title": rgx}, {"text_content": rgx}]}, {"_id": 0, "id": 1, "section_code": 1, "section_title": 1}).limit(limit).to_list(limit)
+    specs = await db.spec_sections.find({**specf, "$or": [{"section_title": rgx}, {"text_content": rgx}]}, {"_id": 0, "id": 1, "section_code": 1, "section_title": 1}).limit(limit).to_list(limit)
     out.extend([{"type": "spec_section", "id": s["id"], "label": f"{s['section_code']} {s['section_title']}", "route": "/specs"} for s in specs])
 
     return {"results": out[: limit * 4]}
 
 
+async def _spec_section_scope(ctx: dict, query: dict) -> dict:
+    """Spec sections carry no project_id; they belong to a project spec
+    (project_spec_id). With the switch on, limit them to the specs of the
+    caller's projects. Unchanged when off or for an all-projects admin."""
+    q = dict(query or {})
+    if not is_enforced(ctx):
+        return q
+    allowed = await allowed_project_ids(ctx)
+    if allowed is None:
+        return q
+    db = get_db()
+    spec_ids = [s["id"] for s in await db.project_specs.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": {"$in": sorted(allowed)}}),
+        {"_id": 0, "id": 1},
+    ).to_list(length=None) if s.get("id")]
+    q["project_spec_id"] = {"$in": spec_ids}
+    return q
+
+
 # ============================================================
 # TRADE TAXONOMY (CSI MasterFormat 2020)
 # ============================================================
+# project-scope: tenant-level (shared trade list)
 @router.get("/trade-taxonomy")
 async def list_trades(ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -696,10 +777,13 @@ async def list_trades(ctx: dict = Depends(require_tenant)):
 # ============================================================
 # ADMIN PAGES
 # ============================================================
+# project-scope: tenant-level (company settings; all-projects admins only)
 @router.get("/admin/tenants")
 async def admin_tenants(ctx: dict = Depends(require_tenant)):
     if ctx["user"].get("role") != "admin":
         raise HTTPException(403, "Admin only")
+    # Company-wide page: an admin limited to specific projects cannot open it.
+    require_full_admin(ctx)
     from routers.admin_settings_router import _platform_admin_emails
     db = get_db()
     platform = _platform_admin_emails()
@@ -710,8 +794,11 @@ async def admin_tenants(ctx: dict = Depends(require_tenant)):
     return await db.tenants.find({"id": ctx["tenant_id"]}, {"_id": 0}).to_list(1)
 
 
+# project-scope: tenant-level (company AI usage; all-projects admins only)
 @router.get("/admin/ai-observability")
 async def admin_ai_obs(days: int = 30, ctx: dict = Depends(require_tenant)):
+    # Company-wide AI usage figures: all-projects admins only (2026-11-16).
+    require_full_admin(ctx)
     db = get_db()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     pipeline = [
@@ -779,6 +866,8 @@ class WorkItemAssistRequest(StrictModel):
 
 @router.post("/ai/work-item-assistant")
 async def ai_work_item(payload: WorkItemAssistRequest, ctx: dict = Depends(require_tenant)):
+    # The project named in the body must be one the caller is assigned to.
+    await check_project_access(ctx, payload.project_id, write=True)
     chat = _new_chat(f"wi-{gen_id()}", WI_ASSISTANT_SYSTEM)
     started = datetime.now(timezone.utc)
     try:
@@ -811,8 +900,12 @@ class ChangeOrderAssistRequest(StrictModel):
 @router.post("/ai/change-order-assistant")
 async def ai_co(payload: ChangeOrderAssistRequest, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project and the originating RFI (both in the body) must be ones
+    # the caller is assigned to.
+    await check_project_access(ctx, payload.project_id, write=True)
     rfi_text = ""
     if payload.rfi_id:
+        await check_record_access(ctx, "rfi", payload.rfi_id, write=True)
         rfi = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.rfi_id}), {"_id": 0})
         if rfi:
             rfi_text = f"Originating RFI {rfi['rfi_number']}: {rfi['subject']}\n{rfi['description']}\n\n"
@@ -878,8 +971,13 @@ class DeliveryUpdate(StrictModel):
 @router.post("/deliveries")
 async def create_delivery(payload: DeliveryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    # The project must belong to the caller's company (404 otherwise).
+    # The project must belong to the caller's company (404 otherwise), and
+    # (switch on) be one they are assigned to (403, so a phone keeps the
+    # queued save). The daily reports named in the body are checked too.
     await require_project(ctx, payload.project_id)
+    for _dr_id in (payload.daily_report_id, payload.parent_daily_report_id):
+        if _dr_id:
+            await check_record_access(ctx, "daily_report", _dr_id, write=True)
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1066,6 +1164,19 @@ async def list_marketplace(ctx: dict = Depends(require_tenant)):
             {"visibility": {"$in": ["network", "public", "union_hall"]}},
         ],
     }
+    # Per-project access (switch on): our own postings are limited to the
+    # caller's projects, plus postings with no project. Other companies'
+    # public postings are not ours to filter and stay listed.
+    own = await project_scope_filter(ctx, {"tenant_id": ctx["tenant_id"]},
+                                     include_company_level=True)
+    if own != {"tenant_id": ctx["tenant_id"]}:
+        pipeline = {
+            "$or": [
+                own,
+                {"tenant_id": {"$ne": ctx["tenant_id"]},
+                 "visibility": {"$in": ["network", "public", "union_hall"]}},
+            ],
+        }
     docs = await db.marketplace_postings.find(pipeline, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
     return [marketplace_public_view(d, ctx["tenant_id"]) for d in docs]
 
@@ -1099,6 +1210,11 @@ async def respond_marketplace(payload: MarketplaceResponseCreate, ctx: dict = De
         raise HTTPException(404)
     if posting["visibility"] == "private" and posting["tenant_id"] != ctx["tenant_id"]:
         raise HTTPException(403, "Posting is private to its tenant")
+    # A posting of the caller's own company that belongs to a project:
+    # the caller must be assigned to it. (Another company's posting is not
+    # in the caller's company, so this leaves it alone.)
+    if posting.get("tenant_id") == ctx["tenant_id"]:
+        await check_project_access(ctx, posting.get("project_id"), write=True)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(),

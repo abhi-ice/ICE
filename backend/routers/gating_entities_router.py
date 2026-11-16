@@ -17,6 +17,10 @@ from models import GatingEntity
 from auth import require_tenant
 from services.gating_entities import compute_age_fields, OPEN_STATUSES_PROXY
 from services.cascade_engine import recompute_all_cascades
+# Per-project access (2026-11-16): every route here names a project id or
+# a gating entity id in the URL, both checked by the route-level
+# dependency. The refresh uses the shared project helper as well.
+from services.project_scope import require_project
 
 
 router = APIRouter(tags=["gating-entities"])
@@ -233,11 +237,7 @@ async def cascade_dashboard_refresh(
     small (returns the result), otherwise hands off to BackgroundTasks
     and returns 202."""
     db = get_db()
-    proj = await db.projects.find_one(
-        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
-    )
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    await require_project(ctx, project_id)
     open_count = await db.gating_entities.count_documents(
         tenant_filter(ctx["tenant_id"], {
             "project_id": project_id,

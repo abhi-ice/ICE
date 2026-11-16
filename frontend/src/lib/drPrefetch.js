@@ -28,6 +28,10 @@ const RECENT_PER_PROJECT = 5;
 // their schedule tasks + report bundles. Every project's report LIST is
 // still cached (it powers the ranking and costs one small GET each).
 const TOP_PROJECTS = 5;
+// Marks these background reads for the server (2026-11-16): while the
+// per-project access switch is off, the warm-up reads every project in the
+// company, and the server must not count that as the person opening them.
+const WARM = { headers: { "X-ICE-Prefetch": "1" } };
 
 function nearDates() {
   const today = localTodayISO();
@@ -65,9 +69,9 @@ export async function warmOfflineCache(api, { force = false } = {}) {
       // Schedule tasks warm for EVERY project (small JSON): a report created
       // offline from the calendar synthesizes its activity grid from these,
       // and that must work even on a project outside the deep-warm top 5.
-      api.get(`/projects/${p.id}/tasks`).catch(() => {});
+      api.get(`/projects/${p.id}/tasks`, WARM).catch(() => {});
       try {
-        const { data: reports } = await api.get(`/projects/${p.id}/daily-reports`);
+        const { data: reports } = await api.get(`/projects/${p.id}/daily-reports`, WARM);
         const rows = Array.isArray(reports) ? reports : [];
         // Guard the ranking against a null/missing report_date —
         // String(null) is "null", which compares GREATER than any ISO date
@@ -89,7 +93,7 @@ export async function warmOfflineCache(api, { force = false } = {}) {
         .slice(0, RECENT_PER_PROJECT);
       const ids = [...new Set([...nearby, ...recent].map((r) => r.id).filter(Boolean))];
       for (const rid of ids) {
-        api.get(`/daily-reports/${rid}/context`).catch(() => {});
+        api.get(`/daily-reports/${rid}/context`, WARM).catch(() => {});
       }
     }
   } catch { /* unauthenticated or transient — next trigger retries */ }

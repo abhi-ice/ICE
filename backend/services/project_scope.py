@@ -6,9 +6,15 @@ change order, safety event, approval and so on to a project that does not
 exist or that belongs to another company. require_project() looks the project
 up under the caller's own tenant and answers 404 when it is not there.
 
-It does NOT apply per-project membership rules (who on the team may touch
-which project); that is a separate decision. It only stops records being
-attached to projects outside the caller's company.
+require_project_for_tenant() only stops records being attached to projects
+outside the caller's company (the MS Project worker uses it; it has no user).
+
+2026-11-16: require_project() and require_project_if_given() (the versions
+that take the request context) also apply the per-project access rule
+(services/project_access.check_project_access): with FF_PROJECT_ACCESS on, a
+caller not assigned to the project gets 403 "You are not assigned to this
+project" for a save (a phone keeps that save queued) or 404 for a read; with
+it off the attempt is only recorded for the admin's report.
 """
 from __future__ import annotations
 
@@ -41,8 +47,14 @@ async def require_project_for_tenant(tenant_id: str, project_id,
 
 async def require_project(ctx: dict, project_id,
                           projection: Optional[dict] = None) -> dict:
-    """Same check using the request context's active tenant."""
-    return await require_project_for_tenant(ctx["tenant_id"], project_id, projection)
+    """Same check using the request context's active tenant, plus the
+    per-project access rule. Counts as a write unless the request is a
+    GET/HEAD (known from the request context); the company check comes
+    first, so an unknown project is still a 404."""
+    proj = await require_project_for_tenant(ctx["tenant_id"], project_id, projection)
+    from services.project_access import check_project_for_request
+    await check_project_for_request(ctx, project_id)
+    return proj
 
 
 async def require_project_if_given(ctx: dict, project_id,

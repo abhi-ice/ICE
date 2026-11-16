@@ -118,6 +118,11 @@ def db(monkeypatch):
     d.projects.docs.append({"id": "p-other", "tenant_id": OTHER})
     monkeypatch.setattr(docs_router, "get_db", lambda: d)
     monkeypatch.setattr(upload_router, "get_db", lambda: d)
+    # Creates now use the shared project check (company, then per-project
+    # access), which reads the database through these modules.
+    from services import project_scope, project_access
+    monkeypatch.setattr(project_scope, "get_db", lambda: d)
+    monkeypatch.setattr(project_access, "get_db", lambda: d)
     return d
 
 

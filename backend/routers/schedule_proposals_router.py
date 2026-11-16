@@ -62,9 +62,12 @@ async def upload_schedule_proposal(
     A PM or admin must then call /approve to commit, or /reject to discard.
     """
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Per-project access (2026-11-16): project_id arrives as a form field,
+    # which the route-level check cannot see. require_project answers 404
+    # for a project outside the company and, with the switch on, 403 "You
+    # are not assigned to this project" for an unassigned caller.
+    from services.project_scope import require_project
+    proj = await require_project(ctx, project_id, {"_id": 0})
 
     content = await file.read()
     if not content:

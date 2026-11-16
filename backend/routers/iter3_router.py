@@ -7,6 +7,14 @@ drawing_markups follow master prompt §4.8 schema:
 
 Photos with upload to Emergent Object Storage.
 Spec semantic search via TF-IDF (services.spec_search).
+
+Per-project access (2026-11-16): ids in the URL (drawing revision, drawing
+markup, photo, spec) are checked by the route-level dependency
+(services/project_access.enforce_project_scope). Project and record ids in
+request bodies and form fields are checked here: the markup's drawing
+revision and linked record, the photo upload's project and daily report
+(writes: a refusal is a 403, which a phone keeps queued), and the spec
+search's project or spec (a read: 404).
 """
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Response, BackgroundTasks
 import io
@@ -15,6 +23,8 @@ from typing import Optional, List, Literal
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel, Photo, PhotoCreate
 from auth import require_tenant
+from services.project_scope import require_project
+from services.project_access import check_project_access, check_record_access
 from services.storage import (
     aput_object, aget_object, make_path, record_file,
     key_belongs_to_tenant, read_upload_limited, UploadTooLarge, open_image_capped,
@@ -68,6 +78,13 @@ async def create_markup(payload: DrawingMarkupCreate, ctx: dict = Depends(requir
     )
     if not rev:
         raise HTTPException(404, "Drawing revision not found")
+    # The revision (and any record the markup links to) must be on a
+    # project the caller is assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id,
+                              write=True, route="/api/drawing-markups")
+    if payload.linked_entity_type and payload.linked_entity_id:
+        await check_record_access(ctx, payload.linked_entity_type, payload.linked_entity_id,
+                                  write=True, route="/api/drawing-markups")
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(),
@@ -186,9 +203,14 @@ async def upload_photo(
     ctx: dict = Depends(require_tenant),
 ):
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Company check (404 for an unknown project, as before), then the
+    # per-project access rule: the project is a form field, which the
+    # route-level dependency cannot see. A refusal is a 403 so a phone
+    # keeps the queued photo.
+    await require_project(ctx, project_id)
+    if daily_report_id:
+        await check_record_access(ctx, "daily_report", daily_report_id,
+                                  write=True, route="/api/photos/upload")
     # pt.68: raised 10MB -> 25MB (matches photo-tray + vision cap). Read in
     # chunks with a running limit so an oversized file is never held whole.
     try:
@@ -331,7 +353,11 @@ class SpecSearchRequest(StrictModel):
 async def specs_search(payload: SpecSearchRequest, ctx: dict = Depends(require_tenant)):
     if not payload.query.strip():
         raise HTTPException(400, "Empty query")
+    # A search only reads, so a project the caller is not assigned to is a
+    # 404 (only while FF_PROJECT_ACCESS is on; recorded while it is off).
     if payload.project_spec_id:
+        await check_record_access(ctx, "project_spec", payload.project_spec_id,
+                                  write=False, route="/api/specs/search")
         return await search_spec(
             tenant_id=ctx["tenant_id"],
             project_spec_id=payload.project_spec_id,
@@ -339,6 +365,8 @@ async def specs_search(payload: SpecSearchRequest, ctx: dict = Depends(require_t
             top_k=payload.top_k,
         )
     if payload.project_id:
+        await check_project_access(ctx, payload.project_id, write=False,
+                                   route="/api/specs/search")
         return await search_all_specs_in_project(
             tenant_id=ctx["tenant_id"],
             project_id=payload.project_id,

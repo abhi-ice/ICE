@@ -43,6 +43,7 @@ ALLOWED_FLAGS = (
     "FF_ENTERPRISE_CPM",
     "FF_SCHEDULE_MODE_2",
     "FF_WRITE_FREEZE",
+    "FF_PROJECT_ACCESS",
 )
 
 _cache: dict = {}

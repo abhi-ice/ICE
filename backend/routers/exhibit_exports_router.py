@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from database import get_db, tenant_filter
 from auth import require_tenant, has_project_access
+from services.project_access import is_full_admin, require_full_admin
 from audit import write_audit
 from services import exhibit_exports
 
@@ -41,7 +42,9 @@ async def _check_project_access(ctx: dict, project_id: str) -> None:
     if not proj:
         raise HTTPException(404, "Project not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # 2026-11-16: an admin limited to specific projects is checked like
+    # everyone else (has_project_access knows their projects).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -94,6 +97,11 @@ async def export_audit_extract(
     # Secret fields in the rows are masked by gather_audit_extract.
     if _user_role(ctx) != "admin":
         raise HTTPException(403, "Admins only")
+    # 2026-11-16: the extract also carries audit rows that name no project
+    # (team invites, access changes, other projects' older rows), so it is
+    # part of the company-wide audit log: admins with access to all
+    # projects only.
+    require_full_admin(ctx)
     await _check_project_access(ctx, project_id)
     _enforce_date_range_cap(date_range_start, date_range_end)
 

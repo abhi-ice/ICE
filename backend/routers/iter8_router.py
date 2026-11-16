@@ -28,9 +28,17 @@ from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
 from audit import write_audit
+from services.project_access import check_project_access, check_record_access, project_scope_filter
 
 
 router = APIRouter(tags=["iter8"])
+
+# Per-project access (2026-11-16). /crud/{entity}/{id} is checked by the
+# route-level dependency (services/project_access.enforce_project_scope),
+# which looks up the record's project from the entity name. Company
+# resources (crews without a home project, equipment, people,
+# certifications) have no project and are not limited. The handlers below
+# add the checks for project ids sent in the body.
 
 
 # ============================================================
@@ -154,6 +162,12 @@ async def crud_patch(entity: str, id: str, payload: dict,
             if not isinstance(_pv, str) or not await db.projects.find_one(
                     tenant_filter(ctx["tenant_id"], {"id": _pv}), {"_id": 0, "id": 1}):
                 payload.pop(_pk, None)
+            else:
+                # Moving a record onto a project: the caller must be
+                # assigned to that project too (403 with the switch on;
+                # recorded only while it is off). The record's current
+                # project is checked by the route-level dependency.
+                await check_project_access(ctx, _pv, write=True)
     if not payload:
         raise HTTPException(400, "no fields to update")
     payload["updated_at"] = utc_now().isoformat()
@@ -394,6 +408,10 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
     )
     if not floor:
         raise HTTPException(404, "Floor not found")
+    # Both ids come in the body: the drawing and the floor (where rooms are
+    # created) must be on projects the caller is assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id, write=True)
+    await check_project_access(ctx, floor.get("project_id"), write=True)
 
     from services.storage import aget_object, key_belongs_to_tenant
     plan_key = rev.get("storage_path") or rev.get("pdf_url")
@@ -611,7 +629,10 @@ async def get_onboarding(ctx: dict = Depends(require_tenant)):
     state: dict = {}
     # progress hints — does the project have any of these yet?
     project_id = None
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"]), {"_id": 0, "id": 1})
+    # Per-project access (switch on): the first project the caller may see.
+    proj = await db.projects.find_one(
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]), field="id"),
+        {"_id": 0, "id": 1})
     if proj:
         project_id = proj["id"]
         state["02_master_doc"] = bool(await db.master_docs.find_one(

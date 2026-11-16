@@ -6,6 +6,15 @@ Phase 3: /record-outcome and the on-resolve cascade.
 
 All endpoints are tenant-scoped. The Delay detail page is the only
 surface that consumes them — daily report and Tasks page stay clean.
+
+Per-project access (2026-11-16): every route here names a delay
+(/delays/{delay_id}/...) or a mitigation (/mitigations/{mitigation_id}/...)
+in the URL. The route-level dependency
+(services/project_access.enforce_project_scope) follows the mitigation to
+its delay and the delay to its project, and refuses a project the caller
+is not assigned to (404 to read, 403 to write) while FF_PROJECT_ACCESS is
+on. No request body here names another project or record, so no extra
+checks are needed in the handlers.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional

@@ -1,6 +1,7 @@
 """Friday schedule digest: pending logic changes, open delays and slipped
 activities per project, emailed to the tenant's admins + project managers at
-7 AM site time. Triggered hourly by the platform cron; each project sends at
+7 AM site time (with per-project access on: only those who may see the
+project -- see digest_recipients). Triggered hourly by the platform cron; each project sends at
 most once per local Friday (db.digest_runs _id claim)."""
 from __future__ import annotations
 
@@ -75,15 +76,39 @@ def render_digest(project_name: str, d: dict, link: str) -> tuple[str, str, str]
     return subject, body, text
 
 
-async def digest_recipients(db, tenant_id: str) -> list:
-    users = await db.users.find({"tenant_id": tenant_id}, {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1}).to_list(2000)
-    memberships = {m["user_id"]: (m.get("role") or "").lower() for m in await db.tenant_users.find(
-        {"tenant_id": tenant_id, "status": {"$ne": "inactive"}}, {"_id": 0, "user_id": 1, "role": 1}).to_list(2000)}
+async def digest_recipients(db, tenant_id: str, project_id: str | None = None) -> list:
+    """Admins and project managers of the company who get a project's digest.
+
+    Per-project access (2026-11-16): when a project is given and the
+    FF_PROJECT_ACCESS switch is on, only people who may see that project get
+    its digest: admins with access to all projects, plus admins and project
+    managers assigned to the project (any project_members row). With the
+    switch off the list is the same as before."""
+    users = await db.users.find({"tenant_id": tenant_id}, {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1, "access_scope": 1}).to_list(2000)
+    rows = await db.tenant_users.find(
+        {"tenant_id": tenant_id, "status": {"$ne": "inactive"}},
+        {"_id": 0, "user_id": 1, "role": 1, "access_scope": 1}).to_list(2000)
+    memberships = {m["user_id"]: (m.get("role") or "").lower() for m in rows}
+    scopes = {m["user_id"]: m.get("access_scope") for m in rows}
+    assigned = None
+    if project_id:
+        from services.project_access import is_enforced
+        if is_enforced():
+            assigned = {m.get("user_id") for m in await db.project_members.find(
+                {"tenant_id": tenant_id, "project_id": project_id},
+                {"_id": 0, "user_id": 1}).to_list(None)}
+    from auth import effective_access_scope
     out = []
     for u in users:
         role = memberships.get(u["id"]) or (u.get("role") or "").lower()
-        if role in DIGEST_ROLES and u.get("email"):
-            out.append(u)
+        if role not in DIGEST_ROLES or not u.get("email"):
+            continue
+        if assigned is not None and u["id"] not in assigned:
+            scope = effective_access_scope(role, scopes.get(u["id"]) or u.get("access_scope"))
+            if not (role == "admin" and scope == "all"):
+                continue
+        u.pop("access_scope", None)
+        out.append(u)
     return out
 
 
@@ -94,7 +119,7 @@ async def send_project_digest(db, tenant_id: str, project: dict) -> dict:
     subject, body, text = render_digest(project.get("name") or "Project", d, f"{base}/schedule-review")
     provider = get_email_provider()
     sent, failed = [], []
-    for u in await digest_recipients(db, tenant_id):
+    for u in await digest_recipients(db, tenant_id, project["id"]):
         try:
             r = provider.send(to_email=u["email"], to_name=u.get("full_name") or "", subject=subject, html=body, text=text)
             (sent if r.get("sent") else failed).append(u["email"])

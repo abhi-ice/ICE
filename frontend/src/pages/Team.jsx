@@ -2,10 +2,12 @@
 import { useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
 import { toast } from "../components/ui/sonner";
-import { Users, Mail, Trash2, Copy, ShieldAlert } from "lucide-react";
+import { Users, Mail, Trash2, Copy, ShieldAlert, KeyRound, AlertTriangle } from "lucide-react";
 import { confirmAction } from "../lib/confirmAction";
 import { deleteWithUndo } from "../lib/deleteWithUndo";
 import FieldLabel from "../components/forms/FieldLabel";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import ProjectChecklist from "../components/team/ProjectChecklist";
 
 // Bug #38 fix (2026-05-13): expanded to include the specialty roles
 // added by migration 015 (submittal_tech + scheduling_engineer) and
@@ -30,12 +32,32 @@ const ROLES = [
   { value: "scheduling_engineer",  label: "Scheduling engineer" },
 ];
 
+// Per-project access (2026-11-16): an admin either sees every project
+// ("all", the default) or only the projects ticked for them ("assigned").
+// Everyone else always works on the projects they are assigned to.
+const EMPTY_DRAFT = { email: "", role: DEFAULT_INVITE_ROLE, access_scope: "all", project_ids: [] };
+
+function errorText(ex, fallback) {
+  // A 422 detail is a list of objects; rendering it raw would crash the
+  // toast, so only show plain strings.
+  const detail = ex?.response?.data?.detail;
+  return typeof detail === "string" && detail ? detail : fallback;
+}
+
+function accessLabel(m) {
+  if ((m.role || "").toLowerCase() === "admin" && (m.access_scope || "all") === "all") return "All projects";
+  const n = m.project_count || 0;
+  return n === 1 ? "1 project" : `${n} projects`;
+}
+
 export default function Team() {
   const [me, setMe] = useState(null);
   const [members, setMembers] = useState([]);
   const [invites, setInvites] = useState([]);
-  const [draft, setDraft] = useState({ email: "", role: DEFAULT_INVITE_ROLE });
+  const [projects, setProjects] = useState([]);
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(null);   // member whose access is being edited
 
   const reload = useCallback(async () => {
     try {
@@ -45,6 +67,9 @@ export default function Team() {
         api.get("/team/invites"),
       ]);
       setMe(u); setMembers(m); setInvites(i);
+      // Projects for the invite / access tick lists (used by admins with
+      // access to all projects; a failure just leaves the lists empty).
+      api.get("/projects").then((r) => setProjects(Array.isArray(r.data) ? r.data : [])).catch(() => {});
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to load team");
     }
@@ -52,6 +77,11 @@ export default function Team() {
   useEffect(() => { reload(); }, [reload]);
 
   const isAdmin = (me?.role || "").toLowerCase() === "admin";
+  // Company-wide controls (invite, revoke, remove, change access) stay with
+  // admins who have access to all projects.
+  const isFullAdmin = isAdmin && (me?.access_scope || "all") === "all";
+  const draftIsAdmin = draft.role === "admin";
+  const draftLimited = !draftIsAdmin || draft.access_scope === "assigned";
   const inviteUrl = (code) => `${window.location.origin}/accept-invite?code=${encodeURIComponent(code)}`;
 
   const sendInvite = async (e) => {
@@ -59,7 +89,13 @@ export default function Team() {
     if (!draft.email) return;
     setBusy(true);
     try {
-      const { data } = await api.post("/team/invites", draft);
+      const body = {
+        email: draft.email,
+        role: draft.role,
+        access_scope: draftIsAdmin ? draft.access_scope : "assigned",
+        project_ids: draftLimited ? draft.project_ids : [],
+      };
+      const { data } = await api.post("/team/invites", body);
       const code = data.invite?.code;
       const invitee = data.invite?.email || draft.email;
       if (data.already_existed) {
@@ -68,7 +104,20 @@ export default function Team() {
         // code). Say which role the invite carries and whether it went out.
         const keptRole = data.invite?.role;
         const keptLabel = ROLES.find((r) => r.value === keptRole)?.label || keptRole;
-        if (keptRole && keptRole !== draft.role) {
+        // The pending invite also keeps its project access. Invites made
+        // before per-project access carry no scope: admins then get every
+        // project, everyone else none.
+        const keptScope = keptRole === "admin" ? (data.invite?.access_scope || "all") : "assigned";
+        const keptProjects = keptScope === "all" ? [] : [...(data.invite?.project_ids || [])].sort();
+        const pickedProjects = [...body.project_ids].sort();
+        const accessDiffers = keptRole === draft.role && (
+          keptScope !== body.access_scope
+          || keptProjects.join("|") !== pickedProjects.join("|"));
+        if (accessDiffers) {
+          toast.info(
+            `This person already has a pending invite with different project access (code ${code}). The original invite and its access were kept. To change the access, revoke that invite below, then send a new one.`,
+          );
+        } else if (keptRole && keptRole !== draft.role) {
           // Older server that kept the original role.
           toast.info(
             `This person already has a pending invite as ${keptLabel} (code ${code}). To change the role, revoke that invite below, then send a new one.`,
@@ -98,17 +147,10 @@ export default function Team() {
           `Invite created but email failed${reason}. Copy the link from the table below to share manually.`,
         );
       }
-      setDraft({ email: "", role: DEFAULT_INVITE_ROLE });
+      setDraft(EMPTY_DRAFT);
       reload();
     } catch (ex) {
-      // A 422 detail is a list of objects; rendering it raw would crash
-      // the toast, so only show plain strings.
-      const detail = ex.response?.data?.detail;
-      toast.error(
-        typeof detail === "string" && detail
-          ? detail
-          : "Invite did not go through. Check the email address and try again.",
-      );
+      toast.error(errorText(ex, "Invite did not go through. Check the email address and try again."));
     } finally { setBusy(false); }
   };
 
@@ -135,7 +177,7 @@ export default function Team() {
     });
     if (!ok) return;
     try { await api.delete(`/team/members/${id}`); toast.success("Member removed"); reload(); }
-    catch (e) { toast.error(e.response?.data?.detail || "Remove failed"); }
+    catch (e) { toast.error(errorText(e, "Remove failed")); }
   };
 
   return (
@@ -145,8 +187,8 @@ export default function Team() {
         <p className="text-sm text-muted-foreground page-desc">Members of your organization. Admins can invite teammates and revoke pending invites.</p>
       </div>
 
-      {/* Invite form (admin only) */}
-      {isAdmin ? (
+      {/* Invite form (admins with access to all projects) */}
+      {isFullAdmin ? (
         <form data-testid="team-invite-form" onSubmit={sendInvite} className="surface p-4 flex flex-wrap gap-3 items-end">
           <div className="grow min-w-[240px]">
             <FieldLabel required className="field-label">Email to invite</FieldLabel>
@@ -166,10 +208,47 @@ export default function Team() {
             className="h-9 px-4 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
             <Mail className="h-4 w-4" /> Send invite
           </button>
+          {/* Which projects the new person can use. Full width under the
+              email / role row, so that row looks the same as before. */}
+          <div className="basis-full" data-testid="invite-access">
+            {draftIsAdmin && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm mb-2">
+                <label className="inline-flex items-center gap-2 max-md:min-h-[44px] cursor-pointer">
+                  <input type="radio" name="invite-scope" data-testid="invite-scope-all"
+                    checked={draft.access_scope !== "assigned"}
+                    onChange={() => setDraft({ ...draft, access_scope: "all" })} />
+                  All projects <span className="text-xs text-slate-500">(including new ones)</span>
+                </label>
+                <label className="inline-flex items-center gap-2 max-md:min-h-[44px] cursor-pointer">
+                  <input type="radio" name="invite-scope" data-testid="invite-scope-assigned"
+                    checked={draft.access_scope === "assigned"}
+                    onChange={() => setDraft({ ...draft, access_scope: "assigned" })} />
+                  Only specific projects
+                </label>
+              </div>
+            )}
+            {draftLimited && (
+              <div>
+                <div className="field-label">
+                  {draftIsAdmin ? "Projects this admin manages" : "Projects this person can use (recommended)"}
+                </div>
+                <ProjectChecklist projects={projects} value={draft.project_ids}
+                  onChange={(ids) => setDraft({ ...draft, project_ids: ids })}
+                  testid="invite-projects" />
+                {!draft.project_ids.length && (
+                  <div data-testid="invite-no-projects-warning"
+                    className="mt-1 text-xs text-amber-700 flex items-start gap-1">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                    No project ticked. Once per-project access is switched on, this person will not see any project until you assign one (here or on the Project Access page).
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </form>
       ) : (
         <div className="surface p-4 text-sm text-slate-500 flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-amber-600" /> Only tenant admins can invite teammates.
+          <ShieldAlert className="h-4 w-4 text-amber-600" /> Only admins with access to all projects can invite teammates.
         </div>
       )}
 
@@ -177,28 +256,35 @@ export default function Team() {
       <div className="surface p-4" data-testid="members-table">
         <div className="font-medium mb-2">Members ({members.length})</div>
         {/* crud-list-table-wrap: compact cards on phones (Name headline;
-            Email/Role/Joined meta; Remove on its own line). Inert >=768px. */}
+            Email/Role/Access/Joined meta; buttons on their own line). Inert >=768px. */}
         <div className="crud-list-table-wrap">
         <table className="dense-table w-full">
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th>Joined</th><th></th></tr></thead>
           <tbody>
             {members.map((m) => (
               <tr key={m.id} data-testid={`member-${m.id}`}>
                 <td className="col-primary" data-label="Name">{m.full_name}</td>
                 <td className="text-xs text-slate-600" data-label="Email">{m.email}</td>
                 <td data-label="Role"><span className="pill pill-slate">{m.role}</span></td>
+                <td className="text-xs text-slate-600" data-label="Access" data-testid={`member-access-${m.id}`}>{accessLabel(m)}</td>
                 <td className="text-xs text-slate-500" data-label="Joined">{new Date(m.created_at).toLocaleDateString()}</td>
-                <td className="text-right col-fullwidth">
-                  {isAdmin && m.id !== me?.id && (
+                <td className="text-right col-fullwidth whitespace-nowrap">
+                  {isFullAdmin && (
+                    <button data-testid={`edit-access-${m.id}`} onClick={() => setEditing(m)}
+                      className="text-blue-600 hover:bg-blue-50 px-2 py-1 rounded text-xs inline-flex items-center gap-1 max-md:min-h-[44px]">
+                      <KeyRound className="h-3.5 w-3.5" /> Access
+                    </button>
+                  )}
+                  {isFullAdmin && m.id !== me?.id && (
                     <button data-testid={`remove-member-${m.id}`} onClick={() => remove(m.id)}
-                      className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs inline-flex items-center gap-1">
+                      className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs inline-flex items-center gap-1 max-md:min-h-[44px]">
                       <Trash2 className="h-3.5 w-3.5" /> Remove
                     </button>
                   )}
                 </td>
               </tr>
             ))}
-            {!members.length && <tr><td colSpan="5" className="text-center py-4 text-sm text-slate-500">No members yet.</td></tr>}
+            {!members.length && <tr><td colSpan="6" className="text-center py-4 text-sm text-slate-500">No members yet.</td></tr>}
           </tbody>
         </table>
         </div>
@@ -220,7 +306,7 @@ export default function Team() {
                 <td data-label="Status"><span className={`pill ${i.status === "pending" ? "pill-blue" : i.status === "accepted" ? "pill-green" : "pill-slate"}`}>{i.status}</span></td>
                 <td className="font-mono text-xs" data-label="Code">{i.code}</td>
                 <td data-label="Link">
-                  {i.status === "pending" && (
+                  {i.status === "pending" && i.code && (
                     <button data-testid={`copy-link-${i.id}`} onClick={() => { navigator.clipboard.writeText(inviteUrl(i.code)); toast.success("Link copied"); }}
                       className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
                       <Copy className="h-3 w-3" /> copy
@@ -229,7 +315,7 @@ export default function Team() {
                 </td>
                 <td className="text-xs text-slate-500" data-label="Sent">{new Date(i.invited_at).toLocaleDateString()}</td>
                 <td className="text-right col-fullwidth">
-                  {isAdmin && i.status === "pending" && (
+                  {isFullAdmin && i.status === "pending" && (
                     <button data-testid={`revoke-invite-${i.id}`} onClick={() => revoke(i.id)}
                       className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs">Revoke</button>
                   )}
@@ -240,6 +326,99 @@ export default function Team() {
           </tbody>
         </table>
         </div>
+      </div>
+
+      <Dialog open={!!editing} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Access for {editing?.full_name || editing?.email}</DialogTitle></DialogHeader>
+          {editing && (
+            <MemberAccessForm member={editing} projects={projects}
+              onCancel={() => setEditing(null)}
+              onSaved={() => { setEditing(null); reload(); }} />
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Edit one member's role, admin scope and project list. Saves through
+// PATCH /team/members/{id}/access; the server refuses (409) to leave the
+// company with no admin who has access to all projects, and that message
+// is shown as it comes.
+function MemberAccessForm({ member, projects, onCancel, onSaved }) {
+  const [role, setRole] = useState(member.role || "super");
+  const [scope, setScope] = useState(member.access_scope || (member.role === "admin" ? "all" : "assigned"));
+  const [projectIds, setProjectIds] = useState(member.project_ids || []);
+  const [saving, setSaving] = useState(false);
+  const isAdminRole = role === "admin";
+  const limited = !isAdminRole || scope === "assigned";
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = {};
+      if (role !== member.role) body.role = role;
+      if (isAdminRole) body.access_scope = scope;
+      if (limited) body.project_ids = projectIds;
+      await api.patch(`/team/members/${member.id}/access`, body);
+      toast.success("Access updated");
+      onSaved();
+    } catch (ex) {
+      toast.error(errorText(ex, "Access was not changed. Try again."));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-3 text-sm" data-testid="member-access-form">
+      <div>
+        <div className="field-label">Role</div>
+        <select data-testid="access-role-select" value={role} onChange={(e) => setRole(e.target.value)}
+          className="w-full h-9 max-md:min-h-[44px] px-2 rounded border border-slate-200 text-sm">
+          {/* A role the invite list does not offer (for example px) is
+              still shown, so the select matches what is saved. */}
+          {!ROLES.some((r) => r.value === member.role) && member.role && (
+            <option value={member.role}>{member.role}</option>
+          )}
+          {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+        </select>
+      </div>
+      {isAdminRole && (
+        <div className="flex flex-col gap-1">
+          <label className="inline-flex items-center gap-2 max-md:min-h-[44px] cursor-pointer">
+            <input type="radio" name="access-scope" data-testid="access-scope-all"
+              checked={scope !== "assigned"} onChange={() => setScope("all")} />
+            All projects <span className="text-xs text-slate-500">(including new ones)</span>
+          </label>
+          <label className="inline-flex items-center gap-2 max-md:min-h-[44px] cursor-pointer">
+            <input type="radio" name="access-scope" data-testid="access-scope-assigned"
+              checked={scope === "assigned"} onChange={() => setScope("assigned")} />
+            Only specific projects
+          </label>
+        </div>
+      )}
+      {limited && (
+        <div>
+          <div className="field-label">Projects</div>
+          <ProjectChecklist projects={projects} value={projectIds} onChange={setProjectIds}
+            testid="access-projects" />
+          {!projectIds.length && (
+            <div className="mt-1 text-xs text-amber-700 flex items-start gap-1">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              No project ticked: once per-project access is on, this person will not see any project.
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+        <button type="button" onClick={onCancel}
+          className="h-9 px-3 max-md:min-h-[44px] rounded border border-slate-200 bg-white text-sm hover:bg-slate-50">
+          Cancel
+        </button>
+        <button type="button" data-testid="access-save" onClick={save} disabled={saving}
+          className="h-9 px-4 max-md:min-h-[44px] rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50">
+          Save
+        </button>
       </div>
     </div>
   );

@@ -19,6 +19,14 @@ from models import (
 )
 from auth import require_tenant
 from audit import write_audit
+# Per-project access (2026-11-16). Routes with a project id or a daily
+# report / activity / presence id in the URL are already checked by the
+# route-level dependency (services/project_access.enforce_project_scope).
+# The calls below cover ids that arrive in the request body, and lists.
+from services.project_access import (
+    check_project_access, check_record_access, project_scope_filter,
+)
+from services.project_scope import require_project
 
 logger = logging.getLogger("ice_schedule_ops.dr")
 
@@ -105,9 +113,13 @@ async def dr_activity_chips(
     dr_ids = list({r.get("daily_report_id") for r in rows if r.get("daily_report_id")})
     drs: dict[str, dict] = {}
     if dr_ids:
+        # Per-project access: only rows whose report is in a project the
+        # caller may see (no change while FF_PROJECT_ACCESS is off).
+        dr_q = await project_scope_filter(
+            ctx, tenant_filter(ctx["tenant_id"], {"id": {"$in": dr_ids}}),
+        )
         dr_docs = await db.daily_reports.find(
-            tenant_filter(ctx["tenant_id"], {"id": {"$in": dr_ids}}),
-            {"_id": 0, "id": 1, "report_date": 1},
+            dr_q, {"_id": 0, "id": 1, "report_date": 1},
         ).to_list(length=None)
         drs = {d["id"]: d for d in dr_docs}
     out: list[dict] = []
@@ -227,9 +239,10 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
 @router.post("/daily-reports", response_model=DailyReport)
 async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Company check (404 for an unknown project) then the per-project
+    # access check (403 "You are not assigned to this project", which a
+    # phone keeps queued; recorded only while the switch is off).
+    proj = await require_project(ctx, payload.project_id, {"_id": 0})
     existing = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {
             "project_id": payload.project_id,
@@ -698,6 +711,9 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
     t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.schedule_activity_id}), {"_id": 0})
     if not t:
         raise HTTPException(404, "Task not found")
+    # The activity comes from the request body: the caller must also be
+    # allowed to change the activity's own project (403 on a save).
+    await check_project_access(ctx, t.get("project_id"), write=True)
     pos_max = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"position": 1}).sort("position", -1).limit(1).to_list(1)
     next_pos = (pos_max[0]["position"] + 1) if pos_max else 0
     loc_name = None
@@ -2255,6 +2271,9 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    # Shared by three routes (one takes the report id from the body), so
+    # check the report's project here too. Answers are cached per request.
+    await check_project_access(ctx, dr.get("project_id"), write=True)
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
     if payload.daily_report_id != daily_report_id:
@@ -2344,6 +2363,9 @@ async def create_presence_toplevel(
 ):
     if not payload.daily_report_id:
         raise HTTPException(400, "daily_report_id required in body for top-level POST /daily-presence")
+    # The report id is in the body here, so the route-level check cannot
+    # see it: check the report's project explicitly (403 on a save).
+    await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
     return await create_presence(payload.daily_report_id, payload, ctx)
 
 

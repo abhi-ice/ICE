@@ -39,6 +39,7 @@ async def _bg_recompute_capacity(tenant_id: str, crew_id: str):
 
 
 # --- Crews ---
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.post("/crews", response_model=Crew)
 async def create_crew(payload: CrewCreate, bg: BackgroundTasks,
                        ctx: dict = Depends(require_tenant)):
@@ -56,6 +57,7 @@ async def create_crew(payload: CrewCreate, bg: BackgroundTasks,
     return Crew(**doc)
 
 
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.get("/crews", response_model=list[Crew])
 async def list_crews(ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -64,6 +66,7 @@ async def list_crews(ctx: dict = Depends(require_tenant)):
 
 
 # --- Equipment ---
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.post("/equipment", response_model=Equipment)
 async def create_equipment(payload: EquipmentCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -75,6 +78,7 @@ async def create_equipment(payload: EquipmentCreate, ctx: dict = Depends(require
     return Equipment(**doc)
 
 
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.get("/equipment", response_model=list[Equipment])
 async def list_equipment(ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -83,6 +87,7 @@ async def list_equipment(ctx: dict = Depends(require_tenant)):
 
 
 # --- People ---
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.post("/people", response_model=Person)
 async def create_person(payload: PersonCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -96,6 +101,7 @@ async def create_person(payload: PersonCreate, ctx: dict = Depends(require_tenan
     return Person(**doc)
 
 
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.get("/people", response_model=list[Person])
 async def list_people(ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -104,6 +110,7 @@ async def list_people(ctx: dict = Depends(require_tenant)):
 
 
 # --- Certifications ---
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.post("/certifications", response_model=Certification)
 async def create_cert(payload: CertificationCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -116,6 +123,7 @@ async def create_cert(payload: CertificationCreate, ctx: dict = Depends(require_
     return Certification(**doc)
 
 
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.get("/certifications", response_model=list[Certification])
 async def list_certs(expiring_within_days: Optional[int] = None, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -127,6 +135,7 @@ async def list_certs(expiring_within_days: Optional[int] = None, ctx: dict = Dep
     return [Certification(**d) for d in docs]
 
 
+# project-scope: tenant-level (company crews, equipment, people, certifications)
 @router.get("/availability")
 async def availability(start: date, end: date, ctx: dict = Depends(require_tenant)):
     """Cross-project crew + equipment availability dashboard."""

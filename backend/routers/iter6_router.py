@@ -23,9 +23,16 @@ from pydantic import Field
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
+from services.project_access import check_project_access, check_record_access, project_scope_filter
 
 
 router = APIRouter(tags=["iter6"])
+
+# Per-project access (2026-11-16). Routes with a project id or a project
+# record id in the URL (daily report, photo, recovery suggestion, submittal,
+# /projects/{project_id}/...) are checked by the route-level dependency
+# (services/project_access.enforce_project_scope). The handlers below add
+# the checks for ids sent in the body and limit the cross-project lists.
 
 
 # ============================================================
@@ -679,7 +686,10 @@ async def recovery_eval(project_id: Optional[str] = None, ctx: dict = Depends(re
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"status": "applied"})
     if project_id:
+        # Checked by the route-level dependency (project_id query parameter).
         f["project_id"] = project_id
+    else:
+        f = await project_scope_filter(ctx, f)
     recs = await db.ai_recovery_suggestions.find(f, {"_id": 0}).sort("applied_at", -1).limit(100).to_list(100)
     rows: list[dict] = []
     total_pred = 0.0
@@ -739,7 +749,8 @@ async def recovery_eval(project_id: Optional[str] = None, ctx: dict = Depends(re
 async def aging_detail(ctx: dict = Depends(require_tenant)):
     """Per-record aging breakdown for procurement dashboard."""
     db = get_db()
-    f = tenant_filter(ctx["tenant_id"])
+    # Per-project access (switch on): only the caller's projects.
+    f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]))
     now = datetime.now(timezone.utc)
 
     rfi_cut = (now - timedelta(days=5)).isoformat()[:10]
@@ -802,6 +813,11 @@ async def link_submittal(submittal_id: str, payload: SubmittalLinkUpdate, ctx: d
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:
         raise HTTPException(400, "No fields")
+    # The submittal itself is checked by the route-level dependency; the
+    # activity it is linked to (body) must also be on a project the caller
+    # is assigned to.
+    if updates.get("schedule_activity_id"):
+        await check_record_access(ctx, "task", updates["schedule_activity_id"], write=True)
     res = await db.submittals.update_one(
         tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"$set": updates},
     )
@@ -872,6 +888,8 @@ async def compute_section(payload: SectionRequest, ctx: dict = Depends(require_t
     """Compute a vertical section (cut-line on plan → list of intersected
     rooms with their floors stacked). Returns segments per floor for the
     frontend to render as 2D rects."""
+    # The project is in the body: the caller must be assigned to it.
+    await check_project_access(ctx, payload.project_id, write=True)
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": payload.project_id})
     floors = await db.floors.find(f, {"_id": 0}).sort("floor_number", 1).to_list(50)

@@ -7,6 +7,13 @@ from models import gen_id, utc_now, StrictModel
 from auth import require_tenant
 from services.voice_pipeline import process_voice_annotation
 from services.storage import get_object, put_object, aget_object, aput_object, make_path, record_file
+# Per-project access (2026-11-16). A voice annotation has no project of
+# its own; it belongs to the project of the record it is linked to
+# (linked_entity_type / linked_entity_id). The audio download
+# (/files/audio/{id}) is resolved that way by the route-level dependency.
+from services.project_access import (
+    allowed_project_ids, check_project_access, is_enforced, resolve_project_id,
+)
 
 router = APIRouter(tags=["voice"])
 
@@ -29,6 +36,15 @@ async def voice_annotate(
         raise HTTPException(413, "Audio file > 25MB; Whisper max")
     if not audio_bytes:
         raise HTTPException(400, "Empty audio file")
+
+    # The linked record comes from the form: the caller must be allowed to
+    # change its project (403 on a save, so a queued clip stays on the
+    # phone). An unlinked note, or a link that does not resolve, is not
+    # tied to a project and is left as before.
+    linked_project_id = None
+    if linked_entity_type and linked_entity_id:
+        linked_project_id = await resolve_project_id(ctx, linked_entity_type, linked_entity_id)
+        await check_project_access(ctx, linked_project_id, write=True)
 
     if kind == "voice_note":
         # v7 guided DR flow (2026-07-05) — voice-note-as-RECORD (spec D).
@@ -66,6 +82,10 @@ async def voice_annotate(
             "transcription_service": None,
             "structured_fields": {},
             "kind": "voice_note",
+            # New field (2026-11-16): the linked record's project, when it
+            # is known, so lists can filter without a lookup. Older rows
+            # do not have it and are resolved through the link instead.
+            "project_id": linked_project_id,
             "linked_entity_type": linked_entity_type,
             "linked_entity_id": linked_entity_id,
             "status": "completed" if audio_url else "failed",
@@ -92,11 +112,32 @@ async def voice_annotate(
 @router.get("/voice/annotations")
 async def list_voice(ctx: dict = Depends(require_tenant)):
     db = get_db()
+    allowed = await allowed_project_ids(ctx) if is_enforced(ctx) else None
+    if allowed is None:
+        # Switch off, or an all-projects admin: unchanged.
+        rows = await db.voice_annotations.find(
+            tenant_filter(ctx["tenant_id"]),
+            {"_id": 0},
+        ).sort("created_at", -1).limit(100).to_list(100)
+        return rows
+    # Switch on: keep notes linked to the caller's projects, plus notes
+    # that are not linked to any project (company-level, visible to the
+    # whole company as before). Read a wider window so the filter still
+    # leaves up to 100 rows.
     rows = await db.voice_annotations.find(
         tenant_filter(ctx["tenant_id"]),
         {"_id": 0},
-    ).sort("created_at", -1).limit(100).to_list(100)
-    return rows
+    ).sort("created_at", -1).limit(500).to_list(500)
+    out = []
+    for r in rows:
+        pid = r.get("project_id") if isinstance(r.get("project_id"), str) else None
+        if not pid and r.get("linked_entity_type") and r.get("linked_entity_id"):
+            pid = await resolve_project_id(ctx, r["linked_entity_type"], r["linked_entity_id"])
+        if pid is None or pid in allowed:
+            out.append(r)
+        if len(out) >= 100:
+            break
+    return out
 
 
 @router.get("/files/audio/{annotation_id}")

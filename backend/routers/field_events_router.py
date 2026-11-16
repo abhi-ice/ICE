@@ -1,10 +1,19 @@
-"""Field events: delays, safety events, QC issues, photos. Master prompt §4.7."""
+"""Field events: delays, safety events, QC issues, photos. Master prompt §4.7.
+
+Per-project access (2026-11-16): routes with a project id or a delay, safety
+event, QC issue, photo or daily report id in the URL are checked by the
+route-level dependency (services/project_access.enforce_project_scope).
+Creates check the body's project with require_project, and every other
+record the body points at (a daily report, a drawing) with
+_check_linked_records, so nobody can hang a record off a project they are
+not assigned to. A refused save is a 403, which a phone keeps queued."""
 from datetime import date as _date, datetime as _datetime
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
 from services.site_time import project_today
 from services.project_scope import require_project
+from services.project_access import check_record_access
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate, SafetyEventUpdate,
     QcIssue, QcIssueCreate, QcIssueUpdate, QcReworkOutcome,
@@ -15,6 +24,17 @@ from auth import require_tenant
 from audit import write_audit
 
 router = APIRouter(tags=["field-events"])
+
+
+async def _check_linked_records(ctx: dict, pairs) -> None:
+    """Per-project access for records named in a request BODY (the URL is
+    already checked by the route-level dependency). pairs is a list of
+    (kind, id); blank ids are skipped. Always a write: a refusal is a 403
+    "You are not assigned to this project", never a 404, so a phone keeps
+    the queued save instead of dropping it."""
+    for kind, rid in pairs:
+        if isinstance(rid, str) and rid:
+            await check_record_access(ctx, kind, rid, write=True)
 
 
 # --- Delays ---
@@ -403,6 +423,10 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     db = get_db()
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. Strip the
     # add_reason out of the record (it's metadata, stamped by
@@ -1104,6 +1128,10 @@ async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_
     db = get_db()
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1279,6 +1307,10 @@ async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant))
     db = get_db()
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1579,6 +1611,10 @@ async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)
     db = get_db()
     # The project must belong to the caller's company (404 otherwise).
     await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("drawing", payload.pin_drawing_id),
+    ])
     # The file key comes from the client. It must be one of this
     # company's stored files, checked BEFORE the object is read for its
     # fingerprint, so a photo row can never be pointed at (or used to read)
@@ -1714,6 +1750,9 @@ async def pin_photo(photo_id: str, payload: PhotoPinPayload, ctx: dict = Depends
         raise HTTPException(404, "Photo not found")
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
+    # The drawing the photo is pinned to must be on a project the caller
+    # is assigned to (the photo itself is checked from the URL).
+    await _check_linked_records(ctx, [("drawing", updates.get("pin_drawing_id"))])
     # Recompute evidentiary_flag using NEW pin values where provided.
     new_x = updates.get("pin_x", before.get("pin_x"))
     new_y = updates.get("pin_y", before.get("pin_y"))

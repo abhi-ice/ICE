@@ -13,6 +13,7 @@ from models import Task, TaskCreate, TaskUpdate, gen_id, utc_now, StrictModel
 from auth import require_tenant
 from audit import write_audit
 from services.cpm import compute_cpm, auto_recompute_after_event
+from services.project_scope import require_project
 
 router = APIRouter(tags=["tasks"])
 
@@ -91,9 +92,11 @@ async def create_task(payload: TaskCreate, bg: BackgroundTasks = None,
             "Only scheduling_engineer / pm / pe / admin can create tasks",
         )
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Per-project access (2026-11-16): the project comes in the body, so the
+    # route-level check cannot see it. require_project answers 404 for a
+    # project outside the company and, with the switch on, 403 "You are not
+    # assigned to this project" for a project the caller is not assigned to.
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     now_iso = utc_now().isoformat()
     doc.update({
@@ -377,9 +380,13 @@ async def update_task(task_id: str, payload: TaskUpdate, bg: BackgroundTasks = N
         # Real-time fan-out for any open Gantt views
         try:
             from routers.ws_router import broadcast
+            # project_id lets the live channel deliver this only to people
+            # who may see the project (per-project access, 2026-11-16).
             await broadcast(ctx["tenant_id"], {
                 "kind": "task_progress",
-                "payload": {"task_id": task_id, "pct_complete": updates["pct_complete"]},
+                "project_id": before.get("project_id"),
+                "payload": {"task_id": task_id, "project_id": before.get("project_id"),
+                            "pct_complete": updates["pct_complete"]},
             })
         except Exception:
             pass

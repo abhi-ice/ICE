@@ -266,7 +266,8 @@ def test_create_photo_refuses_foreign_key_before_reading(db, monkeypatch):
         return None
     monkeypatch.setattr(field_events_router, "_hash_storage_object", _hash)
     for key in (FOREIGN_KEY, "../../etc/passwd", "", "https://x/y"):
-        payload = types.SimpleNamespace(project_id=OWN_PID, storage_path=key)
+        payload = types.SimpleNamespace(project_id=OWN_PID, storage_path=key,
+                                        daily_report_id=None, pin_drawing_id=None)
         with pytest.raises(HTTPException) as e:
             _run(field_events_router.create_photo(payload, SUPER))
         assert e.value.status_code == 404 and e.value.detail == "File not found"

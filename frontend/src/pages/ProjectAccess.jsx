@@ -15,6 +15,8 @@ import FieldLabel from "../components/forms/FieldLabel";
 // CPM Part G (2026-05-15) -- added_at displayed MM/DD/YYYY.
 import { formatDateDisplay } from "../lib/dateUtil";
 import { confirmAction } from "../lib/confirmAction";
+// Per-project access (2026-11-16): "before you switch it on" report.
+import AccessReport from "../components/team/AccessReport";
 
 // Bucket J Phase 3 (2026-05-11) -- specialty roles join the dropdown.
 // submittal_tech + scheduling_engineer carry write power on their
@@ -153,6 +155,10 @@ export default function ProjectAccess() {
           </button>
         </div>
       )}
+
+      <AccessReport
+        onChanged={(pid) => { if (pid && pid === selectedId) loadMembers(selectedId); }}
+        onSelectProject={(pid) => setSelectedId(pid)} />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Projects list (left) */}

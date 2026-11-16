@@ -30,6 +30,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_db, tenant_filter
 from auth import require_tenant, has_project_access
+from services.project_access import (
+    check_record_access, filter_rows, is_full_admin, require_full_admin,
+)
 from services.project_scope import require_project
 from audit import write_audit
 from models import (
@@ -43,6 +46,14 @@ from services import field_suggestions as fs
 log = logging.getLogger("field_suggestions_router")
 
 router = APIRouter(tags=["field-suggestions"])
+
+# Per-project access (2026-11-16). The always-on checks in this file
+# (_check_entity_access and the per-project stats/feed checks) keep working
+# whatever FF_PROJECT_ACCESS says; only an admin with access to all
+# projects skips them now (an admin limited to specific projects is
+# checked like everyone else). The route-level dependency also checks
+# /field-suggestions/{id} and /projects/{project_id}/... URLs. The bulk
+# endpoints skip suggestions on projects the caller is not assigned to.
 
 
 # Role guard sets. Only admin can manually POST a suggestion (AI
@@ -132,7 +143,7 @@ async def _check_entity_access(
     if not project_id:
         raise HTTPException(404, "Entity not found")
     role = _user_role(ctx)
-    if role != "admin":
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -283,22 +294,45 @@ async def bulk_confirm_endpoint(
     service module gates each confirm individually, and the service
     layer is tenant-scoped via tenant_filter so cross-tenant ids
     auto-skip with 'not_found'. This keeps the bulk path O(n) instead
-    of O(n) per-row project lookups."""
+    of O(n) per-row project lookups.
+
+    2026-11-16: suggestions on projects the caller is not assigned to are
+    skipped (reason "not_assigned") when per-project access is on, and
+    recorded in the watch log while it is off."""
+    ids, refused = await _split_by_project_access(ctx, payload.suggestion_ids)
     res = await fs.bulk_confirm(
         tenant_id=ctx["tenant_id"],
-        suggestion_ids=payload.suggestion_ids,
+        suggestion_ids=ids,
         user_id=ctx["user"]["id"], user_role=_user_role(ctx),
         request_id=ctx["request_id"],
-    )
+    ) if ids else {"ok": True, "confirmed": [], "skipped": []}
     if not res.get("ok"):
         raise HTTPException(422, res.get("reason") or "bulk confirm failed")
+    skipped = list(res.get("skipped") or []) + refused
     return {
         "ok": True,
         "success_count": len(res.get("confirmed") or []),
-        "failure_count": len(res.get("skipped") or []),
+        "failure_count": len(skipped),
         "confirmed_ids": res.get("confirmed", []),
-        "failure_details": res.get("skipped", []),
+        "failure_details": skipped,
     }
+
+
+async def _split_by_project_access(ctx: dict, suggestion_ids: list) -> tuple[list, list]:
+    """(ids the caller may act on, skipped rows for the rest). A suggestion
+    on a project the caller is not assigned to is skipped when per-project
+    access is on; while it is off it is only recorded. An all-projects admin
+    keeps every id."""
+    if is_full_admin(ctx):
+        return list(suggestion_ids or []), []
+    keep, refused = [], []
+    for sid in suggestion_ids or []:
+        try:
+            await check_record_access(ctx, "field_suggestion", sid, write=True)
+            keep.append(sid)
+        except HTTPException:
+            refused.append({"id": sid, "reason": "not_assigned"})
+    return keep, refused
 
 
 @router.post("/field-suggestions/bulk-reject")
@@ -306,21 +340,24 @@ async def bulk_reject_endpoint(
     payload: FieldSuggestionBulkRejectPayload,
     ctx: dict = Depends(require_tenant),
 ):
+    # Same project rule as bulk-confirm.
+    ids, refused = await _split_by_project_access(ctx, payload.suggestion_ids)
     res = await fs.bulk_reject(
         tenant_id=ctx["tenant_id"],
-        suggestion_ids=payload.suggestion_ids,
+        suggestion_ids=ids,
         reason=payload.reason,
         user_id=ctx["user"]["id"], user_role=_user_role(ctx),
         request_id=ctx["request_id"],
-    )
+    ) if ids else {"ok": True, "rejected": [], "skipped": []}
     if not res.get("ok"):
         raise HTTPException(422, res.get("reason") or "bulk reject failed")
+    skipped = list(res.get("skipped") or []) + refused
     return {
         "ok": True,
         "success_count": len(res.get("rejected") or []),
-        "failure_count": len(res.get("skipped") or []),
+        "failure_count": len(skipped),
         "rejected_ids": res.get("rejected", []),
-        "failure_details": res.get("skipped", []),
+        "failure_details": skipped,
     }
 
 
@@ -349,8 +386,9 @@ async def get_pending_suggestions_for_current_user(
         )
     if entity_type and entity_type not in _ENTITY_COLLECTION:
         raise HTTPException(422, f"Unknown entity_type: {entity_type!r}")
-    # If project_id supplied, enforce access.
-    if project_id and _user_role(ctx) != "admin":
+    # If project_id supplied, enforce access. Only an admin with access to
+    # all projects skips it (2026-11-16).
+    if project_id and not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=_user_role(ctx), project_id=project_id,
@@ -368,6 +406,9 @@ async def get_pending_suggestions_for_current_user(
     # underlying index). Switching the index per sort would multiply
     # index count; sorting in-page is fine for review-queue scale.
     rows = out.get("rows") or []
+    if not project_id:
+        # Per-project access (switch on): only the caller's projects.
+        rows = await filter_rows(ctx, rows)
     if sort_by == "entity_type":
         rows = sorted(rows, key=lambda r: (r.get("entity_type") or ""))
     elif sort_by == "confidence_score":
@@ -402,7 +443,8 @@ async def get_project_suggestion_stats(
     )
     if not proj:
         raise HTTPException(404, "Project not found")
-    if role != "admin":
+    # Only an admin with access to all projects skips it (2026-11-16).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -479,6 +521,7 @@ async def get_project_suggestion_stats(
 # is the on-demand admin override for testing / one-shot runs.
 # =====================================================================
 
+# project-scope: tenant-level (company-wide sweep; all-projects admins only)
 @router.post("/field-suggestions/sweep-expired")
 async def sweep_expired_endpoint(
     older_than_days: int = Query(default=30, ge=1, le=365),
@@ -487,6 +530,8 @@ async def sweep_expired_endpoint(
 ):
     if _user_role(ctx) not in _ROLE_ADMIN_SWEEP:
         raise HTTPException(403, "Admins only")
+    # Touches every project's rows: all-projects admins only (2026-11-16).
+    require_full_admin(ctx)
     # Tenant-scoped sweep -- only this tenant's rows get touched.
     # The lifespan path runs an unscoped variant.
     res = await fs.expire_stale_pending(
@@ -499,6 +544,7 @@ async def sweep_expired_endpoint(
 # Bucket G Phase 5 -- per-source acceptance-rate stats. Admin/PM
 # only. Feeds the Settings -> AI Usage tab card that shows which
 # producers are actually getting their suggestions accepted.
+# project-scope: tenant-level (counts per AI source; no project records)
 @router.get("/tenants/current/suggestion-source-stats")
 async def get_source_acceptance_stats_endpoint(
     days: int = Query(default=30, ge=1, le=365),
@@ -522,6 +568,7 @@ async def get_source_acceptance_stats_endpoint(
 # required code path.
 # =====================================================================
 
+# project-scope: tenant-level (company-wide sweep; all-projects admins only)
 @router.post("/field-suggestions/sweep-deleted-entities")
 async def sweep_deleted_entities_endpoint(
     limit: int = Query(default=500, ge=1, le=5000),
@@ -529,6 +576,8 @@ async def sweep_deleted_entities_endpoint(
 ):
     if _user_role(ctx) not in _ROLE_ADMIN_SWEEP:
         raise HTTPException(403, "Admins only")
+    # Touches every project's rows: all-projects admins only (2026-11-16).
+    require_full_admin(ctx)
     res = await sweep_orphaned_suggestions(
         tenant_id=ctx["tenant_id"], limit=limit,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],

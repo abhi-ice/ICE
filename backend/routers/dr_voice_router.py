@@ -274,6 +274,12 @@ async def voice_extract(
     )
     if not dr:
         raise HTTPException(status_code=404, detail="DR not found")
+    # Per-project access (2026-11-16). The route-level dependency already
+    # checked the report id in the URL; this repeats it for callers that
+    # reach this function directly (transcribe-and-extract). Cached per
+    # request, and a save gets 403, never 404, so a queued clip is kept.
+    from services.project_access import check_project_access
+    await check_project_access(ctx, dr.get("project_id"), write=True)
     if dr.get("status") not in (None, "draft"):
         # Mirror the manual-edit lock the rest of the UI enforces.
         raise HTTPException(
@@ -936,6 +942,7 @@ async def voice_live_token(
 # "Live Voice" / "Voice Memo" choices as enabled or grayed-out.
 # Auth-gated; no key value is leaked, only booleans.
 # ---------------------------------------------------------------------
+# project-scope: tenant-level (capability flags only, no project data)
 @router.get("/voice/config")
 async def voice_config(ctx: dict = Depends(require_tenant)):
     gemini_present = bool(os.environ.get("GEMINI_API_KEY", "").strip())

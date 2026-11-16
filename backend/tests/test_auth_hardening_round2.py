@@ -27,6 +27,8 @@ def _match_value(actual, cond):
         for op, v in cond.items():
             if op == "$gte" and not (actual is not None and actual >= v):
                 return False
+            if op == "$gt" and not (actual is not None and actual > v):
+                return False
             if op == "$in" and actual not in v:
                 return False
             if op == "$ne" and actual == v:
@@ -110,6 +112,14 @@ class _Coll:
                 _apply(d, upd)
                 return _Res(1)
         return _Res(0)
+
+    async def find_one_and_update(self, flt, upd, projection=None, **k):
+        for d in self.docs:
+            if _match(d, flt):
+                before = _project(d, projection)
+                _apply(d, upd)
+                return before
+        return None
 
     async def update_many(self, flt, upd, **k):
         n = 0
@@ -451,7 +461,8 @@ def test_close_account_retires_cross_company_member_tokens(db):
 # ------------------------------------------------------- 6. member fields
 def test_team_members_only_allow_listed_fields(db):
     rows = run(_ar().list_members(_ctx("super")))
-    assert rows and set(rows[0]) <= set(_ar()._MEMBER_FIELDS)
+    allowed = set(_ar()._MEMBER_FIELDS) | set(_ar()._MEMBER_ACCESS_FIELDS)
+    assert rows and set(rows[0]) <= allowed
     for f in ("id", "email", "full_name", "role", "created_at"):
         assert f in rows[0]
     for f in ("password_hash", "password_reset_token_hash", "password_reset_at"):
@@ -558,14 +569,16 @@ def test_voice_pin_exchange_uniform_401_minimal_tenant_and_throttle(db, monkeypa
                                     _request("5.5.5.6")))
     assert out["tenant"] == {"id": "t1", "display_name": "ICE", "slug": "ice"}
     assert out["access_token"]
-    # 20 wrong tries on one company -> 429
-    for i in range(19):
+    # 20 wrong tries on one company from one address -> 429 for that
+    # address (2026-11-16: the lock is per company AND address, 200 per
+    # company from everywhere; see test_project_access_foundation.py)
+    for i in range(20):
         with pytest.raises(HTTPException):
             run(ir.exchange_voice_pin(ir.ExchangePinRequest(pin="999999", tenant_slug="ice"),
-                                      _request(f"9.9.9.{i}")))
+                                      _request("9.9.9.1")))
     with pytest.raises(HTTPException) as e:
         run(ir.exchange_voice_pin(ir.ExchangePinRequest(pin="999999", tenant_slug="ice"),
-                                  _request("9.9.8.1")))
+                                  _request("9.9.9.1")))
     assert e.value.status_code == 429
 
 
@@ -610,8 +623,11 @@ def test_simultaneous_login_guesses_cannot_pass_the_account_limit(db, monkeypatc
 
     async def burst():
         return await asyncio.gather(*[
+            # One address: the per-(account, address) limit of 10 applies.
+            # (2026-11-16: guesses spread over many addresses meet the
+            # per-account limit of 100 instead.)
             ar.login(UserLogin(email="super@example.com", password=f"guess-{i:04d}"),
-                     _request(f"7.7.{i // 250}.{i % 250}"))
+                     _request("7.7.7.7"))
             for i in range(40)
         ], return_exceptions=True)
     results = run(burst())

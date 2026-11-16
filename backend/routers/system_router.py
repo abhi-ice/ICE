@@ -10,6 +10,10 @@ from models import (
 )
 from auth import require_tenant, role_required, redact_secrets, INVITE_SECRET_KEYS
 from services.project_scope import require_project_if_given
+from services.project_access import (
+    check_project_access, check_record_access, project_scope_filter,
+    require_full_admin,
+)
 from audit import write_audit, verify_chain
 from services.schedule_parser import parse_schedule_file
 from services.schedule_proposal import parsed_to_task_create_payload, validate_payload
@@ -17,6 +21,13 @@ from services.ai_agents import copilot_answer, recovery_suggestions, rfi_draft
 from services.cpm import compute_cpm
 
 router = APIRouter(tags=["system"])
+
+# Per-project access (2026-11-16). Routes with a project id or a project
+# record id in the URL or the project_id query parameter are checked by the
+# route-level dependency (services/project_access.enforce_project_scope).
+# The handlers below add the checks for ids sent in the body and limit the
+# cross-project lists and counts. Routes marked
+# "# project-scope: tenant-level" are company-wide on purpose.
 
 
 # --- Approvals ---
@@ -43,6 +54,8 @@ async def list_approvals(status_filter: Optional[str] = "pending", ctx: dict = D
     f = tenant_filter(ctx["tenant_id"])
     if status_filter:
         f["status"] = status_filter
+    # Per-project access (switch on): only the caller's projects.
+    f = await project_scope_filter(ctx, f)
     docs = await db.approvals.find(f, {"_id": 0}).sort("proposed_at", -1).to_list(500)
     return [Approval(**d) for d in docs]
 
@@ -54,7 +67,9 @@ async def pending_count(ctx: dict = Depends(require_tenant)):
     instead of a 500. Sidebar polls every 60s."""
     try:
         db = get_db()
-        n = await db.approvals.count_documents(tenant_filter(ctx["tenant_id"], {"status": "pending"}))
+        # Same projects as the list above.
+        f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": "pending"}))
+        n = await db.approvals.count_documents(f)
         return {"count": n}
     except Exception:
         return {"count": 0}
@@ -95,6 +110,7 @@ async def decide_approval(approval_id: str, payload: ApprovalDecision, ctx: dict
 
 
 # --- Audit log ---
+# project-scope: tenant-level (company-wide audit log; all-projects admins only)
 @router.get("/audit-log")
 async def list_audit(
     limit: int = 200,
@@ -110,8 +126,12 @@ async def list_audit(
     the company, including team invites), and secret fields (invite codes,
     tokens, PINs, password / token hashes) are masked on the way out.
     Older rows in the database still hold them; they are hidden here
-    instead of rewriting live records."""
+    instead of rewriting live records.
+
+    2026-11-16: the log covers every project in the company, so an admin
+    limited to specific projects cannot read it."""
     role_required(ctx, ["admin"])
+    require_full_admin(ctx)
     db = get_db()
     q = dict(tenant_filter(ctx["tenant_id"]))
     if op:
@@ -135,10 +155,13 @@ async def list_audit(
     return docs
 
 
+# project-scope: tenant-level (company-wide audit log; all-projects admins only)
 @router.get("/audit-log/verify")
 async def verify_audit_chain(ctx: dict = Depends(require_tenant)):
-    # Admins only, like the log itself (2026-11 security round).
+    # Admins only, like the log itself (2026-11 security round); since
+    # 2026-11-16 only admins with access to all projects.
     role_required(ctx, ["admin"])
+    require_full_admin(ctx)
     return await verify_chain(ctx["tenant_id"])
 
 
@@ -151,7 +174,9 @@ async def verify_audit_chain(ctx: dict = Depends(require_tenant)):
 @router.get("/imports")
 async def list_imports(ctx: dict = Depends(require_tenant)):
     db = get_db()
-    docs = await db.imports.find(tenant_filter(ctx["tenant_id"]), {"_id": 0}).sort("created_at", -1).to_list(100)
+    # Per-project access (switch on): only imports for the caller's projects.
+    f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]))
+    docs = await db.imports.find(f, {"_id": 0}).sort("created_at", -1).to_list(100)
     return docs
 
 
@@ -166,7 +191,13 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     # A given project must belong to the caller's company (404 otherwise),
     # so the assistant never reads or writes another company's project.
     await require_project_if_given(ctx, payload.project_id)
+    # The daily report in focus (body) must be on a project the caller is
+    # assigned to as well.
+    if payload.daily_report_id:
+        await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
     session_id = payload.session_id or f"copilot-{ctx['user']['id']}"
+    # access_ctx: the caller's sign-in, so every assistant tool only reads
+    # and changes projects the caller may use (the model cannot widen it).
     res = await execute_copilot_turn(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
@@ -175,6 +206,7 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
         user_role=(ctx["user"].get("role") or "viewer"),
         session_id=session_id,
         message=payload.message,
+        access_ctx=ctx,
     )
     return CopilotResponse(
         session_id=session_id,
@@ -185,6 +217,7 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     )
 
 
+# project-scope: tenant-level (the caller's own assistant history)
 @router.get("/ai/copilot/sessions")
 async def list_copilot_sessions(ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -211,6 +244,7 @@ async def list_copilot_sessions(ctx: dict = Depends(require_tenant)):
     return out
 
 
+# project-scope: tenant-level (the caller's own assistant history)
 @router.get("/ai/copilot/sessions/{session_id}")
 async def get_copilot_session(session_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -223,6 +257,9 @@ async def get_copilot_session(session_id: str, ctx: dict = Depends(require_tenan
 
 @router.post("/ai/recovery")
 async def ai_recovery(payload: RecoveryRequest, ctx: dict = Depends(require_tenant)):
+    # The project and target activity come in the body.
+    await check_project_access(ctx, payload.project_id, write=True)
+    await check_record_access(ctx, "task", payload.target_activity_id, write=True)
     return await recovery_suggestions(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
@@ -242,6 +279,9 @@ async def list_recovery(project_id: str, ctx: dict = Depends(require_tenant)):
 
 @router.post("/ai/rfi-draft")
 async def ai_rfi_draft(payload: RfiDraftRequest, ctx: dict = Depends(require_tenant)):
+    # The project (body) must be one the caller is assigned to. The RFI
+    # shell below is only used when it is on that same project.
+    await check_project_access(ctx, payload.project_id, write=True)
     out = await rfi_draft(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id,
@@ -345,7 +385,14 @@ async def dashboard_summary(
     # the dashboard is bound to a specific project_id.
     pf = {**f}
     if project_id:
+        # Checked by the route-level dependency (project_id query parameter).
         pf["project_id"] = project_id
+    else:
+        # Per-project access (switch on): the "all projects" view only
+        # counts the caller's projects.
+        pf = await project_scope_filter(ctx, pf)
+    # Active projects: the caller's projects only (switch on).
+    f = await project_scope_filter(ctx, f, field="id")
     # pt.35 (2026-05-26): "Active projects" was previously $in: [active,
     # mobilization] which excluded "planning" + "closeout" -- so a brand
     # new project (status defaults to "planning" per models.py:204) didn't
@@ -391,6 +438,7 @@ async def dashboard_summary(
 # ============================================================
 # Bucket C3c Phase 2 — Cron-style entrypoint for nightly cascade recompute
 # ============================================================
+# project-scope: tenant-level (walks every project; all-projects admins only)
 @router.post("/cron/cascade-recompute")
 async def cron_cascade_recompute(ctx: dict = Depends(require_tenant)):
     """Walks every active project for the caller's tenant and recomputes
@@ -401,7 +449,13 @@ async def cron_cascade_recompute(ctx: dict = Depends(require_tenant)):
 
     No system-wide cross-tenant variant on purpose: each tenant's data
     stays isolated. The on-demand /projects/{id}/cascade-dashboard/refresh
-    endpoint covers immediate-need recomputes."""
+    endpoint covers immediate-need recomputes.
+
+    2026-11-16: walks every project in the company, so only an admin with
+    access to all projects may start it (it used to accept any signed-in
+    user)."""
+    from services.project_access import require_full_admin
+    require_full_admin(ctx)
     from services.cascade_engine import recompute_all_cascades
     db = get_db()
     proj_ids = await db.projects.find(

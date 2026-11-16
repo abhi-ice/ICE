@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from database import get_db, tenant_filter
 from auth import require_tenant, has_project_access
+from services.project_access import is_full_admin
 from audit import write_audit
 from models import (
     StrictModel, SubmittalReviewEventCreate, SUBMITTAL_DEFAULT_SLA_DAYS,
@@ -66,7 +67,9 @@ async def _load_submittal(ctx: dict, submittal_id: str) -> dict:
     if not sub:
         raise HTTPException(404, "Submittal not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # 2026-11-16: an admin limited to specific projects is checked like
+    # everyone else (has_project_access knows their projects).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=sub.get("project_id") or "",
@@ -85,7 +88,9 @@ async def _check_project_access(ctx: dict, project_id: str) -> None:
     if not proj:
         raise HTTPException(404, "Project not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # 2026-11-16: an admin limited to specific projects is checked like
+    # everyone else (has_project_access knows their projects).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -255,6 +260,10 @@ async def recompute_aging_endpoint(
     target_project = payload.project_id if payload else None
     if target_project:
         await _check_project_access(ctx, target_project)
+    elif not is_full_admin(ctx):
+        # No project = every project in the company: an admin limited to
+        # specific projects must name one of theirs (2026-11-16).
+        raise HTTPException(403, "Name one of your projects to run this.")
 
     async def _bg(tenant_id, project_id, actor_id, request_id):
         try:
@@ -287,6 +296,10 @@ async def detect_breaches_endpoint(
     target_project = payload.project_id if payload else None
     if target_project:
         await _check_project_access(ctx, target_project)
+    elif not is_full_admin(ctx):
+        # No project = every project in the company: an admin limited to
+        # specific projects must name one of theirs (2026-11-16).
+        raise HTTPException(403, "Name one of your projects to run this.")
 
     async def _bg(tenant_id, project_id, actor_id, request_id):
         try:

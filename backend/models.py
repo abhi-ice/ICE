@@ -136,6 +136,25 @@ class InviteCreate(StrictModel):
         "admin", "pm", "super", "foreman", "viewer",
         "pe", "submittal_tech", "scheduling_engineer",
     ] = "super"
+    # Per-project access (2026-11-16). For an admin: "all" (the default;
+    # every project, including future ones) or "assigned" (only the projects
+    # in project_ids). Every other role is always "assigned" whatever is
+    # sent. Both fields are optional, so older clients keep working.
+    access_scope: Optional[Literal["all", "assigned"]] = None
+    project_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class MemberAccessUpdate(StrictModel):
+    """PATCH /team/members/{user_id}/access (all-projects admins only).
+    Every field is optional; only what is sent changes. project_ids, when
+    sent, is the member's complete project list (projects left out are
+    removed from them, new ones added)."""
+    role: Optional[Literal[
+        "admin", "pm", "super", "foreman", "viewer",
+        "pe", "submittal_tech", "scheduling_engineer",
+    ]] = None
+    access_scope: Optional[Literal["all", "assigned"]] = None
+    project_ids: Optional[list[str]] = Field(default=None, max_length=500)
 
 
 class InviteAccept(StrictModel):
@@ -156,6 +175,9 @@ class User(ReadModel):
     full_name: str
     tenant_id: str
     role: UserRole = "pm"
+    # "all" or "assigned" in the active company (2026-11-16); filled in on
+    # every signed-in request, missing on older stored records.
+    access_scope: Optional[str] = None
     created_at: datetime
 
 
