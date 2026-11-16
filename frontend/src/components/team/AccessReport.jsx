@@ -62,8 +62,15 @@ export default function AccessReport({ onChanged, onSelectProject }) {
   // Rows that are only the phone's background download (nobody opened the
   // project) are summarised in one line, not listed as problems.
   const watch = watchAll.filter((w) => w.write || w.count > 0);
-  const warmupOnly = watchAll.length - watch.length;
-  const problems = noProjects.length + limitedAdmins.length + drRows.length + watch.length;
+  // Counted per project (rows are per route), and people who have left the
+  // company are shown but not counted: there is nothing to do for them.
+  const warmupOnly = new Set(watchAll.filter((w) => !(w.write || w.count > 0))
+    .map((w) => w.project_id)).size;
+  const watchToReview = new Set(watch.filter((w) => w.still_member !== false)
+    .map((w) => `${w.user_id}|${w.project_id}`)).size;
+  const watchShown = (report.watch || []).length;
+  const watchTotal = report.watch_total || watchShown;
+  const problems = noProjects.length + limitedAdmins.length + drRows.length + watchToReview;
   const projects = report.projects || [];
 
   const AssignButton = ({ row, projectId, label }) => (
@@ -139,7 +146,7 @@ export default function AccessReport({ onChanged, onSelectProject }) {
             <ul className="divide-y divide-slate-100 border border-slate-100 rounded">
               {drRows.map((r) => (
                 <li key={`${r.user_id}|${r.project_id}`} className="p-2 flex flex-wrap items-center gap-2">
-                  <span className="grow min-w-[160px]">
+                  <span className="grow min-w-[160px] break-words [overflow-wrap:anywhere]">
                     {who(r)} on <strong>{r.project_name || r.project_id}</strong>
                     <span className="text-xs text-slate-500"> ({r.report_count} report{r.report_count === 1 ? "" : "s"}, last {r.last_report_date})</span>
                   </span>
@@ -156,10 +163,15 @@ export default function AccessReport({ onChanged, onSelectProject }) {
               <Eye className="h-4 w-4 text-slate-500" />
               {report.enforced ? "Refused because the person is not assigned" : "Would be refused once the switch is on"}
             </div>
+            {watchTotal > watchShown && (
+              <p className="text-xs text-slate-500 mb-1" data-testid="par-watch-cut">
+                Showing the {watchShown} most important of {watchTotal} entries (saves first, then views).
+              </p>
+            )}
             <ul className="divide-y divide-slate-100 border border-slate-100 rounded">
               {watch.map((w) => (
                 <li key={`${w.user_id}|${w.project_id}|${w.route}|${w.method}`} className="p-2 flex flex-wrap items-center gap-2">
-                  <span className="grow min-w-[160px]">
+                  <span className="grow min-w-[160px] break-words [overflow-wrap:anywhere]">
                     {who(w)} on <strong>{w.project_name || w.project_id}</strong>
                     <span className="block text-xs text-slate-500 break-all">
                       {w.write ? "Change" : "View"} · {w.method} {w.route} · {w.count ? `${w.count}×` : "background download only"}{w.count && w.prefetch_count ? ` (+${w.prefetch_count} background)` : ""} · last {when(w.last_at)}

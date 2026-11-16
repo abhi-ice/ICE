@@ -1034,7 +1034,9 @@ async def exchange_voice_pin(payload: ExchangePinRequest, request: Request):
     await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
     # The company's rows are written before the PIN check, so simultaneous
     # guesses cannot all slip past the limits; a good PIN removes them below.
-    rid = await reserve_attempt([(slug_ip_key, 20), (slug_key, 200)])
+    # 50 per (company, address): a crew on one site connection mistyping a
+    # few PINs must not shut the whole company out.
+    rid = await reserve_attempt([(slug_ip_key, 50), (slug_key, 200)])
     tenant = await db.tenants.find_one({"slug": payload.tenant_slug}, {"_id": 0})
     rec = None
     if tenant:

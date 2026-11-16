@@ -1,5 +1,6 @@
 """Auth router: register (creates org/tenant), login, me, team invites,
 admin password reset."""
+import asyncio
 import os
 import re
 import secrets
@@ -943,6 +944,7 @@ from services.password_reset_email import send_password_reset_email  # noqa: E40
 
 
 _RESET_TOKEN_TTL_MINUTES = 30
+_RESET_EMAIL_TASKS: set = set()
 
 
 class ForgotPasswordRequest(StrictModel):
@@ -1028,11 +1030,15 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     email_norm = (payload.email or "").strip().lower()
     # 2026-11 security round: limit reset requests. Every request counts,
     # whether or not the email exists, so a 429 reveals nothing: 5 per
-    # email and 50 per client address in 15 minutes.
+    # (email, address), 20 per email from all addresses, and 50 per client
+    # address in 15 minutes. The (email, address) bucket means a stranger
+    # elsewhere cannot block the real person's reset with 5 requests.
+    ip = client_ip(request)
     email_key = f"forgot:acct:{email_norm}"
-    ip_key = f"forgot:ip:{client_ip(request)}"
+    email_ip_key = f"forgot:acctip:{email_norm}|{ip}"
+    ip_key = f"forgot:ip:{ip}"
     await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
-    await reserve_attempt([(email_key, 5)])
+    await reserve_attempt([(email_ip_key, 5), (email_key, 20)])
     await record_failure([ip_key])
     user = await db.users.find_one({"email": email_norm}, {"_id": 0})
 
@@ -1088,28 +1094,43 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
             f"{base_url}/reset-password?token={plain_token}" if base_url
             else f"/reset-password?token={plain_token}"
         )
-        email_result = send_password_reset_email(
-            recipient_email=user["email"],
-            recipient_name=user.get("full_name"),
-            reset_token=plain_token,
-            reset_link=reset_link,
-            expires_minutes=_RESET_TOKEN_TTL_MINUTES,
-        )
-        op = "PASSWORD_RESET_EMAIL_SENT" if email_result.get("sent") else "PASSWORD_RESET_EMAIL_FAILED"
-        try:
-            await write_audit(
-                tenant_id=user.get("tenant_id"),
-                table_name="users", op=op, record_id=user["id"],
-                before={}, after={
-                    "email": user["email"],
-                    "provider_message_id": email_result.get("provider_message_id"),
-                    "error": email_result.get("error"),
-                },
-                actor_id=user["id"],
-                request_id=str(request.headers.get("x-request-id") or ""),
-            )
-        except Exception:
-            pass
+        request_id = str(request.headers.get("x-request-id") or "")
+
+        async def _send_and_audit():
+            # Sent off the request path: the email provider call is a
+            # blocking network call (it would hold up other requests), and a
+            # known email must not answer measurably slower than an unknown
+            # one.
+            try:
+                email_result = await asyncio.to_thread(
+                    send_password_reset_email,
+                    recipient_email=user["email"],
+                    recipient_name=user.get("full_name"),
+                    reset_token=plain_token,
+                    reset_link=reset_link,
+                    expires_minutes=_RESET_TOKEN_TTL_MINUTES,
+                )
+            except Exception as exc:  # never lose the audit row
+                email_result = {"sent": False, "error": str(exc)[:200]}
+            op = "PASSWORD_RESET_EMAIL_SENT" if email_result.get("sent") else "PASSWORD_RESET_EMAIL_FAILED"
+            try:
+                await write_audit(
+                    tenant_id=user.get("tenant_id"),
+                    table_name="users", op=op, record_id=user["id"],
+                    before={}, after={
+                        "email": user["email"],
+                        "provider_message_id": email_result.get("provider_message_id"),
+                        "error": email_result.get("error"),
+                    },
+                    actor_id=user["id"],
+                    request_id=request_id,
+                )
+            except Exception:
+                pass
+
+        _task = asyncio.create_task(_send_and_audit())
+        _RESET_EMAIL_TASKS.add(_task)  # keep a reference until it finishes
+        _task.add_done_callback(_RESET_EMAIL_TASKS.discard)
 
     return {
         "ok": True,

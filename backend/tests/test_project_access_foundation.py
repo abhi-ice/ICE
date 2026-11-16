@@ -1006,7 +1006,7 @@ def test_voice_pin_expired_is_refused(db):
 def test_voice_pin_lock_is_per_address(db):
     ir = importlib.import_module("routers.iter7_router")
     _pin(db)
-    for _ in range(20):
+    for _ in range(50):
         with pytest.raises(HTTPException) as e:
             run(ir.exchange_voice_pin(ir.ExchangePinRequest(pin="999999", tenant_slug="aco"),
                                       _request("9.9.9.9")))

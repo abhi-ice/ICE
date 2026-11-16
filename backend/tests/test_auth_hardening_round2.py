@@ -381,6 +381,36 @@ def test_forgot_password_throttled_per_email(db, monkeypatch):
     assert e.value.status_code == 429 and "Retry-After" in e.value.headers
 
 
+def test_forgot_password_stranger_cannot_block_the_real_person(db, monkeypatch):
+    ar = _ar()
+    monkeypatch.setattr(ar, "send_password_reset_email", lambda **kw: {"sent": True})
+    req = lambda ip: ar.forgot_password(ar.ForgotPasswordRequest(email="victim@example.com"),
+                                        _request(ip))
+    for _ in range(5):
+        assert run(req("10.9.9.9"))["ok"]
+    with pytest.raises(HTTPException):
+        run(req("10.9.9.9"))
+    # The real person, from their own address, still gets through.
+    assert run(req("10.1.1.1"))["ok"]
+
+
+def test_forgot_password_sends_email_off_the_request(db, monkeypatch):
+    ar = _ar()
+    import asyncio as _a
+    db.users.docs.append({"id": "uX", "email": "known@example.com", "tenant_id": "t1",
+                          "full_name": "K"})
+    sent = []
+    monkeypatch.setattr(ar, "send_password_reset_email", lambda **kw: sent.append(kw) or {"sent": True})
+
+    async def go():
+        out = await ar.forgot_password(ar.ForgotPasswordRequest(email="known@example.com"),
+                                       _request())
+        assert out["ok"]
+        await _a.gather(*list(ar._RESET_EMAIL_TASKS))
+    run(go())
+    assert len(sent) == 1 and sent[0]["recipient_email"] == "known@example.com"
+
+
 def test_accept_invite_throttled(db):
     ar = _ar()
     for _ in range(10):
@@ -571,10 +601,10 @@ def test_voice_pin_exchange_uniform_401_minimal_tenant_and_throttle(db, monkeypa
                                     _request("5.5.5.6")))
     assert out["tenant"] == {"id": "t1", "display_name": "ICE", "slug": "ice"}
     assert out["access_token"]
-    # 20 wrong tries on one company from one address -> 429 for that
+    # 50 wrong tries on one company from one address -> 429 for that
     # address (2026-11-16: the lock is per company AND address, 200 per
     # company from everywhere; see test_project_access_foundation.py)
-    for i in range(20):
+    for i in range(50):
         with pytest.raises(HTTPException):
             run(ir.exchange_voice_pin(ir.ExchangePinRequest(pin="999999", tenant_slug="ice"),
                                       _request("9.9.9.1")))

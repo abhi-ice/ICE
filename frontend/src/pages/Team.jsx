@@ -307,7 +307,9 @@ export default function Team() {
                 <td className="text-xs col-primary" data-label="Email">{i.email}</td>
                 <td data-label="Role"><span className="pill pill-slate">{i.role}</span></td>
                 <td className="text-xs text-slate-600" data-label="Access" data-testid={`invite-access-${i.id}`}>
-                  {accessLabel({ ...i, project_count: (i.project_ids || []).length })}
+                  {i.status === "pending"
+                    ? accessLabel({ ...i, project_count: (i.project_ids || []).length })
+                    : "—"}
                 </td>
                 <td data-label="Status"><span className={`pill ${i.status === "pending" ? "pill-blue" : i.status === "accepted" ? "pill-green" : "pill-slate"}`}>{i.status}</span></td>
                 <td className="font-mono text-xs" data-label="Code">{i.code}</td>
