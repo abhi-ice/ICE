@@ -32,11 +32,16 @@ DEFERRED so it cannot disturb Mode-1's existing stored lags.
 """
 import csv
 import io
+import logging
 import math
 import re
+import zipfile
 from datetime import datetime, date
 from typing import List, Optional, Tuple
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
+
+log = logging.getLogger(__name__)
 
 
 def _parse_date(v) -> date | None:
@@ -366,9 +371,16 @@ def parse_xlsx(content: bytes) -> Tuple[List[dict], List[str]]:
     schedule_proposal.parsed_to_task_create_payload's expected input."""
     errors: list[str] = []
     rows: list[dict] = []
-    wb = load_workbook(io.BytesIO(content), data_only=True)
-    ws = wb.active
-    iterator = ws.iter_rows(values_only=True)
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+        ws = wb.active
+        iterator = ws.iter_rows(values_only=True)
+    except (zipfile.BadZipFile, KeyError, InvalidFileException, OSError, ValueError) as e:
+        # Corrupt, truncated or renamed file -- a parse error, not a crash.
+        log.info("parse_xlsx: not a readable workbook: %s", e)
+        return [], ["File is not a valid .xlsx workbook"]
+    if ws is None:
+        return [], ["Empty workbook"]
     try:
         header = next(iterator)
     except StopIteration:
@@ -759,11 +771,19 @@ def parse_mpp_xer(content: bytes, filename: str) -> Tuple[List[dict], List[str]]
 
 
 def parse_schedule_file(filename: str, content: bytes) -> Tuple[List[dict], List[str]]:
-    fn = filename.lower()
+    fn = (filename or "").lower()
     if fn.endswith(".xlsx"):
-        return parse_xlsx(content)
-    if fn.endswith(".csv"):
-        return parse_csv(content)
-    if fn.endswith(".mpp") or fn.endswith(".xer") or fn.endswith(".xml") or fn.endswith(".mpx"):
-        return parse_mpp_xer(content, filename)
-    return [], [f"Unsupported schedule file type: {filename}"]
+        parser, label = (lambda: parse_xlsx(content)), ".xlsx workbook"
+    elif fn.endswith(".csv"):
+        parser, label = (lambda: parse_csv(content)), ".csv file"
+    elif fn.endswith(".mpp") or fn.endswith(".xer") or fn.endswith(".xml") or fn.endswith(".mpx"):
+        parser, label = (lambda: parse_mpp_xer(content, filename)), "schedule file"
+    else:
+        return [], [f"Unsupported schedule file type: {filename}"]
+    try:
+        return parser()
+    except Exception:
+        # Any surprise inside a parser (odd file, library bug) becomes a parse
+        # error the caller can show, never a 500. Full detail goes to the log.
+        log.exception("Schedule parser failed on %r", filename)
+        return [], [f"Could not read this {label}. Check the file and try again."]

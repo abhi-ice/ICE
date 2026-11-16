@@ -282,7 +282,12 @@ async def export_daily_report_pdf(
     photo_cards: list[str] = []
     for p in photos:
         uri = await _photo_data_uri(p)
-        caption = _html_escape(p.get("caption") or "No caption")
+        raw_caption = p.get("caption") or ""
+        # Older photos may carry a placeholder caption from the no-AI-key
+        # stub ("[dev stub] ..."); never print that in a client report.
+        if isinstance(raw_caption, str) and raw_caption.strip().lower().startswith("[dev stub]"):
+            raw_caption = ""
+        caption = _html_escape(raw_caption or "No caption")
         captured = _html_escape(p.get("captured_at") or "—")
         if uri:
             img_tag = f"<img src='{uri}' alt='photo'/>"

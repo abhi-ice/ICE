@@ -336,11 +336,13 @@ export function AuditLog() {
       )}
       {/* Phase 5 -- filter row. */}
       <div className="flex flex-wrap items-end gap-2 p-2 bg-slate-50 border border-slate-200 rounded text-sm">
-        <div>
+        {/* Phone width: long op names would make the select wider than
+            the screen, so it fills the row instead. sm and up unchanged. */}
+        <div className="min-w-0 w-full sm:w-auto">
           <label className="text-xs text-slate-500 block">Op</label>
           <select data-testid="audit-filter-op" value={opFilter}
             onChange={(e) => setOpFilter(e.target.value)}
-            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
+            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs w-full max-w-full sm:w-auto">
             <option value="">All ops</option>
             {AUDIT_OP_GROUPS.map((g) => (
               <optgroup key={g.label} label={g.label}>

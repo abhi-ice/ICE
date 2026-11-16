@@ -25,9 +25,15 @@
  * stop() is called by the component); we only refuse oversized blobs
  * here as a final guard.
  *
+ * Each clip carries `owner` ({ userId, tenantId } or null): only that
+ * signed-in user's drain uploads it; clips without it upload for whoever is
+ * signed in (see "Queue ownership" in lib/drOfflineSync).
+ *
  * Queue/remove dispatch window CustomEvent "ice-offline-queue-changed" so
  * the flow landing's "N items will sync" chip can live-update.
  */
+
+import { queueOwnerStamp, belongsToCurrentUser } from "./drOfflineSync";
 
 const DB_NAME = "ice-dr-voice";
 const DB_VERSION = 1;
@@ -124,6 +130,7 @@ export async function queueClip({
     createdAt: new Date().toISOString(),
     retryCount: 0, lastError: null,
     target, kind, linkedEntityType, linkedEntityId,
+    owner: queueOwnerStamp(), // null when no user is known — never refuses
   };
   try {
     await _idbPut(record);
@@ -198,7 +205,9 @@ export async function listPending(dailyReportId = null) {
   const mem = dailyReportId
     ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
     : [..._memPending];
-  return [...rows, ...mem];
+  // Only the signed-in user's clips (plus unstamped ones).
+  const owner = queueOwnerStamp();
+  return [...rows, ...mem].filter((r) => belongsToCurrentUser(r, owner));
 }
 
 async function _idbDelete(id) {
@@ -295,6 +304,8 @@ async function _drainAll(api) {
     // No server mapping yet: leave it queued — the remap-ready event or the
     // next 'online' drain retries once the DR create has replayed.
     if (isUnresolvedOfflineId(clip.dailyReportId)) continue;
+    // A different person signed in mid-drain: leave the rest for its owner.
+    if (!belongsToCurrentUser(clip)) break;
     const drId = resolveOfflineId(clip.dailyReportId);
     try {
       const ext = (clip.mimeType || "audio/webm").split("/")[1] || "webm";

@@ -27,6 +27,13 @@ from typing import Optional, Any
 
 from database import get_db, tenant_filter
 
+
+def _real_caption(cap):
+    """None for an empty caption or one the old no-AI-key stub wrote."""
+    if not isinstance(cap, str) or not cap.strip() or cap.strip().lower().startswith("[dev stub]"):
+        return None
+    return cap
+
 log = logging.getLogger("exhibit_exports")
 
 
@@ -374,7 +381,7 @@ async def gather_photo_evidence(
             t = tray_by_id.get(p.get("tray_photo_id") or "")
             if t:
                 p["_ai_suggested_class"] = t.get("ai_suggested_class")
-                p["_ai_suggested_caption"] = t.get("ai_suggested_caption")
+                p["_ai_suggested_caption"] = _real_caption(t.get("ai_suggested_caption"))
                 p["_ai_confidence_score"] = t.get("ai_confidence_score")
                 p["_ai_safety_concerns"] = t.get(
                     "ai_safety_concerns_detected",

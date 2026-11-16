@@ -28,11 +28,14 @@
  *       data: {...},
  *       createdAt: ISO,
  *       retryCount: 0,
- *       lastError: null
+ *       lastError: null,
+ *       owner: { userId, tenantId } | null
  *     },
  *     ...
  *   ]
  */
+import { getQueueOwner } from "./auth";
+
 const QUEUE_KEY = "ice-dr-offline-queue";
 const MAX_QUEUE_SIZE = 200;
 
@@ -160,6 +163,40 @@ export function isPermanentRejection(err) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Queue ownership (2026-11-16). One phone can be shared: if a second person
+// signs in before the first person's saves have synced, replaying those saves
+// with the second person's sign-in would file them under the wrong account
+// (or get them rejected and dropped). Every queued save — here and in the
+// photo, voice and note queues — is stamped with its owner (user id + tenant
+// id), and a drain only replays the signed-in owner's saves. Other owners'
+// saves are kept exactly as they are until their owner signs in again.
+// Saves with NO stamp (queued before this change, or while no user was
+// signed in) sync for whoever is signed in, as they always did.
+// ---------------------------------------------------------------------------
+export { getQueueOwner };
+
+/** Owner stamp for a new queued save; null when no user is known. */
+export function queueOwnerStamp() {
+  try { return getQueueOwner() || null; } catch { return null; }
+}
+
+function sameOwner(a, b) {
+  const ua = a?.userId || null;
+  const ub = b?.userId || null;
+  if (!ua || !ub) return !ua && !ub;
+  return ua === ub && (a.tenantId || null) === (b.tenantId || null);
+}
+
+/** True when the signed-in user may sync this queued save: it is theirs, or
+ *  it carries no owner stamp. `owner` defaults to the signed-in user. */
+export function belongsToCurrentUser(entry, owner = queueOwnerStamp()) {
+  const o = entry?.owner;
+  if (!o || !o.userId) return true;
+  if (!owner || !owner.userId) return false;
+  return sameOwner(o, owner);
+}
+
 // Progress PATCH on one activity row (EOD%, hours, notes...).
 const ACTIVITY_PATCH_RE = /^\/daily-report-activities\/[^/?#]+\/?$/;
 
@@ -170,12 +207,15 @@ let _drainingIds = null;
 
 export function enqueueRequest({ method, url, data, offlineCreate = null }) {
   const q = readQueue();
+  // Never refuses a save: with no known user the stamp is simply null.
+  const owner = queueOwnerStamp();
   // Offline DR create (2026-07-06): deterministic dedupe — a double-tap on
   // "+ New" while offline must not queue two creates for the same
   // (url, tempId). The backend create is idempotent anyway; this just keeps
   // the queue clean.
   if (offlineCreate?.tempId) {
-    const dup = q.find((r) => r.offlineCreate?.tempId === offlineCreate.tempId);
+    const dup = q.find((r) => r.offlineCreate?.tempId === offlineCreate.tempId
+      && sameOwner(r.owner, owner));
     if (dup) return dup.id;
   }
   // Day-1 fix (2026-10-25, finding 8): coalesce progress PATCHes to the same
@@ -190,7 +230,11 @@ export function enqueueRequest({ method, url, data, offlineCreate = null }) {
       && data && typeof data === "object" && !Array.isArray(data)) {
     let last = null;
     for (let i = q.length - 1; i >= 0; i -= 1) {
-      if (q[i].url === url) { last = q[i]; break; }
+      // Only merge into a save this user may sync: their own, or an
+      // unstamped one (queued before owner stamps existed). Skipping the
+      // unstamped one would bring back the 409 drop described above for a
+      // slider moved again right after this update reaches the phone.
+      if (q[i].url === url && belongsToCurrentUser(q[i], owner)) { last = q[i]; break; }
     }
     if (last && last.method === "PATCH" && !last.offlineCreate
         && !(_drainingIds && _drainingIds.has(last.id))
@@ -213,6 +257,7 @@ export function enqueueRequest({ method, url, data, offlineCreate = null }) {
     createdAt: new Date().toISOString(),
     retryCount: 0,
     lastError: null,
+    owner,
     ...(offlineCreate ? { offlineCreate } : {}),
   });
   writeQueue(q);
@@ -267,8 +312,11 @@ function applyRemapToRequest(req, map) {
   return { ...req, url, data };
 }
 
+// Counts and lists below cover only the signed-in user's saves (plus
+// unstamped ones) — another person's pending saves are not theirs to see.
 export function getQueueSize() {
-  return readQueue().length;
+  const owner = queueOwnerStamp();
+  return readQueue().filter((r) => belongsToCurrentUser(r, owner)).length;
 }
 
 /**
@@ -293,7 +341,8 @@ export async function getPendingSyncCounts(dailyReportId = null) {
 }
 
 export function getQueue() {
-  return readQueue();
+  const owner = queueOwnerStamp();
+  return readQueue().filter((r) => belongsToCurrentUser(r, owner));
 }
 
 export function clearQueue() {
@@ -326,8 +375,13 @@ async function _drainQueueOnce(api) {
     return { synced: 0, failed: 0, remaining: -1 };
   }
   const q = readQueue();
-  if (!q.length) return { synced: 0, failed: 0, remaining: 0 };
-  _drainingIds = new Set(q.map((r) => r.id));
+  // Replay only the signed-in user's saves (and unstamped ones). Everyone
+  // else's stay in the queue untouched, in place, until they sign in.
+  const owner = queueOwnerStamp();
+  const isMine = (r) => belongsToCurrentUser(r, owner);
+  const mine = q.filter(isMine);
+  if (!mine.length) return { synced: 0, failed: 0, remaining: 0 };
+  _drainingIds = new Set(mine.map((r) => r.id));
   let synced = 0;
   let failed = 0;
   // Offline-create remap (2026-07-06): start from any persisted mappings
@@ -357,7 +411,7 @@ async function _drainQueueOnce(api) {
   // Temp DR ids whose create still sits in this queue — a row token whose
   // DR is neither mapped nor pending can never resolve (orphan -> drop).
   const pendingCreates = new Set(
-    q.filter((r) => r.offlineCreate?.tempId).map((r) => r.offlineCreate.tempId),
+    mine.filter((r) => r.offlineCreate?.tempId).map((r) => r.offlineCreate.tempId),
   );
   const resolveRowIds = async (req) => {
     const hay = `${req.url || ""}|${req.data != null ? JSON.stringify(req.data) : ""}`;
@@ -412,6 +466,11 @@ async function _drainQueueOnce(api) {
 
   const keep = [];
   for (const raw of q) {
+    if (!isMine(raw)) { keep.push(raw); continue; } // another owner's: untouched
+    // Someone else signed in while this drain was running: stop replaying
+    // (the next request would go out under THEIR sign-in) and keep the rest
+    // exactly as queued for the next drain.
+    if (!sameOwner(queueOwnerStamp(), owner)) { keep.push(raw); continue; }
     let req = applyRemapToRequest(raw, remap);
     if (referencesDeadId(req)) { failed += 1; continue; } // dropped with its create
     const rowRes = await resolveRowIds(req);
@@ -523,7 +582,8 @@ async function _drainQueueOnce(api) {
   // so writing the queue back can never wipe them out.
   const snapshotIds = new Set(q.map((r) => r.id));
   const addedDuringDrain = readQueue().filter((r) => !snapshotIds.has(r.id));
-  const finalQueue = [...keep, ...addedDuringDrain].map((r) => applyRemapToRequest(r, remap));
+  const finalQueue = [...keep, ...addedDuringDrain]
+    .map((r) => (isMine(r) ? applyRemapToRequest(r, remap) : r));
   try {
     if (JSON.stringify(finalQueue) !== JSON.stringify(q)) writeQueue(finalQueue);
   } catch {
@@ -535,7 +595,7 @@ async function _drainQueueOnce(api) {
     try { window.dispatchEvent(new Event("ice-offline-remap-ready")); }
     catch { /* non-window env */ }
   }
-  return { synced, failed, remaining: keep.length };
+  return { synced, failed, remaining: keep.filter(isMine).length };
 }
 
 /**

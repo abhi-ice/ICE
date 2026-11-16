@@ -84,6 +84,8 @@ Run from repo root:
 import asyncio
 import os
 import sys
+
+import pytest
 import types
 import uuid
 from datetime import date, datetime, timedelta
@@ -279,6 +281,10 @@ _STUB = _StubDB()
 # =============================================================================
 # Stub modules BEFORE importing the real services.
 # =============================================================================
+# Remember what was loaded, so the stubs (and the modules imported against
+# them) can be taken back out of sys.modules afterwards. Without this, every
+# test file collected later imports the fake auth/database/audit modules.
+_MODULES_BEFORE = dict(sys.modules)
 _db_mod = types.ModuleType("database")
 _db_mod.get_db = lambda: _STUB
 _db_mod.tenant_filter = lambda tenant_id, q=None: {**(q or {}), "tenant_id": tenant_id}
@@ -333,6 +339,36 @@ from services.working_days import (  # noqa: E402
     working_days_between, add_working_days, next_business_day,
     is_business_day, FEDERAL_HOLIDAYS,
 )
+
+# Take the stubs (and everything imported against them) back out of
+# sys.modules so files collected after this one import the real modules.
+# The autouse fixture below puts this file's set back while its own tests
+# run, because some code here imports lazily at call time.
+_STUBBED_MODULES = {n: m for n, m in sys.modules.items()
+                    if n not in _MODULES_BEFORE or n in ("database", "audit", "auth")}
+
+
+def _restore_real_modules():
+    for _name in _STUBBED_MODULES:
+        if _name in _MODULES_BEFORE:
+            sys.modules[_name] = _MODULES_BEFORE[_name]
+        else:
+            sys.modules.pop(_name, None)
+
+
+_restore_real_modules()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _use_stubbed_modules():
+    saved = {n: sys.modules.get(n) for n in _STUBBED_MODULES}
+    sys.modules.update(_STUBBED_MODULES)
+    yield
+    for n, m in saved.items():
+        if m is None:
+            sys.modules.pop(n, None)
+        else:
+            sys.modules[n] = m
 
 
 # =============================================================================

@@ -171,6 +171,11 @@ function drainAllQueues() {
 try {
   setTimeout(drainAllQueues, 4000);      // post-load (after token hydration)
   setInterval(drainAllQueues, 60000);    // heartbeat while the app is open
+  // Right after a sign-in (lib/auth setAuth): sync THAT user's queued saves.
+  // Each drain only replays saves owned by the signed-in user (plus
+  // unstamped ones), so someone signing in on a shared phone never replays
+  // another person's saves; theirs wait for them.
+  window.addEventListener("ice-auth-changed", () => { drainAllQueues(); });
 } catch { /* non-window env */ }
 
 // Round 3 (2026-07-06) — tenant-wide offline warm-up: yesterday/today/

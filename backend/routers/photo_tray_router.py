@@ -377,6 +377,56 @@ async def archive_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
+async def _remove_tray_blob(tenant_id: str, storage_key: Optional[str]) -> None:
+    """Delete the stored image behind a removed tray entry, but only when
+    nothing else still points at the same key (a photo row or another tray
+    row). Failures are logged, never raised."""
+    if not storage_key:
+        return
+    import logging
+    log = logging.getLogger("photo_tray_router")
+    db = get_db()
+    try:
+        still_used = (
+            await db.photos.count_documents(
+                tenant_filter(tenant_id, {"storage_path": storage_key}),
+            )
+            or await db.photo_tray.count_documents(
+                tenant_filter(tenant_id, {"storage_key": storage_key}),
+            )
+        )
+        if still_used:
+            log.info("Tray delete: storage object still referenced; kept")
+            return
+        from services.storage import remove_object
+        await asyncio.to_thread(remove_object, storage_key)
+        # Keep the file register honest: the object is gone.
+        await db.files.update_many(
+            tenant_filter(tenant_id, {"storage_path": storage_key}),
+            {"$set": {"is_deleted": True}},
+        )
+    except Exception as exc:
+        log.warning(
+            "Tray delete: could not remove storage object %s: %s",
+            storage_key, exc,
+        )
+
+
+# Captions the old no-AI-key stub wrote ("[dev stub] ...") are not real
+# captions and must never reach a photo row or a client report.
+_DEV_STUB_CAPTION_PREFIX = "[dev stub]"
+
+
+def _usable_ai_caption(tray: dict) -> Optional[str]:
+    """The tray's AI caption, or None when it is empty or a stub caption."""
+    cap = (tray or {}).get("ai_suggested_caption")
+    if not isinstance(cap, str) or not cap.strip():
+        return None
+    if cap.strip().lower().startswith(_DEV_STUB_CAPTION_PREFIX):
+        return None
+    return cap
+
+
 # pt.31 — Hard delete of a tray entry. Allowed ONLY while the photo is
 # still untagged (no rows in the photos collection pointing at this tray
 # row). Once tagged, deletion must happen from inside the DR / Photos
@@ -390,9 +440,10 @@ async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not before:
         raise HTTPException(404, "Tray entry not found")
-    # Tagged check — photos collection holds the (tray_id → event) links
+    # Tagged check — photo rows link back to the tray entry through
+    # `tray_photo_id` (see create_photo_tag / attach-to-dr).
     tag_count = await db.photos.count_documents(
-        tenant_filter(ctx["tenant_id"], {"tray_id": tray_id}),
+        tenant_filter(ctx["tenant_id"], {"tray_photo_id": tray_id}),
     )
     if tag_count > 0:
         raise HTTPException(
@@ -401,21 +452,12 @@ async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
             f"Delete it from the daily report or Photos page instead so the audit chain "
             f"captures the reason.",
         )
-    # Remove the storage object best-effort; tray-row delete is the
-    # authoritative action even if blob cleanup misfires.
-    sp = before.get("storage_path")
-    if sp:
-        try:
-            from services.storage import delete_object as _del_obj
-            try:
-                _del_obj(sp)
-            except Exception:
-                pass
-        except Exception:
-            pass
     await db.photo_tray.delete_one(
         tenant_filter(ctx["tenant_id"], {"id": tray_id}),
     )
+    # Remove the stored image best-effort; the tray-row delete above is
+    # the authoritative action even if blob cleanup fails.
+    await _remove_tray_blob(ctx["tenant_id"], before.get("storage_key"))
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="photo_tray",
         op="PHOTO_TRAY_DELETE",
@@ -868,7 +910,7 @@ async def _create_photo_ai_field_suggestions(
     from services import field_suggestions as fs
 
     # ---- Caption -> event.description / body / summary ----
-    caption = (tray.get("ai_suggested_caption") or "").strip()
+    caption = (_usable_ai_caption(tray) or "").strip()
     target = _REF_TO_CAPTION_TARGET.get(ref_field)
     if caption and target:
         entity_type, field_path = target
@@ -1230,7 +1272,7 @@ async def attach_trays_to_dr(
             "daily_report_id": payload.daily_report_id,
             "tray_photo_id": tray["id"],
             "tagged_at": now_iso, "tagged_by": ctx["user"]["id"],
-            "tag_caption": tray.get("ai_suggested_caption"),
+            "tag_caption": _usable_ai_caption(tray),
             # No event reference — this is a DR-level attach.
             "daily_report_activity_id": None, "delay_id": None, "rfi_id": None,
             "qc_issue_id": None, "safety_event_id": None,
@@ -1246,7 +1288,7 @@ async def attach_trays_to_dr(
             "gps_lat": tray.get("exif_gps_lat"), "gps_lng": tray.get("exif_gps_lng"),
             "photo_class": "progress", "evidentiary_flag": False,
             "schedule_activity_id": None, "tags": [],
-            "caption": tray.get("ai_suggested_caption"),
+            "caption": _usable_ai_caption(tray),
             "is_supplement": False, "created_at": now_iso,
             "created_via_ai_suggestion": False, "ai_suggestion_id": None,
             "ai_confidence_at_tag_time": None,
@@ -1696,7 +1738,7 @@ async def create_safety_event_from_photo(
     inferred_event_type, inferred_severity, _ = _infer_severity_from_concerns(concerns)
     description = (
         (payload.description or "").strip()
-        or (tray.get("ai_suggested_caption") or "").strip()
+        or (_usable_ai_caption(tray) or "").strip()
         or f"AI-flagged photo (tray {tray_id[:8]}): {', '.join(concerns[:2]) or 'safety concern'}"
     )
     severity = (payload.severity or inferred_severity)
@@ -1764,7 +1806,7 @@ async def create_safety_event_from_photo(
         "captured_by": tray.get("uploaded_by"),
         "created_at": now_iso,
         "photo_class": tray.get("ai_suggested_class") or "safety",
-        "tag_caption": tray.get("ai_suggested_caption"),
+        "tag_caption": _usable_ai_caption(tray),
         "tagged_at": now_iso,
         "tagged_by": ctx["user"]["id"],
         "evidentiary_flag": True,           # safety photos are evidentiary

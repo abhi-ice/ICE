@@ -1,5 +1,7 @@
 """Spec PDF upload + Drawing PDF upload routes."""
+import asyncio
 import io
+import logging
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks, Request, Response
 from typing import Optional
 import pdfplumber
@@ -10,39 +12,111 @@ from services.spec_ingest import ingest_spec_pdf
 from services.storage import put_object, aput_object, make_path, record_file
 
 router = APIRouter(tags=["uploads"])
+_log = logging.getLogger("ice_schedule_ops.uploads")
+
+
+def _parse_range(range_header: Optional[str], total: int):
+    """Read a `Range: bytes=...` header (RFC 7233) for a file of `total` bytes.
+
+    Returns None when there is no usable header (no header, another unit, or
+    text we cannot read) -- the caller then sends the whole file with a 200.
+    Returns "unsatisfiable" when the range is well formed but lies outside the
+    file -- the caller then sends a 416.
+    Otherwise returns (start, end), both inclusive.
+
+    Only the first range is served when several are asked for (PDF.js asks for
+    one at a time)."""
+    if not range_header:
+        return None
+    header = range_header.strip()
+    if not header.lower().startswith("bytes="):
+        return None
+    rng = header.split("=", 1)[1].split(",")[0].strip()
+    start_s, dash, end_s = rng.partition("-")
+    start_s, end_s = start_s.strip(), end_s.strip()
+    if not dash or not (start_s or end_s):
+        return None
+    # Plain ASCII digits only: str.isdigit() also accepts characters such as
+    # "²" that int() cannot read, which would turn a bad header into a 500.
+    if not all(c in "0123456789" for c in start_s + end_s):
+        return None
+    if not start_s:
+        # Suffix form "bytes=-N": the LAST N bytes of the file.
+        n = int(end_s)
+        if n == 0 or total == 0:
+            return "unsatisfiable"
+        return (max(0, total - n), total - 1)
+    start = int(start_s)
+    if end_s:
+        end = int(end_s)
+        if end < start:
+            return None  # not a valid range -> ignore it, per RFC 7233
+    else:
+        end = total - 1
+    if start >= total:
+        return "unsatisfiable"
+    return (start, min(end, total - 1))
 
 
 def _pdf_range_response(data: bytes, content_type: str, range_header: Optional[str]) -> Response:
     """Serve a PDF with HTTP range support (pt.77). PDF.js streams large specs
-    by requesting byte ranges; we honor `Range: bytes=start-end` with a 206 so
-    the browser fetches pages on demand instead of the whole file. A request
-    WITHOUT a Range header gets the full 200 (so the blob path still works) plus
-    `Accept-Ranges: bytes` to advertise range support."""
+    by requesting byte ranges; we honor `Range: bytes=start-end` (and the
+    suffix form `bytes=-N`, meaning the last N bytes) with a 206 so the
+    browser fetches pages on demand instead of the whole file. A range that
+    lies outside the file gets a 416. A request WITHOUT a Range header (or
+    with one we cannot read) gets the full 200 (so the blob path still
+    works) plus `Accept-Ranges: bytes` to advertise range support."""
     total = len(data)
-    if range_header and range_header.strip().lower().startswith("bytes="):
-        try:
-            rng = range_header.split("=", 1)[1].split(",")[0].strip()
-            start_s, _, end_s = rng.partition("-")
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else total - 1
-            start = max(0, start)
-            end = min(end, total - 1)
-            if start <= end:
-                chunk = data[start:end + 1]
-                return Response(
-                    content=chunk, status_code=206, media_type=content_type,
-                    headers={
-                        "Content-Range": f"bytes {start}-{end}/{total}",
-                        "Accept-Ranges": "bytes",
-                        "Content-Length": str(len(chunk)),
-                    },
-                )
-        except Exception:
-            pass  # malformed Range -> fall through to full 200
+    rng = _parse_range(range_header, total)
+    if rng == "unsatisfiable":
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{total}", "Accept-Ranges": "bytes"},
+        )
+    if rng is not None:
+        start, end = rng
+        chunk = data[start:end + 1]
+        return Response(
+            content=chunk, status_code=206, media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{total}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(len(chunk)),
+            },
+        )
     return Response(
         content=data, media_type=content_type,
         headers={"Accept-Ranges": "bytes", "Content-Length": str(total)},
     )
+
+
+def _looks_like_pdf(data: bytes) -> bool:
+    """True when the file starts with the PDF marker "%PDF-". The PDF
+    specification lets readers find the marker anywhere in the first 1024
+    bytes, so a leading byte-order mark, whitespace or other short prefix is
+    allowed."""
+    return b"%PDF-" in data[:1024 + 5]
+
+
+def _read_pdf_info(data: bytes) -> dict:
+    """Open the PDF and return its page count and first-page size in points.
+    Raises HTTPException(400, "Not a valid PDF") when the file is not a PDF
+    or cannot be opened, so a bad upload is refused instead of being stored
+    with a page count of 0."""
+    if not _looks_like_pdf(data):
+        raise HTTPException(400, "Not a valid PDF")
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            pages = pdf.pages
+            if not pages:
+                raise ValueError("PDF has no pages")
+            p0 = pages[0]
+            return {"page_count": len(pages), "width_px": int(p0.width), "height_px": int(p0.height)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.warning("PDF upload refused, could not open it: %s", e)
+        raise HTTPException(400, "Not a valid PDF")
 
 
 @router.post("/specs/{spec_id}/upload")
@@ -61,6 +135,9 @@ async def upload_spec_pdf(
     pdf_bytes = await file.read()
     if len(pdf_bytes) > 250 * 1024 * 1024:
         raise HTTPException(413, "PDF > 250MB")
+    # Refuse files that are named .pdf but are not PDFs (checked off the
+    # event loop: opening a large spec takes a moment).
+    await asyncio.to_thread(_read_pdf_info, pdf_bytes)
 
     await db.project_specs.update_one(
         tenant_filter(ctx["tenant_id"], {"id": spec_id}),
@@ -119,26 +196,18 @@ async def upload_drawing_revision(
     pdf_bytes = await file.read()
     if len(pdf_bytes) > 250 * 1024 * 1024:
         raise HTTPException(413, "PDF > 250MB")
+    # Check the file really is a PDF before storing anything, and read its
+    # page count and first-page size.
+    info = await asyncio.to_thread(_read_pdf_info, pdf_bytes)
+    page_count = info["page_count"]
+    width_px = info["width_px"]
+    height_px = info["height_px"]
 
     storage_path = make_path(ctx["tenant_id"], "drawings", "pdf")
     try:
         await aput_object(storage_path, pdf_bytes, "application/pdf")
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
-
-    # peek page count
-    page_count = 0
-    width_px = 612
-    height_px = 792
-    try:
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            page_count = len(pdf.pages)
-            if pdf.pages:
-                p0 = pdf.pages[0]
-                width_px = int(p0.width)
-                height_px = int(p0.height)
-    except Exception:
-        pass
 
     await record_file(
         tenant_id=ctx["tenant_id"], storage_path=storage_path,
@@ -164,7 +233,8 @@ async def upload_drawing_revision(
     await db.drawing_revisions.insert_one(rev.copy())
     await db.drawings.update_one(
         tenant_filter(ctx["tenant_id"], {"id": drawing_id}),
-        {"$set": {"current_revision_id": rev["id"], "revision_count": (drawing.get("revision_count", 0) + 1)}},
+        # $inc so two uploads at the same moment both count.
+        {"$set": {"current_revision_id": rev["id"]}, "$inc": {"revision_count": 1}},
     )
     return {"id": rev["id"], "page_count": page_count, "pdf_url": storage_path}
 

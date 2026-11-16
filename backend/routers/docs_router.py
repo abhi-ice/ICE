@@ -22,6 +22,16 @@ async def _next_number(db, tenant_id: str, project_id: str, collection: str, pre
     return f"{prefix}-{count + 1:04d}"
 
 
+async def _require_project(db, tenant_id: str, project_id: str) -> None:
+    """404 unless the project exists in the caller's company. Every create
+    endpoint that takes a project_id calls this, so nobody can attach records
+    to another company's project (or to a project that does not exist)."""
+    proj = await db.projects.find_one(
+        tenant_filter(tenant_id, {"id": project_id}), {"_id": 0, "id": 1})
+    if not proj:
+        raise HTTPException(404, "Project not found")
+
+
 async def _project_today_iso(db, tenant_id: str, project_id: str) -> str:
     """Today's DATE on the SITE's clock (2026-07-03). Server-side
     DATE-granular stamps in the schedule-impact path (date_initiated,
@@ -207,6 +217,7 @@ async def _resolve_rfi_task_impacts(
 @router.post("/rfis", response_model=Rfi)
 async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await _require_project(db, ctx["tenant_id"], payload.project_id)
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
@@ -560,6 +571,7 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
 @router.post("/change-orders", response_model=ChangeOrder)
 async def create_co(payload: ChangeOrderCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await _require_project(db, ctx["tenant_id"], payload.project_id)
     co_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "change_orders", "CO")
     doc = payload.model_dump(mode="json")
     doc.update({
@@ -585,6 +597,7 @@ async def list_co(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.post("/work-items", response_model=WorkItem)
 async def create_work_item(payload: WorkItemCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await _require_project(db, ctx["tenant_id"], payload.project_id)
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
     doc.update({
@@ -653,10 +666,12 @@ async def list_work_item_links(work_item_id: str, ctx: dict = Depends(require_te
 @router.post("/drawings", response_model=Drawing)
 async def create_drawing(payload: DrawingCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await _require_project(db, ctx["tenant_id"], payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
-        "revision_count": 1, "current_revision_id": None,
+        # No PDF uploaded yet; each upload adds one (upload_router).
+        "revision_count": 0, "current_revision_id": None,
         "qr_code_url": None, "status": "current",
         "created_at": utc_now().isoformat(),
     })
@@ -670,6 +685,19 @@ async def list_drawings(project_id: str, ctx: dict = Depends(require_tenant)):
     docs = await db.drawings.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
     ).sort("sheet_number", 1).to_list(500)
+    # Count each drawing's uploaded revisions instead of trusting the stored
+    # revision_count: drawings created before 2026-11-16 started at 1, so
+    # their stored count is one too high. One grouped query for the whole
+    # list; nothing stored is changed.
+    counts: dict = {}
+    if docs:
+        rows = await db.drawing_revisions.aggregate([
+            {"$match": tenant_filter(ctx["tenant_id"], {"drawing_id": {"$in": [d["id"] for d in docs]}})},
+            {"$group": {"_id": "$drawing_id", "n": {"$sum": 1}}},
+        ]).to_list(None)
+        counts = {r["_id"]: r["n"] for r in rows}
+    for d in docs:
+        d["revision_count"] = counts.get(d["id"], 0)
     return [Drawing(**d) for d in docs]
 
 
@@ -677,6 +705,7 @@ async def list_drawings(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.post("/specs", response_model=ProjectSpec)
 async def create_spec(payload: SpecCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await _require_project(db, ctx["tenant_id"], payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],

@@ -324,8 +324,10 @@ async def download_ms_project_file(project_id: str, ctx: dict = Depends(require_
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "ms_project_file_id": 1, "ms_project_file_name": 1})
-    if not proj:
+        {"_id": 0, "id": 1, "ms_project_file_id": 1, "ms_project_file_name": 1})
+    # "is None": a narrow projection on a project with none of these fields
+    # set comes back as {} -- the project exists, it just has no file yet.
+    if proj is None:
         raise HTTPException(status_code=404, detail="Project not found")
     if not proj.get("ms_project_file_id"):
         raise HTTPException(status_code=404, detail="No Microsoft Project file stored for this project yet")
@@ -355,8 +357,8 @@ async def generate_ms_project_file(project_id: str, ctx: dict = Depends(require_
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "schedule_mode": 1, "ms_project_file_id": 1})
-    if not proj:
+        {"_id": 0, "id": 1, "schedule_mode": 1, "ms_project_file_id": 1})
+    if proj is None:
         raise HTTPException(status_code=404, detail="Project not found")
     if proj.get("schedule_mode") != "mode2":
         raise HTTPException(
@@ -411,7 +413,7 @@ async def sync_state(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "ms_project_file_id": 1, "ms_project_file_name": 1,
+        {"_id": 0, "id": 1, "ms_project_file_id": 1, "ms_project_file_name": 1,
          "ms_project_file_rev": 1, "ms_project_file_updated_at": 1,
          "ms_project_file_source": 1}) or {}
     st["file"] = ({
@@ -461,9 +463,9 @@ async def worker_download_file(job_id: str, _w: dict = Depends(require_worker)):
     job = await _claimed_job_or_409(db, job_id)
     proj = await db.projects.find_one(
         tenant_filter(job["tenant_id"], {"id": job["project_id"]}),
-        {"_id": 0, "ms_project_file_id": 1, "ms_project_file_rev": 1,
+        {"_id": 0, "id": 1, "ms_project_file_id": 1, "ms_project_file_rev": 1,
          "ms_project_file_sha": 1, "ms_project_file_source": 1})
-    if not proj or not proj.get("ms_project_file_id"):
+    if proj is None or not proj.get("ms_project_file_id"):
         raise HTTPException(status_code=404, detail="project has no stored file")
     row = await db.files.find_one(
         tenant_filter(job["tenant_id"], {"id": proj["ms_project_file_id"]}), {"_id": 0})

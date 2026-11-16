@@ -266,9 +266,14 @@ async def _send_invite_email_and_audit(db, ctx: dict, request: Request, invite: 
     Returns (email_result, invite_link)."""
     from services.invite_email import send_invite_email
     tenant_row = await db.tenants.find_one(
-        {"id": ctx["tenant_id"]}, {"_id": 0, "name": 1},
+        {"id": ctx["tenant_id"]},
+        {"_id": 0, "display_name": 1, "legal_name": 1, "name": 1},
     )
-    tenant_name = (tenant_row or {}).get("name") or "your team"
+    # Tenants store display_name / legal_name (see register); "name" is
+    # only a fallback for any older row that used it.
+    tenant_row = tenant_row or {}
+    tenant_name = (tenant_row.get("display_name") or tenant_row.get("legal_name")
+                   or tenant_row.get("name") or "your team")
     base_url = _invite_base_url(request)
     code = invite["code"]
     invite_link = f"{base_url}/accept-invite?code={code}" if base_url else f"/accept-invite?code={code}"

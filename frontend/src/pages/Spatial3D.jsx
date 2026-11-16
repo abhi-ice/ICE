@@ -357,7 +357,7 @@ export default function Spatial3D() {
 
   return (
     <div data-testid="spatial-3d-page" className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="flex items-center gap-2">
             <Box className="h-5 w-5 text-blue-600" />
@@ -367,7 +367,7 @@ export default function Spatial3D() {
             {project?.name} · {floors.length} floors · {locations.length} rooms · {meta.filter((m) => m.drawing_type?.startsWith("elevation_")).length} elevation faces bound
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button data-testid="bind-elev" onClick={() => setBindOpen(true)} className="h-8 px-3 rounded text-xs flex items-center gap-1 bg-white border border-slate-200">
             <ImageIcon className="h-3.5 w-3.5" /> Bind elevation drawings
           </button>

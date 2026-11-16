@@ -30,13 +30,19 @@
  *   Store: pendingPhotos  (keyPath: "id")
  *   Row:   { id, blob, mimeType, dailyReportId, projectId,
  *            activityRowId, taskId, caption, photoClass,
- *            createdAt, retryCount, lastError }
+ *            createdAt, retryCount, lastError, owner }
+ *   `owner` ({ userId, tenantId } or null) — only that signed-in user's
+ *   drain uploads the photo; rows without it upload for whoever is signed
+ *   in (see "Queue ownership" in lib/drOfflineSync).
  */
 
 // Offline-created DRs (2026-07-06): a photo queued against a provisional
 // "offline-dr-*" id can only upload after the request queue's drain has
 // created the real report and recorded the id mapping.
-import { resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection } from "./drOfflineSync";
+import {
+  resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection,
+  queueOwnerStamp, belongsToCurrentUser,
+} from "./drOfflineSync";
 
 const DB_NAME = "ice-dr-photos";
 const DB_VERSION = 1;
@@ -191,6 +197,7 @@ export async function queuePhoto({
     createdAt: new Date().toISOString(),
     retryCount: 0,
     lastError: null,
+    owner: queueOwnerStamp(), // null when no user is known — never refuses
   };
   try {
     await _idbPut(record);
@@ -247,7 +254,10 @@ export async function listPending(dailyReportId = null) {
   const mem = dailyReportId
     ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
     : [..._memPending];
-  return [...rows, ...mem];
+  // Only the signed-in user's photos (plus unstamped ones): the drain and the
+  // "will sync" counts never touch another person's queued photos.
+  const owner = queueOwnerStamp();
+  return [...rows, ...mem].filter((r) => belongsToCurrentUser(r, owner));
 }
 
 /** Remove a queued photo (after a successful upload, or a user discard). */
@@ -473,6 +483,8 @@ async function _drainAll(api) {
     // create is still in the request queue) — a remap-ready event or the
     // next 'online' drain picks it up once the mapping exists.
     if (isUnresolvedOfflineId(photo.dailyReportId)) continue;
+    // A different person signed in mid-drain: leave the rest for its owner.
+    if (!belongsToCurrentUser(photo)) break;
     try {
       await uploadOne(api, {
         ...photo,

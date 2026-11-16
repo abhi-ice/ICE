@@ -732,14 +732,20 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
 
     from services.storage import get_object
     pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    if payload.page < 1:
+        raise HTTPException(422, "Page must be 1 or more")
     try:
         images = pdf2image.convert_from_bytes(pdf_bytes, first_page=payload.page,
                                               last_page=payload.page, dpi=150)
         img = images[0] if images else None
     except Exception as e:
-        raise HTTPException(500, f"pdf2image: {e}")
+        # Raw pdftoppm output goes to the server log only.
+        logging.getLogger("ice_schedule_ops.drawings").warning(
+            "suggest-polygon: could not render page %s of revision %s: %s",
+            payload.page, payload.drawing_revision_id, e)
+        raise HTTPException(422, "Could not read this PDF")
     if img is None:
-        raise HTTPException(500, "Could not render plan page")
+        raise HTTPException(422, f"Page {payload.page} is not in this PDF")
 
     # Crop if requested (scale crop_box from points to rendered px @ 150 dpi
     # vs default 72 dpi)
@@ -796,9 +802,12 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
 # ============================================================
 # 6. Drawing OCR (pytesseract)
 # ============================================================
+_drawing_log = logging.getLogger("ice_schedule_ops.drawings")
+
+
 class DrawingOcrRequest(StrictModel):
     drawing_revision_id: str
-    page: int = 1
+    page: int = Field(default=1, ge=1)
 
 
 @router.post("/drawings/ocr")
@@ -814,23 +823,41 @@ async def drawing_ocr(payload: DrawingOcrRequest, ctx: dict = Depends(require_te
     rev = await db.drawing_revisions.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.drawing_revision_id}), {"_id": 0},
     )
-    if not rev:
+    if not rev or not (rev.get("storage_path") or rev.get("pdf_url")):
         raise HTTPException(404, "Revision not found")
     from services.storage import get_object
     pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    # Read the page count first so a page past the end gets a clear message.
+    # Raw tool errors (pdftoppm / tesseract output) go to the server log only.
+    try:
+        page_total = int(pdf2image.pdfinfo_from_bytes(pdf_bytes).get("Pages") or 0)
+    except Exception as e:
+        _drawing_log.warning("drawing OCR: could not read PDF for revision %s: %s",
+                             payload.drawing_revision_id, e)
+        raise HTTPException(422, "Could not read this PDF")
+    if page_total < 1:
+        raise HTTPException(422, "Could not read this PDF")
+    if payload.page > page_total:
+        raise HTTPException(422, f"Page {payload.page} is out of range (1..{page_total})")
     try:
         images = pdf2image.convert_from_bytes(pdf_bytes, first_page=payload.page,
                                               last_page=payload.page, dpi=200)
-        img = images[0]
     except Exception as e:
-        raise HTTPException(500, f"pdf2image: {e}")
+        _drawing_log.warning("drawing OCR: could not render page %s of revision %s: %s",
+                             payload.page, payload.drawing_revision_id, e)
+        raise HTTPException(422, "Could not read this PDF")
+    if not images:
+        raise HTTPException(422, f"Page {payload.page} is out of range (1..{page_total})")
+    img = images[0]
     # Crop bottom-right 30% (typical title-block)
     W, H = img.size
     title_block = img.crop((int(W * 0.55), int(H * 0.65), W, H))
     try:
         text = pytesseract.image_to_string(title_block)
     except Exception as e:
-        raise HTTPException(500, f"tesseract: {e}")
+        _drawing_log.error("drawing OCR: tesseract failed on revision %s: %s",
+                           payload.drawing_revision_id, e)
+        raise HTTPException(500, "Could not read text from this page")
 
     # Heuristics
     extracted: dict = {"raw_text": text}

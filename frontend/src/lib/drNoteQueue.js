@@ -18,8 +18,15 @@
  * authenticated axios client so this module never imports lib/api (avoids the
  * api.js <-> component import cycle). MUTEX-guarded so the component drain,
  * the reconnect drain, and the heartbeat can't double-post a note.
+ *
+ * Each note carries `owner` ({ userId, tenantId } or null): only that
+ * signed-in user's drain posts it; notes without it post for whoever is
+ * signed in (see "Queue ownership" in lib/drOfflineSync).
  */
-import { resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection } from "./drOfflineSync";
+import {
+  resolveOfflineId, isUnresolvedOfflineId, isPermanentRejection,
+  queueOwnerStamp, belongsToCurrentUser,
+} from "./drOfflineSync";
 
 const DB_NAME = "ice-dr-voice-notes";
 const STORE = "pendingNotes";
@@ -104,6 +111,7 @@ export async function queuePendingNote({ dailyReportId, blob, mimeType, duration
     mimeType,
     durationSec: durationSec || null,
     createdAt: new Date().toISOString(),
+    owner: queueOwnerStamp(), // null when no user is known — never refuses
   };
   try {
     await _idbPut(rec);
@@ -150,7 +158,9 @@ export async function listPendingNotes(dailyReportId = null) {
   const mem = dailyReportId
     ? _memPending.filter((r) => r.dailyReportId === dailyReportId)
     : [..._memPending];
-  return [...rows, ...mem];
+  // Only the signed-in user's notes (plus unstamped ones).
+  const owner = queueOwnerStamp();
+  return [...rows, ...mem].filter((r) => belongsToCurrentUser(r, owner));
 }
 
 async function _idbDelete(id) {
@@ -213,6 +223,8 @@ async function _drainAll(api) {
     // Provisional report id with no server mapping yet: WAIT — posting now
     // would orphan the note against a report id that will never exist.
     if (isUnresolvedOfflineId(n.dailyReportId)) continue;
+    // A different person signed in mid-drain: leave the rest for its owner.
+    if (!belongsToCurrentUser(n)) break;
     try {
       await postNote(api, resolveOfflineId(n.dailyReportId),
         n.bytes || n.blob, n.mimeType, n.durationSec);

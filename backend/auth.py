@@ -320,7 +320,10 @@ def decode_token(token: str) -> dict:
     except pyjwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token expired")
     except pyjwt.InvalidTokenError as e:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid token: {e}")
+        # Keep the library's reason in the server log only; the caller just
+        # needs to know the token was rejected.
+        log.info("Rejected token: %s", e)
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
 
 
 async def _resolve_via_jwt(token: str) -> dict | None:

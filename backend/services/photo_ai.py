@@ -1100,7 +1100,10 @@ def _stub_analysis(tray_row: dict) -> dict:
     confidence = 0.5 + (seed_int % 50) / 100.0  # 0.50-0.99
     return {
         "ai_suggested_class": cls,
-        "ai_suggested_caption": f"[dev stub] {cls} photo from tray {tray_row.get('id', '?')[:8]}",
+        # No caption from the stub: a made-up caption would be copied
+        # onto the photo and printed in client reports. The supervisor
+        # writes the caption instead.
+        "ai_suggested_caption": None,
         "ai_suggested_event_type": ev,
         "ai_suggested_trade": "general",
         "ai_confidence_score": round(confidence, 2),
