@@ -41,6 +41,19 @@ def _public_signup_allowed() -> bool:
     return (os.environ.get("ALLOW_PUBLIC_SIGNUP") or "").strip().lower() in {"1", "true", "yes"}
 
 
+def _is_platform_owner_email(email: str | None) -> bool:
+    """Full-backup hardening (2026-11-16). The platform owner is identified
+    by email (PLATFORM_ADMIN_EMAILS) and can download every company's data.
+    Nobody may create an account for, remove, or reset the password of
+    that email through a company's own team tools; the owner's account is
+    managed only with scripts/reset_password.py on the server."""
+    from routers.admin_settings_router import _platform_admin_emails
+    return bool(email) and email.strip().lower() in _platform_admin_emails()
+
+
+_RESERVED_EMAIL = "This email address is reserved for the platform owner and can't be used here."
+
+
 @router.post("/register", response_model=TokenResponse)
 async def register(payload: UserRegister):
     """Public signup. Creates a fresh tenant + makes the registrant its admin.
@@ -57,6 +70,8 @@ async def register(payload: UserRegister):
             status.HTTP_403_FORBIDDEN,
             "Sign-up is by invitation only. Ask your company admin to invite you.",
         )
+    if _is_platform_owner_email(getattr(payload, "email", None)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _RESERVED_EMAIL)
     db = get_db()
     if await db.users.find_one({"email": payload.email.lower()}, {"_id": 0, "id": 1}):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
@@ -153,6 +168,8 @@ async def accept_invite(payload: InviteAccept):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invite not found or already used")
     if invite["email"].lower() != payload.email.lower():
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Email does not match the invite")
+    if _is_platform_owner_email(payload.email):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _RESERVED_EMAIL)
     expires = invite.get("expires_at")
     if expires and datetime.fromisoformat(expires.replace("Z", "+00:00")) < datetime.now(timezone.utc):
         await db.team_invites.update_one({"id": invite["id"]}, {"$set": {"status": "expired"}})
@@ -313,6 +330,8 @@ async def _send_invite_email_and_audit(db, ctx: dict, request: Request, invite: 
 async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Depends(require_tenant)):
     if (ctx["user"].get("role") or "").lower() != "admin":
         raise HTTPException(403, "Only tenant admins can invite teammates")
+    if _is_platform_owner_email(payload.email):
+        raise HTTPException(403, _RESERVED_EMAIL)
     db = get_db()
     if await db.users.find_one({"email": payload.email.lower(), "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1}):
         raise HTTPException(409, "User with this email is already a member")
@@ -439,9 +458,11 @@ async def remove_member(user_id: str, ctx: dict = Depends(require_tenant)):
     if user_id == ctx["user"]["id"]:
         raise HTTPException(400, "Cannot remove yourself; ask another admin")
     db = get_db()
-    user = await db.users.find_one({"id": user_id, "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1})
+    user = await db.users.find_one({"id": user_id, "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1, "email": 1})
     if not user:
         raise HTTPException(404, "Member not found")
+    if _is_platform_owner_email(user.get("email")):
+        raise HTTPException(403, "The platform owner's account can't be removed here.")
     await db.tenant_users.update_many({"user_id": user_id, "tenant_id": ctx["tenant_id"]},
                                       {"$set": {"status": "revoked"}})
     await db.users.delete_one({"id": user_id, "tenant_id": ctx["tenant_id"]})
@@ -479,6 +500,8 @@ async def admin_reset_password(
     )
     if not user:
         raise HTTPException(404, "Member not found in this tenant")
+    if _is_platform_owner_email(user.get("email")) and user_id != ctx["user"]["id"]:
+        raise HTTPException(403, "Only the platform owner can change the platform owner's password.")
 
     new_hash = hash_password(payload.new_password)
     # Capture the BEFORE-prefix so the audit log shows the old hash got
