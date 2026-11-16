@@ -16,8 +16,14 @@ import { useEffect, useRef, useState } from "react";
 import { Lock } from "lucide-react";
 import { getUser } from "../../lib/auth";
 import { toast } from "../ui/sonner";
+import { progressLimitsOf, progressLimitNote } from "../../lib/progressLimits";
+import { PROGRESS_DROP_EVENT } from "../../lib/drOfflineSync";
 
-export default function EodSlider({ rowId, initialValue, locked, updateRow, activityCode, gate }) {
+// Progress lock (2026-11-16): `limitsRow` is the grid row; its
+// progress_floor / progress_ceiling (set by the server from the submitted
+// reports) bound the slider. Moving past a limit stops there and says why
+// once per drag; the screen also shows the same note under the slider.
+export default function EodSlider({ rowId, initialValue, locked, updateRow, activityCode, gate, limitsRow }) {
   const [val, setVal] = useState(Number(initialValue) || 0);
   const [override, setOverride] = useState(false);
   const overrideReasonRef = useRef("");
@@ -32,6 +38,23 @@ export default function EodSlider({ rowId, initialValue, locked, updateRow, acti
     setVal(Number(initialValue) || 0);
     lastSentRef.current = Number(initialValue) || 0;
   }, [initialValue]);
+  // A save queued offline and later refused by the progress lock
+  // (lib/drOfflineSync): the percent was never saved, so go back to the
+  // saved value. initialValue alone can't do it -- the server value did not
+  // change, so the effect above never fires. The message itself is shown
+  // by lib/api.js.
+  const initialRef = useRef(initialValue);
+  initialRef.current = initialValue;
+  useEffect(() => {
+    const onDrop = (ev) => {
+      if (!rowId || ev?.detail?.rowId !== rowId) return;
+      const saved = Number(initialRef.current) || 0;
+      setVal(saved);
+      lastSentRef.current = saved;
+    };
+    window.addEventListener(PROGRESS_DROP_EVENT, onDrop);
+    return () => window.removeEventListener(PROGRESS_DROP_EVENT, onDrop);
+  }, [rowId]);
 
   const maxPct = gate && typeof gate.max_pct === "number" ? gate.max_pct : 100;
   const gated = maxPct < 100;
@@ -45,6 +68,18 @@ export default function EodSlider({ rowId, initialValue, locked, updateRow, acti
   // allow iff new <= max(old_eod, max_pct).
   const startVal = Number(initialValue) || 0;
   const effMax = override ? 100 : Math.max(maxPct, startVal);
+  const lim = progressLimitsOf(limitsRow);
+  const limitToastAt = useRef(0);
+  // Keep a value inside the range the submitted reports allow.
+  const withinLimits = (n) => {
+    const v = Math.min(lim.ceiling, Math.max(lim.floor, n));
+    if (v !== n && Date.now() - limitToastAt.current > 2500) {
+      limitToastAt.current = Date.now();
+      const note = progressLimitNote(limitsRow, v);
+      if (note) toast.error(note, { id: `limit-${rowId}` });
+    }
+    return v;
+  };
 
   const commit = (v) => {
     let n = Math.max(0, Math.min(100, Number(v) || 0));
@@ -56,6 +91,7 @@ export default function EodSlider({ rowId, initialValue, locked, updateRow, acti
         toast.error(gate?.reason || "Progress is gated by this activity's predecessors.");
       }
     }
+    n = withinLimits(n);
     if (n === lastSentRef.current) { setVal(n); return; }
     const payload = { pct_complete_end_of_day: n };
     // Send the override reason only on a true increase past the gate cap.
@@ -95,7 +131,7 @@ export default function EodSlider({ rowId, initialValue, locked, updateRow, acti
         data-testid={`dr-pct-${activityCode}`}
         type="range" min="0" max="100" step="1"
         value={val}
-        onChange={(e) => setVal(Math.min(effMax, Number(e.target.value)))}
+        onChange={(e) => setVal(withinLimits(Math.min(effMax, Number(e.target.value))))}
         onMouseUp={(e) => commit(e.target.value)}
         onTouchEnd={(e) => commit(e.target.value)}
         onKeyUp={(e) => commit(e.target.value)}

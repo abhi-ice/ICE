@@ -454,6 +454,109 @@ async def after_presence_change(db, tenant_id: str, daily_report_id: str, task_i
             log.warning("recompute after crew change failed: %s", exc)
 
 
+async def after_progress_change(db, tenant_id: str, daily_report: dict, changes: list,
+                                *, actor_id=None, request_id=None) -> None:
+    """The schedule follows a report row's end-of-day percent that was set
+    outside the report grid (the AI assistant, a voice memo) -- the same
+    steps a slider save on the grid runs (2026-11-16):
+      * the task's percent, status and last-synced marker change ONLY when
+        this row is the latest-dated row with a percent a person entered; a
+        back-dated report never overwrites a later one, nor a change made on
+        the schedule since then;
+      * actual start / finish are recomputed from the reports and 'not
+        started' / 'in progress' settled (a task brought back to 0% with no
+        work on any report becomes not started);
+      * the computed status is refreshed, and the forecast and following
+        tasks re-run when the percent or an actual date moved.
+    `changes` is a list of (task_id, row_id, previous end-of-day percent).
+    Best effort: the row is already saved, so a failure is logged, never
+    raised."""
+    from services.task_status import compute_and_persist_status
+    report_date = _d(daily_report.get("report_date"))
+    project_id = daily_report.get("project_id")
+    run_recompute = False
+    now_iso = utc_now().isoformat()
+    for task_id, row_id, prev_eod in changes:
+        if not task_id:
+            continue
+        try:
+            t0 = await db.tasks.find_one(
+                tenant_filter(tenant_id, {"id": task_id}),
+                {"_id": 0, "id": 1, "pct_complete": 1, "status": 1, "project_id": 1,
+                 "actual_start": 1, "actual_finish": 1})
+            if not t0:
+                continue
+            project_id = project_id or t0.get("project_id")
+            later = [h for h in progress_rows(await task_report_history(
+                         db, tenant_id, task_id, exclude_row_id=row_id))
+                     if report_date and h["_report_date"] > report_date]
+            pct_changed = False
+            if not later:
+                row = await db.daily_report_activities.find_one(
+                    {"id": row_id}, {"_id": 0, "pct_complete_end_of_day": 1}) or {}
+                pct = float(row.get("pct_complete_end_of_day") or 0)
+                task_set = {
+                    "pct_complete": pct,
+                    "status": _status_for_pct(pct),
+                    "prev_pct_complete": prev_eod,
+                    "last_synced_from_dr": {
+                        "daily_report_id": daily_report.get("id"),
+                        "daily_report_date": daily_report.get("report_date"),
+                        "synced_at": now_iso,
+                        "sync_state": ("provisional" if daily_report.get("status") in (None, "draft")
+                                       else "confirmed"),
+                    },
+                }
+                await db.tasks.update_one(tenant_filter(tenant_id, {"id": task_id}),
+                                          {"$set": task_set})
+                pct_changed = pct != float(t0.get("pct_complete") or 0)
+                if pct_changed:
+                    # Same write-back record a grid save leaves (it also
+                    # tells pre_report_progress what the task was before).
+                    await db.task_sync_events.insert_one({
+                        "id": gen_id(),
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "task_id": task_id,
+                        "daily_report_id": daily_report.get("id"),
+                        "daily_report_activity_id": row_id,
+                        "triggered_by_user_id": actor_id,
+                        "triggered_at": now_iso,
+                        "sync_state": task_set["last_synced_from_dr"]["sync_state"],
+                        "fields_updated": {
+                            "pct_complete": {"before": t0.get("pct_complete"), "after": pct},
+                            "status": {"before": t0.get("status"), "after": task_set["status"]},
+                        },
+                        "cpm_recomputed": False,
+                        "cpm_changes": [],
+                    })
+            act = await recompute_task_actuals(db, tenant_id, task_id)
+            actuals_moved = bool(act) and (act.get("actual_start"), act.get("actual_finish")) != \
+                (t0.get("actual_start"), t0.get("actual_finish"))
+            await settle_unstarted_status(db, tenant_id, task_id)
+            await compute_and_persist_status(db, tenant_id, task_id,
+                                             actor_id=actor_id, request_id=request_id)
+            if pct_changed or actuals_moved:
+                run_recompute = True
+            elif not later:
+                # Same rule as a grid slider save: a progress-aware engine
+                # re-flows on any percent save.
+                from services.feature_flags import progress_recompute_enabled_for
+                proj = await db.projects.find_one(
+                    tenant_filter(tenant_id, {"id": project_id}),
+                    {"_id": 0, "schedule_mode": 1, "schedule_engine": 1}) or {}
+                run_recompute = run_recompute or progress_recompute_enabled_for(proj)
+        except Exception as exc:
+            log.warning("schedule refresh after progress change failed for %s: %s", task_id, exc)
+    if run_recompute and project_id:
+        try:
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(tenant_id, project_id,
+                                             actor_id=actor_id, request_id=request_id)
+        except Exception as exc:
+            log.warning("recompute after progress change failed: %s", exc)
+
+
 # ---------------------------------------------------------------- delays
 async def open_delays_for_task(db, tenant_id: str, task_id: str) -> list:
     docs = await db.delays.find(

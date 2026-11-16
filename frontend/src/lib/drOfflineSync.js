@@ -219,6 +219,51 @@ function errorCode(err) {
   return d && typeof d === "object" ? d.code || null : null;
 }
 
+// Progress lock (2026-11-16, services/progress_ratchet.py): a queued
+// progress save that lands outside what the submitted reports allow (below
+// an earlier submitted report, or above a later one) is refused with
+//   422 {"detail": <plain message>, "code": "progress_out_of_range", ...}
+// That never clears by retrying. The drain stops retrying it: the other
+// fields of the same save (hours, notes, crew) are still sent without the
+// percent, and the user is told once what happened.
+export const PROGRESS_OUT_OF_RANGE_CODE = "progress_out_of_range";
+export const PROGRESS_DROP_EVENT = "ice-offline-progress-refused";
+// Fields of an activity save that only carry or imply the end-of-day percent
+// (or control it); what is left over is still worth sending.
+const PROGRESS_ONLY_FIELDS = ["pct_complete_end_of_day", "status_at_end_of_day",
+  "slider_gate_override_reason", "task_last_modified_at", "edit_reason"];
+
+export function isProgressOutOfRangeRejection(err) {
+  const resp = err?.response;
+  return !!resp && resp.status === 422 && errorCode(err) === PROGRESS_OUT_OF_RANGE_CODE;
+}
+
+/** Call where a queue gives up on a save's percent because of the progress
+ * lock: tell the page (lib/api.js shows one plain message) and, with the
+ * report row's id, let an open report screen put that row's slider back to
+ * the saved value. Never throws. */
+export function announceProgressDrop(err, rowId = null) {
+  if (!isProgressOutOfRangeRejection(err)) return;
+  try {
+    window.dispatchEvent(new CustomEvent(PROGRESS_DROP_EVENT, {
+      detail: { message: err.response.data.detail, rowId: rowId || null },
+    }));
+  } catch { /* non-window env */ }
+}
+
+/** The same activity save without its percent, or null when nothing else
+ * was in it. */
+export function withoutProgress(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const rest = { ...data };
+  for (const k of PROGRESS_ONLY_FIELDS) delete rest[k];
+  const left = Object.keys(rest).filter((k) => rest[k] !== undefined);
+  if (!left.length) return null;
+  // A locked report still needs its edit reason on the remaining fields.
+  if (data.edit_reason) rest.edit_reason = data.edit_reason;
+  return rest;
+}
+
 /**
  * What a queue does with a save the server refused (2026-11-16). One rule
  * for the request, photo, voice and note queues:
@@ -700,6 +745,17 @@ async function _drainQueueOnce(api) {
           ? "The schedule changed while you were offline. Your field entry will be saved on the next sync."
           : (e?.response?.data?.detail || e.message || "unknown"),
       };
+      if (isProgressOutOfRangeRejection(e)) {
+        // Progress lock: the percent can never be saved by retrying. Say so
+        // once, and keep only the rest of the save (hours, notes, crew),
+        // without the percent, for the next drain.
+        const rowMatch = /\/daily-report-activities\/([^/?#]+)/.exec(req.url || "");
+        announceProgressDrop(e, rowMatch ? decodeURIComponent(rowMatch[1]) : null);
+        const rest = req.method === "PATCH" && rowMatch
+          ? withoutProgress(req.data) : null;
+        if (rest) keep.push({ ...next, data: rest });
+        continue;
+      }
       if (action === "hold") {
         // Kept on the phone, no automatic retries, and the user is told.
         keep.push({ ...next, held: { code: errorCode(e), at: new Date().toISOString() } });

@@ -1065,6 +1065,16 @@ from services.edit_permissions import (  # noqa: E402
 app.add_exception_handler(NotReportAuthorError, not_report_author_handler)
 app.add_exception_handler(ReportNotDraftError, not_report_author_handler)
 
+# An activity's end-of-day percent outside what the submitted reports allow
+# (it can't go below an earlier submitted report or above a later one):
+# plain message plus code "progress_out_of_range" and the limits, so the
+# screens can explain it and the offline queue stops retrying that save
+# (services/progress_ratchet.py).
+from services.progress_ratchet import (  # noqa: E402
+    ProgressOutOfRangeError, progress_out_of_range_handler,
+)
+app.add_exception_handler(ProgressOutOfRangeError, progress_out_of_range_handler)
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):

@@ -485,6 +485,21 @@ async def voice_extract(
                 best, best_score = g, score
         return best if best_score >= 1 else None
 
+    # Progress lock (2026-11-16): a spoken percent outside what the other
+    # submitted reports allow (below an earlier one, above a later one) is
+    # not written; the rest of the memo still is, and the response says
+    # which percent was left out and why (progress_refused).
+    from services.progress_ratchet import progress_limits_for_tasks, out_of_range_message
+    try:
+        limits_by_task = await progress_limits_for_tasks(
+            db, tenant_id, [g.get("schedule_activity_id") for g in grid],
+            dr.get("report_date"), exclude_dr_id=dr_id)
+    except Exception as exc:
+        log.warning("dr_voice: progress limits failed for dr=%s: %s", dr_id, exc)
+        limits_by_task = {}
+    progress_refused: list = []
+    progress_changes: list = []  # (task id, row id, previous end-of-day)
+
     for au in (parsed.get("activity_updates") or []):
         if not isinstance(au, dict):
             continue
@@ -500,9 +515,19 @@ async def voice_extract(
             continue
         row_update: dict = {"updated_at": now}
         if au.get("pct_complete_end_of_day") is not None:
-            row_update["pct_complete_end_of_day"] = max(
-                0.0, min(100.0, float(au["pct_complete_end_of_day"]))
-            )
+            _pct = max(0.0, min(100.0, float(au["pct_complete_end_of_day"])))
+            _msg = out_of_range_message(
+                _pct, limits_by_task.get(row.get("schedule_activity_id")) or {})
+            if _msg:
+                progress_refused.append({"activity_code": row.get("activity_code"),
+                                         "requested": _pct, "message": _msg})
+            else:
+                row_update["pct_complete_end_of_day"] = _pct
+                # A person said this percent: the row now decides the task's
+                # progress and locks it once submitted (_row_sets_progress).
+                row_update["pct_set_at"] = now.isoformat()
+                progress_changes.append((row.get("schedule_activity_id"), row["id"],
+                                         row.get("pct_complete_end_of_day", 0)))
         if au.get("crew_count") is not None:
             row_update["crew_count"] = max(0, int(au["crew_count"]))
         if au.get("notes"):
@@ -513,6 +538,12 @@ async def voice_extract(
                 {"$set": row_update},
             )
             applied["activity_updates"] += 1
+    # The schedule follows a spoken percent the same way it follows a slider
+    # save (task percent, actual dates, status, forecast, following tasks).
+    if progress_changes:
+        from services.schedule_feedback import after_progress_change
+        await after_progress_change(db, tenant_id, dr, progress_changes,
+                                    actor_id=actor_id, request_id=_new_id())
 
     # 3. Crew presence rows -- dedupe by (trade, company) so re-running
     # the same recording (or a paraphrase) doesn't double the headcount.
@@ -871,6 +902,9 @@ async def voice_extract(
         "ok": True,
         "applied": applied,
         "skipped_duplicates": skipped_dupes,
+        # Spoken percents left out by the progress lock, each with a plain
+        # message ({activity_code, requested, message}).
+        "progress_refused": progress_refused,
         "draft": parsed,   # so frontend can show diff/preview if it wants
     }
 

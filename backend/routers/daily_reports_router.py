@@ -196,7 +196,8 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
     ).limit(200).to_list(200)
 
     from services.schedule_feedback import start_of_day_pct, task_report_histories
-    yesterday = (report_date - timedelta(days=1)).isoformat()
+    from services.progress_ratchet import clamp_to_limits, limits_from_history
+    yesterday =(report_date - timedelta(days=1)).isoformat()
     # Existing rows we already have so we don't double-insert on refresh
     existing = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id},
@@ -227,6 +228,10 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
             )
             if prev_row and prev_row.get("pct_complete_end_of_day") is not None:
                 prev_pct = float(prev_row["pct_complete_end_of_day"])
+        # Progress lock: a new row never starts below what an earlier
+        # submitted report recorded, nor above a later submitted one.
+        prev_pct = clamp_to_limits(prev_pct, limits_from_history(
+            histories.get(t["id"], []), rd_iso, exclude_dr_id=daily_report_id))
 
         loc_name = None
         if t.get("location_id"):
@@ -512,9 +517,12 @@ async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None
     # from any delays whose daily_report_id we just nulled out).
     if affected_task_ids:
         from services.task_status import compute_and_persist_status
-        from services.schedule_feedback import recompute_task_actuals
+        from services.schedule_feedback import recompute_task_actuals, settle_unstarted_status
         for tid in affected_task_ids:
             await recompute_task_actuals(db, ctx["tenant_id"], tid)
+            # 0% with no report showing work -> not started; work shown
+            # but under 100% -> in progress (the schedule follows the reports).
+            await settle_unstarted_status(db, ctx["tenant_id"], tid)
             await compute_and_persist_status(
                 db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
@@ -609,6 +617,31 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
     return rows
 
 
+def _limits_fields(lim: dict) -> dict:
+    """Progress-lock range (services/progress_ratchet) as grid row fields."""
+    return {"progress_floor": lim.get("floor"), "progress_floor_from": lim.get("floor_from"),
+            "progress_ceiling": lim.get("ceiling"), "progress_ceiling_from": lim.get("ceiling_from")}
+
+
+async def _stamp_progress_limits(db, tenant_id: str, dr: dict, rows: list) -> list:
+    """Progress lock (2026-11-16): stamp each row with the end-of-day range
+    the OTHER submitted / approved reports allow, so the screens can stop the
+    slider there and say why. Read-time only, never persisted. Best effort:
+    a failure leaves the rows without limits (the save still checks)."""
+    try:
+        from services.progress_ratchet import progress_limits_for_tasks
+        lims = await progress_limits_for_tasks(
+            db, tenant_id, [r.get("schedule_activity_id") for r in rows],
+            dr.get("report_date"), exclude_dr_id=dr.get("id"))
+        for r in rows:
+            lim = lims.get(r.get("schedule_activity_id"))
+            if lim:
+                r.update(_limits_fields(lim))
+    except Exception:
+        logger.warning("progress limits for report %s failed", dr.get("id"), exc_info=True)
+    return rows
+
+
 async def _compute_grid_slider_gates(db, tenant_id: str, tasks: list) -> dict:
     """CPM B1 (2026-06-12) -- {task_id -> slider gate} for the grid's linked
     tasks. One extra $in query for the predecessor states, then the pure
@@ -643,13 +676,15 @@ async def _compute_grid_slider_gates(db, tenant_id: str, tasks: list) -> dict:
 async def get_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     # ensure tenant ownership
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0, "id": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+                                         {"_id": 0, "id": 1, "report_date": 1})
     if not dr:
         raise HTTPException(404, "Daily report not found")
     rows = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id}, {"_id": 0},
     ).sort("position", 1).to_list(200)
     await _enrich_grid_rows(db, ctx["tenant_id"], rows)
+    await _stamp_progress_limits(db, ctx["tenant_id"], dr, rows)
     return [DailyReportActivity(**r) for r in rows]
 
 
@@ -753,8 +788,14 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
             target_size = int(crew.get("target_size") or 0)
     # A back-dated report starts from the earlier report's end-of-day,
     # never from today's progress (see start_of_day_pct).
-    from services.schedule_feedback import start_of_day_pct
-    sod_pct = await start_of_day_pct(db, ctx["tenant_id"], t, dr.get("report_date"))
+    from services.schedule_feedback import start_of_day_pct, task_report_history
+    from services.progress_ratchet import clamp_to_limits, limits_from_history
+    _hist = await task_report_history(db, ctx["tenant_id"], t["id"])
+    sod_pct = await start_of_day_pct(db, ctx["tenant_id"], t, dr.get("report_date"), history=_hist)
+    # Progress lock: the new row starts inside the range the submitted
+    # reports allow (never below an earlier one, never above a later one).
+    _lim = limits_from_history(_hist, dr.get("report_date"), exclude_dr_id=daily_report_id)
+    sod_pct = clamp_to_limits(sod_pct, _lim)
     row = {
         "id": gen_id(),
         "daily_report_id": daily_report_id,
@@ -784,7 +825,7 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
             add_reason=payload.add_reason or "", after=row,
             request_id=ctx["request_id"],
         )
-    return DailyReportActivity(**row)
+    return DailyReportActivity(**row, **_limits_fields(_lim))
 
 
 @router.delete("/daily-report-activities/{row_id}", dependencies=[Depends(require_daily_report_writer)])
@@ -858,6 +899,8 @@ async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant),
         actuals_moved = bool(act) and (act.get("actual_start"), act.get("actual_finish")) != (
             task.get("actual_start"), task.get("actual_finish"))
         if synced_here or actuals_moved:
+            from services.schedule_feedback import settle_unstarted_status
+            await settle_unstarted_status(db, ctx["tenant_id"], task_id)
             from services.task_status import compute_and_persist_status
             await compute_and_persist_status(
                 db, ctx["tenant_id"], task_id,
@@ -1003,6 +1046,42 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             # through to normal write rather than blocking the user.
             pass
 
+    # Progress lock (2026-11-16): once a report is submitted or approved the
+    # activity can't go back below what it recorded on a later report, and a
+    # back-dated report can't claim more than a later submitted one. Going
+    # back means editing the report that recorded the higher value (itself
+    # checked against its own neighbours). A "complete" end-of-day status
+    # means 100%. Refused before anything is written (422,
+    # code progress_out_of_range). See services/progress_ratchet.py.
+    _implied_eod = updates.get("pct_complete_end_of_day")
+    if _implied_eod is None and updates.get("status_at_end_of_day") == "complete":
+        _implied_eod = 100.0
+    if _implied_eod is not None and before.get("schedule_activity_id"):
+        from services.progress_ratchet import progress_limits, ensure_in_range
+        ensure_in_range(float(_implied_eod), await progress_limits(
+            db, ctx["tenant_id"], before["schedule_activity_id"], dr.get("report_date"),
+            exclude_dr_id=dr["id"]))
+    # A row saved without a percent stamp (pct_set_at) counts as entered by a
+    # person when its end-of-day differs from its start-of-day, so editing
+    # only the start-of-day can change whether the row locks progress:
+    #   * a row that already counted keeps counting (stamped below), so
+    #     setting start-of-day equal to end-of-day can't quietly unlock it;
+    #   * a row that starts counting is range-checked like a percent save.
+    sod_stamp_set_at: Optional[str] = None
+    if ("pct_complete_start_of_day" in updates and _implied_eod is None
+            and not before.get("pct_set_at") and before.get("schedule_activity_id")):
+        from services.schedule_feedback import _row_sets_progress
+        _eod_now = float(before.get("pct_complete_end_of_day") or 0)
+        _was = _row_sets_progress(before)
+        _will = _row_sets_progress({**before, **updates})
+        if _was:
+            sod_stamp_set_at = utc_now().isoformat()
+        elif _will:
+            from services.progress_ratchet import progress_limits, ensure_in_range
+            ensure_in_range(_eod_now, await progress_limits(
+                db, ctx["tenant_id"], before["schedule_activity_id"], dr.get("report_date"),
+                exclude_dr_id=dr["id"]))
+
     # CPM B1 (2026-06-12) -- EOD-slider gate enforcement. FF_SLIDER_GATING.
     # A successor cannot earn progress its predecessors don't yet allow
     # (Sid's pinned table -- FS lock < 100%, SS lock until started, FF cap
@@ -1105,7 +1184,7 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     # can decide the task's current progress. A row opened only for notes,
     # crew or hours keeps a pre-filled percent that may be stale, so it
     # never does (see services.schedule_feedback._row_sets_progress).
-    if "pct_complete_end_of_day" in updates:
+    if "pct_complete_end_of_day" in updates or sod_stamp_set_at:
         row_updates["pct_set_at"] = now_iso
     row_updates["sync_state"] = "provisional"
     row_updates["last_sync_at"] = now_iso
@@ -1515,6 +1594,49 @@ async def _dr_is_empty(db, daily_report_id: str, tenant_id: str) -> bool:
     return await report_is_empty(db, tenant_id, daily_report_id)
 
 
+async def _ensure_report_progress_in_range(db, tenant_id: str, dr: dict) -> None:
+    """Refuse (422, code progress_out_of_range) when any row on this report
+    whose end-of-day a person entered is outside the range the OTHER
+    submitted / approved reports allow. The message names each activity."""
+    from services.schedule_feedback import progress_rows
+    from services.progress_ratchet import (
+        progress_limits_for_tasks, out_of_range_message, ProgressOutOfRangeError,
+    )
+    rows = await db.daily_report_activities.find(
+        {"daily_report_id": dr["id"]}, {"_id": 0},
+    ).sort("position", 1).to_list(5000)
+    rows = [r for r in progress_rows(rows) if r.get("schedule_activity_id")]
+    if not rows:
+        return
+    lims = await progress_limits_for_tasks(
+        db, tenant_id, [r["schedule_activity_id"] for r in rows],
+        dr.get("report_date"), exclude_dr_id=dr["id"])
+    bad = []
+    for r in rows:
+        lim = lims.get(r["schedule_activity_id"]) or {}
+        msg = out_of_range_message(float(r.get("pct_complete_end_of_day") or 0), lim)
+        if msg:
+            name = r.get("activity_description") or r.get("activity_code") or "An activity"
+            code = r.get("activity_code")
+            label = f"{code} {name}" if code and code != name else name
+            bad.append({"row_id": r["id"], "activity_code": code, "activity": label,
+                        "value": float(r.get("pct_complete_end_of_day") or 0),
+                        "message": msg, **_limits_fields(lim)})
+    if not bad:
+        return
+    lines = "; ".join(f"{b['activity']}: {b['message']}" for b in bad)
+    noun = "activity is" if len(bad) == 1 else "activities are"
+    first = bad[0]
+    raise ProgressOutOfRangeError(
+        f"This report can't be submitted yet: {len(bad)} {noun} outside what other "
+        f"submitted reports allow. {lines}",
+        # The top-level limits describe the first refused row; "rows" has all.
+        {"floor": first["progress_floor"], "floor_from": first["progress_floor_from"],
+         "ceiling": first["progress_ceiling"], "ceiling_from": first["progress_ceiling_from"]},
+        rows=bad,
+    )
+
+
 @router.post("/daily-reports/{daily_report_id}/submit", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx: dict = Depends(require_tenant)):
     db = get_db()
@@ -1532,6 +1654,11 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
     if before.get("status") == "submitted":
         return DailyReport(**before)
     ensure_can_change_draft(ctx, before)
+    # Progress lock (2026-11-16): submitting locks this report's progress,
+    # so every row whose end-of-day a person entered must still sit inside
+    # the range the other submitted reports allow (an earlier report may
+    # have been submitted after this draft's row was saved).
+    await _ensure_report_progress_in_range(db, ctx["tenant_id"], before)
 
     # Addition 3 + Test 2G follow-up (2026-05-12) -- empty DR requires
     # explicit no-work-day ack. Returns BOTH the legacy `error` key
@@ -2897,6 +3024,7 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
     # row alongside the pre-existing task_updated_at optimistic-lock
     # token. Single $in query. METADATA / VIEW ONLY.
     await _enrich_grid_rows(db, ctx["tenant_id"], grid)
+    await _stamp_progress_limits(db, ctx["tenant_id"], dr, grid)
 
     # Bucket C3a Phase 3 — pre-populate constraint_type +
     # constraint_reference for any row that has no constraint set yet,

@@ -90,6 +90,9 @@ import VoiceIntakePanel from "../components/VoiceIntakePanel";
 // exact B1-gated component. Desktop grid rendering is unchanged (same
 // component, new home).
 import EodSlider from "../components/dr/EodSlider";
+import {
+  progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
+} from "../lib/progressLimits";
 // v7 guided flow — COMMON_TRADES moved to components/dr/drFlowShared.jsx
 // (values unchanged; pt.47/pt.62 notes preserved there) so the flow's crew
 // sheet and the Manpower Log share one list. LockedReasonCard +
@@ -1077,6 +1080,19 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         toast.info(
           "This DR has no activities or events. Pick a no-work-day reason to submit.",
         );
+        return false;
+      }
+      // Progress lock: rows now outside what other submitted reports allow.
+      // Mark each one inline and show the server's plain message; the slider
+      // limits are fresh after the reload.
+      if (isProgressOutOfRange(e)) {
+        const byRow = {};
+        for (const row of (e.response.data.rows || [])) {
+          if (row.row_id) byRow[row.row_id] = [{ row_id: row.row_id, message: row.message }];
+        }
+        setSubmitRowErrors(byRow);
+        toast.error(progressOutOfRangeMessage(e), { duration: 10000 });
+        reload();
         return false;
       }
       // Bucket C3a Phase 3 — structured per-row errors render inline.
@@ -3009,9 +3025,16 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td>
         {editable ? (
-          <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
-            locked={locked} updateRow={updateRow} activityCode={r.activity_code}
-            gate={r.slider_gate} />
+          <>
+            <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
+              locked={locked} updateRow={updateRow} activityCode={r.activity_code}
+              gate={r.slider_gate} limitsRow={r} />
+            {progressLimitNote(r, r.pct_complete_end_of_day || 0) && (
+              <div className="mt-1 text-[11px] text-slate-500 normal-case" data-testid={`dr-pct-limit-${r.activity_code}`}>
+                {progressLimitNote(r, r.pct_complete_end_of_day || 0)}
+              </div>
+            )}
+          </>
         ) : (
           <span className="text-xs tabular-nums text-slate-500">{r.pct_complete_end_of_day || 0}</span>
         )}
@@ -3187,7 +3210,11 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
       reload();
       return true;
     } catch (e) {
-      if (e.response?.status === 409) {
+      if (isProgressOutOfRange(e)) {
+        // Progress lock: a submitted report limits this activity.
+        toast.error(progressOutOfRangeMessage(e), { id: `range-${rowId}` });
+        reload();
+      } else if (e.response?.status === 409) {
         const next = new Set(staleRows); next.add(rowId); setStaleRows(next);
         toast.error("Schedule was updated externally — click Refresh on the row to pull the latest before re-entering.");
       } else {
@@ -5943,7 +5970,13 @@ function GuidedDrFlow({
         saved = true;
         await reload();
       } catch (e) {
-        if (e.response?.status === 409) {
+        if (isProgressOutOfRange(e)) {
+          // Progress lock: a submitted report limits this activity. Show the
+          // server's plain message and put the slider back on the saved value.
+          toast.error(progressOutOfRangeMessage(e), { id: `range-${rowId}` });
+          await reload();
+          setSliderResync((s) => ({ ...s, [rowId]: (s[rowId] || 0) + 1 }));
+        } else if (e.response?.status === 409) {
           toast.error("This activity was just changed somewhere else, so that change was not saved. The latest progress is now showing — move the slider again if it needs changing.");
           await reload();
           setSliderResync((s) => ({ ...s, [rowId]: (s[rowId] || 0) + 1 }));
@@ -6373,12 +6406,18 @@ function GuidedDrFlow({
                   rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
                   locked={locked && !lockedReasonOk} updateRow={updateRow}
                   activityCode={r.activity_code}
-                  gate={r.slider_gate} />
+                  gate={r.slider_gate} limitsRow={r} />
               </div>
               <div className="dr-flow-prog-meta">
                 was {r.pct_complete_start_of_day || 0}%
                 {plannedTick != null ? ` · planned ${plannedTick}%` : ""}
               </div>
+              {/* Progress lock: why the slider stops where it does. */}
+              {progressLimitNote(r, r.pct_complete_end_of_day || 0) && (
+                <div className="dr-flow-prog-meta" data-testid={`dr-flow-progress-limit-${screen}`}>
+                  {progressLimitNote(r, r.pct_complete_end_of_day || 0)}
+                </div>
+              )}
             </div>
           </div>
 

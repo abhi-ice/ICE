@@ -1511,18 +1511,43 @@ async def _tool_mark_activity_status(ctx: dict, args: dict) -> dict:
         updates["crew_count"] = int(args["crew_count"])
     if not updates:
         return {"error": "no fields to update"}
-    await db.daily_report_activities.update_one({"id": row["id"]}, {"$set": updates})
-    # cascade pct back to task
+    # Progress lock (2026-11-16): the same rule as the report screens. The
+    # percent can't go below what an earlier submitted report recorded, or
+    # above a later submitted one; "complete" means 100%. Nothing is changed
+    # when it is out of range.
+    implied = updates.get("pct_complete_end_of_day")
+    if implied is None and updates.get("status_at_end_of_day") == "complete":
+        implied = 100.0
+    task_id = row.get("schedule_activity_id")
+    if implied is not None and task_id:
+        from services.progress_ratchet import progress_limits, out_of_range_message, error_dict
+        dr = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0, "report_date": 1}) or {}
+        lim = await progress_limits(db, ctx["tenant_id"], task_id, dr.get("report_date"),
+                                    exclude_dr_id=dr_id)
+        msg = out_of_range_message(float(implied), lim)
+        if msg:
+            return error_dict(msg, lim)
     if "pct_complete_end_of_day" in updates:
-        new_pct = float(updates["pct_complete_end_of_day"])
-        await db.tasks.update_one(
-            tenant_filter(ctx["tenant_id"], {"id": row["schedule_activity_id"]}),
-            {"$set": {
-                "prev_pct_complete": row.get("pct_complete_end_of_day", 0),
-                "pct_complete": new_pct,
-                "status": "complete" if new_pct >= 100 else "in_progress",
-            }},
-        )
+        # A person (through the assistant) entered this percent: the row can
+        # now decide the task's progress (see schedule_feedback._row_sets_progress).
+        updates["pct_set_at"] = utc_now().isoformat()
+    await db.daily_report_activities.update_one({"id": row["id"]}, {"$set": updates})
+    # The schedule follows the reports, exactly as for a slider save on the
+    # grid: the task's percent changes only when this row is the latest-dated
+    # one a person set (a back-dated report never overwrites a later report
+    # or a schedule change made since), then actual dates, status, forecast
+    # and following tasks are refreshed.
+    if "pct_complete_end_of_day" in updates and task_id:
+        from services.schedule_feedback import after_progress_change
+        dr_full = await db.daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": dr_id}),
+            {"_id": 0, "id": 1, "report_date": 1, "status": 1, "project_id": 1}) or {"id": dr_id}
+        await after_progress_change(
+            db, ctx["tenant_id"], dr_full,
+            [(task_id, row["id"], row.get("pct_complete_end_of_day", 0))],
+            actor_id=(ctx.get("user") or {}).get("id"), request_id=ctx.get("request_id"))
+    updates.pop("pct_set_at", None)
     return {"updated": {"resource": "activity_grid_row", "activity_code": code,
                         "id": row["id"], "fields": updates}}
 

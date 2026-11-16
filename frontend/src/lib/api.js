@@ -131,7 +131,7 @@ export const asArray = (v) => (Array.isArray(v) ? v : []);
 // connection loss. Drains automatically on the next 'online' event.
 import {
   installOfflineInterceptor, drainOfflineQueue, getQueueSize, ROLE_READ_ONLY_DROP_EVENT,
-  HELD_EVENT, releaseHeldSaves, isRoleReadOnlyRejection,
+  HELD_EVENT, releaseHeldSaves, isRoleReadOnlyRejection, PROGRESS_DROP_EVENT,
 } from "./drOfflineSync";
 installOfflineInterceptor(client);
 
@@ -192,6 +192,24 @@ try {
     lastRoleDropToast = now;
     import("../components/ui/sonner").then(({ toast }) => {
       toast.error("Changes saved on this device were not sent: your role can view daily reports but not change them.");
+    }).catch(() => {});
+  });
+} catch { /* non-window env */ }
+
+// Progress lock (2026-11-16): a progress save made offline could not be
+// applied because a submitted report limits it (it can't go below an earlier
+// submitted report or above a later one). The percent is not retried; any
+// hours, notes or crew in the same save still sync. One plain message per
+// burst, with the server's own explanation.
+try {
+  let lastProgressDropToast = 0;
+  window.addEventListener(PROGRESS_DROP_EVENT, (ev) => {
+    const now = Date.now();
+    if (now - lastProgressDropToast < 10000) return;
+    lastProgressDropToast = now;
+    const why = ev?.detail?.message ? ` ${ev.detail.message}` : "";
+    import("../components/ui/sonner").then(({ toast }) => {
+      toast.error(`A progress change saved on this device was not applied.${why}`, { duration: 12000 });
     }).catch(() => {});
   });
 } catch { /* non-window env */ }

@@ -1382,6 +1382,16 @@ class DailyReportActivity(ReadModel):
     # activity's current progress, so this save recorded history only.
     # Response-only; never persisted to mongo.
     task_progress_kept_from: Optional[str] = None
+    # Progress lock (2026-11-16) -- read-time only (GET grid / context),
+    # never persisted: the allowed end-of-day range from the OTHER submitted
+    # or approved reports. progress_floor = highest percent on an earlier
+    # one (progress_floor_from = its date, YYYY-MM-DD); progress_ceiling =
+    # lowest percent on a later one (progress_ceiling_from = its date).
+    # See services/progress_ratchet.py.
+    progress_floor: Optional[float] = None
+    progress_floor_from: Optional[str] = None
+    progress_ceiling: Optional[float] = None
+    progress_ceiling_from: Optional[str] = None
     # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
     # the gating entity that's blocking this row, or free-text "other").
     # constraint_auto_filled marks rows where the system pre-populated

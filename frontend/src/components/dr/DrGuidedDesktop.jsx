@@ -20,7 +20,7 @@ import { getUser } from "../../lib/auth";
 import { localTodayISO } from "../../lib/dateUtil";
 import { queuePhoto } from "../../lib/drPhotoQueue";
 import { compressImage } from "../../lib/imageCompress";
-import { drainOfflineQueue } from "../../lib/drOfflineSync";
+import { drainOfflineQueue, PROGRESS_DROP_EVENT } from "../../lib/drOfflineSync";
 import { useDailyReportPermissions } from "../../lib/drPermissions";
 import DrVoiceNotes from "./DrVoiceNotes";
 import GuidedDialog from "./GuidedDialog";
@@ -29,6 +29,9 @@ import "./drGuidedDesktop.css";
 import { sectionLabel } from "../../lib/sectionLabel";
 import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
 import { noWorkHeading } from "../../lib/noWorkDay";
+import {
+  clampToProgressLimits, progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
+} from "../../lib/progressLimits";
 
 /* ================= option lists — mockup labels, real enum values ================= */
 const opt = (pairs) => pairs.map(([label, value]) => ({ label, value }));
@@ -385,6 +388,23 @@ export default function DrGuidedDesktop({
     });
   }, []);
 
+  // A progress save queued offline and later refused by the progress lock
+  // (lib/drOfflineSync): the percent was never saved, so drop the slider's
+  // local value and show the saved one again (the message is shown by
+  // lib/api.js).
+  useEffect(() => {
+    const onDrop = (ev) => {
+      const rowId = ev?.detail?.rowId;
+      if (!rowId || !mountedRef.current) return;
+      setPctDraft((p) => {
+        if (!(rowId in p)) return p;
+        const n = { ...p }; delete n[rowId]; return n;
+      });
+    };
+    window.addEventListener(PROGRESS_DROP_EVENT, onDrop);
+    return () => window.removeEventListener(PROGRESS_DROP_EVENT, onDrop);
+  }, []);
+
   const commitPct = useCallback((m, v) => {
     const run = async () => {
       const n = Math.round(Number(v));
@@ -424,7 +444,11 @@ export default function DrGuidedDesktop({
       } catch (e) {
         clearDraftIf(m.row.id, n); // revert only if this commit still owns the draft
         if (!mountedRef.current) return;
-        if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
+        // Progress lock: a submitted report already set a limit (another
+        // screen may have submitted it after this grid loaded). Show the
+        // server's plain message and reload so the slider learns the limit.
+        if (isProgressOutOfRange(e)) { toast.error(progressOutOfRangeMessage(e), { id: `range-${m.row.id}` }); reload(); }
+        else if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
         else toast.error(fmtErr(e, "Save progress"));
       }
     };
@@ -474,6 +498,9 @@ export default function DrGuidedDesktop({
       }
     }
     if (n < 0) n = 0;
+    // Progress lock: never below what an earlier submitted report recorded,
+    // never above a later submitted one (the note under the slider says why).
+    n = clampToProgressLimits(m.row, n);
     touch(m.row.id);
     setPctDraft((p) => ({ ...p, [m.row.id]: n }));
     clearTimeout(commitTimers.current[m.row.id]);
@@ -1315,6 +1342,9 @@ export default function DrGuidedDesktop({
               <div className="progmeta">was {m.sod}%{m.planned != null ? ` · planned ${m.planned}%` : ""}</div>
               <input type="range" className="progrange" min="0" max="100" step="5" value={m.pct}
                 disabled={gateLockedUi} onChange={(e) => setProg(m, e.target.value, false)} />
+              {progressLimitNote(m.row, m.pct) && (
+                <div className="hint" data-testid={`progress-limit-note-${r.id}`}>{progressLimitNote(m.row, m.pct)}</div>
+              )}
             </div>
             <div className="ra" />
           </div>
@@ -1561,8 +1591,10 @@ export default function DrGuidedDesktop({
             {!viewOnly && <div className="push"><button className="btn link" onClick={openWxEdit}>Change</button></div>}
           </div>
           <div className="hint">
-            {wxTime ? `Filled in automatically at ${wxTime}. Tap "Change" only if it looks wrong.`
-              : `Tap "Change" to fill in today's weather.`}
+            {viewOnly
+              ? (wxTime ? `Filled in automatically at ${wxTime}.` : "No weather recorded yet.")
+              : wxTime ? `Filled in automatically at ${wxTime}. Tap "Change" only if it looks wrong.`
+                : `Tap "Change" to fill in today's weather.`}
           </div>
           <div className={`wedit${wxEdit && !viewOnly ? " open" : ""}`}>
             <div className="fld"><label className="f">Conditions</label>
