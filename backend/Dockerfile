@@ -91,4 +91,4 @@ WORKDIR /app/backend
 # both IPv4 and IPv6, which Railway's private network needs. One process only:
 # the live-update list and the background loops assume a single process.
 EXPOSE 8000
-CMD ["sh", "-c", "exec uvicorn server:app --host :: --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+CMD ["python", "serve.py"]
