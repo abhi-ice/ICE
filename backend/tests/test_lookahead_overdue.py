@@ -285,6 +285,9 @@ def test_assistant_overdue_view_uses_planned_finish_not_slip(monkeypatch):
         async def no_guard(*a, **k):
             return None
         monkeypatch.setattr(copilot_tools, "_guard", no_guard)
+        # Use this test's database connection (other test files can leave an
+        # older one behind in copilot_tools).
+        monkeypatch.setattr(copilot_tools, "get_db", lambda: db)
         out = await copilot_tools._tool_get_schedule_analysis(
             {"tenant_id": tenant, "project_id": pid, "user": {"id": "u", "role": "admin"}},
             {"view": "overdue"})
