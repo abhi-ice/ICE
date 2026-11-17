@@ -277,7 +277,8 @@ DR_WRITES = [
                                               "pct_complete_end_of_day": 70}},
     {"tool": "record_presence", "args": {"trade": "Carpenters", "headcount": 2}},
     {"tool": "create_delay", "args": {"description": "wind"}},
-    {"tool": "create_daily_report", "args": {"report_date": "2026-11-17"}},
+    # Same date as the fixture's dr1, so the report already exists whatever today is.
+    {"tool": "create_daily_report", "args": {"date": "2026-11-16"}},
     {"tool": "delete_entity", "args": {"entity_type": "delay", "id": "dl1"}},
     {"tool": "update_entity", "args": {"entity_type": "delay", "id": "dl1",
                                        "fields": {"description": "x"}}},

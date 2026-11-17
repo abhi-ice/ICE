@@ -52,6 +52,7 @@ BATCH_SIZE = 64
 POLL_SECONDS = 3
 FIRST_SLEEP_SECONDS = 60
 FLAG_OFF_SLEEP_SECONDS = 15
+GATE_CHECK_SECONDS = 300
 
 Embedder = Callable[..., Awaitable[tuple[list[list[float]], int]]]
 
@@ -514,6 +515,7 @@ async def run_worker_loop(get_db_fn) -> None:
 
     worker_id = _worker_id()
     await asyncio.sleep(FIRST_SLEEP_SECONDS)
+    last_gate_check = 0.0
     while True:
         try:
             if not search_everything_enabled():
@@ -521,6 +523,13 @@ async def run_worker_loop(get_db_fn) -> None:
                 continue
             db = get_db_fn()
             await ensure_ready(db)
+            # Every few minutes: a project newly marked as controlled
+            # government information (or a company that turned AI off)
+            # loses its stored vectors right away, not at the nightly check.
+            if time.monotonic() - last_gate_check >= GATE_CHECK_SECONDS:
+                last_gate_check = time.monotonic()
+                from services.search.reconcile import recheck_gates
+                await recheck_gates(db)
             stats = await process_once(db, worker_id=worker_id)
             if stats["jobs"]:
                 logger.debug("search worker: %s", stats)

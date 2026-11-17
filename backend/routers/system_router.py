@@ -215,7 +215,9 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     return CopilotResponse(
         session_id=session_id,
         response=res["reply"],
-        citations=[],
+        # Sources the assistant cited from "search everything" (empty while
+        # that switch is off).
+        citations=res.get("citations") or [],
         usage={"actions": len(res.get("actions_executed", [])),
                 "tool_results": res.get("tool_results", [])},
     )

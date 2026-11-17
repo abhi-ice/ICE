@@ -45,7 +45,10 @@ class VoyageRejected(VoyageUnavailable):
 
 
 async def _post(path: str, payload: dict, *, timeout: float = 60.0,
-                client: Optional[httpx.AsyncClient] = None) -> dict:
+                client: Optional[httpx.AsyncClient] = None, attempts: int = 6) -> dict:
+    """attempts=6 for background indexing (patient); searches pass a short
+    timeout and 2 attempts so a Voyage outage falls back to keyword search
+    within about two seconds."""
     key = voyage_api_key()
     if not key:
         raise VoyageUnavailable("VOYAGE_API_KEY is not set")
@@ -55,11 +58,12 @@ async def _post(path: str, payload: dict, *, timeout: float = 60.0,
     c = client or httpx.AsyncClient(timeout=timeout)
     try:
         delay = 1.0
-        for attempt in range(6):
+        last = max(1, attempts) - 1
+        for attempt in range(last + 1):
             try:
                 r = await c.post(url, json=payload, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                if attempt == 5:
+                if attempt == last:
                     raise VoyageUnavailable(f"Voyage request failed: {type(exc).__name__}") from None
             else:
                 if r.status_code == 200:
@@ -67,7 +71,7 @@ async def _post(path: str, payload: dict, *, timeout: float = 60.0,
                 if r.status_code not in _RETRY_STATUS:
                     cls = VoyageRejected if 400 <= r.status_code < 500 else VoyageUnavailable
                     raise cls(f"Voyage returned HTTP {r.status_code}", r.status_code)
-                if attempt == 5:
+                if attempt == last:
                     raise VoyageUnavailable(f"Voyage returned HTTP {r.status_code}", r.status_code)
                 ra = r.headers.get("retry-after")
                 if ra:
@@ -95,8 +99,15 @@ def _batches(texts: Sequence[str]):
         yield batch
 
 
+# A search waits for at most one quick try, so an outage falls back to
+# keyword search fast; background indexing keeps the patient retries.
+FAST_EMBED_TIMEOUT = 2.5
+FAST_RERANK_TIMEOUT = 3.0
+
+
 async def embed(texts: Sequence[str], *, input_type: str = "document",
-                client: Optional[httpx.AsyncClient] = None) -> tuple[list[list[float]], int]:
+                client: Optional[httpx.AsyncClient] = None,
+                fast: bool = False) -> tuple[list[list[float]], int]:
     """Embed texts in order. input_type is "document" for indexed pieces and
     "query" for search questions. Returns (vectors, total_tokens)."""
     if input_type not in ("document", "query"):
@@ -109,7 +120,7 @@ async def embed(texts: Sequence[str], *, input_type: str = "document",
             "model": EMBED_MODEL,
             "input_type": input_type,
             "output_dimension": EMBED_DIMS,
-        }, client=client)
+        }, client=client, **({"timeout": FAST_EMBED_TIMEOUT, "attempts": 1} if fast else {}))
         rows = sorted(data.get("data") or [], key=lambda d: d.get("index", 0))
         if len(rows) != len(idx):
             raise VoyageUnavailable("Voyage returned the wrong number of vectors")
@@ -120,14 +131,16 @@ async def embed(texts: Sequence[str], *, input_type: str = "document",
 
 
 async def rerank(query: str, documents: Sequence[str], *, top_k: Optional[int] = None,
-                 client: Optional[httpx.AsyncClient] = None) -> list[tuple[int, float]]:
+                 client: Optional[httpx.AsyncClient] = None,
+                 fast: bool = False) -> list[tuple[int, float]]:
     """Rerank documents for a query. Returns [(input_index, score)] best first."""
     if not documents:
         return []
     payload: dict = {"query": query, "documents": list(documents), "model": RERANK_MODEL, "truncation": True}
     if top_k:
         payload["top_k"] = int(top_k)
-    data = await _post("rerank", payload, timeout=30.0, client=client)
+    data = await _post("rerank", payload, client=client,
+                       **({"timeout": FAST_RERANK_TIMEOUT, "attempts": 1} if fast else {"timeout": 30.0}))
     rows = data.get("data") or data.get("results") or []
     res = [(int(r["index"]), float(r["relevance_score"])) for r in rows]
     res.sort(key=lambda x: -x[1])
