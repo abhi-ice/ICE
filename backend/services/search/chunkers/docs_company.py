@@ -47,9 +47,10 @@ def scrub(text: Any) -> str:
     if text is None:
         return ""
     s = str(text)
-    s = _EMAIL_RE.sub(" ", s)
+    # Hidden, not deleted: a marker tells the reader a value is on file.
+    s = _EMAIL_RE.sub("[email on file, hidden from search]", s)
     s = _URL_RE.sub(" ", s)
-    s = _PHONE_RE.sub(" ", s)
+    s = _PHONE_RE.sub("[phone on file, hidden from search]", s)
     return s
 
 

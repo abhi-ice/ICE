@@ -5,11 +5,13 @@ import {
   Download, FileText, Copy, Loader2, RotateCcw, Wrench, FileDown,
 } from "lucide-react";
 import * as XLSX from "xlsx";
+import { useNavigate } from "react-router-dom";
 import { useProjects } from "../../lib/projects";
 import { subscribeDailyReportId } from "../../lib/copilotContext";
 import api from "../../lib/api";
 import { toast } from "../ui/sonner";
 import { deleteWithUndo } from "../../lib/deleteWithUndo";
+import CopilotSources, { renderTextWithCites, isAppPath } from "./CopilotSources";
 
 // v4 pt.26 (2026-05-26) — Mason robustness pass:
 //   1) Conversation memory: thread persisted to localStorage AND last 8
@@ -106,6 +108,7 @@ function detectDocumentIntent(userMessage) {
 
 export default function CopilotPanel({ open, onClose }) {
   const { activeId } = useProjects();
+  const navigate = useNavigate();
   const [sessionId] = useState(getOrMakeSessionId);
   const [activeDrId, setActiveDrId] = useState(null);
   const [thread, setThread] = useState(() => {
@@ -154,9 +157,15 @@ export default function CopilotPanel({ open, onClose }) {
     // Build a context string of the last 8 turns so the LLM has memory
     // even if the server-side session library drops state. The format
     // looks like a conversation transcript, which Claude handles well.
+    // Source markers like [S1] in earlier answers are dropped here: sources
+    // are renumbered from S1 on every turn, so an old [S1] would point at a
+    // different record than this turn's S1 and could be linked wrongly.
     const recent = thread.slice(-8)
       .filter((m) => m.text && !m.tools_only)
-      .map((m) => `${m.role === "user" ? "User" : "Mason"}: ${m.text}`)
+      .map((m) => {
+        const text = m.role === "user" ? m.text : m.text.replace(/\s?\[S\d+\]/g, "");
+        return `${m.role === "user" ? "User" : "Mason"}: ${text}`;
+      })
       .join("\n\n");
     const messageWithContext = recent
       ? `=== Prior conversation (for context) ===\n${recent}\n\n=== New message ===\n${msg}\n\nReply directly to the new message; use the prior conversation as context only.`
@@ -212,6 +221,9 @@ export default function CopilotPanel({ open, onClose }) {
         retry_payload: isBareTool ? msg : null,
         artifact: intent,
         user_prompt: msg,
+        // Search everything: records the assistant quoted as [S1], [S2] ...
+        // Empty unless the search feature is switched on server side.
+        citations: Array.isArray(data.citations) ? data.citations : [],
       }]);
     } catch (e) {
       clearTimeout(timeoutId);
@@ -338,6 +350,17 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
     });
   };
 
+  // Open a cited record inside the app. On phones the panel covers the whole
+  // screen (480px and below), so close it there to show the record; on wider
+  // screens it is a side drawer and stays open beside the page.
+  const openCitation = (c) => {
+    if (!c || !isAppPath(c.url)) return;
+    navigate(c.url);
+    try {
+      if (window.matchMedia && window.matchMedia("(max-width: 480px)").matches) onClose?.();
+    } catch {}
+  };
+
   if (!open) return null;
   const isFresh = thread.length === 1 && thread[0]?.role === "ai";
 
@@ -437,7 +460,12 @@ p{margin:0 0 8px;line-height:1.45;}</style></head>
                       <span>Ran tool: <code>{m.bare_tool}</code></span>
                     </div>
                   )}
-                  <div className={`copilot-msg-bubble ${m.error ? "copilot-msg-bubble--error" : ""}`}>{m.text}</div>
+                  <div className={`copilot-msg-bubble ${m.error ? "copilot-msg-bubble--error" : ""}`}>
+                    {m.role === "ai" && m.citations?.length ? renderTextWithCites(m.text, m.citations, openCitation) : m.text}
+                  </div>
+                  {m.role === "ai" && m.citations?.length > 0 && (
+                    <CopilotSources citations={m.citations} onOpen={openCitation} testid={`copilot-sources-${i}`} />
+                  )}
                   {m.tools && m.tools.length > 0 && (
                     <div data-testid={`copilot-tools-${i}`} className="copilot-tools">
                       {m.tools.map((tt, j) => {

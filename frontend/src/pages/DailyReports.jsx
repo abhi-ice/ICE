@@ -10,7 +10,7 @@
  * call DR-only tools: record_presence, mark_activity_status, create_unplanned_activity.
  */
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useLocation } from "react-router-dom";
 import api, { extractApiError } from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { setActiveDailyReportId, subscribeDescriptionInsert } from "../lib/copilotContext";
@@ -278,14 +278,19 @@ export default function DailyReports() {
   // gallery click-through scrolls to and pulse-highlights the specific
   // event row. Stripped from the URL after first mount so refresh
   // doesn't re-trigger.
+  // Search everything (2026-11-17): also re-read it when an in-app link
+  // (e.g. an assistant source) navigates here while this page is already
+  // open; the URL write-back below uses replaceState, which does not change
+  // the router location, so this never loops.
+  const drLocation = useLocation();
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(drLocation.search);
     const target = params.get("openId");
     // Offline round 2 (2026-07-06): a restored provisional id
     // ("offline-dr-*") may have synced while the page was closed — resolve
     // it to the real id so refresh doesn't land on a dead-link screen.
     if (target) setOpenId(resolveOfflineId(target));
-  }, []);
+  }, [drLocation.search, drLocation.key]);
 
   // Offline round 2 (2026-07-06): when the request queue drains a
   // provisionally-created report, swap the OPEN page over to the real id

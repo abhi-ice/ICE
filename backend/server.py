@@ -71,6 +71,7 @@ from routers.admin_settings_router import router as admin_settings_router  # noq
 from routers.backup_router import router as backup_router  # noqa: E402
 from routers.schedule_review_router import router as schedule_review_router  # noqa: E402
 from routers.ws_router import router as ws_router  # noqa: E402
+from routers.search_router import router as search_router  # noqa: E402
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ice_schedule_ops")
@@ -1185,6 +1186,8 @@ api_router.include_router(admin_settings_router)
 api_router.include_router(backup_router)
 api_router.include_router(schedule_review_router)
 api_router.include_router(ws_router)
+# Search everything (2026-11-17): GET /api/search/everything, behind FF_SEARCH_EVERYTHING.
+api_router.include_router(search_router)
 
 # Per-project access (2026-11-16): one route-level check for every /api
 # route. It looks at project ids (and ids of records that belong to a

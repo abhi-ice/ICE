@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "../lib/api";
 import {
   ShieldCheck, Bot, FileText, History, ShoppingBasket, FileBarChart,
@@ -1766,8 +1767,37 @@ export function AiHelpPanel({ onClose }) {
 // Bucket I (2026-05-11) -- Weekly Reports page rebuilt with tabs.
 // Per spec: NO new sidebar entry. Reports Generator lives as a tab
 // inside the existing /weekly-reports route.
+// Search everything (phase 2): links from the assistant's sources list land
+// here as /weekly-reports?tab=generator&openId=<report id>. Read both from the
+// address bar (and again whenever it changes, so a link followed while this
+// page is already open still works). With no parameters the page opens on the
+// rollup tab exactly as before.
+const WR_TABS = ["rollup", "generator"];
+
 export function WeeklyReports() {
-  const [tab, setTab] = useState("rollup");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get("tab");
+  const urlOpenId = searchParams.get("openId");
+  // Once the linked report has opened (or failed to), take openId out of the
+  // address bar. Otherwise switching tabs or reloading would open it again
+  // after the user closed it, and following the same link a second time
+  // would not count as a change and would do nothing.
+  const clearOpenId = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("openId");
+      next.set("tab", "generator");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const [tab, setTab] = useState(() => {
+    if (WR_TABS.includes(urlTab)) return urlTab;
+    return urlOpenId ? "generator" : "rollup";
+  });
+  useEffect(() => {
+    if (WR_TABS.includes(urlTab)) setTab(urlTab);
+    else if (urlOpenId) setTab("generator");
+  }, [urlTab, urlOpenId]);
   return (
     <div data-testid="weekly-reports-page" className="space-y-4">
       <div className="flex items-center gap-2">
@@ -1786,7 +1816,7 @@ export function WeeklyReports() {
           label="Reports Generator" testid="weekly-tab-generator" />
       </div>
       {tab === "rollup" && <WeeklyRollupTab />}
-      {tab === "generator" && <ReportsGeneratorTab />}
+      {tab === "generator" && <ReportsGeneratorTab openId={urlOpenId} onOpenHandled={clearOpenId} />}
     </div>
   );
 }
@@ -1909,7 +1939,7 @@ function _friday(monday) {
   return localISODate(dt);
 }
 
-function ReportsGeneratorTab() {
+function ReportsGeneratorTab({ openId = null, onOpenHandled = null }) {
   const { activeId, projects } = useProjects();
   const project = projects.find((p) => p.id === activeId);
   const user = (typeof window !== "undefined"
@@ -1965,6 +1995,35 @@ function ReportsGeneratorTab() {
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [activeId, filterType, filterStatus]);
+
+  // Open the report named in the address bar (?openId=) once per id. The
+  // report is fetched directly, so it opens even when it is not on the
+  // first page of the list or belongs to the current filters' hidden rows.
+  // When done, the parent removes openId from the address bar, which resets
+  // the "already opened" memory below so the same link works again later.
+  const openedFromUrl = useRef(null);
+  const onOpenHandledRef = useRef(onOpenHandled);
+  onOpenHandledRef.current = onOpenHandled;
+  useEffect(() => {
+    if (!openId) { openedFromUrl.current = null; return undefined; }
+    if (openId === openedFromUrl.current) return undefined;
+    openedFromUrl.current = openId;
+    let cancelled = false;
+    let settled = false;
+    api.get(`/recovery-reports/${openId}`)
+      .then(({ data }) => { if (!cancelled && data) setOpenReport(data); })
+      .catch(() => { if (!cancelled) toast.error("That report could not be opened. It may have been archived or you may not have access."); })
+      .finally(() => {
+        settled = true;
+        if (!cancelled && onOpenHandledRef.current) onOpenHandledRef.current();
+      });
+    return () => {
+      cancelled = true;
+      // Cancelled before the answer came back (for example a quick re-render):
+      // forget the id so the next run tries again.
+      if (!settled) openedFromUrl.current = null;
+    };
+  }, [openId]);
 
   const generate = async () => {
     if (!activeId) return;

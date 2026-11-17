@@ -277,7 +277,8 @@ DR_WRITES = [
                                               "pct_complete_end_of_day": 70}},
     {"tool": "record_presence", "args": {"trade": "Carpenters", "headcount": 2}},
     {"tool": "create_delay", "args": {"description": "wind"}},
-    {"tool": "create_daily_report", "args": {"report_date": "2026-11-17"}},
+    # Same date as the fixture's dr1, so the report already exists whatever today is.
+    {"tool": "create_daily_report", "args": {"date": "2026-11-16"}},
     {"tool": "delete_entity", "args": {"entity_type": "delay", "id": "dl1"}},
     {"tool": "update_entity", "args": {"entity_type": "delay", "id": "dl1",
                                        "fields": {"description": "x"}}},
@@ -300,7 +301,10 @@ def test_assistant_daily_report_writes_follow_role_and_author_rules(uid, role, m
     # already exists and is returned unchanged. Every other write is refused.
     refused = [r for r in out["tool_results"]
                if not (role == "super" and r["tool"] == "create_daily_report")]
-    assert all("error" in (r.get("result") or {}) for r in refused), out["tool_results"]
+    # A read-only role is now stopped by the role check before the tool runs
+    # ("refused"); the report rules stop the rest ("error").
+    assert all(("error" in (r.get("result") or {})) or ("refused" in (r.get("result") or {}))
+               for r in refused), out["tool_results"]
 
 
 def test_assistant_author_can_still_mark_progress(monkeypatch):

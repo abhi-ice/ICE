@@ -180,6 +180,13 @@ async def recheck_gates(db) -> int:
     for g in pairs:
         t, p = g["_id"].get("t"), g["_id"].get("p")
         allowed = await gate.project_allows_embedding(ctx, t, p)
+        if not allowed:
+            # Sharing with the outside AI service is off for this project
+            # (controlled government information, or the company turned AI
+            # off): drop its stored vectors at once, not record by record.
+            await db[SEARCH_CHUNKS].update_many(
+                {"tenant_id": t, "project_id": p, "embedding": {"$ne": None}},
+                {"$set": {"embedding": None, "embedded": False, "model": None}})
         if await gate.note_gate_state(db, t, p, allowed):
             n += await requeue_project_sources(db, t, p)
     return n
