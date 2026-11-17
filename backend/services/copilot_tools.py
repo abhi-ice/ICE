@@ -196,11 +196,17 @@ Tools:
                               delays/safety/QC/work_items open, DRs filed, photos) + recent DRs + recent RFIs
                               + top blockers. Use when the user asks "what's going on" or "status update".
 
-  - get_schedule_analysis     args: {view: 'critical_path'|'slipping'|'upcoming'|'blockers'|'completed'|'summary',
+  - get_schedule_analysis     args: {view: 'critical_path'|'slipping'|'upcoming'|'blockers'|'completed'|'overdue'|'summary',
                               days?: int (for 'upcoming', default 14), project_id?: str}
                               CPM-aware schedule views — saves multiple round-trips when the user asks
                               "what's slipping", "what's blocking", "what's coming this week", "show me
                               the critical path".
+                              'overdue' = field work whose PLANNED finish is already past and is not
+                              complete (same rule as the look-ahead's Overdue pill); each row has
+                              days_past_planned_finish. Use it for "what's overdue / late / behind".
+                              'slipping' is different: slip_days is how far the FORECAST finish has
+                              moved past the planned finish (it can be a future date) — never call
+                              slipping work "overdue" unless its planned finish has passed.
   - create_task               args: {description: str, planned_start?: 'YYYY-MM-DD', planned_finish?: 'YYYY-MM-DD', duration_days?: int, trade_code?: str}
   - update_task               args: {activity_code: str, pct_complete?: int (0..100), planned_start?: 'YYYY-MM-DD', planned_finish?: 'YYYY-MM-DD', status?: 'in_progress'|'complete'|'blocked'}
   - mark_task_complete        args: {activity_code: str}
@@ -665,6 +671,23 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
         ).sort("planned_start", 1).limit(50).to_list(50)
     elif view == "blockers":
         rows = await db.tasks.find({**base, "open_blocker_count": {"$gt": 0}}, proj_fields).sort("open_blocker_count", -1).limit(30).to_list(30)
+    elif view == "overdue":
+        # Same rule as the look-ahead (services.schedule_filters): planned
+        # finish before today, not complete, field work only.
+        from services.schedule_filters import overdue_unfinished
+        today = await project_today_for(db, ctx["tenant_id"], project_id)
+        t_iso = today.isoformat()
+        rows = await db.tasks.find(
+            {**base, "$expr": overdue_unfinished(t_iso, t_iso)},
+            {**proj_fields, "projected_finish_date": 1},
+        ).sort("planned_finish", 1).limit(50).to_list(50)
+        for r in rows:
+            try:
+                pf = date.fromisoformat(str(r.get("planned_finish"))[:10])
+                r["days_past_planned_finish"] = (today - pf).days
+            except ValueError:
+                pass
+        return {"view": "overdue", "as_of": t_iso, "count": len(rows), "rows": rows}
     elif view == "completed":
         rows = await db.tasks.find({**base, "status": "complete"}, proj_fields).sort("planned_finish", -1).limit(50).to_list(50)
     else:

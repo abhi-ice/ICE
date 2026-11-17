@@ -262,3 +262,35 @@ def test_daily_report_picker_skips_overdue_paperwork():
         codes = set(_codes(await drr.list_available_tasks(rid, ctx=_ctx(tenant))))
         assert "PW_LATE" not in codes and "FW_LATE" in codes
     _run(body)
+
+
+@needs_db
+def test_assistant_overdue_view_uses_planned_finish_not_slip(monkeypatch):
+    """The assistant's "overdue" list follows the look-ahead rule: a task
+    planned for the future with forecast slip is NOT overdue; overdue
+    paperwork is left out."""
+    from services import copilot_tools
+
+    async def body(db, tenant):
+        pid = await _seed_with_paperwork(db, tenant)
+        await db.tasks.insert_one({
+            "id": "task-FUT-" + uuid.uuid4().hex[:6], "tenant_id": tenant, "project_id": pid,
+            "activity_code": "FUTURE_SLIP", "description": "Startup", "planned_start": "2027-11-26",
+            "planned_finish": "2027-12-01", "slip_days": 23, "pct_complete": 0, "status": "not_started"})
+
+        async def today(*a, **k):
+            return date(2026, 11, 16)
+        monkeypatch.setattr(copilot_tools, "project_today_for", today)
+
+        async def no_guard(*a, **k):
+            return None
+        monkeypatch.setattr(copilot_tools, "_guard", no_guard)
+        out = await copilot_tools._tool_get_schedule_analysis(
+            {"tenant_id": tenant, "project_id": pid, "user": {"id": "u", "role": "admin"}},
+            {"view": "overdue"})
+        codes = {r["activity_code"] for r in out["rows"]}
+        assert "FUTURE_SLIP" not in codes and "PW_LATE" not in codes
+        assert {"OVERDUE", "NOTSTARTED_LATE", "FW_LATE"} <= codes
+        by = {r["activity_code"]: r for r in out["rows"]}
+        assert by["OVERDUE"]["days_past_planned_finish"] == 6  # planned finish 11/10
+    _run(body)
