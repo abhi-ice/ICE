@@ -10,7 +10,7 @@ Replaces the prior keyword-scanning heuristic engine. The new pipeline:
      (project header, date, weather, signer, activities, crew
      presence, delays, notes).
   3. Send both to Anthropic's claude-sonnet-4-5-20250929 via the same
-     emergentintegrations LlmChat shim used by every other AI feature
+     services.anthropic_compat LlmChat used by every other AI feature
      in this codebase (services/ai_agents.py). The model returns a
      JSON object shaped:
          {"<sheet_name>": {"<cell_address>": <value>, ...}, ...}
@@ -38,9 +38,11 @@ from datetime import datetime, date as date_cls, timezone
 from io import BytesIO
 from typing import Any, Optional
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
+from services.llm_keys import llm_api_key
 from database import get_db
 from models import gen_id, utc_now
+from services.no_work_day import no_work_heading
 
 
 MODEL_PROVIDER = "anthropic"
@@ -54,12 +56,13 @@ class DrTemplateExportError(RuntimeError):
 
 
 def _key() -> str:
-    return os.environ.get("EMERGENT_LLM_KEY", "")
+    # ANTHROPIC_API_KEY first, then EMERGENT_LLM_KEY (see services/llm_keys.py).
+    return llm_api_key() or ""
 
 
 def _new_chat(session_id: str, system_message: str) -> LlmChat:
     """Same _new_chat shape as services/ai_agents.py so the export
-    inherits the existing emergentintegrations -> Anthropic shim."""
+    uses the same Claude client and key order."""
     return LlmChat(
         api_key=_key(),
         session_id=session_id,
@@ -417,6 +420,8 @@ def _build_dr_snapshot(
         "is_no_work_day": bool(dr.get("is_no_work_day")),
         "no_work_reason": dr.get("no_work_reason"),
         "no_work_note": dr.get("no_work_note"),
+        # "No work day — <reason>" for a no-work-day report, else None.
+        "no_work_day_heading": no_work_heading(dr),
         "project": {
             "owner_name": p.get("owner_name"),
             "address_line1": p.get("address_line1"),
@@ -628,6 +633,14 @@ VISITS, DELIVERIES AND REMARKS (every form)
   lines. When there are more items than lines, put two short items on a line.
 - Leave a visitors or deliveries box empty when we have none that day.
 
+NO WORK DAY
+-----------
+- When no_work_day_heading is set (e.g. "No work day — Weather"), the report was
+  filed as a no-work day. Write no_work_day_heading, word for word, as the FIRST
+  line of the remarks or notes area (or, when the form has a description-of-work
+  box and no remarks, as the first line of that box). Keep weather, date and the
+  header fields as usual.
+
 GENERAL RULES
 -------------
 - Never invent values. If we have no DR data for a value cell, BLANK it (null) --
@@ -675,6 +688,7 @@ async def inject_dr_into_template(
     user -- there is NO fallback to the heuristic engine.
     """
     from openpyxl import load_workbook
+    from services.xlsx_safe import set_text_cell
 
     wb = load_workbook(BytesIO(template_bytes))
     template_snapshot = _extract_template_snapshot(wb)
@@ -745,7 +759,11 @@ async def inject_dr_into_template(
             if not _is_writable(cell):
                 continue
             try:
-                cell.value = _cell_safe(value)  # None is a legitimate blank intent
+                # None is a legitimate blank intent. set_text_cell keeps
+                # text from the report (notes, names) from becoming a live
+                # formula; the template's own formula cells were skipped
+                # above and are never touched.
+                set_text_cell(cell, _cell_safe(value))
             except (AttributeError, TypeError, ValueError):
                 # Merged-cell secondaries / read-only cell subclasses
                 # reject .value assignment -- skip without aborting.

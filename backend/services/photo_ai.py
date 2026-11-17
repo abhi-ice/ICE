@@ -38,9 +38,9 @@ Design notes
   Image tokens vary by size; we charge actual usage reported by the
   Anthropic API.
 
-Phase 1 ships these signatures with mock returns (DEV_MODE env var
-or no Anthropic key triggers the stub path). Phase 2 wires real
-Claude Vision + the endpoints that call this module.
+Phase 1 shipped these signatures with mock returns. Since 2026-11-16
+only PHOTO_AI_DEV_MODE=1 uses the mock (dev stub); with no AI key the
+calls answer "AI analysis isn't available right now" and save nothing.
 """
 from __future__ import annotations
 
@@ -55,6 +55,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from database import get_db, tenant_filter
+from services.llm_keys import has_llm_key, llm_api_key
 
 log = logging.getLogger("photo_ai")
 
@@ -80,52 +81,52 @@ except Exception as _heif_exc:
 # the posture obvious. Anthropic SDK is also import-probed here so any
 # version mismatch (e.g. v0.40 breaking changes vs. our pinned 0.39)
 # surfaces before the first photo upload rather than after.
-# Federal-contractor compliance follow-up (2026-05-12): ALL Claude Vision
-# traffic now flows through Emergent's LLM gateway via EMERGENT_LLM_KEY,
-# NOT api.anthropic.com directly. No separate Anthropic Console account
-# is maintained. The boot-time probe verifies emergentintegrations is
-# importable AND a gateway key is configured before the first analyze.
-_HAS_EMERGENT_LLM_KEY = bool(os.environ.get("EMERGENT_LLM_KEY"))
+# Key (2026-11-15, Railway move): Claude Vision uses ANTHROPIC_API_KEY,
+# or EMERGENT_LLM_KEY when that is the only key (services/llm_keys.py).
+# This boot check only logs; the real decision is made per call in
+# ai_available(), so a key added later is picked up after a restart.
+_HAS_LLM_KEY = has_llm_key()
+_HAS_EMERGENT_LLM_KEY = _HAS_LLM_KEY  # old name, kept for any outside reader
 _PHOTO_AI_DEV_OVERRIDE = os.environ.get("PHOTO_AI_DEV_MODE") == "1"
-if not _HAS_EMERGENT_LLM_KEY:
+if _PHOTO_AI_DEV_OVERRIDE:
     log.warning(
-        "Photo AI: EMERGENT_LLM_KEY not set -- falling back to "
-        "deterministic dev stub. Real Claude Vision will NOT be "
-        "called. Set EMERGENT_LLM_KEY to enable.",
+        "Photo AI: PHOTO_AI_DEV_MODE=1 set; using the made-up test "
+        "results (dev stub) instead of real Claude Vision.",
     )
-elif _PHOTO_AI_DEV_OVERRIDE:
+elif not _HAS_LLM_KEY:
     log.warning(
-        "Photo AI: PHOTO_AI_DEV_MODE=1 set; using dev stub even "
-        "though an API key is configured.",
+        "Photo AI: no AI key set (ANTHROPIC_API_KEY or EMERGENT_LLM_KEY). "
+        "Photo AI analysis will answer 'AI analysis isn't available "
+        "right now' until a key is set. Set ANTHROPIC_API_KEY to enable.",
     )
 else:
     log.info(
-        "Photo AI: Emergent LLM gateway path enabled "
-        "(EMERGENT_LLM_KEY present).",
+        "Photo AI: Claude Vision enabled (AI key present).",
     )
 
-# Probe the emergentintegrations SDK at module load. If the import
-# fails we want to know now, not on the first analyze call. The
-# gateway client (LlmChat + ImageContent + UserMessage) lives in
-# emergentintegrations.llm.chat.
+# Check the Claude client loads at module load. If the import fails we
+# want to know now, not on the first analyze call. The client (LlmChat +
+# ImageContent + UserMessage) lives in services.anthropic_compat, built on
+# the official anthropic package.
 _GATEWAY_SDK_OK = False
 try:
-    from emergentintegrations.llm.chat import (  # noqa: F401
+    from services.anthropic_compat import (  # noqa: F401
         LlmChat as _ProbeLlmChat,
         UserMessage as _ProbeUserMessage,
         ImageContent as _ProbeImageContent,
     )
     _GATEWAY_SDK_OK = True
-    log.info("Photo AI: emergentintegrations gateway SDK import OK")
+    log.info("Photo AI: Claude client (services.anthropic_compat) import OK")
 except ImportError as _gw_exc:
     log.warning(
-        "Photo AI: gateway client init failed: emergentintegrations "
-        "not installed (%s) -- dev stub will be used.",
+        "Photo AI: Claude client init failed: anthropic package "
+        "not installed (%s) -- photo AI analysis will be unavailable.",
         _gw_exc,
     )
 except Exception as _gw_exc:
     log.warning(
-        "Photo AI: gateway client init failed: %s -- dev stub will be used.",
+        "Photo AI: Claude client init failed: %s -- photo AI analysis "
+        "will be unavailable.",
         _gw_exc,
     )
 
@@ -591,8 +592,10 @@ async def find_dedup_source(
         return None
     db = get_db()
     src = await db.photo_tray.find_one(
+        # Never copy made-up dev stub results onto another photo.
         {"tenant_id": tenant_id, "phash": phash,
-         "ai_analysis_status": "complete"},
+         "ai_analysis_status": "complete",
+         "ai_model_version": {"$ne": DEV_STUB_MODEL}},
         {"_id": 0, "id": 1, "ai_suggested_class": 1,
          "ai_suggested_caption": 1, "ai_suggested_event_type": 1,
          "ai_suggested_trade": 1, "ai_confidence_score": 1,
@@ -607,26 +610,97 @@ async def find_dedup_source(
 # Core: analyze_photo
 # =====================================================================
 
+# Shown to the user when photo AI can't run (no AI key, or the Claude
+# client failed to load). The photos themselves are always kept.
+from services.ai_unavailable import (  # noqa: E402
+    PHOTO_AI_UNAVAILABLE_MESSAGE as AI_UNAVAILABLE_MESSAGE,
+    AI_UNAVAILABLE_CODE as AI_UNAVAILABLE_REASON,
+)
+DEV_STUB_MODEL = "dev-stub-v1"
+DEV_STUB_REVIEW_PREFIX = "(Dev stub)"
+
+
 def _is_dev_mode() -> bool:
-    """Dev mode = explicit PHOTO_AI_DEV_MODE=1 OR no Emergent gateway
-    key OR gateway SDK import failed. Real Vision requires
-    EMERGENT_LLM_KEY (federal-contractor compliance: no direct
-    Anthropic Console account). When dev mode is on, _stub_analysis
-    returns deterministic mock data without any network call.
+    """Dev mode = PHOTO_AI_DEV_MODE=1, set on purpose by a developer.
+    In dev mode _stub_analysis / _stub_review return made-up test results
+    without any network call.
+
+    Changed 2026-11-16: a missing AI key no longer turns dev mode on.
+    Made-up findings were reaching real users ("1 safety · 1 QC"); now a
+    missing key means AI is unavailable (see ai_available()).
     """
-    if os.environ.get("PHOTO_AI_DEV_MODE") == "1":
+    return os.environ.get("PHOTO_AI_DEV_MODE") == "1"
+
+
+def ai_available() -> bool:
+    """True when real Claude Vision can be called: an AI key is set
+    (ANTHROPIC_API_KEY, or EMERGENT_LLM_KEY as a fallback) and the
+    Claude client loaded. Checked per call so a key added later is
+    picked up after a restart."""
+    return bool(_GATEWAY_SDK_OK) and has_llm_key()
+
+
+def photo_ai_can_run() -> bool:
+    """True when an analysis or review can produce a result: either dev
+    mode is on (test results) or real AI is available."""
+    return _is_dev_mode() or ai_available()
+
+
+def is_dev_stub_result(row: Optional[dict]) -> bool:
+    """True when a saved tray row or photo review holds made-up test
+    results from the dev stub (written before 2026-11-16 when no AI key
+    was set, or by dev mode). These must never be shown as real
+    findings or copied onto another photo."""
+    if not isinstance(row, dict):
+        return False
+    if row.get("ai_model_version") == DEV_STUB_MODEL:
         return True
-    if not _GATEWAY_SDK_OK:
+    raw = row.get("ai_raw_response")
+    if isinstance(raw, dict) and raw.get("_dev_mode"):
         return True
-    return not os.environ.get("EMERGENT_LLM_KEY")
+    text = row.get("text")
+    if isinstance(text, str) and text.strip().startswith(DEV_STUB_REVIEW_PREFIX):
+        return True
+    return False
+
+
+def hide_dev_stub(row: Optional[dict]) -> bool:
+    """True when the row holds made-up dev stub results and dev mode is off:
+    such results are never shown, copied into field suggestions or printed
+    in exhibits."""
+    return is_dev_stub_result(row) and not _is_dev_mode()
+
+
+# AI result fields on a tray row, cleared from answers for a dev stub row.
+_TRAY_AI_RESULT_FIELDS = (
+    "ai_suggested_class", "ai_suggested_caption", "ai_suggested_event_type",
+    "ai_suggested_trade", "ai_confidence_score", "ai_model_version",
+    "ai_raw_response", "ai_analysis_completed_at",
+)
+
+
+def without_dev_stub_ai(row: dict) -> dict:
+    """The tray row as screens should see it. Outside dev mode a row holding
+    made-up dev stub results comes back as "AI analysis failed: AI not
+    available" with no suggested class, caption, event type, trade or
+    confidence, so the tag wizard does not pre-fill them. The saved row is
+    left as it is (a real analysis replaces it later)."""
+    if not hide_dev_stub(row):
+        return row
+    out = dict(row)
+    for k in _TRAY_AI_RESULT_FIELDS:
+        out[k] = None
+    out["ai_safety_concerns_detected"] = []
+    out["ai_analysis_status"] = "failed"
+    out["ai_failure_reason"] = AI_UNAVAILABLE_REASON
+    return out
 
 
 def _anthropic_api_key() -> Optional[str]:
-    """Returns the Emergent LLM gateway key. Name preserved for
-    back-compat with older callers; all Vision traffic now routes
-    through Emergent's gateway, not api.anthropic.com directly.
+    """Returns the AI key: ANTHROPIC_API_KEY, else EMERGENT_LLM_KEY,
+    else None. Name kept for older callers.
     """
-    return os.environ.get("EMERGENT_LLM_KEY") or None
+    return llm_api_key()
 
 
 # =====================================================================
@@ -650,11 +724,17 @@ def _preprocess_image_for_vision(blob: bytes) -> tuple[bytes, str, dict]:
         from PIL import Image, ImageOps
     except ImportError:
         raise ImageConversionError("Pillow not installed")
+    from services.storage import open_image_capped, ImageTooLarge
     try:
-        img = Image.open(io.BytesIO(blob))
+        # Pixel-capped open (2026-11-16): a "decompression bomb" (small
+        # file, huge picture) is refused before any pixels are decoded.
+        # This only skips the AI analysis; the photo itself is kept.
+        img = open_image_capped(blob)
         # HEIC may require pillow-heif. If not registered, Pillow
         # raises UnidentifiedImageError which we surface clearly.
         img.load()
+    except ImageTooLarge as exc:
+        raise ImageTooLargeError(f"image too large to analyze: {exc}") from exc
     except Exception as exc:
         raise NotAnImageError(f"unrecognized image format: {exc}") from exc
     try:
@@ -837,9 +917,8 @@ async def _call_anthropic_vision(
     VisionTimeoutError / VisionApiError / VisionMalformedJsonError so
     the retry loop can distinguish failure classes.
 
-    Federal-contractor compliance refactor (2026-05-12): the underlying
-    transport is now Emergent's LLM gateway (via emergentintegrations
-    LlmChat) instead of direct api.anthropic.com. The 7-stage exception
+    Transport: services.anthropic_compat.LlmChat (official anthropic
+    package; see services/llm_keys.py for the key order). The 7-stage exception
     classification (sdk/client_init/payload_encode/api_error subtypes/
     response_parse/vision_malformed_json/usage_metadata) is preserved
     so audit-log triage flows are unchanged. Function name kept for
@@ -848,22 +927,22 @@ async def _call_anthropic_vision(
     api_key = _anthropic_api_key()
     if not api_key:
         raise VisionApiError(
-            "no EMERGENT_LLM_KEY configured", subtype="no_api_key",
+            "no AI key configured (set ANTHROPIC_API_KEY)", subtype="no_api_key",
         )
 
     # --- Stage 1: SDK import ----------------------------------------
     try:
-        from emergentintegrations.llm.chat import (
+        from services.anthropic_compat import (
             LlmChat, UserMessage, ImageContent,
         )
     except ImportError as exc:
         raise VisionApiError(
-            f"emergentintegrations not installed: {exc}",
+            f"anthropic client not installed: {exc}",
             subtype="sdk_unavailable",
         ) from exc
     except Exception as exc:
         raise VisionApiError(
-            f"emergentintegrations import errored "
+            f"anthropic client import errored "
             f"({type(exc).__name__}): {exc}",
             subtype="sdk_unavailable",
         ) from exc
@@ -886,7 +965,7 @@ async def _call_anthropic_vision(
         raise VisionApiError(
             f"LlmChat constructor rejected kwargs "
             f"({type(exc).__name__}: {exc}). Likely SDK version drift "
-            f"-- check `pip show emergentintegrations`.",
+            f"-- check `pip show anthropic`.",
             subtype="client_init_failed",
         ) from exc
     except Exception as exc:
@@ -920,8 +999,8 @@ async def _call_anthropic_vision(
             f"timeout after {timeout_seconds}s", subtype="api_timeout",
         ) from exc
     except Exception as exc:
-        # Classify by error string content. emergentintegrations passes
-        # gateway HTTP errors through; we look for status-code hints
+        # Classify by error string content. anthropic_compat puts the
+        # HTTP status in the error text; we look for status-code hints
         # in the message to set a useful subtype.
         cls = type(exc).__name__
         msg_str = str(exc)[:200]
@@ -947,7 +1026,7 @@ async def _call_anthropic_vision(
         raise VisionApiError(msg, subtype=subtype) from exc
 
     # --- Stage 5: text extraction from gateway response -------------
-    # emergentintegrations.send_message returns a string of the
+    # LlmChat.send_message returns a string of the
     # assistant's text. Defensive cast in case a future SDK version
     # returns a richer object.
     try:
@@ -970,7 +1049,7 @@ async def _call_anthropic_vision(
     data = _parse_vision_json(text)
 
     # --- Stage 7: usage / model metadata ----------------------------
-    # emergentintegrations.send_message does not currently surface
+    # LlmChat.send_message does not currently surface
     # per-call token usage as a structured object. Estimate from the
     # round-trip payload sizes so the cost dashboard at Settings ->
     # AI Usage still rolls up sensible numbers. (1 token ~= 4 chars
@@ -1102,13 +1181,16 @@ def _stub_analysis(tray_row: dict) -> dict:
     confidence = 0.5 + (seed_int % 50) / 100.0  # 0.50-0.99
     return {
         "ai_suggested_class": cls,
-        "ai_suggested_caption": f"[dev stub] {cls} photo from tray {tray_row.get('id', '?')[:8]}",
+        # No caption from the stub: a made-up caption would be copied
+        # onto the photo and printed in client reports. The supervisor
+        # writes the caption instead.
+        "ai_suggested_caption": None,
         "ai_suggested_event_type": ev,
         "ai_suggested_trade": "general",
         "ai_confidence_score": round(confidence, 2),
         "ai_safety_concerns_detected": [],
         "ai_raw_response": {"_dev_mode": True, "seed": seed_int},
-        "ai_model_version": "dev-stub-v1",
+        "ai_model_version": DEV_STUB_MODEL,
         "ai_cost_tokens_input": 0,
         "ai_cost_tokens_output": 0,
     }
@@ -1483,15 +1565,16 @@ def _parse_review_json(text: str) -> dict:
 
 
 def _stub_review(lens: str, n: int) -> dict:
-    """Dev-mode (no EMERGENT_LLM_KEY) deterministic stub so the UI flow
-    works end-to-end locally without spending tokens."""
+    """Dev mode (PHOTO_AI_DEV_MODE=1 only) made-up review so the UI flow
+    works end-to-end locally without spending tokens. Never used just
+    because the AI key is missing."""
     if lens == "combined":
         return {"ok": True, "lens": "combined", "photo_count": n,
                 "severity": "moderate", "label": "1 safety · 1 QC",
                 "text": ("(Dev stub) Foreman would describe the work, then flag "
                          "any safety items — e.g. a worker without fall protection "
                          "near an open edge (OSHA 1926.501) — and any QC items, e.g. "
-                         "uneven support spacing. Set EMERGENT_LLM_KEY to run the real "
+                         "uneven support spacing. Set ANTHROPIC_API_KEY to run the real "
                          "combined review."),
                 "safety_findings": [{"issue": "(stub) missing fall protection near open edge",
                                      "osha_code": "1926.501", "severity": "major"}],
@@ -1500,12 +1583,12 @@ def _stub_review(lens: str, n: int) -> dict:
         return {"ok": True, "lens": "safety", "photo_count": n,
                 "severity": "moderate", "label": f"{n} concern{'s' if n != 1 else ''}",
                 "text": ("(Dev stub) Foreman would flag visible safety items here — "
-                         "fall protection, PPE, and housekeeping. Set EMERGENT_LLM_KEY "
+                         "fall protection, PPE, and housekeeping. Set ANTHROPIC_API_KEY "
                          "to run the real review.")}
     return {"ok": True, "lens": "qc", "photo_count": n,
             "severity": "minor", "label": "1 concern",
             "text": ("(Dev stub) Foreman would assess workmanship against spec — "
-                     "spacing, supports, and seams. Set EMERGENT_LLM_KEY to run the "
+                     "spacing, supports, and seams. Set ANTHROPIC_API_KEY to run the "
                      "real review.")}
 
 
@@ -1519,8 +1602,8 @@ async def _call_vision_review(
     images and the review system prompt."""
     api_key = _anthropic_api_key()
     if not api_key:
-        raise VisionApiError("no EMERGENT_LLM_KEY configured", subtype="no_api_key")
-    from emergentintegrations.llm.chat import (
+        raise VisionApiError("no AI key configured (set ANTHROPIC_API_KEY)", subtype="no_api_key")
+    from services.anthropic_compat import (
         LlmChat, UserMessage, ImageContent,
     )
     session_id = f"photo-review-{int(asyncio.get_event_loop().time()*1000)}"
@@ -1621,6 +1704,11 @@ async def review_photos(
     ids = [str(t) for t in (tray_ids or []) if t][:8]  # cap at 8 images / call
     if not ids:
         return {"ok": False, "reason": "no_photos"}
+    # No AI key (and not dev mode): say so plainly. Nothing is made up
+    # and nothing is saved.
+    if not photo_ai_can_run():
+        return {"ok": False, "reason": AI_UNAVAILABLE_REASON,
+                "message": AI_UNAVAILABLE_MESSAGE}
     # Resolve each pinned id to an image storage key. The DR gallery sends
     # Photo (tagging-junction) ids -> photos.storage_path, and each Photo
     # points back to its source tray row via tray_photo_id. We prefer the
@@ -1801,6 +1889,14 @@ async def analyze_photo(
         return {"ok": False, "status": "skipped",
                 "reason": reason, "fields": update}
 
+    # 2b. AI unavailable (no AI key, not dev mode). Leave the row as it
+    # is (normally "pending") so it is analyzed once a key is set; never
+    # write made-up results.
+    if not photo_ai_can_run():
+        return {"ok": False, "status": tray.get("ai_analysis_status"),
+                "reason": AI_UNAVAILABLE_REASON,
+                "message": AI_UNAVAILABLE_MESSAGE}
+
     # 3. Budget gate.
     budget = await check_budget(tenant_id=tenant_id)
     if not budget.get("budget_ok"):
@@ -1915,7 +2011,7 @@ async def _run_vision_with_retry(
             # Pillow preprocess.
             jpeg_bytes, media_type, _img_meta = _preprocess_image_for_vision(blob)
 
-            # Dev mode: deterministic stub (no API key configured).
+            # Dev mode (PHOTO_AI_DEV_MODE=1 only): made-up test result.
             if _is_dev_mode():
                 stub = _stub_analysis(tray)
                 in_tok = 0
@@ -2096,6 +2192,11 @@ async def batch_analyze_pending(
     scoped to project_id) and calls analyze_photo on up to `limit`
     rows. Throttles between calls. Returns aggregate counts."""
     limit = max(1, min(int(limit), BATCH_SIZE_LIMIT))
+    if not photo_ai_can_run():
+        # Rows stay "pending" so a later run (with a key) picks them up.
+        return {"attempted": 0, "complete": 0, "skipped": 0,
+                "budget_paused": 0, "failed": 0, "phash_reused": 0,
+                "ai_unavailable": True, "message": AI_UNAVAILABLE_MESSAGE}
     db = get_db()
     q = {"tenant_id": tenant_id, "ai_analysis_status": "pending"}
     if project_id:

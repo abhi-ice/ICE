@@ -1,8 +1,8 @@
 """AI agents.
 
 SUBSTITUTION: master prompt §6 specified LangGraph multi-agent topology.
-Emergent runtime uses emergentintegrations.LlmChat (Anthropic via universal
-key). We preserve the multi-step "graph node" pattern as named functions
+We use services.anthropic_compat.LlmChat (Claude through the official
+anthropic package; key order in services/llm_keys.py). We preserve the multi-step "graph node" pattern as named functions
 with explicit retrieval -> reasoning -> validation phases. Token usage
 tracked in ai_usage_tracking.
 
@@ -20,7 +20,8 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
+from services.llm_keys import llm_api_key
 from database import get_db, tenant_filter
 from models import gen_id, utc_now
 
@@ -29,7 +30,8 @@ MODEL_NAME = "claude-sonnet-4-5-20250929"
 
 
 def _key() -> str:
-    return os.environ.get("EMERGENT_LLM_KEY", "")
+    # ANTHROPIC_API_KEY first, then EMERGENT_LLM_KEY (see services/llm_keys.py).
+    return llm_api_key() or ""
 
 
 def _new_chat(session_id: str, system_message: str) -> LlmChat:
@@ -287,9 +289,16 @@ async def recovery_suggestions(*, tenant_id: str, project_id: str, target_activi
         chat = _new_chat(f"recovery-{target_activity_id}", RECOVERY_SYSTEM)
         resp = await chat.send_message(UserMessage(text=user_text))
         ok = True
-    except Exception:
-        resp = "[]"
-        ok = False
+    except Exception as e:
+        # 2026-11-16: a failed call used to save an empty "pending" result
+        # that later read as "AI found nothing". Save nothing; answer with
+        # the plain "AI isn't available" message.
+        import logging
+        logging.getLogger("ai_agents").warning("recovery AI call failed: %s", e)
+        latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        await _track_usage(tenant_id, request_id, latency_ms, False)
+        from services.ai_unavailable import AiUnavailableError, RECOVERY_UNAVAILABLE_MESSAGE
+        raise AiUnavailableError(RECOVERY_UNAVAILABLE_MESSAGE)
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     await _track_usage(tenant_id, request_id, latency_ms, ok)
 
@@ -355,11 +364,16 @@ async def rfi_draft(*, tenant_id: str, project_id: str, subject: str, context: s
         resp = await chat.send_message(UserMessage(text=user_text))
         ok = True
     except Exception as e:
-        resp = f"RFI drafter unavailable: {e}"
+        # 2026-11-16: no error text as a "draft" (it was saved as a
+        # suggested RFI body). ok=False and an empty draft instead.
+        import logging
+        logging.getLogger("ai_agents").warning("RFI drafter AI call failed: %s", e)
+        resp = ""
         ok = False
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     await _track_usage(tenant_id, request_id, latency_ms, ok)
-    return {"draft": resp, "citations": _extract_spec_citations(resp), "usage": {"latency_ms": latency_ms}}
+    return {"draft": resp, "ok": ok, "citations": _extract_spec_citations(resp),
+            "usage": {"latency_ms": latency_ms}}
 
 
 # ============================================================
@@ -776,8 +790,16 @@ async def generate_delay_report(*, tenant_id: str, delay: dict) -> str:
         resp = await chat.send_message(UserMessage(text=user_text))
         ok = True
     except Exception as e:
-        resp = f"AI delay report temporarily unavailable: {e}"
-        ok = False
+        # 2026-11-16: never hand back error text as if it were the report
+        # (the route used to save it over a good report, and it printed in
+        # the client PDF). Record the failed call and stop with the plain
+        # "AI isn't available" answer; nothing is saved.
+        import logging
+        logging.getLogger("ai_agents").warning("delay report AI call failed: %s", e)
+        latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        await _track_usage(tenant_id, request_id, latency_ms, False)
+        from services.ai_unavailable import AiUnavailableError, DELAY_REPORT_UNAVAILABLE_MESSAGE
+        raise AiUnavailableError(DELAY_REPORT_UNAVAILABLE_MESSAGE)
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     await _track_usage(tenant_id, request_id, latency_ms, ok)
     # Bucket G Phase 2 -- calibration_rag producer hook. On a

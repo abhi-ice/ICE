@@ -35,8 +35,10 @@ export function useProjects() {
         setActiveProjectId(data[0].id);
         setActive(data[0].id);
       } else {
-        setActiveProjectId("");
-        setActive(null);
+        // Only write and announce when something changes; otherwise the
+        // change event re-runs this load forever on a company with no projects.
+        if (stored) setActiveProjectId("");
+        if (active) setActive(null);
       }
     } finally {
       setLoading(false);

@@ -66,6 +66,16 @@ const MODES = [
   { value: "offline_voice",  label: "Voice offline (sync later)",  requiresOnline: false, requiresVoice: true  },
 ];
 
+// Progress lock (2026-11-16): the server leaves out a spoken percent that
+// is outside what the submitted reports allow (below an earlier one, above
+// a later one) and lists it in progress_refused with a plain message.
+function announceProgressRefused(data) {
+  const refused = Array.isArray(data?.progress_refused) ? data.progress_refused : [];
+  if (!refused.length) return;
+  const lines = refused.map((x) => `${x.activity_code ? `${x.activity_code}: ` : ""}${x.message}`);
+  toast.error(`Progress not changed from the recording. ${lines.join(" ")}`, { duration: 10000 });
+}
+
 export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, initialMode }) {
   // pt.43: for v1 we force the mode to voice_async (or offline_voice
   // when navigator.onLine is false). The MODES array still has the
@@ -326,6 +336,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
         setLastResult(data);
         setFinalTranscript(data.transcript || "");
         setExtractWarning(data.warning || null);
+        announceProgressRefused(data);
         if (data.warning === "no_speech_detected" && !fallbackTranscript) {
           toast.error(
             "AI couldn't hear any speech in the recording. Check your "
@@ -783,6 +794,7 @@ export default function VoiceIntakePanel({ dailyReportId, onApplied, locked, ini
         { transcript: finalTranscript, source_kind: "live_voice" },
       );
       setLastResult({ ...r.data, transcript: finalTranscript, transcript_source: "gemini_live" });
+      announceProgressRefused(r.data);
       const s = summarizeApplied(r.data.applied);
       const skipped = r.data.skipped_duplicates;
       const totalSkipped = skipped

@@ -42,8 +42,15 @@ from auth import (
     require_tenant, role_required,
     get_accessible_project_ids, has_project_access,
 )
+from services.project_scope import require_project, require_project_if_given
+from services.project_access import allowed_project_ids, is_enforced, is_full_admin
 from audit import write_audit
 from services import resource_leveling as svc
+
+# Per-project access (2026-11-16). The checks in this file are always on
+# (they use auth.get_accessible_project_ids / has_project_access, which now
+# treat an admin limited to specific projects as limited). The route-level
+# dependency also checks /projects/{project_id}/... URLs.
 
 log = logging.getLogger("resource_leveling_router")
 
@@ -572,9 +579,15 @@ class RecomputePayload(StrictModel):
 
 
 async def _run_full_recompute(tenant_id: str, project_id: Optional[str],
-                                crew_id: Optional[str]) -> dict:
+                                crew_id: Optional[str],
+                                only_project_ids: Optional[list] = None) -> dict:
     """Internal: walks crews + projects in scope and refreshes
-    capacity / demand. Idempotent."""
+    capacity / demand. Idempotent.
+
+    only_project_ids (2026-11-16): when given (a caller limited to some
+    projects, per-project access on), demand is refreshed only for those
+    projects instead of every project in the company. Crew capacity stays
+    company-wide (crews are company resources)."""
     db = get_db()
     capacity_results: dict = {"written": 0, "zeroed": 0, "crews_processed": 0}
     demand_results: dict = {"cleared": 0, "added": 0, "projects_processed": 0}
@@ -601,6 +614,9 @@ async def _run_full_recompute(tenant_id: str, project_id: Optional[str],
         proj_ids = [p["id"] async for p in db.projects.find(
             {"tenant_id": tenant_id}, {"_id": 0, "id": 1},
         )]
+        if only_project_ids is not None:
+            allowed = set(only_project_ids)
+            proj_ids = [p for p in proj_ids if p in allowed]
         for pid in proj_ids:
             r = await svc.recompute_demand_for_project(tenant_id=tenant_id, project_id=pid)
             demand_results["cleared"] += r["cleared"]
@@ -623,6 +639,13 @@ async def trigger_recompute(
             f"Role {role!r} cannot trigger recompute "
             f"(scheduling_engineer / pm / pe / admin only)",
         )
+    # Per-project access: a project in the body must be in the caller's
+    # company (404) and one they are assigned to (403, switch on). Without a
+    # project, a caller limited to some projects only refreshes theirs.
+    await require_project_if_given(ctx, payload.project_id)
+    only_pids = None
+    if not payload.project_id and is_enforced(ctx) and not is_full_admin(ctx):
+        only_pids = sorted(await allowed_project_ids(ctx) or [])
     # If a date range is supplied AND >7 days, hand off to background.
     # Otherwise execute inline so the dashboard can refresh immediately.
     inline = True
@@ -639,7 +662,7 @@ async def trigger_recompute(
     now_iso = utc_now().isoformat()
     if inline:
         result = await _run_full_recompute(
-            ctx["tenant_id"], payload.project_id, payload.crew_id,
+            ctx["tenant_id"], payload.project_id, payload.crew_id, only_pids,
         )
         await write_audit(
             tenant_id=ctx["tenant_id"], table_name="system",
@@ -656,7 +679,7 @@ async def trigger_recompute(
     # Background mode.
     async def _bg_task(tenant_id, pid, cid, jid, actor):
         try:
-            result = await _run_full_recompute(tenant_id, pid, cid)
+            result = await _run_full_recompute(tenant_id, pid, cid, only_pids)
             await write_audit(
                 tenant_id=tenant_id, table_name="system",
                 op="RESOURCE_LEVELING_RECOMPUTED",
@@ -702,6 +725,9 @@ async def commit_reallocation(
     # target projects. Source can be None for a pool-to-project move.
     role = (ctx["user"].get("role") or "")
     for pid in filter(None, [payload.from_project_id, payload.to_project_id]):
+        # The project must exist in the caller's company (admins skip the
+        # membership check below, so this is what stops a made-up id).
+        await require_project(ctx, pid)
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=pid,

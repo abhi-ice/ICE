@@ -34,6 +34,10 @@ import { deleteWithUndo } from "../lib/deleteWithUndo";
 import BackButton from "../components/BackButton";
 import SubmitProgress from "../components/SubmitProgress";
 import { getUser } from "../lib/auth";
+import {
+  isDailyReportViewOnly, DR_VIEW_ONLY_TEXT, useCurrentUser, canDeleteReport,
+  useDailyReportPermissions,
+} from "../lib/drPermissions";
 import DelayForm from "../components/forms/DelayForm";
 import FieldLabel from "../components/forms/FieldLabel";
 import CoordinationEventForm from "../components/forms/CoordinationEventForm";
@@ -86,6 +90,9 @@ import VoiceIntakePanel from "../components/VoiceIntakePanel";
 // exact B1-gated component. Desktop grid rendering is unchanged (same
 // component, new home).
 import EodSlider from "../components/dr/EodSlider";
+import {
+  progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage, progressLimitsOf, reportDay,
+} from "../lib/progressLimits";
 // v7 guided flow — COMMON_TRADES moved to components/dr/drFlowShared.jsx
 // (values unchanged; pt.47/pt.62 notes preserved there) so the flow's crew
 // sheet and the Manpower Log share one list. LockedReasonCard +
@@ -104,9 +111,11 @@ import ActivityPickerDialog from "../components/dr/ActivityPickerDialog";
 import { previewDelayThenConfirm } from "../lib/delayPreview";
 import CarriedDelaysCard from "../components/dr/CarriedDelaysCard";
 import { sectionLabel } from "../lib/sectionLabel";
+import { isFieldCreatedCode } from "../lib/fieldActivityCode";
 // v7 cleanup (spec #8) — shared Export dropdown, surfaced in the guided
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
+import { noWorkHeading } from "../lib/noWorkDay";
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -254,6 +263,14 @@ export default function DailyReports() {
   const navigate = useNavigate();
   const userRole = (getUser()?.role || "").toLowerCase();
   const isAdminOrPm = userRole === "admin" || userRole === "pm";
+  // Read-only roles see the list and open reports, but get no create or
+  // delete buttons (the server refuses those saves with 403 role_read_only).
+  // The role comes from a fresh copy of the user (lib/api.js refreshes it),
+  // so a promotion or demotion shows without signing out. Delete shows only
+  // where the server allows it: a submitted or approved report for an admin
+  // or project manager, a draft also for its author (lib/drPermissions).
+  const drUser = useCurrentUser();
+  const drViewOnly = isDailyReportViewOnly(drUser);
 
   // Bucket D Phase 3 -- gallery chips + date links route here with
   // ?openId=<dr-id>; honor it on first mount so the DR opens directly.
@@ -498,15 +515,21 @@ export default function DailyReports() {
             className="sbtn sbtn-md sbtn-secondary">
             <Upload /> Upload DR Template
           </button>
-          <button data-testid="dr-new-button"
-            onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
-            className="sbtn sbtn-md sbtn-primary">
-            New daily report
-          </button>
+          {drViewOnly ? (
+            <span data-testid="dr-view-only-note" className="text-xs text-muted-foreground self-center">
+              {DR_VIEW_ONLY_TEXT}
+            </span>
+          ) : (
+            <button data-testid="dr-new-button"
+              onClick={() => { setPickerDate(localTodayISO()); setPickerOpen(true); }}
+              className="sbtn sbtn-md sbtn-primary">
+              New daily report
+            </button>
+          )}
         </div>
       </div>
 
-      {pickerOpen && (
+      {pickerOpen && !drViewOnly && (
         <div data-testid="dr-new-dialog"
           className="surface p-4 border-l-4 border-blue-500 bg-blue-50/30">
           <div className="font-medium text-sm mb-2">Open or create a daily report</div>
@@ -548,20 +571,27 @@ export default function DailyReports() {
               return (
                 <tr key={r.id} data-testid={`dr-row-${r.id}`}>
                   <td className="font-mono">{formatDateDisplay(r.report_date)}</td>
-                  <td><StatusPill status={r.status} /></td>
+                  <td>
+                    <StatusPill status={r.status} />
+                    {noWorkHeading(r) && (
+                      <span data-testid={`dr-no-work-${r.id}`} className="pill pill-amber ml-2">{noWorkHeading(r)}</span>
+                    )}
+                  </td>
                   <td className="text-xs max-md:hidden">{r.submitted_at ? new Date(r.submitted_at).toLocaleString() : "—"}</td>
                   <td className="text-right whitespace-nowrap">
                     <button data-testid={`open-dr-${r.id}`} onClick={() => setOpenId(r.id)} className="text-sm text-primary hover:underline mr-3">
                       Open
                     </button>
-                    <button
-                      data-testid={`delete-dr-${r.id}`}
-                      onClick={() => removeReport(r)}
-                      title="Delete report"
-                      className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] inline-flex items-center justify-center rounded align-middle text-red-500 hover:bg-red-50"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {canDeleteReport(r, drUser) && (
+                      <button
+                        data-testid={`delete-dr-${r.id}`}
+                        onClick={() => removeReport(r)}
+                        title="Delete report"
+                        className="h-7 w-7 max-md:min-h-[44px] max-md:min-w-[44px] inline-flex items-center justify-center rounded align-middle text-red-500 hover:bg-red-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
@@ -590,6 +620,11 @@ export default function DailyReports() {
                 </span>
                 <ChevronRight className="h-4 w-4 shrink-0" style={{ color: "var(--v4-fg-muted)" }} />
               </button>
+              {noWorkHeading(r) && (
+                <div data-testid={`dr-no-work-m-${r.id}`} className="mt-1.5">
+                  <span className="pill pill-amber">{noWorkHeading(r)}</span>
+                </div>
+              )}
               <div className="mt-2 flex items-center gap-2">
                 {r.submitted_at && (
                   <span className="text-xs" style={{ color: "var(--v4-fg-muted)" }}>
@@ -599,12 +634,14 @@ export default function DailyReports() {
                 <div className="ml-auto flex items-center gap-2">
                   {/* spec #8 — Export moved OFF the list card into the DR
                       detail header (ExportDropdown, landing + review). */}
-                  <button data-testid={`delete-dr-m-${r.id}`} onClick={() => removeReport(r)}
-                    title="Delete report"
-                    className="h-9 w-9 grid place-items-center rounded-lg text-red-500"
-                    style={{ border: "1px solid var(--v4-border)" }}>
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  {canDeleteReport(r, drUser) && (
+                    <button data-testid={`delete-dr-m-${r.id}`} onClick={() => removeReport(r)}
+                      title="Delete report"
+                      className="h-9 w-9 grid place-items-center rounded-lg text-red-500"
+                      style={{ border: "1px solid var(--v4-border)" }}>
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -956,16 +993,32 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     } catch { /* queue unreadable — validate on server data only */ }
     if (presence.length + queuedCrew === 0 && hasProgress) {
       errors.push(
-        "Crew presence is empty but activities show recorded progress. "
-        + "Either add a trade row to the presence panel, or unmark the activity "
-        + "progress (zero progress + no crew = no-work day, which you can submit "
-        + "via the no-work-day modal).",
+        "No crew is listed, but activities show progress. Add the crew that "
+        + "worked, or set the progress back (no progress and no crew can be "
+        + "filed as a no-work day).",
       );
+    }
+    // Progress lock (2026-11-16): a row outside what other submitted reports
+    // allow is refused by the server at submit; say so up front.
+    // Same rule as the server: only rows whose percent a person entered
+    // (stamped, or changed from start of day) are checked; a pre-filled row
+    // never set by hand is not refused.
+    for (const r of grid) {
+      if (!r.pct_set_at && (r.pct_complete_end_of_day ?? 0) === (r.pct_complete_start_of_day ?? 0)) continue;
+      const { floor, floorFrom, ceiling, ceilingFrom } = progressLimitsOf(r);
+      const v = Number(r.pct_complete_end_of_day ?? 0);
+      const name = r.activity_description || r.activity_code || "An activity";
+      if (floorFrom && v < floor) {
+        errors.push(`${name}: progress can't go below ${floor}% — the ${reportDay(floorFrom)} report already recorded ${floor}%. Raise it, or edit the ${reportDay(floorFrom)} report.`);
+      } else if (ceilingFrom && v > ceiling) {
+        errors.push(`${name}: progress can't go above ${ceiling}% — the ${reportDay(ceilingFrom)} report recorded ${ceiling}%. Lower it, or edit the ${reportDay(ceilingFrom)} report first.`);
+      }
     }
     // The "every row untouched" case: only a hard-block when grid IS
     // non-empty. Empty grid is a valid no-work day candidate.
     const untouched = grid.filter((r) =>
-      (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
+      !r.pct_set_at
+      && (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
       && (!r.status_at_end_of_day || r.status_at_end_of_day === "not_started")
     );
     // Round 7 (2026-07-06): a row whose EOD slider is GATE-LOCKED by its
@@ -1043,6 +1096,19 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         toast.info(
           "This DR has no activities or events. Pick a no-work-day reason to submit.",
         );
+        return false;
+      }
+      // Progress lock: rows now outside what other submitted reports allow.
+      // Mark each one inline and show the server's plain message; the slider
+      // limits are fresh after the reload.
+      if (isProgressOutOfRange(e)) {
+        const byRow = {};
+        for (const row of (e.response.data.rows || [])) {
+          if (row.row_id) byRow[row.row_id] = [{ row_id: row.row_id, message: row.message }];
+        }
+        setSubmitRowErrors(byRow);
+        toast.error(progressOutOfRangeMessage(e), { duration: 10000 });
+        reload();
         return false;
       }
       // Bucket C3a Phase 3 — structured per-row errors render inline.
@@ -1296,6 +1362,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         onBack={onBack}
         busy={busy}
         submit={submit}
+        checkSubmit={validate}
         submitNoWorkDay={submitNoWorkDay}
         noWorkModal={noWorkModal}
         setNoWorkModal={setNoWorkModal}
@@ -1373,6 +1440,12 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
             </button>
           </div>
         </div>
+        {/* A report filed as a no-work day says so, with its reason. */}
+        {noWorkHeading(report) && (
+          <div data-testid="dr-no-work-heading" className="mt-2">
+            <span className="pill pill-amber">{noWorkHeading(report)}</span>
+          </div>
+        )}
       </div>
 
       {/* HEADER */}
@@ -2929,7 +3002,7 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
                    dailyReportId, reload }) {
   const delta = (r.pct_complete_end_of_day || 0) - (r.pct_complete_start_of_day || 0);
   const variance = delta < 0 ? "neg" : delta === 0 ? "zero" : "pos";
-  const isUnplanned = (r.activity_code || "").startsWith("AF");
+  const isUnplanned = isFieldCreatedCode(r.activity_code);
   const isStale = staleRows.has(r.id);
   const isProvisional = r.sync_state === "provisional";
   const rowErrs = submitRowErrors[r.id] || [];
@@ -2969,9 +3042,16 @@ function GridRow({ r, editable, locked, staleRows, refreshStaleRow,
       <td className="text-xs tabular-nums text-slate-500">{r.pct_complete_start_of_day || 0}</td>
       <td>
         {editable ? (
-          <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
-            locked={locked} updateRow={updateRow} activityCode={r.activity_code}
-            gate={r.slider_gate} />
+          <>
+            <EodSlider rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
+              locked={locked} updateRow={updateRow} activityCode={r.activity_code}
+              gate={r.slider_gate} limitsRow={r} />
+            {progressLimitNote(r, r.pct_complete_end_of_day || 0) && (
+              <div className="mt-1 text-[11px] text-slate-500 normal-case" data-testid={`dr-pct-limit-${r.activity_code}`}>
+                {progressLimitNote(r, r.pct_complete_end_of_day || 0)}
+              </div>
+            )}
+          </>
         ) : (
           <span className="text-xs tabular-nums text-slate-500">{r.pct_complete_end_of_day || 0}</span>
         )}
@@ -3147,7 +3227,11 @@ function ActivityGridPanel({ grid, reload, dailyReportId, locked, reportDate, pr
       reload();
       return true;
     } catch (e) {
-      if (e.response?.status === 409) {
+      if (isProgressOutOfRange(e)) {
+        // Progress lock: a submitted report limits this activity.
+        toast.error(progressOutOfRangeMessage(e), { id: `range-${rowId}` });
+        reload();
+      } else if (e.response?.status === 409) {
         const next = new Set(staleRows); next.add(rowId); setStaleRows(next);
         toast.error("Schedule was updated externally — click Refresh on the row to pull the latest before re-entering.");
       } else {
@@ -4797,13 +4881,16 @@ function PhotosPanel({ rows, dailyReportId, projectId, locked, reload }) {
     if (runningLens) return;
     setRunningLens(rev.lens);
     try {
-      // pt.65: delete the old review FIRST (awaited, not swallowed) so a
-      // failed delete can't leave two persisted copies — the POST always
-      // inserts a fresh row, so create-before-delete risked a duplicate on
-      // next mount. If the delete fails we abort before creating a second.
-      await api.delete(`/photo-reviews/${rev.id}`);
+      // 2026-11-16: run the new review FIRST and delete the old one only
+      // after it succeeded. Deleting first lost the saved review whenever
+      // the re-run failed (for example "AI isn't available right now"):
+      // gone from the server but still on screen. If the old one can't be
+      // deleted, both stay on screen, matching the server.
       const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens, daily_report_id: dailyReportId });
-      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
+      let oldGone = true;
+      try { await api.delete(`/photo-reviews/${rev.id}`); } catch { oldGone = false; }
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }),
+        ...(oldGone ? r.filter((x) => x.id !== rev.id) : r)]);
       if (dialogId === rev.id) setDialogId(null);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Re-run failed — try again.");
@@ -5620,12 +5707,29 @@ function FlowSheet({ open, onClose, title, subtitle, children, testid }) {
 function GuidedDrFlow({
   id, report, project, grid, presence, photos, voiceAnnotations,
   delays, safetyEvents, qcIssues, rfis, deliveries,
-  locked, reload, onBack, busy, submit, noWorkModal, setNoWorkModal,
+  locked: lockedStatus, reload, onBack, busy, submit, noWorkModal, setNoWorkModal,
   submitNoWorkDay, approve, onDownloadPdf,
 }) {
+  // Read-only roles (viewer, submittal technician, scheduling engineer):
+  // the flow behaves like a locked report with no way to enter an edit
+  // reason, and the add/submit controls are hidden. The server refuses
+  // their saves anyway (403 role_read_only). lockedStatus stays the real
+  // "submitted/approved" state for the labels.
+  // 2026-11-16: also view-only on a draft someone else started (only its
+  // author, an admin or a project manager may change it; the server
+  // refuses everyone else), with a banner that says who started it.
+  const drPerms = useDailyReportPermissions(report);
+  const viewOnly = drPerms.viewOnly;
+  const locked = lockedStatus || viewOnly;
+  const viewOnlyBanner = viewOnly ? (
+    <div className="dr-flow-instr" data-testid="dr-flow-view-only"
+      style={{ color: "#f59e0b", background: "rgba(245, 158, 11, 0.10)", border: "1px solid rgba(245, 158, 11, 0.45)" }}>
+      <Lock className="h-3.5 w-3.5" /> {drPerms.bannerText}
+    </div>
+  ) : null;
   // Editable "today's planned" activities (Field Work section) in grid order.
   const activities = (grid || []).filter((r) => gridSectionOf(r.work_category) === 2);
-  const unplannedRows = activities.filter((r) => (r.activity_code || "").startsWith("AF"));
+  const unplannedRows = activities.filter((r) => isFieldCreatedCode(r.activity_code));
   // Screens: 0..N-1 activities, then "unplanned", then "review".
   const N = activities.length;
   const UNPLANNED = N;
@@ -5883,7 +5987,13 @@ function GuidedDrFlow({
         saved = true;
         await reload();
       } catch (e) {
-        if (e.response?.status === 409) {
+        if (isProgressOutOfRange(e)) {
+          // Progress lock: a submitted report limits this activity. Show the
+          // server's plain message and put the slider back on the saved value.
+          toast.error(progressOutOfRangeMessage(e), { id: `range-${rowId}` });
+          await reload();
+          setSliderResync((s) => ({ ...s, [rowId]: (s[rowId] || 0) + 1 }));
+        } else if (e.response?.status === 409) {
           toast.error("This activity was just changed somewhere else, so that change was not saved. The latest progress is now showing — move the slider again if it needs changing.");
           await reload();
           setSliderResync((s) => ({ ...s, [rowId]: (s[rowId] || 0) + 1 }));
@@ -6107,15 +6217,22 @@ function GuidedDrFlow({
             </span>
           </div>
           <div className="dr-flow-hero-t">Daily report</div>
+          {/* A report filed as a no-work day says so, with its reason. */}
+          {noWorkHeading(report) && (
+            <div className="dr-flow-hero-row" data-testid="dr-flow-no-work-heading" style={{ marginTop: 6 }}>
+              <span className="pill pill-amber" style={{ whiteSpace: "normal" }}>{noWorkHeading(report)}</span>
+            </div>
+          )}
           <div className="dr-flow-hero-s">
             {longDate} · {project?.name || "Project"} · {N} {N === 1 ? "activity" : "activities"}
             {carriedWeekday ? `, carried from ${carriedWeekday}` : ""}
           </div>
-          {locked && (
+          {lockedStatus && (
             <div className="dr-flow-hero-row">
               <span className="dr-flow-locked-tag"><Lock className="h-3 w-3" /> Submitted</span>
             </div>
           )}
+          {viewOnlyBanner}
           {N > 0 ? (
             <button className="dr-flow-cta" data-testid="dr-flow-start" onClick={() => goActivity(0)}>
               {locked ? "Review report" : "Start"} <ChevronRight className="h-4 w-4" />
@@ -6124,13 +6241,17 @@ function GuidedDrFlow({
             <div className="dr-flow-empty">
               <ClipboardList className="h-8 w-8" style={{ color: "var(--v4-fg-faint)" }} />
               <div className="dr-flow-empty-t">No activities yet</div>
-              <div className="dr-flow-empty-s">Add the activities being worked today. Log work done off-schedule, or file a no-work day.</div>
-              <button className="dr-flow-cta" data-testid="dr-flow-empty-add-activity" onClick={() => setPickerOpen(true)}>
-                <Plus className="h-4 w-4" /> Add activity
-              </button>
-              <button className="dr-flow-alt" data-testid="dr-flow-empty-unplanned" onClick={() => setSheet({ kind: "unplanned" })}>
-                Add unplanned activity
-              </button>
+              {!viewOnly && (
+                <>
+                  <div className="dr-flow-empty-s">Add the activities being worked today. Log work done off-schedule, or file a no-work day.</div>
+                  <button className="dr-flow-cta" data-testid="dr-flow-empty-add-activity" onClick={() => setPickerOpen(true)}>
+                    <Plus className="h-4 w-4" /> Add activity
+                  </button>
+                  <button className="dr-flow-alt" data-testid="dr-flow-empty-unplanned" onClick={() => setSheet({ kind: "unplanned" })}>
+                    Add unplanned activity
+                  </button>
+                </>
+              )}
               {!locked && (
                 <button className="dr-flow-alt" data-testid="dr-flow-empty-nowork" onClick={submitAndReturn}>
                   File as no-work day
@@ -6158,6 +6279,7 @@ function GuidedDrFlow({
                 );
               })}
             </div>
+            {!viewOnly && (
             <button type="button" className="dr-flow-bigcard" data-testid="dr-flow-add-activity" onClick={() => setPickerOpen(true)}
               style={{ marginTop: 10 }}>
               <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
@@ -6167,10 +6289,11 @@ function GuidedDrFlow({
               </div>
               <ChevronRight className="h-4 w-4" style={{ color: "var(--v4-fg-muted)" }} />
             </button>
+            )}
           </>
         )}
 
-        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} refreshKey={carriedKey} className="mt-3" />
+        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} refreshKey={carriedKey} className="mt-3" readOnly={viewOnly} />
         {picker}
         <div className="dr-flow-rowlbl">Site-wide</div>
         {/* Day-1 audit #21: on a draft the Weather card opens the phone
@@ -6202,7 +6325,7 @@ function GuidedDrFlow({
             green "Add unplanned activity" button already covers this — two
             unplanned entry points on one screen read as a mistake. The
             site-wide card shows only when activities exist. */}
-        {N > 0 && (
+        {N > 0 && !viewOnly && (
           <button className="dr-flow-bigcard" data-testid="dr-flow-unplanned-card" onClick={() => setSheet({ kind: "unplanned" })}>
             <Plus className="h-6 w-6" style={{ color: "#34d399" }} />
             <div className="dr-flow-big-body">
@@ -6269,7 +6392,8 @@ function GuidedDrFlow({
               activity: it feeds edit_reason on grid PATCHes, add_reason on
               photo tags, AND is carried into every issue/delivery/coord
               create (the flow forms never re-prompt for a reason). */}
-          {locked && (
+          {viewOnlyBanner}
+          {locked && !viewOnly && (
             <LockedReasonCard value={lockedReason} onChange={setLockedReason} />
           )}
           <div className="dr-flow-actname">{r.activity_description || r.activity_code}</div>
@@ -6299,12 +6423,18 @@ function GuidedDrFlow({
                   rowId={r.id} initialValue={r.pct_complete_end_of_day || 0}
                   locked={locked && !lockedReasonOk} updateRow={updateRow}
                   activityCode={r.activity_code}
-                  gate={r.slider_gate} />
+                  gate={r.slider_gate} limitsRow={r} />
               </div>
               <div className="dr-flow-prog-meta">
                 was {r.pct_complete_start_of_day || 0}%
                 {plannedTick != null ? ` · planned ${plannedTick}%` : ""}
               </div>
+              {/* Progress lock: why the slider stops where it does. */}
+              {progressLimitNote(r, r.pct_complete_end_of_day || 0) && (
+                <div className="dr-flow-prog-meta" data-testid={`dr-flow-progress-limit-${screen}`}>
+                  {progressLimitNote(r, r.pct_complete_end_of_day || 0)}
+                </div>
+              )}
             </div>
           </div>
 
@@ -6359,14 +6489,14 @@ function GuidedDrFlow({
               {thisIssues === 0
                 ? <span className="dr-flow-noissue"><CheckCircle2 className="h-3.5 w-3.5" /> No issues</span>
                 : <span className="dr-flow-hasissue"><AlertTriangle className="h-3.5 w-3.5" /> {thisIssues} logged</span>}
-              <span className="dr-flow-qadd">
+              {!viewOnly && <span className="dr-flow-qadd">
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-delay" onClick={() => setSheet({ kind: "delay", activity: r })}><AlertTriangle className="h-3 w-3" /> Delay</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-rfi" onClick={() => setSheet({ kind: "rfi", activity: r })}><MessageSquare className="h-3 w-3" /> RFI</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-safety" onClick={() => setSheet({ kind: "safety", activity: r })}><ShieldAlert className="h-3 w-3" /> Safety</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-qc" onClick={() => setSheet({ kind: "qc", activity: r })}><ClipboardCheck className="h-3 w-3" /> QC</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-delivery" onClick={() => setSheet({ kind: "delivery", activity: r })}><Truck className="h-3 w-3" /> Delivery</button>
                 <button type="button" className="dr-flow-qa" data-testid="dr-flow-issue-coord" onClick={() => setSheet({ kind: "coordination", activity: r })}><MessageSquare className="h-3 w-3" /> Coord</button>
-              </span>
+              </span>}
             </div>
             {/* spec A — this task's logged issues, one line each. */}
             {issueItems.length > 0 && (
@@ -6463,6 +6593,7 @@ function GuidedDrFlow({
           <DrFlowExport id={id} report={report} testidPrefix="dr-flow-export-review" />
         </div>
         <div className="dr-flow-subline">{project?.name || "Project"} · {longDate} · everything for today</div>
+        {viewOnlyBanner}
 
         <div className="dr-flow-instr" data-testid="dr-flow-instr">
           <Pencil className="h-3.5 w-3.5" />
@@ -6553,7 +6684,7 @@ function GuidedDrFlow({
         {/* spec D — record + playable list on the Review step. */}
         <div className="dr-flow-rowlbl">Voice notes</div>
         <DrVoiceNotes reportId={id} notes={voiceNoteRows} reload={reload}
-          allowRecord onPendingChange={setVoiceNotePending} />
+          allowRecord={!viewOnly} onPendingChange={setVoiceNotePending} />
       </div>
 
       <div className="dr-flow-nav">
@@ -6574,6 +6705,10 @@ function GuidedDrFlow({
               <CheckCircle2 className="h-4 w-4" /> Submitted — waiting for approval
             </button>
           )
+        ) : viewOnly ? (
+          <button className="dr-flow-next" data-testid="dr-flow-view-only-submit" disabled>
+            <Lock className="h-4 w-4" /> View only
+          </button>
         ) : (
           <button className="dr-flow-next" data-testid="dr-flow-submit" disabled={busy} onClick={submitAndReturn}>
             <CheckCircle2 className="h-4 w-4" /> {busy ? "Submitting…" : "Submit report"}
@@ -6788,9 +6923,16 @@ function FlowPhotos({ dailyReportId, photos, canAdd, photoBusy, onAddFiles, relo
     if (running) return;
     setRunning(true);
     try {
-      await api.delete(`/photo-reviews/${rev.id}`);
+      // 2026-11-16: run the new review FIRST and delete the old one only
+      // after it succeeded. Deleting first lost the saved review whenever
+      // the re-run failed (for example "AI isn't available right now"):
+      // gone from the server but still on screen. If the old one can't be
+      // deleted, both stay on screen, matching the server.
       const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens, daily_report_id: dailyReportId });
-      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
+      let oldGone = true;
+      try { await api.delete(`/photo-reviews/${rev.id}`); } catch { oldGone = false; }
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }),
+        ...(oldGone ? r.filter((x) => x.id !== rev.id) : r)]);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Re-run failed — try again.");
     } finally { setRunning(false); }

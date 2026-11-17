@@ -20,12 +20,18 @@ import { getUser } from "../../lib/auth";
 import { localTodayISO } from "../../lib/dateUtil";
 import { queuePhoto } from "../../lib/drPhotoQueue";
 import { compressImage } from "../../lib/imageCompress";
-import { drainOfflineQueue } from "../../lib/drOfflineSync";
+import { drainOfflineQueue, PROGRESS_DROP_EVENT } from "../../lib/drOfflineSync";
+import { useDailyReportPermissions } from "../../lib/drPermissions";
 import DrVoiceNotes from "./DrVoiceNotes";
 import GuidedDialog from "./GuidedDialog";
 import { COMMON_TRADES, LockedReasonCard, isFlowReasonValid } from "./drFlowShared";
 import "./drGuidedDesktop.css";
 import { sectionLabel } from "../../lib/sectionLabel";
+import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
+import { noWorkHeading } from "../../lib/noWorkDay";
+import {
+  clampToProgressLimits, progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
+} from "../../lib/progressLimits";
 
 /* ================= option lists — mockup labels, real enum values ================= */
 const opt = (pairs) => pairs.map(([label, value]) => ({ label, value }));
@@ -194,9 +200,17 @@ export default function DrGuidedDesktop({
   locked, reload, onBack, busy, submit, submitNoWorkDay,
   noWorkModal, setNoWorkModal, approve, onDownloadPdf,
   onDownloadClientTemplate, clientTemplatePresent,
-  submitRowErrors, online, queueSize,
+  submitRowErrors, online, queueSize, checkSubmit,
 }) {
   const [openActId, setOpenActId] = useState(null);
+  // Read-only roles (viewer, submittal technician, scheduling engineer) can
+  // open the report but every edit control is hidden or disabled; the server
+  // refuses their saves anyway (403 role_read_only).
+  // 2026-11-16: also view-only on a draft someone else started (only its
+  // author, an admin or a project manager may change it), and the role is
+  // re-read when lib/api.js refreshes the signed-in user.
+  const drPerms = useDailyReportPermissions(report);
+  const viewOnly = drPerms.viewOnly;
   const [dlg, setDlg] = useState(null);
   const [wxEdit, setWxEdit] = useState(false);
   const [wx, setWx] = useState({});
@@ -254,10 +268,10 @@ export default function DrGuidedDesktop({
 
   /* ---------- per-activity model ---------- */
   const activities = useMemo(() => (grid || []).filter((r) => gridSectionOf(r.work_category) === 2), [grid]);
-  const unplannedRows = useMemo(() => activities.filter((r) => (r.activity_code || "").startsWith("AF")), [activities]);
+  const unplannedRows = useMemo(() => activities.filter((r) => isFieldCreatedCode(r.activity_code)), [activities]);
   // Mockup containment: unplanned items live ONLY in the Unplanned work
   // card — they are not activity cards and don't count toward "N of M".
-  const cardRows = useMemo(() => activities.filter((r) => !(r.activity_code || "").startsWith("AF")), [activities]);
+  const cardRows = useMemo(() => activities.filter((r) => !isFieldCreatedCode(r.activity_code)), [activities]);
   const voiceNotes = useMemo(() => (voiceAnnotations || []).filter((v) => v.kind === "voice_note"), [voiceAnnotations]);
   const issueBags = { delays, safetyEvents, qcIssues, rfis, deliveries, coordEvents };
 
@@ -374,6 +388,23 @@ export default function DrGuidedDesktop({
     });
   }, []);
 
+  // A progress save queued offline and later refused by the progress lock
+  // (lib/drOfflineSync): the percent was never saved, so drop the slider's
+  // local value and show the saved one again (the message is shown by
+  // lib/api.js).
+  useEffect(() => {
+    const onDrop = (ev) => {
+      const rowId = ev?.detail?.rowId;
+      if (!rowId || !mountedRef.current) return;
+      setPctDraft((p) => {
+        if (!(rowId in p)) return p;
+        const n = { ...p }; delete n[rowId]; return n;
+      });
+    };
+    window.addEventListener(PROGRESS_DROP_EVENT, onDrop);
+    return () => window.removeEventListener(PROGRESS_DROP_EVENT, onDrop);
+  }, []);
+
   const commitPct = useCallback((m, v) => {
     const run = async () => {
       const n = Math.round(Number(v));
@@ -401,11 +432,23 @@ export default function DrGuidedDesktop({
         // clock value; use it so a chained commit never self-409s.
         const fresh = res?.data?.task_updated_at || res?.data?.last_sync_at;
         if (fresh) gridStamps.current[m.row.id] = fresh;
+        // Back-dated report: a later report already set this activity's
+        // current progress, so this save only records history.
+        const keptFrom = res?.data?.task_progress_kept_from;
+        if (keptFrom) {
+          const [, mm, dd] = String(keptFrom).split("-");
+          toast.info(`A later report (${mm}/${dd}) already set this activity's progress; this report records history only.`,
+            { id: `kept-${m.row.id}` });
+        }
         await reload(); // the [grid] effect dissolves the draft on confirm
       } catch (e) {
         clearDraftIf(m.row.id, n); // revert only if this commit still owns the draft
         if (!mountedRef.current) return;
-        if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
+        // Progress lock: a submitted report already set a limit (another
+        // screen may have submitted it after this grid loaded). Show the
+        // server's plain message and reload so the slider learns the limit.
+        if (isProgressOutOfRange(e)) { toast.error(progressOutOfRangeMessage(e), { id: `range-${m.row.id}` }); reload(); }
+        else if (e?.response?.status === 409) { toast.error("This row changed elsewhere — refreshing."); reload(); }
         else toast.error(fmtErr(e, "Save progress"));
       }
     };
@@ -455,6 +498,9 @@ export default function DrGuidedDesktop({
       }
     }
     if (n < 0) n = 0;
+    // Progress lock: never below what an earlier submitted report recorded,
+    // never above a later submitted one (the note under the slider says why).
+    n = clampToProgressLimits(m.row, n);
     touch(m.row.id);
     setPctDraft((p) => ({ ...p, [m.row.id]: n }));
     clearTimeout(commitTimers.current[m.row.id]);
@@ -536,7 +582,9 @@ export default function DrGuidedDesktop({
       if (!okToLog) throw new Error("cancelled");
       const res = await api.post(`/delays`, {
         project_id: project.id, daily_report_id: id, date: reportDate || localTodayISO(),
-        description: a.what.trim(), severity: a.dsev, status: a.dstat || "open",
+        // "Is it fixed yet?": send the picked status as-is (Open stays open).
+        // Skipped -> no status, and the server picks its default.
+        description: a.what.trim(), severity: a.dsev, ...(a.dstat ? { status: a.dstat } : {}),
         cause_class: a.cause, reason_category: a.cause,
         owner_attribution: a.owner || "none",
         linked_task_ids: picked.map((x) => x.id),
@@ -982,15 +1030,21 @@ export default function DrGuidedDesktop({
     setReviews((r) => r.filter((x) => x.id !== rev.id));
     if (dialogId === rev.id) setDialogId(null);
   };
-  // Retry re-runs the SAME photos and REPLACES the review (delete-first so a
-  // failed delete can't leave two persisted copies on the next mount).
+  // Retry re-runs the SAME photos and REPLACES the review.
   const retryReview = async (rev, rowId) => {
     if (runningRowId) return;
     setRunningRowId(rowId || rowOfReview(rev) || rev.id);
     try {
-      await api.delete(`/photo-reviews/${rev.id}`);
+      // 2026-11-16: run the new review FIRST and delete the old one only
+      // after it succeeded. Deleting first lost the saved review whenever
+      // the re-run failed (for example "AI isn't available right now"):
+      // gone from the server but still on screen. If the old one can't be
+      // deleted, both stay on screen, matching the server.
       const { data } = await api.post(`/photo-tray/review`, { tray_ids: rev.ids, lens: rev.lens || "combined", daily_report_id: id });
-      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }), ...r.filter((x) => x.id !== rev.id)]);
+      let oldGone = true;
+      try { await api.delete(`/photo-reviews/${rev.id}`); } catch { oldGone = false; }
+      setReviews((r) => [toReview({ ...data, photo_ids: data.photo_ids || rev.ids }),
+        ...(oldGone ? r.filter((x) => x.id !== rev.id) : r)]);
       if (dialogId === rev.id) setDialogId(null);
     } catch (e) {
       toast.error(e.response?.data?.detail || fmtErr(e, "Re-run"));
@@ -1078,12 +1132,26 @@ export default function DrGuidedDesktop({
     if (report.status === "submitted") { approve(); return; }
     if (report.status === "approved") { onDownloadPdf("internal"); return; }
     const un = model.filter((mm) => !mm.updated);
+    // The same checks Submit runs (crew vs progress, progress lock), shown
+    // here so nothing claims "Nothing here blocks you" and then refuses.
+    let blockers = [];
+    try { blockers = (checkSubmit ? checkSubmit().errors : []) || []; } catch { blockers = []; }
     setDlg({
       kind: "custom", title: "Submit report", sub: dateSub,
       body: (
         <>
           <div className="gq">Does this look right?</div>
-          <div className="ggloss">One last look before it goes to the office. Nothing here blocks you.</div>
+          <div className="ggloss">{blockers.length
+            ? "One last look before it goes to the office."
+            : "One last look before it goes to the office. Nothing here blocks you."}</div>
+          {blockers.length > 0 && (
+            <div className="reviewwarn" data-testid="dr-submit-blockers">
+              <b>Fix {blockers.length === 1 ? "this" : "these"} before submitting:</b>
+              <ul style={{ margin: "6px 0 0 18px", listStyle: "disc" }}>
+                {blockers.map((m, i) => <li key={i}>{m}</li>)}
+              </ul>
+            </div>
+          )}
           <div className="sumwrap">
             <div className="sumrow"><span className="sl">Weather</span>
               <span className="sv">{report?.weather_conditions
@@ -1125,7 +1193,7 @@ export default function DrGuidedDesktop({
         <>
           <button className="btn" onClick={() => setDlg(null)}>Keep editing</button>
           <span style={{ flex: 1 }} />
-          <button className="btn green" disabled={busy} onClick={() => { setDlg(null); submit(() => {}); }}>
+          <button className="btn green" disabled={busy || blockers.length > 0} onClick={() => { setDlg(null); submit(() => {}); }}>
             {busy ? "Submitting…" : "Submit report"}
           </button>
         </>
@@ -1288,6 +1356,9 @@ export default function DrGuidedDesktop({
               <div className="progmeta">was {m.sod}%{m.planned != null ? ` · planned ${m.planned}%` : ""}</div>
               <input type="range" className="progrange" min="0" max="100" step="5" value={m.pct}
                 disabled={gateLockedUi} onChange={(e) => setProg(m, e.target.value, false)} />
+              {progressLimitNote(m.row, m.pct) && (
+                <div className="hint" data-testid={`progress-limit-note-${r.id}`}>{progressLimitNote(m.row, m.pct)}</div>
+              )}
             </div>
             <div className="ra" />
           </div>
@@ -1486,6 +1557,10 @@ export default function DrGuidedDesktop({
               <div className="addr">
                 {[project?.client_name, project?.contractor_name, dateSub].filter(Boolean).join(" · ")}
               </div>
+              {/* A report filed as a no-work day says so, with its reason. */}
+              {noWorkHeading(report) && (
+                <div className="nowork" data-testid="drgx-no-work-heading">{noWorkHeading(report)}</div>
+              )}
             </div>
             <div className="saved">Saved automatically</div>
           </div>
@@ -1501,7 +1576,14 @@ export default function DrGuidedDesktop({
           </div>
         )}
 
-        {locked && (
+        {viewOnly && (
+          <div className="card" data-testid="drgx-view-only"
+            style={{ borderColor: "var(--open-line)", background: "var(--open-bg)", color: "var(--open-fg)", fontWeight: 600 }}>
+            {drPerms.bannerText}
+          </div>
+        )}
+
+        {locked && !viewOnly && (
           <div className="card">
             <div className="sec-title">{report.status === "approved" ? "Approved report" : "Submitted report"}</div>
             <div className="sec-sub">Editing a submitted report — reason required. It's captured in the audit chain.</div>
@@ -1516,15 +1598,19 @@ export default function DrGuidedDesktop({
             <WeatherIcon />
             <div className="now">
               {wxLine}
-              <button className="wok" onClick={() => toast.success("Weather confirmed. Thanks!")}>&#10003; Looks right</button>
+              {!viewOnly && (
+                <button className="wok" onClick={() => toast.success("Weather confirmed. Thanks!")}>&#10003; Looks right</button>
+              )}
             </div>
-            <div className="push"><button className="btn link" onClick={openWxEdit}>Change</button></div>
+            {!viewOnly && <div className="push"><button className="btn link" onClick={openWxEdit}>Change</button></div>}
           </div>
           <div className="hint">
-            {wxTime ? `Filled in automatically at ${wxTime}. Tap "Change" only if it looks wrong.`
-              : `Tap "Change" to fill in today's weather.`}
+            {viewOnly
+              ? (wxTime ? `Filled in automatically at ${wxTime}.` : "No weather recorded yet.")
+              : wxTime ? `Filled in automatically at ${wxTime}. Tap "Change" only if it looks wrong.`
+                : `Tap "Change" to fill in today's weather.`}
           </div>
-          <div className={`wedit${wxEdit ? " open" : ""}`}>
+          <div className={`wedit${wxEdit && !viewOnly ? " open" : ""}`}>
             <div className="fld"><label className="f">Conditions</label>
               <input className="i" value={wx.cond || ""} onChange={(e) => setWx((p) => ({ ...p, cond: e.target.value }))} /></div>
             <div className="g2">
@@ -1548,7 +1634,7 @@ export default function DrGuidedDesktop({
         </div>
 
         {/* ============ Today's activities ============ */}
-        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} refreshKey={carriedKey} className="mt-6" />
+        <CarriedDelaysCard reportId={id} reportDate={report?.report_date} onChange={reload} refreshKey={carriedKey} className="mt-6" readOnly={viewOnly} />
         <div style={{ marginTop: 30, display: "flex", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 260 }}>
             <div className="sec-title" style={{ fontSize: 22 }}>Today's activities</div>
@@ -1556,36 +1642,46 @@ export default function DrGuidedDesktop({
               Everything for each activity lives on its card — progress, crew, issues &amp; deliveries, photos.
             </div>
           </div>
-          <button type="button" className="btn accent" data-testid="drgx-add-activity" onClick={() => setPickerOpen(true)}>
-            + Add activity
-          </button>
+          {!viewOnly && (
+            <button type="button" className="btn accent" data-testid="drgx-add-activity" onClick={() => setPickerOpen(true)}>
+              + Add activity
+            </button>
+          )}
         </div>
         <ActivityPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} reportId={id}
           reportDate={report?.report_date} locked={locked} lockedReason={lockedReason}
           onAdded={async (row) => { setCarriedKey((k) => k + 1); await reload(); if (row?.id) toggleAct(row.id); }} />
+        {/* View only: a disabled fieldset turns off every input, slider and
+            button inside the activity cards; the cards still open to read. */}
+        <fieldset disabled={viewOnly} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <div className="actsgrid">
           {model.length === 0
             ? <div className="card emptyday"><span className="none">No activities yet. Use “Add activity” to pick what's being worked today, log unplanned work below, or file a no-work day.</span></div>
             : model.map(renderCard)}
         </div>
+        </fieldset>
 
         {/* ============ Unplanned work + Voice notes (site-wide, paired) ============ */}
         <div className="sitegrid">
-          <div className="card" data-testid="drgx-unplanned">
-            <div className="sec-title">Unplanned work</div>
-            <div className="sec-sub">Did the crew do something that wasn't on the schedule? Log it here. The office will review it.</div>
-            <button className="btn ghost" onClick={() => openFlow(FLOW_unplanned())}>Add unplanned activity</button>
-          </div>
+          {!viewOnly && (
+            <div className="card" data-testid="drgx-unplanned">
+              <div className="sec-title">Unplanned work</div>
+              <div className="sec-sub">Did the crew do something that wasn't on the schedule? Log it here. The office will review it.</div>
+              <button className="btn ghost" onClick={() => openFlow(FLOW_unplanned())}>Add unplanned activity</button>
+            </div>
+          )}
           <div className="card" data-testid="drgx-voice">
             <div className="sec-title">Voice notes</div>
             <div className="sec-sub">Prefer to talk instead of type? Record a short voice note.</div>
-            <DrVoiceNotes reportId={id} notes={voiceNotes} reload={reload} allowRecord />
+            <DrVoiceNotes reportId={id} notes={voiceNotes} reload={reload} allowRecord={!viewOnly} />
           </div>
         </div>
         {/* Each unplanned item is a FULL activity card (progress, crew,
             issues & deliveries, photos) — same as the mobile flow. */}
         {unplannedModel.length > 0 && (
-          <div className="actsgrid">{unplannedModel.map(renderCard)}</div>
+          <fieldset disabled={viewOnly} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+            <div className="actsgrid">{unplannedModel.map(renderCard)}</div>
+          </fieldset>
         )}
       </div>
 
@@ -1600,7 +1696,7 @@ export default function DrGuidedDesktop({
             <div className={`notespop${notesOpen ? " show" : ""}`}>
               <div className="nt">Daily notes</div>
               <div className="hint" style={{ margin: "0 0 10px" }}>Write anything worth remembering about today. This goes on the printed report.</div>
-              <textarea className="i" style={{ minHeight: 120 }} value={notesText}
+              <textarea className="i" style={{ minHeight: 120 }} value={notesText} readOnly={viewOnly}
                 placeholder="Visitors, weather effects, crew changes, anything notable..."
                 onChange={(e) => { setNotesText(e.target.value); setNotesDirty(true); }} />
               <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
@@ -1608,7 +1704,7 @@ export default function DrGuidedDesktop({
                   // Cancel is the explicit discard — click-away keeps the draft.
                   setNotesOpen(false); setNotesDirty(false); setNotesText(report?.notes || "");
                 }}>Cancel</button>
-                <button className="btn small accent" onClick={saveNotes}>Save note</button>
+                {!viewOnly && <button className="btn small accent" onClick={saveNotes}>Save note</button>}
               </div>
             </div>
             <button className="btn link" data-notes-toggle onClick={() => {
@@ -1623,7 +1719,7 @@ export default function DrGuidedDesktop({
               setExportOpen(false);
             }}>Daily notes</button>
           </div>
-          {!locked && (
+          {!locked && !viewOnly && (
             <button className="btn link" onClick={() => openFlow(FLOW_nowork())}>File as no-work day</button>
           )}
           <div style={{ position: "relative" }}>
@@ -1638,9 +1734,13 @@ export default function DrGuidedDesktop({
               Export &#9662;
             </button>
           </div>
-          <button className="btn green" disabled={busy} onClick={openReview} data-testid="drgx-submit">
-            {greenLabel}
-          </button>
+          {viewOnly ? (
+            <span className="status" data-testid="drgx-view-only-status">View only</span>
+          ) : (
+            <button className="btn green" disabled={busy} onClick={openReview} data-testid="drgx-submit">
+              {greenLabel}
+            </button>
+          )}
         </div>
       </div>
 

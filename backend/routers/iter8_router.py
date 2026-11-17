@@ -21,14 +21,24 @@ from datetime import datetime, timezone, date, timedelta
 from typing import Optional, Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import Field
+from pymongo.errors import PyMongoError
+from bson.errors import BSONError
 
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
 from audit import write_audit
+from services.project_access import check_project_access, check_record_access, project_scope_filter
 
 
 router = APIRouter(tags=["iter8"])
+
+# Per-project access (2026-11-16). /crud/{entity}/{id} is checked by the
+# route-level dependency (services/project_access.enforce_project_scope),
+# which looks up the record's project from the entity name. Company
+# resources (crews without a home project, equipment, people,
+# certifications) have no project and are not limited. The handlers below
+# add the checks for project ids sent in the body.
 
 
 # ============================================================
@@ -82,11 +92,62 @@ _GATING_ENTITY_TYPE = {
 }
 
 
+# Fields the generic PATCH never writes, whatever the client sends. These
+# are set by the server (ids, company, who/when, stored-file keys, photo
+# fingerprints, lock state, audit hashes) or belong to dedicated endpoints.
+# No screen sends any of them (checked against frontend/src: CrudList only
+# sends the form fields of crews, people, equipment, certifications,
+# deliveries, work-items, change-orders, delays and locations), so they are
+# dropped quietly rather than refused -- an older client's save still goes
+# through with its real edits.
+# The list itself lives in services/patch_fields.py (shared with the
+# subcontractor / supplier edits and the AI assistant's update tool).
+from services.patch_fields import PROTECTED_FIELDS as _CRUD_PROTECTED_FIELDS  # noqa: E402
+
+
+def _clean_crud_payload(payload) -> dict:
+    """Validate and trim a generic PATCH body.
+
+    * 400 when the body is not a JSON object, or a field name starts with
+      "$", contains "." or a NUL character (these would either be read by
+      the database as an operator / nested path, or crash the write).
+    * Protected fields (above) are dropped.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    clean: dict = {}
+    for k, v in payload.items():
+        if not isinstance(k, str) or not k:
+            raise HTTPException(400, "invalid field name")
+        if k.startswith("$") or "." in k or "\x00" in k:
+            raise HTTPException(400, f"invalid field name: {k[:64]!r}")
+        if k in _CRUD_PROTECTED_FIELDS:
+            continue
+        clean[k] = v
+    return clean
+
+
 def _cfg(entity: str) -> dict:
     cfg = ENTITY_CONFIG.get(entity)
     if not cfg:
         raise HTTPException(404, f"Unknown entity '{entity}'")
     return cfg
+
+
+async def _ensure_daily_report_rules(ctx: dict, entity: str, *records) -> None:
+    """The generic edit and delete must follow the same daily report rules as
+    the dedicated routes (PATCH /delays/{id}, DELETE /photo-tags/{id} ...),
+    or a read-only role could change a report through this side door:
+      * photos are report material: only a role that may change daily
+        reports may edit or delete one;
+      * any record filed on a daily report (stored row or request body):
+        read-only roles are refused, and on a draft only its author, an admin
+        or a project manager may change it."""
+    from auth import ensure_daily_report_writer
+    from services.edit_permissions import ensure_can_change_linked_report
+    if entity == "photos":
+        ensure_daily_report_writer(ctx)
+    await ensure_can_change_linked_report(ctx, *records)
 
 
 @router.patch("/crud/{entity}/{id}")
@@ -96,23 +157,46 @@ async def crud_patch(entity: str, id: str, payload: dict,
     cfg = _cfg(entity)
     db = get_db()
     coll = db[cfg["collection"]]
-    # Bucket H Phase 4 -- snapshot the before-state when entity=crews so
-    # we know if a supply-side field actually moved.
-    before = None
-    if entity == "crews":
-        before = await coll.find_one(
-            tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0},
-        )
-    # Strip immutable fields
-    for k in ("id", "tenant_id", "created_at", "created_by", "_id"):
-        payload.pop(k, None)
+    # Snapshot the before-state: crews use it to tell whether a supply-side
+    # field moved (Bucket H Phase 4), and every entity uses it for the daily
+    # report check below.
+    before = await coll.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0},
+    )
+    # Refuse field names the database would misread; drop server-owned
+    # fields (ids, company, file keys, lock state, hashes).
+    payload = _clean_crud_payload(payload)
+    await _ensure_daily_report_rules(ctx, entity, before, payload)
+    # A record can only be moved onto a project of the caller's own
+    # company. A project id that is not found under this company is
+    # dropped quietly (like the protected fields above) rather than
+    # refused, so an older client's save still goes through with its
+    # other edits.
+    for _pk in ("project_id", "home_project_id"):
+        _pv = payload.get(_pk)
+        if _pv not in (None, ""):
+            if not isinstance(_pv, str) or not await db.projects.find_one(
+                    tenant_filter(ctx["tenant_id"], {"id": _pv}), {"_id": 0, "id": 1}):
+                payload.pop(_pk, None)
+            else:
+                # Moving a record onto a project: the caller must be
+                # assigned to that project too (403 with the switch on;
+                # recorded only while it is off). The record's current
+                # project is checked by the route-level dependency.
+                await check_project_access(ctx, _pv, write=True)
     if not payload:
         raise HTTPException(400, "no fields to update")
     payload["updated_at"] = utc_now().isoformat()
     payload["updated_by"] = ctx["user"]["id"]
-    res = await coll.update_one(
-        tenant_filter(ctx["tenant_id"], {"id": id}), {"$set": payload},
-    )
+    try:
+        res = await coll.update_one(
+            tenant_filter(ctx["tenant_id"], {"id": id}), {"$set": payload},
+        )
+    except (PyMongoError, BSONError) as exc:
+        # A value the database cannot store (for example a nested field
+        # name starting with "$") is the client's mistake: answer 400, not
+        # a server error.
+        raise HTTPException(400, f"could not save these fields: {type(exc).__name__}")
     if not res.matched_count:
         raise HTTPException(404, f"{entity} {id} not found")
     doc = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
@@ -240,6 +324,7 @@ async def crud_delete(entity: str, id: str, bg: BackgroundTasks,
     before = await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": id}), {"_id": 0})
     if not before:
         raise HTTPException(404, f"{entity} {id} not found")
+    await _ensure_daily_report_rules(ctx, entity, before)
     if cfg.get("soft_delete"):
         await coll.update_one(
             tenant_filter(ctx["tenant_id"], {"id": id}),
@@ -323,7 +408,8 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
     """Render the plan PDF page, send to Claude vision, ask it to identify
     every room (label + polygon points). Optionally create a Location per
     detected room. Master prompt §22 — drawing_ingest agent."""
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    from services.anthropic_compat import LlmChat, UserMessage, ImageContent
+    from services.llm_keys import llm_api_key
     import pdf2image
     from PIL import Image
 
@@ -339,9 +425,17 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
     )
     if not floor:
         raise HTTPException(404, "Floor not found")
+    # Both ids come in the body: the drawing and the floor (where rooms are
+    # created) must be on projects the caller is assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id, write=True)
+    await check_project_access(ctx, floor.get("project_id"), write=True)
 
-    from services.storage import get_object
-    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    from services.storage import aget_object, key_belongs_to_tenant
+    plan_key = rev.get("storage_path") or rev.get("pdf_url")
+    # Only ever read a file stored under the caller's own company.
+    if not key_belongs_to_tenant(plan_key, ctx["tenant_id"]):
+        raise HTTPException(404, "Drawing revision not found")
+    pdf_bytes, _ = await aget_object(plan_key)
     try:
         images = pdf2image.convert_from_bytes(
             pdf_bytes, first_page=payload.page, last_page=payload.page, dpi=120,
@@ -372,7 +466,7 @@ async def auto_detect_rooms(payload: AutoDetectRoomsRequest, ctx: dict = Depends
         "labelled name (e.g. 'Conference Rm A') use that as 'name', otherwise "
         '"Room <code>". Skip rooms whose polygon would be smaller than 60 pixels.'
     )
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    api_key = llm_api_key() or ""
     chat = LlmChat(
         api_key=api_key,
         session_id=f"rooms-{payload.drawing_revision_id}-{payload.floor_id}",
@@ -552,7 +646,10 @@ async def get_onboarding(ctx: dict = Depends(require_tenant)):
     state: dict = {}
     # progress hints — does the project have any of these yet?
     project_id = None
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"]), {"_id": 0, "id": 1})
+    # Per-project access (switch on): the first project the caller may see.
+    proj = await db.projects.find_one(
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]), field="id"),
+        {"_id": 0, "id": 1})
     if proj:
         project_id = proj["id"]
         state["02_master_doc"] = bool(await db.master_docs.find_one(

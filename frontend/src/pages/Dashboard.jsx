@@ -31,6 +31,7 @@ export default function Dashboard() {
   const { projects, activeId } = useProjects();
   const [recentTasks, setRecentTasks] = useState([]);
   const [recentRfis, setRecentRfis] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
 
   // pt.34 (2026-05-26): project-scope the summary fetch. Previously
   // this fired once on mount with no deps and ignored the project
@@ -49,8 +50,20 @@ export default function Dashboard() {
   }, [activeId]);
   useEffect(() => {
     if (!activeId) { setRecentTasks([]); setRecentRfis([]); return; }
-    api.get(`/projects/${activeId}/tasks`).then(({ data }) => setRecentTasks(data.slice(0, 8)));
-    api.get(`/projects/${activeId}/rfis`).then(({ data }) => setRecentRfis(data.slice(0, 5)));
+    // 2026-11-16: the table used to download every task (slow on big
+    // schedules) and show the first 8 by import order. The dedicated
+    // endpoint returns only this week's priorities: overdue unfinished work,
+    // then work in progress, then work starting within 14 days (8 rows max).
+    let cancelled = false;
+    setTasksLoading(true);
+    api.get(`/projects/${activeId}/dashboard-activities`, { params: { days: 14, limit: 8 } })
+      .then(({ data }) => { if (!cancelled) setRecentTasks(data?.items || []); })
+      .catch(() => { if (!cancelled) setRecentTasks([]); })
+      .finally(() => { if (!cancelled) setTasksLoading(false); });
+    api.get(`/projects/${activeId}/rfis`)
+      .then(({ data }) => { if (!cancelled) setRecentRfis(data.slice(0, 5)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [activeId]);
 
   return (
@@ -77,6 +90,9 @@ export default function Dashboard() {
         <div className="lg:col-span-2 bg-card border border-border rounded-lg">
           <div className="px-4 py-3 border-b border-border font-medium text-sm">
             Active project: {projects.find((p) => p.id === activeId)?.name || "—"}
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
+              Overdue, in progress, and starting in the next 14 days
+            </span>
           </div>
           {/* crud-list-table-wrap: on phones this 5-col table reflows into
               compact cards (Description = headline, the rest inline meta) so it
@@ -85,23 +101,32 @@ export default function Dashboard() {
           <div className="crud-list-table-wrap">
           <table className="w-full dense-table">
             <thead>
-              <tr><th>Activity</th><th>Description</th><th>Status</th><th>Plan finish</th><th>%</th></tr>
+              <tr><th>Activity</th><th>Description</th><th>Status</th><th>Finish</th><th>%</th></tr>
             </thead>
             <tbody>
               {recentTasks.map((t) => (
                 <tr key={t.id} data-testid={`dash-task-row-${t.activity_code}`}>
                   <td className="font-mono text-xs" data-label="Activity">{t.activity_code}</td>
-                  <td className="truncate max-w-[280px] col-primary" data-label="Description">{t.description}</td>
+                  <td className="truncate max-w-[280px] col-primary" data-label="Description">{t.display_name || t.description}</td>
                   <td data-label="Status">
-                    <span className={`pill ${t.status === "complete" ? "pill-green" : t.status === "in_progress" ? "pill-blue" : "pill-slate"}`}>
-                      {t.status}
-                    </span>
+                    {t.overdue ? (
+                      <span className="pill pill-red" data-testid={`dash-task-overdue-${t.activity_code}`}>overdue</span>
+                    ) : (
+                      <span className={`pill ${t.status === "complete" ? "pill-green" : t.status === "in_progress" ? "pill-blue" : "pill-slate"}`}>
+                        {t.status}
+                      </span>
+                    )}
                   </td>
-                  <td className="font-mono text-xs" data-label="Plan finish">{formatDateDisplay(t.planned_finish)}</td>
-                  <td className="tabular-nums" data-label="%">{t.pct_complete}%</td>
+                  {/* Finish shows the slipped (projected) date when there is one. */}
+                  <td className="font-mono text-xs" data-label="Finish">{formatDateDisplay(t.projected_finish_date || t.planned_finish)}</td>
+                  <td className="tabular-nums" data-label="%">{Math.round(Number(t.pct_complete) || 0)}%</td>
                 </tr>
               ))}
-              {!recentTasks.length && <tr><td colSpan="5" className="text-center text-sm text-muted-foreground py-6">No tasks loaded.</td></tr>}
+              {!recentTasks.length && (
+                <tr><td colSpan="5" className="text-center text-sm text-muted-foreground py-6">
+                  {tasksLoading ? "Loading…" : "Nothing overdue, in progress, or starting in the next 14 days."}
+                </td></tr>
+              )}
             </tbody>
           </table>
           </div>

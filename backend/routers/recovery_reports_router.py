@@ -22,6 +22,7 @@ from fastapi import (
 from database import get_db, tenant_filter
 from services.site_time import project_today_for
 from auth import require_tenant, has_project_access
+from services.project_access import is_full_admin
 from audit import write_audit
 from models import RecoveryReportCreate, RecoveryReport
 from services import recovery_report as rr
@@ -50,7 +51,9 @@ async def _check_project_access(ctx: dict, project_id: str) -> None:
     if not proj:
         raise HTTPException(404, "Project not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # 2026-11-16: an admin limited to specific projects is checked like
+    # everyone else (has_project_access knows their projects).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -68,7 +71,9 @@ async def _load_report(ctx: dict, report_id: str) -> dict:
     if not row:
         raise HTTPException(404, "Report not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # 2026-11-16: an admin limited to specific projects is checked like
+    # everyone else (has_project_access knows their projects).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=row.get("project_id") or "",

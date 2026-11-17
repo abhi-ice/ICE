@@ -65,6 +65,13 @@ def schedule_mode_2_enabled() -> bool:
     return _enabled("FF_SCHEDULE_MODE_2")
 
 
+def project_access_enabled() -> bool:
+    """Per-project access (2026-11-16). Default OFF = watch only: nothing is
+    refused, but every request that would have been refused is counted in
+    project_access_watch (services/project_access). ON = enforced."""
+    return _enabled("FF_PROJECT_ACCESS")
+
+
 def schedule_mode_for_project(project: dict) -> str:
     """The schedule mode for a project: 'mode2' (MS Project engine) or 'mode1'
     (our internal CPM engine, the default). Read from the project doc's

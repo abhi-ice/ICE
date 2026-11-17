@@ -162,11 +162,16 @@ async def require_worker(authorization: Optional[str] = Header(default=None)) ->
     token = runtime_settings.worker_token() or os.environ.get("MS_PROJECT_WORKER_TOKEN")
     if not token:
         raise HTTPException(status_code=503, detail="MS Project worker integration not configured")
-    if not authorization or authorization.strip() != f"Bearer {token}":
+    # Constant-time compare (2026-11-16) so response timing cannot be used
+    # to guess the token one character at a time.
+    import hmac
+    if not authorization or not hmac.compare_digest(
+            authorization.strip().encode("utf-8"), f"Bearer {token}".encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid MS Project worker token")
     return {"worker": True}
 
 
+# project-scope: tenant-level (MS Project worker; machine token, no user)
 @router.post("/internal/ms-project/claim")
 async def claim_job(payload: dict = Body(default={}), _w: dict = Depends(require_worker)):
     """Long-poll for the next job. Returns a job dict, or 204 when none within
@@ -185,6 +190,7 @@ async def claim_job(payload: dict = Body(default={}), _w: dict = Depends(require
         await asyncio.sleep(2)
 
 
+# project-scope: tenant-level (MS Project worker; machine token, no user)
 @router.post("/internal/ms-project/results")
 async def post_result(payload: dict = Body(...), _w: dict = Depends(require_worker)):
     """Worker posts a job result. Ingest is idempotent + watermark-guarded."""
@@ -193,6 +199,7 @@ async def post_result(payload: dict = Body(...), _w: dict = Depends(require_work
     return await mps.record_result(payload)
 
 
+# project-scope: tenant-level (MS Project worker; machine token, no user)
 @router.post("/internal/ms-project/renew-lease")
 async def renew(payload: dict = Body(...), _w: dict = Depends(require_worker)):
     """Heartbeat a long-running claimed job so the reaper doesn't requeue it.
@@ -206,6 +213,12 @@ async def renew(payload: dict = Body(...), _w: dict = Depends(require_worker)):
     return {"renewed": await mps.renew_lease(job_id)}
 
 
+# Per-project access (2026-11-16): every user route below has {project_id}
+# in its path, so the route-level check (services/project_access
+# .enforce_project_scope, wired in server.py) already covers it: with the
+# switch on, an unassigned caller gets 404 on a read and 403 on a save.
+# The PM/admin checks below are project-level powers, so an admin limited
+# to specific projects keeps them on the projects they are assigned to.
 @router.get("/projects/{project_id}/recompute-status/{job_id}")
 async def recompute_status(project_id: str, job_id: str, ctx: dict = Depends(require_tenant)):
     """Frontend polls this after a Mode-2 recompute returned {status:'queued'}."""
@@ -324,8 +337,10 @@ async def download_ms_project_file(project_id: str, ctx: dict = Depends(require_
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "ms_project_file_id": 1, "ms_project_file_name": 1})
-    if not proj:
+        {"_id": 0, "id": 1, "ms_project_file_id": 1, "ms_project_file_name": 1})
+    # "is None": a narrow projection on a project with none of these fields
+    # set comes back as {} -- the project exists, it just has no file yet.
+    if proj is None:
         raise HTTPException(status_code=404, detail="Project not found")
     if not proj.get("ms_project_file_id"):
         raise HTTPException(status_code=404, detail="No Microsoft Project file stored for this project yet")
@@ -355,8 +370,8 @@ async def generate_ms_project_file(project_id: str, ctx: dict = Depends(require_
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "schedule_mode": 1, "ms_project_file_id": 1})
-    if not proj:
+        {"_id": 0, "id": 1, "schedule_mode": 1, "ms_project_file_id": 1})
+    if proj is None:
         raise HTTPException(status_code=404, detail="Project not found")
     if proj.get("schedule_mode") != "mode2":
         raise HTTPException(
@@ -411,7 +426,7 @@ async def sync_state(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(ctx["tenant_id"], {"id": project_id}),
-        {"_id": 0, "ms_project_file_id": 1, "ms_project_file_name": 1,
+        {"_id": 0, "id": 1, "ms_project_file_id": 1, "ms_project_file_name": 1,
          "ms_project_file_rev": 1, "ms_project_file_updated_at": 1,
          "ms_project_file_source": 1}) or {}
     st["file"] = ({
@@ -447,6 +462,7 @@ async def _claimed_job_or_409(db, job_id: str) -> dict:
     return job
 
 
+# project-scope: tenant-level (MS Project worker; machine token, no user)
 @router.get("/internal/ms-project/file/{job_id}")
 async def worker_download_file(job_id: str, _w: dict = Depends(require_worker)):
     """Stream the CURRENT stored .mpp for a claimed job. X-File-Sha/X-File-Rev
@@ -461,9 +477,9 @@ async def worker_download_file(job_id: str, _w: dict = Depends(require_worker)):
     job = await _claimed_job_or_409(db, job_id)
     proj = await db.projects.find_one(
         tenant_filter(job["tenant_id"], {"id": job["project_id"]}),
-        {"_id": 0, "ms_project_file_id": 1, "ms_project_file_rev": 1,
+        {"_id": 0, "id": 1, "ms_project_file_id": 1, "ms_project_file_rev": 1,
          "ms_project_file_sha": 1, "ms_project_file_source": 1})
-    if not proj or not proj.get("ms_project_file_id"):
+    if proj is None or not proj.get("ms_project_file_id"):
         raise HTTPException(status_code=404, detail="project has no stored file")
     row = await db.files.find_one(
         tenant_filter(job["tenant_id"], {"id": proj["ms_project_file_id"]}), {"_id": 0})
@@ -481,6 +497,7 @@ async def worker_download_file(job_id: str, _w: dict = Depends(require_worker)):
     })
 
 
+# project-scope: tenant-level (MS Project worker; machine token, no user)
 @router.post("/internal/ms-project/file/{job_id}")
 async def worker_upload_file(
     job_id: str,

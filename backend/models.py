@@ -136,6 +136,25 @@ class InviteCreate(StrictModel):
         "admin", "pm", "super", "foreman", "viewer",
         "pe", "submittal_tech", "scheduling_engineer",
     ] = "super"
+    # Per-project access (2026-11-16). For an admin: "all" (the default;
+    # every project, including future ones) or "assigned" (only the projects
+    # in project_ids). Every other role is always "assigned" whatever is
+    # sent. Both fields are optional, so older clients keep working.
+    access_scope: Optional[Literal["all", "assigned"]] = None
+    project_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class MemberAccessUpdate(StrictModel):
+    """PATCH /team/members/{user_id}/access (all-projects admins only).
+    Every field is optional; only what is sent changes. project_ids, when
+    sent, is the member's complete project list (projects left out are
+    removed from them, new ones added)."""
+    role: Optional[Literal[
+        "admin", "pm", "super", "foreman", "viewer",
+        "pe", "submittal_tech", "scheduling_engineer",
+    ]] = None
+    access_scope: Optional[Literal["all", "assigned"]] = None
+    project_ids: Optional[list[str]] = Field(default=None, max_length=500)
 
 
 class InviteAccept(StrictModel):
@@ -156,6 +175,9 @@ class User(ReadModel):
     full_name: str
     tenant_id: str
     role: UserRole = "pm"
+    # "all" or "assigned" in the active company (2026-11-16); filled in on
+    # every signed-in request, missing on older stored records.
+    access_scope: Optional[str] = None
     created_at: datetime
 
 
@@ -1018,6 +1040,9 @@ class Task(ReadModel):
     # instead of recomputing.
     slip_days: Optional[int] = None
     lookahead_status: LookaheadStatus = "not_in_window"
+    # Set only by the look-ahead endpoint: the task finished (effectively)
+    # before the window start but is still not done. Never stored.
+    overdue: bool = False
     # CPM Part A (2026-05-15) -- read model accepts both legacy bare-
     # string predecessors and the new dict form. Migration 018 converts
     # all stored data to dicts; the validator handles in-flight rows
@@ -1188,6 +1213,15 @@ class DailyReport(ReadModel):
     notes: Optional[str] = None
     status: str = "draft"
     prepared_by: Optional[str] = None
+    # Who started the report on older rows (prepared_by is used now), and
+    # the starter's name for the "Started by ..." note on someone else's
+    # draft (filled on GET /daily-reports/{id} only). The screens use these
+    # to mirror the server's draft-ownership rule (2026-11-16).
+    created_by: Optional[str] = None
+    prepared_by_name: Optional[str] = None
+    # An admin or project manager who opened the day before any field
+    # writer did: recorded here, not as the author (see the create route).
+    opened_by: Optional[str] = None
     submitted_by: Optional[str] = None
     submitted_at: Optional[datetime] = None
     approved_by: Optional[str] = None
@@ -1287,11 +1321,18 @@ class DailyReportActivity(ReadModel):
     position: int
     pct_complete_start_of_day: float = 0
     pct_complete_end_of_day: float = 0
+    # When a person entered the end-of-day percent (None = pre-filled, never
+    # set by hand) and when a person typed the start-of-day by hand.
+    pct_set_at: Optional[str] = None
+    sod_set_at: Optional[str] = None
     crew_count: int = 0
     crew_id: Optional[str] = None
     # Phase E — FK to daily_presence row picked from the grid dropdown.
     linked_crew_id: Optional[str] = None
     hours_worked: float = 0
+    # True while hours_worked / crew_count come from the crew rows logged on
+    # this activity (headcount x hours each); False once a person types hours.
+    hours_from_presence: bool = False
     delay_minutes: int = 0
     delay_reason: Optional[str] = None
     weather_impact_minutes: int = 0
@@ -1340,6 +1381,21 @@ class DailyReportActivity(ReadModel):
     #    binding_pred_code: str|None, reason: str}
     # VIEW ONLY -- never persisted to mongo, never read by the CPM engine.
     slider_gate: Optional[dict] = None
+    # Back-dated reports (2026-11-16) -- set only on a row-save response:
+    # the date (YYYY-MM-DD) of a LATER report that already set this
+    # activity's current progress, so this save recorded history only.
+    # Response-only; never persisted to mongo.
+    task_progress_kept_from: Optional[str] = None
+    # Progress lock (2026-11-16) -- read-time only (GET grid / context),
+    # never persisted: the allowed end-of-day range from the OTHER submitted
+    # or approved reports. progress_floor = highest percent on an earlier
+    # one (progress_floor_from = its date, YYYY-MM-DD); progress_ceiling =
+    # lowest percent on a later one (progress_ceiling_from = its date).
+    # See services/progress_ratchet.py.
+    progress_floor: Optional[float] = None
+    progress_floor_from: Optional[str] = None
+    progress_ceiling: Optional[float] = None
+    progress_ceiling_from: Optional[str] = None
     # Bucket C3a Phase 2 — constraint capture (controlled vocab + ref to
     # the gating entity that's blocking this row, or free-text "other").
     # constraint_auto_filled marks rows where the system pre-populated
@@ -2360,6 +2416,18 @@ class PhotoCreate(StrictModel):
     pin_drawing_id: Optional[str] = None
     pin_x: Optional[float] = None
     pin_y: Optional[float] = None
+
+    @field_validator("storage_path")
+    @classmethod
+    def _storage_path_is_server_key(cls, v: str) -> str:
+        # File keys are only ever built on the server (services.storage.
+        # make_path). Refuse anything that does not have that shape, such
+        # as path tricks. The endpoint must still check the key is under
+        # the caller's own company (services.storage.key_belongs_to_tenant).
+        from services.storage import looks_like_storage_key
+        if not looks_like_storage_key(v):
+            raise ValueError("storage_path must be a file key from a server upload")
+        return v
 
 
 class PhotoUpdate(StrictModel):

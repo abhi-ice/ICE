@@ -84,6 +84,8 @@ Run from repo root:
 import asyncio
 import os
 import sys
+
+import pytest
 import types
 import uuid
 from datetime import date, datetime, timedelta
@@ -279,6 +281,10 @@ _STUB = _StubDB()
 # =============================================================================
 # Stub modules BEFORE importing the real services.
 # =============================================================================
+# Remember what was loaded, so the stubs (and the modules imported against
+# them) can be taken back out of sys.modules afterwards. Without this, every
+# test file collected later imports the fake auth/database/audit modules.
+_MODULES_BEFORE = dict(sys.modules)
 _db_mod = types.ModuleType("database")
 _db_mod.get_db = lambda: _STUB
 _db_mod.tenant_filter = lambda tenant_id, q=None: {**(q or {}), "tenant_id": tenant_id}
@@ -297,6 +303,9 @@ sys.modules["audit"] = _audit_mod
 # auth: only needed because routers/field_events_router.py imports it.
 _auth_mod = types.ModuleType("auth")
 _auth_mod.require_tenant = lambda: {}
+# Daily-report role guard (2026-11-16) imported by the same routers.
+_auth_mod.require_daily_report_writer = lambda: {}
+_auth_mod.ensure_daily_report_writer_if_linked = lambda *a, **k: None
 sys.modules["auth"] = _auth_mod
 
 # Now import the real services. This must come AFTER the stubs above.
@@ -333,6 +342,65 @@ from services.working_days import (  # noqa: E402
     working_days_between, add_working_days, next_business_day,
     is_business_day, FEDERAL_HOLIDAYS,
 )
+
+# Take the stubs (and everything imported against them) back out of
+# sys.modules so files collected after this one import the real modules.
+# The autouse fixture below puts this file's set back while its own tests
+# run, because some code here imports lazily at call time.
+_STUBBED_MODULES = {n: m for n, m in sys.modules.items()
+                    if n not in _MODULES_BEFORE or n in ("database", "audit", "auth")}
+
+
+def _restore_real_modules():
+    for _name in _STUBBED_MODULES:
+        if _name in _MODULES_BEFORE:
+            sys.modules[_name] = _MODULES_BEFORE[_name]
+        else:
+            sys.modules.pop(_name, None)
+
+
+_restore_real_modules()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _use_stubbed_modules():
+    saved = {n: sys.modules.get(n) for n in _STUBBED_MODULES}
+    sys.modules.update(_STUBBED_MODULES)
+    yield
+    for n, m in saved.items():
+        if m is None:
+            sys.modules.pop(n, None)
+        else:
+            sys.modules[n] = m
+
+
+# Data date pinned for every test in this file (2026-11-16). The impact-days
+# engine now forecasts unfinished work from the data date (the project's
+# site-clock today). These tests are written around a May 2026 schedule, so
+# the data date is pinned to the anchor Monday 2026-05-04: nothing is "in the
+# past" and each test checks only the cascade it was written for. The
+# data-date forecast itself is covered by the DD-* tests at the end.
+PINNED_DATA_DATE = date(2026, 5, 4)
+
+
+async def _pinned_today(*_a, **_k):
+    return PINNED_DATA_DATE
+
+
+def _pin_data_date():
+    """Point compute_projected_finish_dates' site-clock lookup at the
+    pinned date. Returns the previous function so it can be restored."""
+    g = compute_projected_finish_dates.__globals__
+    prev = g.get("project_today_for")
+    g["project_today_for"] = _pinned_today
+    return prev
+
+
+@pytest.fixture(autouse=True)
+def _pinned_data_date():
+    prev = _pin_data_date()
+    yield
+    compute_projected_finish_dates.__globals__["project_today_for"] = prev
 
 
 # =============================================================================
@@ -4720,6 +4788,179 @@ def test_reshape_count_only_counts_moved_tasks():
 
 
 # =============================================================================
+# Data-date forecast (2026-11-16) -- the impact-days engine forecasts
+# unfinished work from the data date. Data date pinned to Wed 2026-05-13
+# (DD) unless a test says otherwise; schedule anchored at Mon 2026-05-04.
+# =============================================================================
+DD = date(2026, 5, 13)
+
+
+def _task_row(code):
+    return next(t for t in _STUB.tasks.rows if t["activity_code"] == code)
+
+
+def _run_projection(data_date=DD):
+    asyncio.run(compute_projected_finish_dates(
+        _STUB, TENANT, PROJECT, data_date=data_date))
+
+
+def test_dd_started_task_finishes_from_data_date_and_successor_follows():
+    """In progress at 40% of a 5-working-day task, data date Wed 5/13: 3 days
+    left (5 x 60%), counting 5/13 as day 1 -> finish Fri 5/15 (planned 5/8),
+    slip 5. The finish-to-start successor (planned 5/11-5/13) moves to
+    5/18-5/20."""
+    _reset()
+    _add_task("A", 5, D(5, 4), actual_start=D(5, 4).isoformat(),
+              pct_complete=40, status="in_progress")
+    _add_task("B", 3, D(5, 11), predecessors=[_pred("A")])
+    _run_projection()
+    a, b = _task_row("A"), _task_row("B")
+    assert a["projected_start_date"] == "2026-05-04"
+    assert a["projected_finish_date"] == "2026-05-15"
+    assert a["slip_days"] == 5
+    assert b["projected_start_date"] == "2026-05-18"
+    assert b["projected_finish_date"] == "2026-05-20"
+    assert b["slip_days"] == 5
+
+
+def test_dd_started_task_remaining_is_at_least_one_day():
+    """99% done still needs one working day: finish on the data date."""
+    _reset()
+    _add_task("A", 5, D(5, 4), actual_start=D(5, 4).isoformat(),
+              pct_complete=99, status="in_progress")
+    _run_projection()
+    assert _task_row("A")["projected_finish_date"] == "2026-05-13"
+
+
+def test_dd_started_task_ahead_of_plan_keeps_existing_formula():
+    """Data date early in the task with enough progress: the data-date
+    forecast lands before the planned finish, so the existing formula
+    (planned finish) wins and nothing is shown as moved."""
+    _reset()
+    _add_task("A", 5, D(5, 4), actual_start=D(5, 4).isoformat(),
+              pct_complete=60, status="in_progress")
+    _run_projection(data_date=D(5, 6))  # 2 days left from Wed -> Thu 5/7
+    a = _task_row("A")
+    assert a["projected_finish_date"] is None
+    assert a.get("slip_days") is None
+
+
+def test_dd_started_task_at_100_percent_unchanged():
+    """100% without an actual finish: the existing formula only."""
+    _reset()
+    _add_task("A", 5, D(5, 4), actual_start=D(5, 4).isoformat(),
+              pct_complete=100, status="in_progress")
+    _run_projection()
+    assert _task_row("A")["projected_finish_date"] is None
+
+
+def test_dd_complete_task_unchanged():
+    """A finished task keeps its actual dates; the data date never moves it."""
+    _reset()
+    _add_task("A", 5, D(5, 4), actual_start=D(5, 4).isoformat(),
+              actual_finish=D(5, 8).isoformat(), pct_complete=100,
+              status="complete")
+    _run_projection()
+    assert _task_row("A")["projected_finish_date"] is None
+
+
+def test_dd_not_started_task_in_past_starts_on_data_date():
+    """Not started, planned 5/4-5/8, data date Wed 5/13: starts 5/13 and
+    keeps its 5 working days -> finishes Tue 5/19, slip 7."""
+    _reset()
+    _add_task("A", 5, D(5, 4))
+    _run_projection()
+    a = _task_row("A")
+    assert a["projected_start_date"] == "2026-05-13"
+    assert a["projected_finish_date"] == "2026-05-19"
+    assert a["slip_days"] == working_days_between(D(5, 8), D(5, 19)) == 7
+
+
+def test_dd_not_started_task_adds_open_delay_days():
+    """Open delay days are added on top of the planned length."""
+    _reset()
+    _add_task("A", 5, D(5, 4))
+    _add_open_delay("task-A", 2)
+    _run_projection()
+    a = _task_row("A")
+    assert a["projected_start_date"] == "2026-05-13"
+    assert a["projected_finish_date"] == "2026-05-21"
+
+
+def test_dd_on_weekend_rolls_to_next_working_day():
+    """Data date Saturday 5/16: the not-started task starts Monday 5/18."""
+    _reset()
+    _add_task("A", 5, D(5, 4))
+    _run_projection(data_date=D(5, 16))
+    a = _task_row("A")
+    assert a["projected_start_date"] == "2026-05-18"
+    assert a["projected_finish_date"] == "2026-05-22"
+
+
+def test_dd_future_task_unchanged():
+    """A task planned after the data date is not touched."""
+    _reset()
+    _add_task("A", 3, D(5, 20))
+    _run_projection()
+    assert _task_row("A")["projected_finish_date"] is None
+
+
+def test_dd_not_started_successor_of_late_predecessor_uses_later_date():
+    """Never earlier than the existing formula: a successor already pushed
+    past the data date by its predecessor keeps the cascade dates."""
+    _reset()
+    _add_task("A", 5, D(5, 4), actual_start=D(5, 4).isoformat(),
+              pct_complete=0, status="in_progress")
+    _add_task("B", 2, D(5, 11), predecessors=[_pred("A")])
+    _run_projection()
+    a, b = _task_row("A"), _task_row("B")
+    # A: 5 working days left from 5/13 -> Tue 5/19. B follows: 5/20-5/21.
+    assert a["projected_finish_date"] == "2026-05-19"
+    assert b["projected_start_date"] == "2026-05-20"
+    assert b["projected_finish_date"] == "2026-05-21"
+
+
+def test_dd_progress_without_actual_start_forecasts_finish_only():
+    """Percent entered (for example from a Microsoft Project sync) but no
+    actual start: the start is not moved, the finish follows the work left."""
+    _reset()
+    _add_task("A", 5, D(5, 4), pct_complete=40, status="in_progress")
+    _run_projection()
+    a = _task_row("A")
+    assert a["projected_start_date"] == "2026-05-04"
+    assert a["projected_finish_date"] == "2026-05-15"
+
+
+def test_dd_remaining_float_follows_new_finish():
+    """The full recompute chain (as after a Daily Report save) uses the
+    project's data date, and remaining float follows the new finish."""
+    async def _dd(*_a, **_k):
+        return DD
+
+    async def _go():
+        _reset()
+        _add_task("A", 5, D(5, 4))
+        compute_projected_finish_dates.__globals__["project_today_for"] = _dd
+        await auto_recompute_after_event(TENANT, PROJECT)
+        return _task_row("A")
+
+    a = asyncio.run(_go())
+    assert a["projected_finish_date"] == "2026-05-19"
+    assert a["slip_days"] == 7
+    assert a["remaining_float_days"] == int(a.get("total_float_days") or 0) - 7
+
+
+def test_dd_mode2_project_not_forecast(monkeypatch):
+    """A project Microsoft Project drives (Mode 2 on) keeps the old result."""
+    monkeypatch.setenv("FF_SCHEDULE_MODE_2", "1")
+    _reset()
+    _STUB.projects.rows[0]["schedule_mode"] = "mode2"
+    _add_task("A", 5, D(5, 4))
+    _run_projection()
+    assert _task_row("A")["projected_finish_date"] is None
+
+
+# =============================================================================
 # Standalone runner. Lets `python backend/tests/test_cpm_correctness.py` work
 # without pytest infrastructure -- prints concrete dates per test on success
 # and a clear failure message + exit 1 on the first regression.
@@ -4876,6 +5117,7 @@ def _run_all():
           "QC rework days "
           "(11 + 5 + 6 + 6 + 7 + 5 + 4 + 7 + 5 + 4 + 5 + 1 + 3 tests)")
     print("=" * 78)
+    _pin_data_date()
     for name, fn in tests:
         try:
             asyncio.run(fn())

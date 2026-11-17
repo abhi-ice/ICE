@@ -8,7 +8,8 @@ import json
 import os
 import re
 from typing import Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from services.anthropic_compat import LlmChat, UserMessage
+from services.llm_keys import llm_api_key
 
 MODEL_PROVIDER = "anthropic"
 MODEL_NAME = "claude-sonnet-4-5-20250929"
@@ -63,7 +64,7 @@ async def review_schedule_diff(diff: dict, project_name: str = "") -> dict:
         "predecessor_changes_count": len(diff.get("predecessor_changes", [])),
     }
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    api_key = llm_api_key()
     if not api_key:
         return _heuristic_review(diff)
 

@@ -28,11 +28,10 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
-# Reuse the existing Anthropic shim (services.anthropic_compat is
-# registered into sys.modules at server.py boot under the namespace
-# `emergentintegrations.llm.chat`). Going through that import path means
-# this code automatically uses the customer's ANTHROPIC_API_KEY.
-from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: E402
+# Claude client built on the official anthropic package. It uses
+# ANTHROPIC_API_KEY (or EMERGENT_LLM_KEY as a fallback, see llm_keys.py).
+from services.anthropic_compat import LlmChat, UserMessage  # noqa: E402
+from services.llm_keys import llm_api_key  # noqa: E402
 
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
 MAX_TRANSCRIPT_CHARS = 30_000  # ~5 min of typical speech -- generous cap
@@ -374,7 +373,7 @@ async def extract_dr_fields(
     )
 
     chat = LlmChat(
-        api_key="",   # ignored by the shim
+        api_key=llm_api_key() or "",
         session_id=f"dr-extract-{uuid.uuid4().hex[:8]}",
         system_message=_SYSTEM,
     ).with_model("anthropic", CLAUDE_MODEL)

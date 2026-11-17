@@ -3,7 +3,12 @@ import { useEffect, useRef } from "react";
 import { getToken } from "./auth";
 
 const WS_URL = (() => {
-  const base = process.env.REACT_APP_BACKEND_URL || "";
+  // Use the build-time site address; if it is missing, use the address the
+  // page was loaded from, so older phones still get a full ws(s):// address.
+  let base = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
+  if (!base && typeof window !== "undefined" && window.location) {
+    base = window.location.origin;
+  }
   const wsBase = base.replace(/^http/, "ws");
   return `${wsBase}/api/ws`;
 })();

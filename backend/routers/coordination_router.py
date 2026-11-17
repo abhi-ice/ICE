@@ -17,7 +17,15 @@ from models import (
     gen_id, utc_now,
 )
 from auth import require_tenant
+from services.edit_permissions import ensure_can_change_linked_report
 from audit import write_audit
+# Per-project access (2026-11-16). The list (project id in the URL) and
+# get/patch/delete (event id in the URL) are checked by the route-level
+# dependency. Create takes the project and report ids from the body, so
+# it checks them here. Editing stays "creator or admin"; an admin limited
+# to some projects only reaches events on their own projects.
+from services.project_access import check_record_access
+from services.project_scope import require_project
 
 
 router = APIRouter(tags=["coordination-events"])
@@ -29,12 +37,17 @@ async def create_coordination_event(
     ctx: dict = Depends(require_tenant),
 ):
     db = get_db()
-    proj = await db.projects.find_one(
-        tenant_filter(ctx["tenant_id"], {"id": payload.project_id}),
-        {"_id": 0, "id": 1},
-    )
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
+    # 404 for a project outside the company, then the access check
+    # (403 "You are not assigned to this project" on a save).
+    await require_project(ctx, payload.project_id)
+    # A linked or parent report in the body must also be on a project the
+    # caller may change.
+    for _dr_id in (payload.linked_daily_report_id,
+                   getattr(payload, "parent_daily_report_id", None)):
+        if _dr_id:
+            await check_record_access(ctx, "daily_report", _dr_id, write=True)
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
@@ -221,6 +234,8 @@ async def update_coordination_event(
     )
     if not before:
         raise HTTPException(404, "Coordination event not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     if before.get("deleted_at"):
         raise HTTPException(409, "Cannot edit a deleted coordination event.")
     if not _can_edit(ctx, before):
@@ -297,6 +312,8 @@ async def delete_coordination_event(event_id: str, ctx: dict = Depends(require_t
     )
     if not before:
         raise HTTPException(404, "Coordination event not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before)
     if before.get("deleted_at"):
         return {"ok": True, "already_deleted": True}
     if not _can_edit(ctx, before):

@@ -1,7 +1,10 @@
 import axios from "axios";
-import { getToken, getActiveTenantId, clearAuth } from "./auth";
+import { getToken, getActiveTenantId, clearAuth, updateStoredUser } from "./auth";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// Full site address baked in at build time (for example https://app.example.com).
+// If it is missing, fall back to the same site the page came from ("/api"),
+// instead of the broken "undefined/api". A trailing slash is trimmed.
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
 export const API = `${BACKEND_URL}/api`;
 
 // Bearer-JWT only. The Google-OAuth cookie path was removed in the
@@ -126,7 +129,10 @@ export const asArray = (v) => (Array.isArray(v) ? v : []);
 // 5-Route DR Entry (2026-05-25) — install the offline request queue
 // so PATCH/POST mutations against /daily-reports/* and friends survive
 // connection loss. Drains automatically on the next 'online' event.
-import { installOfflineInterceptor, drainOfflineQueue, getQueueSize } from "./drOfflineSync";
+import {
+  installOfflineInterceptor, drainOfflineQueue, getQueueSize, ROLE_READ_ONLY_DROP_EVENT,
+  HELD_EVENT, releaseHeldSaves, isRoleReadOnlyRejection, PROGRESS_DROP_EVENT,
+} from "./drOfflineSync";
 installOfflineInterceptor(client);
 
 // v7 full-offline (2026-07-05) — drain the offline PHOTO and VOICE queues on
@@ -168,6 +174,112 @@ function drainAllQueues() {
 try {
   setTimeout(drainAllQueues, 4000);      // post-load (after token hydration)
   setInterval(drainAllQueues, 60000);    // heartbeat while the app is open
+  // Right after a sign-in (lib/auth setAuth): sync THAT user's queued saves.
+  // Each drain only replays saves owned by the signed-in user (plus
+  // unstamped ones), so someone signing in on a shared phone never replays
+  // another person's saves; theirs wait for them.
+  window.addEventListener("ice-auth-changed", () => { drainAllQueues(); });
+} catch { /* non-window env */ }
+
+// Role refusal (2026-11-16): a queue dropped a save because the signed-in
+// role can only view daily reports (lib/drOfflineSync announceRoleReadOnlyDrop).
+// One plain message per burst, never a silent loss.
+try {
+  let lastRoleDropToast = 0;
+  window.addEventListener(ROLE_READ_ONLY_DROP_EVENT, () => {
+    const now = Date.now();
+    if (now - lastRoleDropToast < 10000) return;
+    lastRoleDropToast = now;
+    import("../components/ui/sonner").then(({ toast }) => {
+      toast.error("Changes saved on this device were not sent: your role can view daily reports but not change them.");
+    }).catch(() => {});
+  });
+} catch { /* non-window env */ }
+
+// Progress lock (2026-11-16): a progress save made offline could not be
+// applied because a submitted report limits it (it can't go below an earlier
+// submitted report or above a later one). The percent is not retried; any
+// hours, notes or crew in the same save still sync. One plain message per
+// burst, with the server's own explanation.
+try {
+  let lastProgressDropToast = 0;
+  window.addEventListener(PROGRESS_DROP_EVENT, (ev) => {
+    const now = Date.now();
+    if (now - lastProgressDropToast < 10000) return;
+    lastProgressDropToast = now;
+    const why = ev?.detail?.message ? ` ${ev.detail.message}` : "";
+    import("../components/ui/sonner").then(({ toast }) => {
+      toast.error(`A progress change saved on this device was not applied.${why}`, { duration: 12000 });
+    }).catch(() => {});
+  });
+} catch { /* non-window env */ }
+
+// Held saves (2026-11-16): a queue kept a save on this phone instead of
+// retrying it, because the report was started by someone else or was already
+// submitted (lib/drOfflineSync rejectionAction). One plain message per burst,
+// with a Retry button for after an admin or project manager hands the report
+// over. Nothing is dropped.
+try {
+  let lastHeldToast = 0;
+  window.addEventListener(HELD_EVENT, (ev) => {
+    const now = Date.now();
+    if (now - lastHeldToast < 10000) return;
+    lastHeldToast = now;
+    const why = ev?.detail?.code === "report_not_draft"
+      ? "the report was already submitted"
+      : "someone else started this report — only they, an admin or a project manager can change it";
+    import("../components/ui/sonner").then(({ toast }) => {
+      toast.error(
+        `Changes saved on this device were not added: ${why}. They are kept on this device. `
+        + "Ask an admin or project manager to hand the report to you (or reopen it), then choose Retry.",
+        {
+          duration: Infinity,
+          action: {
+            label: "Retry",
+            onClick: () => { releaseHeldSaves(); drainAllQueues(); },
+          },
+        },
+      );
+    }).catch(() => {});
+  });
+} catch { /* non-window env */ }
+
+// Fresh role (2026-11-16): the screens read the role from the copy of the
+// user saved at sign-in. Refresh it from /auth/me on load, when the tab gets
+// focus again, on reconnect, and whenever a save is refused with
+// "role_read_only", so a promotion or demotion shows without signing out
+// (lib/auth updateStoredUser fires the change event the screens listen to).
+let _lastUserRefresh = 0;
+export function refreshCurrentUser({ force = false } = {}) {
+  try {
+    if (!getToken()) return Promise.resolve(false);
+    if (typeof navigator !== "undefined" && !navigator.onLine) return Promise.resolve(false);
+    const now = Date.now();
+    if (!force && now - _lastUserRefresh < 60000) return Promise.resolve(false);
+    _lastUserRefresh = now;
+    return client.get("/auth/me")
+      .then((r) => updateStoredUser(r?.data))
+      .catch(() => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+client.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (isRoleReadOnlyRejection(err)) refreshCurrentUser({ force: true });
+    return Promise.reject(err);
+  },
+);
+try {
+  setTimeout(() => refreshCurrentUser({ force: true }), 1500);
+  window.addEventListener("focus", () => refreshCurrentUser());
+  window.addEventListener("online", () => refreshCurrentUser({ force: true }));
+  try {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshCurrentUser();
+    });
+  } catch { /* no document */ }
 } catch { /* non-window env */ }
 
 // Round 3 (2026-07-06) — tenant-wide offline warm-up: yesterday/today/

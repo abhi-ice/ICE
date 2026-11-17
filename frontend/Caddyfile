@@ -1,0 +1,108 @@
+# Caddy settings for the Railway "web" service.
+#
+# - Serves the built React site from /srv.
+# - Sends any unknown address to index.html, so the single-page app's own
+#   routes (for example /projects/123) work on refresh.
+# - Forwards everything under /api (including the /api/ws live-update
+#   WebSocket) to the api service over Railway's private network, so the
+#   browser only ever talks to one address.
+#
+# Variables (set on the web service in Railway):
+#   PORT          Railway sets this; Caddy listens on it (8080 if missing).
+#   API_UPSTREAM  host:port of the api service, for example
+#                 api.railway.internal:8000 (the api's fixed PORT, not ours).
+
+{
+	# No admin endpoint and no automatic certificates: Railway's edge already
+	# handles HTTPS in front of this service.
+	admin off
+	auto_https off
+	persist_config off
+
+	servers {
+		# Only Railway's edge can reach this service, so trust the
+		# X-Forwarded-* headers it sends. This keeps the real visitor address
+		# and "https" visible to the api.
+		trusted_proxies static 0.0.0.0/0 ::/0
+	}
+}
+
+:{$PORT:8080} {
+	# Browser safety settings on every response, including the proxied /api
+	# ones: HTTPS only, no showing the site inside other sites, no guessing
+	# file types, and a strict referrer. Caddy's own name is not sent.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=(self)"
+		-Server
+	}
+
+	# Simple check for Railway's health check setting.
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	@api path /api /api/*
+	handle @api {
+		# Largest upload the app accepts is a 250 MB schedule file; anything
+		# bigger is refused here before it reaches the api.
+		request_body {
+			max_size 260MB
+		}
+		# Caddy passes WebSocket upgrades through on its own. There is no
+		# request size limit and no read timeout here, so large .mpp uploads
+		# and the worker's long-poll calls are not cut short by Caddy.
+		# API answers are never stored by the browser or any cache in between.
+		header Cache-Control "no-store"
+		reverse_proxy {$API_UPSTREAM:api.railway.internal:8000} {
+			# Try again for a short while if the api is restarting.
+			lb_try_duration 10s
+			# Drop idle connections to the api well before the api does
+			# (uvicorn keeps them 75 s), so a reused connection is never
+			# already closed.
+			transport http {
+				keepalive 30s
+			}
+		}
+	}
+
+	# Built JavaScript and CSS have a content hash in their names, so they
+	# can be kept for a year. A missing file here is a plain 404 (never
+	# index.html), so an old cached page cannot load HTML as a script.
+	handle /static/* {
+		root * /srv
+		encode zstd gzip
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	handle {
+		root * /srv
+		encode zstd gzip
+		# Everything else (index.html for every app route, the offline
+		# service worker, the manifest, icons) must be checked each time,
+		# otherwise phones keep running an old version of the app.
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	# The live-update connection carries the login token in its address
+	# (?token=...), so the query string is blanked in the log.
+	log {
+		output stdout
+		format filter {
+			wrap console
+			fields {
+				request>uri query {
+					replace token REDACTED
+				}
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}

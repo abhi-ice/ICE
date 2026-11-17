@@ -99,6 +99,15 @@ async def _patch_kind(kind: str, vid: str, payload: dict, ctx: dict) -> dict:
     )
     if not before:
         raise HTTPException(404, f"{kind.capitalize()} not found")
+    # 2026-11-16: drop server-owned fields (id, tenant_id, created stamps,
+    # file keys, hashes...) so an edit can never move the record to another
+    # company; refuse names the database would misread ("$set", "a.b").
+    from services.patch_fields import split_patch_fields
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    payload, bad = split_patch_fields(payload)
+    if bad:
+        raise HTTPException(400, f"invalid field name: {str(bad[0])[:64]!r}")
     updates = {k: v for k, v in payload.items() if v is not None}
     updates["updated_at"] = datetime.now(timezone.utc)
     await coll.update_one(
@@ -135,41 +144,49 @@ async def _delete_kind(kind: str, vid: str, ctx: dict) -> dict:
     return {"ok": True, "id": vid}
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.get("/subcontractors")
 async def list_subs(ctx: dict = Depends(require_tenant)):
     return await _list_kind("subcontractor", ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.post("/subcontractors")
 async def create_sub(payload: VendorIn, ctx: dict = Depends(require_tenant)):
     return await _create_kind("subcontractor", payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.patch("/subcontractors/{vid}")
 async def patch_sub(vid: str, payload: dict, ctx: dict = Depends(require_tenant)):
     return await _patch_kind("subcontractor", vid, payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.delete("/subcontractors/{vid}")
 async def delete_sub(vid: str, ctx: dict = Depends(require_tenant)):
     return await _delete_kind("subcontractor", vid, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.get("/suppliers")
 async def list_suppliers(ctx: dict = Depends(require_tenant)):
     return await _list_kind("supplier", ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.post("/suppliers")
 async def create_supplier(payload: VendorIn, ctx: dict = Depends(require_tenant)):
     return await _create_kind("supplier", payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.patch("/suppliers/{vid}")
 async def patch_supplier(vid: str, payload: dict, ctx: dict = Depends(require_tenant)):
     return await _patch_kind("supplier", vid, payload, ctx)
 
 
+# project-scope: tenant-level (company subcontractor / supplier list)
 @router.delete("/suppliers/{vid}")
 async def delete_supplier(vid: str, ctx: dict = Depends(require_tenant)):
     return await _delete_kind("supplier", vid, ctx)

@@ -22,6 +22,7 @@ from database import get_db, tenant_filter
 from auth import require_tenant
 from audit import write_audit
 from models import utc_now
+from services.llm_keys import llm_api_key
 
 
 router = APIRouter(tags=["schedule-diffs"])
@@ -93,12 +94,15 @@ async def generate_ai_narrative(diff_id: str, ctx: dict = Depends(require_tenant
         ],
     }
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    api_key = llm_api_key()
     if not api_key:
-        raise HTTPException(503, "AI narrative unavailable (no LLM key configured)")
+        # Same plain 422 "ai_unavailable" answer as every other AI feature
+        # (a 503 body is replaced by Cloudflare's own page in production).
+        from services.ai_unavailable import AiUnavailableError, SCHEDULE_NARRATIVE_UNAVAILABLE_MESSAGE
+        raise AiUnavailableError(SCHEDULE_NARRATIVE_UNAVAILABLE_MESSAGE)
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from services.anthropic_compat import LlmChat, UserMessage
     except Exception as e:
         raise HTTPException(503, f"LLM library unavailable: {e}")
 

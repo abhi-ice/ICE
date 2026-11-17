@@ -35,8 +35,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from database import get_db, tenant_filter
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from services.dr_voice_extract import extract_dr_fields
+from services.ai_unavailable import ensure_ai_available, VOICE_EXTRACT_UNAVAILABLE_MESSAGE
 
 log = logging.getLogger(__name__)
 
@@ -222,7 +223,7 @@ async def _gemini_transcribe_audio(audio_bytes: bytes, mime_type: str) -> str:
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
-@router.post("/{dr_id}/voice/transcribe")
+@router.post("/{dr_id}/voice/transcribe", dependencies=[Depends(require_daily_report_writer)])
 async def voice_transcribe(
     dr_id: str,
     audio: UploadFile = File(...),
@@ -253,7 +254,43 @@ async def voice_transcribe(
     return {"transcript": transcript, "char_count": len(transcript)}
 
 
-@router.post("/{dr_id}/voice/extract")
+VOICE_NOT_DRAFT_MESSAGE = (
+    "This report was already submitted, so the voice memo was not added to it. "
+    "The recording is kept on your device."
+)
+
+
+async def _draft_for_voice(ctx: dict, dr_id: str) -> dict:
+    """The checks every voice route that writes to the report runs first,
+    cheapest first and before any audio is read or any AI is paid for:
+    the report exists (404), the caller is assigned to its project (403),
+    it is still a draft (409, code "report_not_draft", so a phone keeps the
+    queued clip and tells the user) and the caller may change it -- its
+    author, an admin or a project manager (403, code "not_report_author").
+    The same changes made by hand (PATCH /daily-reports, PATCH
+    /daily-report-activities, POST /presence) follow the same rules."""
+    db = get_db()
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": dr_id}),
+        {"_id": 0},
+    )
+    if not dr:
+        raise HTTPException(status_code=404, detail="DR not found")
+    # Per-project access (2026-11-16). The route-level dependency already
+    # checked the report id in the URL; this repeats it for callers that
+    # reach this function directly. Cached per request, and a save gets
+    # 403, never 404, so a queued clip is kept.
+    from services.project_access import check_project_access
+    await check_project_access(ctx, dr.get("project_id"), write=True)
+    from services.edit_permissions import ReportNotDraftError, ensure_can_change_draft
+    if dr.get("status") not in (None, "draft"):
+        # Mirror the manual-edit lock the rest of the UI enforces.
+        raise ReportNotDraftError(VOICE_NOT_DRAFT_MESSAGE)
+    ensure_can_change_draft(ctx, dr)
+    return dr
+
+
+@router.post("/{dr_id}/voice/extract", dependencies=[Depends(require_daily_report_writer)])
 async def voice_extract(
     dr_id: str,
     payload: dict,
@@ -268,18 +305,13 @@ async def voice_extract(
     tenant_id = ctx["tenant_id"]
     actor_id = ctx["user"]["id"]
 
-    dr = await db.daily_reports.find_one(
-        tenant_filter(tenant_id, {"id": dr_id}),
-        {"_id": 0},
-    )
-    if not dr:
-        raise HTTPException(status_code=404, detail="DR not found")
-    if dr.get("status") not in (None, "draft"):
-        # Mirror the manual-edit lock the rest of the UI enforces.
-        raise HTTPException(
-            status_code=409,
-            detail="DR is not in draft status; voice extract is draft-only",
-        )
+    dr = await _draft_for_voice(ctx, dr_id)
+    # No AI key: plain message, nothing on the report is changed. The
+    # "ai_unavailable" code keeps a queued clip on the phone for a retry.
+    # Checked after the report checks above, so a clip for a missing,
+    # submitted or someone else's report is never kept for an AI retry
+    # that could not succeed anyway.
+    ensure_ai_available(VOICE_EXTRACT_UNAVAILABLE_MESSAGE)
 
     # Pull activity grid for matching context. We need code + name +
     # trade so Claude can fuzzy-match spoken descriptions like
@@ -453,6 +485,21 @@ async def voice_extract(
                 best, best_score = g, score
         return best if best_score >= 1 else None
 
+    # Progress lock (2026-11-16): a spoken percent outside what the other
+    # submitted reports allow (below an earlier one, above a later one) is
+    # not written; the rest of the memo still is, and the response says
+    # which percent was left out and why (progress_refused).
+    from services.progress_ratchet import progress_limits_for_tasks, out_of_range_message
+    try:
+        limits_by_task = await progress_limits_for_tasks(
+            db, tenant_id, [g.get("schedule_activity_id") for g in grid],
+            dr.get("report_date"), exclude_dr_id=dr_id)
+    except Exception as exc:
+        log.warning("dr_voice: progress limits failed for dr=%s: %s", dr_id, exc)
+        limits_by_task = {}
+    progress_refused: list = []
+    progress_changes: list = []  # (task id, row id, previous end-of-day)
+
     for au in (parsed.get("activity_updates") or []):
         if not isinstance(au, dict):
             continue
@@ -468,9 +515,19 @@ async def voice_extract(
             continue
         row_update: dict = {"updated_at": now}
         if au.get("pct_complete_end_of_day") is not None:
-            row_update["pct_complete_end_of_day"] = max(
-                0.0, min(100.0, float(au["pct_complete_end_of_day"]))
-            )
+            _pct = max(0.0, min(100.0, float(au["pct_complete_end_of_day"])))
+            _msg = out_of_range_message(
+                _pct, limits_by_task.get(row.get("schedule_activity_id")) or {})
+            if _msg:
+                progress_refused.append({"activity_code": row.get("activity_code"),
+                                         "requested": _pct, "message": _msg})
+            else:
+                row_update["pct_complete_end_of_day"] = _pct
+                # A person said this percent: the row now decides the task's
+                # progress and locks it once submitted (_row_sets_progress).
+                row_update["pct_set_at"] = now.isoformat()
+                progress_changes.append((row.get("schedule_activity_id"), row["id"],
+                                         row.get("pct_complete_end_of_day", 0)))
         if au.get("crew_count") is not None:
             row_update["crew_count"] = max(0, int(au["crew_count"]))
         if au.get("notes"):
@@ -481,6 +538,12 @@ async def voice_extract(
                 {"$set": row_update},
             )
             applied["activity_updates"] += 1
+    # The schedule follows a spoken percent the same way it follows a slider
+    # save (task percent, actual dates, status, forecast, following tasks).
+    if progress_changes:
+        from services.schedule_feedback import after_progress_change
+        await after_progress_change(db, tenant_id, dr, progress_changes,
+                                    actor_id=actor_id, request_id=_new_id())
 
     # 3. Crew presence rows -- dedupe by (trade, company) so re-running
     # the same recording (or a paraphrase) doesn't double the headcount.
@@ -499,6 +562,7 @@ async def voice_extract(
          (p.get("company_name") or "").strip().lower())
         for p in existing_presence
     }
+    crew_task_ids: list = []  # activities that got a crew row (synced below)
     for cp in (parsed.get("crew_presence") or []):
         if not isinstance(cp, dict) or not cp.get("trade_code"):
             continue
@@ -532,6 +596,16 @@ async def voice_extract(
             "created_by": actor_id,
         })
         applied["crew_presence"] += 1
+        if linked_task:
+            crew_task_ids.append(linked_task)
+
+    # Crew logged by voice counts toward its activity, the same as a crew
+    # row added by hand (2026-11-16): report row hours and crew, the task's
+    # hours to date, actual dates and status. Best effort (logged inside).
+    if crew_task_ids:
+        from services.schedule_feedback import after_presence_change
+        await after_presence_change(db, tenant_id, dr_id, crew_task_ids, dr.get("project_id"),
+                                    actor_id=actor_id, request_id=_new_id())
 
     # 4. Delays / Safety / QC / Deliveries / Coordination -- append-only
     #    inserts that re-use the same enums the manual UI accepts.
@@ -828,11 +902,14 @@ async def voice_extract(
         "ok": True,
         "applied": applied,
         "skipped_duplicates": skipped_dupes,
+        # Spoken percents left out by the progress lock, each with a plain
+        # message ({activity_code, requested, message}).
+        "progress_refused": progress_refused,
         "draft": parsed,   # so frontend can show diff/preview if it wants
     }
 
 
-@router.post("/{dr_id}/voice/transcribe-and-extract")
+@router.post("/{dr_id}/voice/transcribe-and-extract", dependencies=[Depends(require_daily_report_writer)])
 async def voice_transcribe_and_extract(
     dr_id: str,
     audio: UploadFile = File(...),
@@ -844,6 +921,13 @@ async def voice_transcribe_and_extract(
     connectivity returns; this endpoint handles transcription +
     extraction + DB writes atomically from the client's perspective.
     """
+    # Report checks first (missing, no access, not a draft, someone else's
+    # draft), before the clip is read or a transcript is paid for.
+    await _draft_for_voice(ctx, dr_id)
+    # No AI key: stop before reading the clip or paying for a transcript
+    # that can't be used. The clip stays queued on the phone (code
+    # "ai_unavailable").
+    ensure_ai_available(VOICE_EXTRACT_UNAVAILABLE_MESSAGE)
     raw = await audio.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty audio upload")
@@ -884,7 +968,7 @@ async def voice_transcribe_and_extract(
 # ---------------------------------------------------------------------
 # Live conversational token issuance (Route 3)
 # ---------------------------------------------------------------------
-@router.post("/{dr_id}/voice/live-token")
+@router.post("/{dr_id}/voice/live-token", dependencies=[Depends(require_daily_report_writer)])
 async def voice_live_token(
     dr_id: str, ctx: dict = Depends(require_tenant),
 ):
@@ -936,6 +1020,7 @@ async def voice_live_token(
 # "Live Voice" / "Voice Memo" choices as enabled or grayed-out.
 # Auth-gated; no key value is leaked, only booleans.
 # ---------------------------------------------------------------------
+# project-scope: tenant-level (capability flags only, no project data)
 @router.get("/voice/config")
 async def voice_config(ctx: dict = Depends(require_tenant)):
     gemini_present = bool(os.environ.get("GEMINI_API_KEY", "").strip())

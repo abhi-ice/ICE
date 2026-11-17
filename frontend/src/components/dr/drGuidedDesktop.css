@@ -84,6 +84,8 @@ html[data-theme="dark"] .drgx, html.dark .drgx{
   color:var(--brand-primary-strong);margin-bottom:4px}
 .drgx .proj h1{font-size:25px}
 .drgx .proj .addr{color:var(--muted);font-size:16px;margin-top:3px}
+.drgx .proj .nowork{display:inline-block;margin-top:8px;padding:4px 12px;border-radius:8px;font-size:16px;font-weight:700;
+  background:var(--open-bg);border:1px solid var(--open-line);color:var(--open-fg)}
 .drgx .saved{margin-left:auto;color:var(--brand-primary-strong);font-size:14px;font-weight:600;
   padding-bottom:4px;white-space:nowrap}
 

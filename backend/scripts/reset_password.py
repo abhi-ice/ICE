@@ -10,8 +10,9 @@ Writes a freshly bcrypt'd password_hash and appends an
 OPERATOR_PASSWORD_RESET audit entry. Use with care -- direct DB
 write bypasses the tenant-admin permission check that the HTTP
 endpoint enforces. The audit entry captures who ran the script
-(--executed-by required). Active Bearer JWTs remain valid until
-they expire naturally (~7 days).
+(--executed-by required). It also bumps the user's token_version,
+which signs the user out on every device (tokens issued before the
+reset stop working).
 
 Usage:
 
@@ -135,12 +136,12 @@ async def main(argv: Optional[list[str]] = None) -> int:
             "password_hash": new_hash,
             "password_reset_at": now_iso,
             "password_reset_by": args.executed_by,
-        }},
+        },
+         # Sign the user out everywhere: every token carries the
+         # token_version it was issued under, and a bumped version retires
+         # all of them (same as the in-app password reset).
+         "$inc": {"token_version": 1}},
     )
-    # Note: the Google-OAuth cookie session path was removed in the
-    # 2026-05-11 purge, so there's no longer a user_sessions collection
-    # to invalidate. Active Bearer JWTs are stateless and expire on
-    # their own.
 
     # Audit (uses write_audit so the SHA-256 chain stays intact).
     await write_audit(
@@ -169,8 +170,8 @@ async def main(argv: Optional[list[str]] = None) -> int:
     if args.note:
         print(f"Note: {args.note}")
     print()
-    print("User must log in with the new password. Active Bearer JWTs "
-          "remain valid until they expire (~7 days).")
+    print("User must log in with the new password. They are signed out "
+          "on every device (older sign-in tokens no longer work).")
     return 0
 
 

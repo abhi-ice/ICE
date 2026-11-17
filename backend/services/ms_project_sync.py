@@ -70,6 +70,7 @@ from zoneinfo import ZoneInfo
 from database import get_db, tenant_filter
 from models import gen_id, pred_code, pred_relationship
 from services.feature_flags import schedule_mode_2_enabled
+from services.project_scope import require_project_for_tenant
 from services.working_days import (
     FEDERAL_HOLIDAYS, working_days_between, working_days_between_cal,
 )
@@ -480,7 +481,11 @@ async def get_sync_state(tenant_id: str, project_id: str) -> dict:
 
 
 async def enqueue_push_job(tenant_id, project_id, *, actor_id=None, request_id=None) -> dict:
+    # Every enqueue first confirms the project exists in THIS tenant (404
+    # otherwise), so no job is ever queued for a made-up id or another
+    # company's project.
     db = get_db()
+    await require_project_for_tenant(tenant_id, project_id, db=db)
     seq = await _next_seq(db, tenant_id, project_id)
     project_file = await _project_file_descriptor(db, tenant_id, project_id)
     # Conflict check basis: the rowversion we last ingested. The worker compares
@@ -515,6 +520,7 @@ async def enqueue_pull_job(tenant_id, project_id, *, actor_id=None, request_id=N
     backend can ingest external edits as a reviewable schedule proposal (Phase 2
     consumes this via the existing proposal/diff flow)."""
     db = get_db()
+    await require_project_for_tenant(tenant_id, project_id, db=db)
     seq = await _next_seq(db, tenant_id, project_id)
     job = {
         "id": gen_id(), "tenant_id": tenant_id, "project_id": project_id, "seq": seq,
@@ -534,6 +540,7 @@ async def enqueue_create_job(tenant_id, project_id, *, actor_id=None, request_id
     hosted file, then posts a push-style read-back so ingest stamps external
     ids. Used when a mode2 project has tasks but no stored file yet."""
     db = get_db()
+    await require_project_for_tenant(tenant_id, project_id, db=db)
     seq = await _next_seq(db, tenant_id, project_id)
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}),

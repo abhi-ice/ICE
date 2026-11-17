@@ -16,6 +16,8 @@ import logging
 
 from database import get_db, tenant_filter
 from auth import require_tenant
+from services.project_scope import require_project
+from services.project_access import check_record_access
 from audit import write_audit
 from models import TIAGenerationCreate, TIAUnflagPayload, utc_now, gen_id
 from services.tia_generator import generate_tia, fetch_artifact_bytes
@@ -31,6 +33,10 @@ TIA_BG_TASK_THRESHOLD = 200
 
 
 def _is_admin(ctx: dict) -> bool:
+    """Project-level power (unflag/reflag privilege, download privileged
+    work product). Per-project access (2026-11-16): an admin limited to
+    specific projects keeps it on their own projects; the route-level
+    dependency has already refused projects they are not assigned to."""
     return (ctx.get("user", {}).get("role") or "").lower() == "admin"
 
 
@@ -155,11 +161,13 @@ async def kick_off_generation(
     if payload.project_id != project_id:
         raise HTTPException(400, "project_id mismatch")
     db = get_db()
-    proj = await db.projects.find_one(
-        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
-    )
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Company check (404 for an unknown project, as before) plus the
+    # per-project access rule (the route-level dependency has checked the
+    # URL already; this keeps the endpoint safe when called directly).
+    await require_project(ctx, project_id)
+    if payload.gating_entity_id:
+        await check_record_access(ctx, "gating_entity", payload.gating_entity_id,
+                                  write=True, route="/api/projects/{project_id}/tia/generate")
 
     filters = {
         k: v for k, v in {

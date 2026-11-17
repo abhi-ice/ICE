@@ -179,11 +179,17 @@ export default function CopilotPanel({ open, onClose }) {
         const key = Object.keys(result)[0];
         if (!key) return `${r.tool}`;
         const v = result[key];
+        // Short, readable summary: lists show their size, nested records
+        // are left out (they used to print as "[object Object]").
+        const show = (val) => (Array.isArray(val) ? `${val.length} item${val.length === 1 ? "" : "s"}`
+          : typeof val === "string" ? val.slice(0, 40)
+            : val !== null && typeof val === "object" ? null : String(val));
+        if (Array.isArray(v)) return `${r.tool} → ${key}: ${show(v)}`;
         if (typeof v === "object" && v !== null) {
-          const nice = Object.entries(v).slice(0, 3)
-            .map(([k, val]) => `${k}=${typeof val === "string" ? val.slice(0, 40) : val}`)
-            .join(" · ");
-          return `${r.tool} → ${nice}`;
+          const nice = Object.entries(v)
+            .map(([k, val]) => [k, show(val)]).filter(([, s]) => s !== null)
+            .slice(0, 3).map(([k, s]) => `${k}: ${s}`).join(" · ");
+          return nice ? `${r.tool} → ${nice}` : `${r.tool}`;
         }
         return `${r.tool}`;
       });
@@ -212,7 +218,9 @@ export default function CopilotPanel({ open, onClose }) {
       const timedOut = e.name === "AbortError" || e.message?.includes("aborted");
       const detail = timedOut
         ? "Mason timed out after 60 seconds. The server may be slow or the tool call may have hung."
-        : "Mason error: " + (e.response?.data?.detail || e.message);
+        : e.response?.data?.code === "ai_unavailable"
+          ? e.response.data.detail // plain "AI isn't available right now" message
+          : "Mason error: " + (e.response?.data?.detail || e.message);
       setThread((t) => [...t, { role: "ai", text: detail, error: true, retry_payload: msg }]);
     } finally {
       setBusy(false);

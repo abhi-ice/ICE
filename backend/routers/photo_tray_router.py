@@ -37,12 +37,18 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, Query, Response
 
 from database import get_db, tenant_filter
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from audit import write_audit
 from models import (PhotoTray, PhotoTagCreate, EVIDENTIARY_CLASSES,
                      TenantAiBudgetUpdate,
                      gen_id, utc_now)
-from services.storage import put_object, get_object, aput_object, aget_object, make_path, record_file
+from services.storage import (
+    put_object, get_object, aput_object, aget_object, make_path, record_file,
+    key_belongs_to_tenant, read_upload_limited, UploadTooLarge, open_image_capped,
+)
+
+# Largest photo accepted (pt.68: 25 MB, matches the vision-preprocess guard).
+_TRAY_MAX_BYTES = 25 * 1024 * 1024
 
 
 router = APIRouter(tags=["photo-tray"])
@@ -72,9 +78,11 @@ def _extract_image_meta(body: bytes) -> dict:
         "exif_gps_lng": None,
     }
     try:
-        from PIL import Image, ExifTags
+        from PIL import ExifTags
         import imagehash
-        img = Image.open(io.BytesIO(body))
+        # Refuses decompression bombs before decoding; any error here just
+        # means no metadata -- the photo itself is still saved.
+        img = open_image_capped(body)
         out["width"] = img.width
         out["height"] = img.height
         out["phash"] = str(imagehash.phash(img))
@@ -137,7 +145,7 @@ async def _find_dedup(tenant_id: str, project_id: str,
 # ============================================================
 # Upload
 # ============================================================
-@router.post("/photo-tray", response_model=PhotoTray)
+@router.post("/photo-tray", response_model=PhotoTray, dependencies=[Depends(require_daily_report_writer)])
 async def upload_to_tray(
     project_id: str = Form(...),
     capture_source: str = Form("manual_upload"),
@@ -157,20 +165,23 @@ async def upload_to_tray(
     capture_source values: mobile_camera | manual_upload | drawing_pin.
     """
     db = get_db()
-    proj = await db.projects.find_one(
-        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1},
-    )
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # The project comes in the form: unknown -> 404 (as before); not
+    # assigned with per-project access on -> 403, so a phone keeps the
+    # queued photo and retries it once the assignment is fixed.
+    from services.project_scope import require_project
+    await require_project(ctx, project_id, projection={"_id": 0, "id": 1})
     if capture_source not in ("mobile_camera", "manual_upload", "drawing_pin"):
         capture_source = "manual_upload"
 
-    body = await file.read()
     # pt.68: 10MB was too tight — modern phone / high-res site photos routinely
     # exceed it. 25MB matches the vision-preprocess guard so anything that
     # uploads can also be AI-reviewed. (Large media transiting the API process
     # is the P1 presigned-direct-upload item in the scale audit.)
-    if len(body) > 25 * 1024 * 1024:
+    # Read in chunks with a running limit so an oversized file is never
+    # held whole in memory.
+    try:
+        body = await read_upload_limited(file, _TRAY_MAX_BYTES)
+    except UploadTooLarge:
         raise HTTPException(413, "Photo exceeds 25MB limit")
     if not body:
         raise HTTPException(400, "Empty file")
@@ -309,7 +320,9 @@ async def list_tray(
     docs = await db.photo_tray.find(
         tenant_filter(ctx["tenant_id"], f), {"_id": 0},
     ).sort("uploaded_at", -1).to_list(length=500)
-    return docs
+    # Made-up dev stub results are never shown as real AI findings.
+    from services.photo_ai import without_dev_stub_ai
+    return [without_dev_stub_ai(d) for d in docs]
 
 
 @router.get("/photo-tray/{tray_id}")
@@ -328,7 +341,8 @@ async def get_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
          "evidentiary_flag": 1,
          **{k: 1 for k in _PHOTO_EVENT_REFS}},
     ).to_list(length=None)
-    return {"tray": doc, "tags": tags}
+    from services.photo_ai import without_dev_stub_ai
+    return {"tray": without_dev_stub_ai(doc), "tags": tags}
 
 
 @router.get("/photo-tray/{tray_id}/file")
@@ -340,17 +354,23 @@ async def stream_tray_image(tray_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not doc:
         raise HTTPException(404, "Tray entry not found")
+    # Only ever read a file stored under the caller's own company.
+    if not key_belongs_to_tenant(doc.get("storage_key"), ctx["tenant_id"]):
+        raise HTTPException(404, "Tray entry not found")
     try:
         data, ct = await aget_object(doc["storage_key"])
     except Exception as e:
         raise HTTPException(500, f"storage: {e}")
-    return Response(content=data, media_type=ct)
+    # The type came from the uploader; only ever send it back as an image.
+    if not (ct or "").lower().startswith("image/") or "svg" in (ct or "").lower():
+        ct = "application/octet-stream"
+    return Response(content=data, media_type=ct, headers={"X-Content-Type-Options": "nosniff"})
 
 
 # ============================================================
 # Archive (status flip)
 # ============================================================
-@router.post("/photo-tray/{tray_id}/archive")
+@router.post("/photo-tray/{tray_id}/archive", dependencies=[Depends(require_daily_report_writer)])
 async def archive_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.photo_tray.find_one(
@@ -374,12 +394,78 @@ async def archive_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
+async def _remove_tray_blob(tenant_id: str, storage_key: Optional[str]) -> None:
+    """Delete the stored image behind a removed tray entry, but only when
+    nothing else still points at the same key (a photo row or another tray
+    row). Failures are logged, never raised."""
+    if not storage_key:
+        return
+    import logging
+    log = logging.getLogger("photo_tray_router")
+    # Never delete a file that is not stored under this company.
+    if not key_belongs_to_tenant(storage_key, tenant_id):
+        log.warning("Tray delete: storage key is not under this company; kept")
+        return
+    db = get_db()
+    try:
+        still_used = (
+            await db.photos.count_documents(
+                tenant_filter(tenant_id, {"storage_path": storage_key}),
+            )
+            or await db.photo_tray.count_documents(
+                tenant_filter(tenant_id, {"storage_key": storage_key}),
+            )
+        )
+        if still_used:
+            log.info("Tray delete: storage object still referenced; kept")
+            return
+        from services.storage import remove_object
+        await asyncio.to_thread(remove_object, storage_key)
+        # Keep the file register honest: the object is gone.
+        await db.files.update_many(
+            tenant_filter(tenant_id, {"storage_path": storage_key}),
+            {"$set": {"is_deleted": True}},
+        )
+    except Exception as exc:
+        log.warning(
+            "Tray delete: could not remove storage object %s: %s",
+            storage_key, exc,
+        )
+
+
+# Captions the old no-AI-key stub wrote ("[dev stub] ...") are not real
+# captions and must never reach a photo row or a client report.
+_DEV_STUB_CAPTION_PREFIX = "[dev stub]"
+
+
+def _usable_ai_caption(tray: dict) -> Optional[str]:
+    """The tray's AI caption, or None when it is empty or a stub caption."""
+    cap = (tray or {}).get("ai_suggested_caption")
+    if not isinstance(cap, str) or not cap.strip():
+        return None
+    if cap.strip().lower().startswith(_DEV_STUB_CAPTION_PREFIX):
+        return None
+    return cap
+
+
+def _raise_if_photo_ai_unavailable() -> None:
+    """Stop an AI request up front when there is no AI key (and dev mode
+    is off), with a plain message and nothing saved. 422 with code
+    "ai_unavailable", not 503 (see services/ai_unavailable.py)."""
+    from services.photo_ai import photo_ai_can_run
+    from services.ai_unavailable import (
+        AiUnavailableError, PHOTO_AI_UNAVAILABLE_MESSAGE,
+    )
+    if not photo_ai_can_run():
+        raise AiUnavailableError(PHOTO_AI_UNAVAILABLE_MESSAGE)
+
+
 # pt.31 — Hard delete of a tray entry. Allowed ONLY while the photo is
 # still untagged (no rows in the photos collection pointing at this tray
 # row). Once tagged, deletion must happen from inside the DR / Photos
 # page so the audit chain captures the reason. Returns 409 + a clear
 # message if any tag links exist.
-@router.delete("/photo-tray/{tray_id}")
+@router.delete("/photo-tray/{tray_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.photo_tray.find_one(
@@ -387,9 +473,10 @@ async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not before:
         raise HTTPException(404, "Tray entry not found")
-    # Tagged check — photos collection holds the (tray_id → event) links
+    # Tagged check — photo rows link back to the tray entry through
+    # `tray_photo_id` (see create_photo_tag / attach-to-dr).
     tag_count = await db.photos.count_documents(
-        tenant_filter(ctx["tenant_id"], {"tray_id": tray_id}),
+        tenant_filter(ctx["tenant_id"], {"tray_photo_id": tray_id}),
     )
     if tag_count > 0:
         raise HTTPException(
@@ -398,21 +485,12 @@ async def delete_tray_entry(tray_id: str, ctx: dict = Depends(require_tenant)):
             f"Delete it from the daily report or Photos page instead so the audit chain "
             f"captures the reason.",
         )
-    # Remove the storage object best-effort; tray-row delete is the
-    # authoritative action even if blob cleanup misfires.
-    sp = before.get("storage_path")
-    if sp:
-        try:
-            from services.storage import delete_object as _del_obj
-            try:
-                _del_obj(sp)
-            except Exception:
-                pass
-        except Exception:
-            pass
     await db.photo_tray.delete_one(
         tenant_filter(ctx["tenant_id"], {"id": tray_id}),
     )
+    # Remove the stored image best-effort; the tray-row delete above is
+    # the authoritative action even if blob cleanup fails.
+    await _remove_tray_blob(ctx["tenant_id"], before.get("storage_key"))
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="photo_tray",
         op="PHOTO_TRAY_DELETE",
@@ -491,7 +569,7 @@ async def _validate_event_ref(db, tenant_id: str, daily_report_id: str,
     return ev
 
 
-@router.post("/photo-tags")
+@router.post("/photo-tags", dependencies=[Depends(require_daily_report_writer)])
 async def create_photo_tag(
     payload: PhotoTagCreate, ctx: dict = Depends(require_tenant),
 ):
@@ -512,15 +590,22 @@ async def create_photo_tag(
 
     dr = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.daily_report_id}),
-        {"_id": 0, "id": 1, "project_id": 1, "status": 1},
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1,
+         "prepared_by": 1, "created_by": 1},
     )
     if not dr:
         raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
+    # A draft takes photos only from its author, an admin or a project manager.
+    from services.edit_permissions import ensure_can_change_draft
+    ensure_can_change_draft(ctx, dr)
     if dr.get("project_id") != tray.get("project_id"):
         raise HTTPException(
             422,
             "Tray entry and daily report must belong to the same project",
         )
+    # Both ids come in the body and share one project (checked just above):
+    # the caller must be assigned to it (403 keeps a phone's queued tag).
+    await check_project_access(ctx, dr.get("project_id"), write=True)
 
     # Bug #30 fix (2026-05-13): idempotency gate on (tenant, tray,
     # ref_field, ref_id). Same dedup pattern as field_suggestions
@@ -858,6 +943,11 @@ async def _create_photo_ai_field_suggestions(
     with AI guesses)."""
     if tray.get("ai_analysis_status") != "complete":
         return
+    # Made-up dev stub results (saved before 2026-11-16 with no AI key) are
+    # never turned into suggestions outside dev mode.
+    from services.photo_ai import hide_dev_stub
+    if hide_dev_stub(tray):
+        return
     confidence = tray.get("ai_confidence_score")
     if confidence is None or float(confidence) <= 0.3:
         return
@@ -865,7 +955,7 @@ async def _create_photo_ai_field_suggestions(
     from services import field_suggestions as fs
 
     # ---- Caption -> event.description / body / summary ----
-    caption = (tray.get("ai_suggested_caption") or "").strip()
+    caption = (_usable_ai_caption(tray) or "").strip()
     target = _REF_TO_CAPTION_TARGET.get(ref_field)
     if caption and target:
         entity_type, field_path = target
@@ -944,7 +1034,7 @@ async def list_tags_for_tray(tray_id: str, ctx: dict = Depends(require_tenant)):
     return docs
 
 
-@router.delete("/photo-tags/{photo_id}")
+@router.delete("/photo-tags/{photo_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
     """Remove a single tagging-junction row. Tray entry stays; if this
     was the last tag, tray status flips back to 'untagged'."""
@@ -954,6 +1044,8 @@ async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
     )
     if not photo:
         raise HTTPException(404, "Photo tag not found")
+    from services.edit_permissions import ensure_can_change_linked_report
+    await ensure_can_change_linked_report(ctx, photo)
     tray_id = photo.get("tray_photo_id")
     await db.photos.delete_one(
         tenant_filter(ctx["tenant_id"], {"id": photo_id}),
@@ -988,6 +1080,10 @@ async def delete_photo_tag(photo_id: str, ctx: dict = Depends(require_tenant)):
 # Cross-tenant URL -> 404 (leak-resistant; never 403).
 
 from auth import has_project_access, can_manage_project_members  # noqa: E402
+from services.project_access import (  # noqa: E402
+    check_project_access, check_record_access, is_enforced, is_full_admin,
+    allowed_project_ids, require_full_admin,
+)
 from models import StrictModel as _AiStrictModel  # alias to avoid name clash
 from pydantic import Field as _AiField
 
@@ -1042,7 +1138,10 @@ async def _enforce_tray_access(ctx: dict, tray: dict,
             403,
             f"Role {role!r} cannot perform this action on AI suggestions",
         )
-    if role == "admin":
+    # 2026-11-16: only an admin with access to all projects skips the
+    # project check; an admin limited to specific projects is checked
+    # like everyone else (auth.has_project_access knows their projects).
+    if is_full_admin(ctx):
         return
     ok = await has_project_access(
         tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
@@ -1069,6 +1168,8 @@ async def analyze_single(
     if not tray:
         raise HTTPException(404, "Tray photo not found")
     await _enforce_tray_access(ctx, tray, _ROLE_TRIGGER_SINGLE)
+    # No AI key: say so before touching the row (nothing is changed).
+    _raise_if_photo_ai_unavailable()
     # Reset status to pending so analyze_photo's atomic flip can fire.
     await db.photo_tray.update_one(
         {"id": tray_id},
@@ -1091,7 +1192,7 @@ class _PhotoReviewPayload(_AiStrictModel):
     daily_report_id: Optional[str] = None
 
 
-@router.post("/photo-tray/review")
+@router.post("/photo-tray/review", dependencies=[Depends(require_daily_report_writer)])
 async def photo_review(
     payload: _PhotoReviewPayload, ctx: dict = Depends(require_tenant),
 ):
@@ -1099,13 +1200,22 @@ async def photo_review(
         raise HTTPException(400, "lens must be 'combined', 'safety', or 'qc'")
     if not payload.tray_ids:
         raise HTTPException(400, "Pin at least one photo to review")
+    # Ids in the body: the daily report and every pinned photo must be on
+    # projects the caller is assigned to.
+    if payload.daily_report_id:
+        await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
+    for _tid in payload.tray_ids[:8]:
+        await check_record_access(ctx, "photo_tray", _tid, write=True)
+    # No AI key: plain message, and no review is saved.
+    _raise_if_photo_ai_unavailable()
     from services.photo_ai import review_photos
     result = await review_photos(
         tenant_id=ctx["tenant_id"], tray_ids=payload.tray_ids,
         lens=payload.lens, actor_id=ctx["user"]["id"],
     )
     if not result.get("ok"):
-        raise HTTPException(422, result.get("reason") or "review_failed")
+        raise HTTPException(
+            422, result.get("message") or result.get("reason") or "review_failed")
     # pt.61: persist the review so it survives a refresh / re-open days later
     # (and we don't burn tokens re-generating it). Scoped to the daily report.
     if payload.daily_report_id:
@@ -1151,10 +1261,15 @@ async def list_photo_reviews(dr_id: str, ctx: dict = Depends(require_tenant)):
         tenant_filter(ctx["tenant_id"], {"daily_report_id": dr_id}),
         {"_id": 0},
     ).sort("created_at", -1).to_list(length=100)
+    # Made-up dev stub reviews (saved when no AI key was set) are not
+    # real findings; hide them outside dev mode.
+    from services.photo_ai import _is_dev_mode, is_dev_stub_result
+    if not _is_dev_mode():
+        docs = [d for d in docs if not is_dev_stub_result(d)]
     return docs
 
 
-@router.delete("/photo-reviews/{review_id}")
+@router.delete("/photo-reviews/{review_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_photo_review(review_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     res = await db.photo_reviews.delete_one(
@@ -1175,7 +1290,7 @@ class _AttachToDrPayload(_AiStrictModel):
     add_reason: Optional[str] = None
 
 
-@router.post("/photo-tray/attach-to-dr")
+@router.post("/photo-tray/attach-to-dr", dependencies=[Depends(require_daily_report_writer)])
 async def attach_trays_to_dr(
     payload: _AttachToDrPayload, ctx: dict = Depends(require_tenant),
 ):
@@ -1185,10 +1300,19 @@ async def attach_trays_to_dr(
     tenant_id = ctx["tenant_id"]
     dr = await db.daily_reports.find_one(
         tenant_filter(tenant_id, {"id": payload.daily_report_id}),
-        {"_id": 0, "id": 1, "project_id": 1, "status": 1},
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1,
+         "prepared_by": 1, "created_by": 1},
     )
     if not dr:
         raise HTTPException(404, f"daily_report {payload.daily_report_id} not found")
+    # The daily report is in the body: the caller must be assigned to its
+    # project (403 keeps a phone's queued attach). Each photo must be on the
+    # same project (checked per photo below).
+    await check_project_access(ctx, dr.get("project_id"), write=True)
+    # A draft takes photos only from its author, an admin or a project
+    # manager (the same rule as every other change to a draft).
+    from services.edit_permissions import ensure_can_change_draft
+    ensure_can_change_draft(ctx, dr)
 
     # Locked-DR add policy (mirrors create_photo_tag): admin/PM bypass,
     # everyone else needs an add_reason. Enforced once for the whole batch.
@@ -1227,7 +1351,7 @@ async def attach_trays_to_dr(
             "daily_report_id": payload.daily_report_id,
             "tray_photo_id": tray["id"],
             "tagged_at": now_iso, "tagged_by": ctx["user"]["id"],
-            "tag_caption": tray.get("ai_suggested_caption"),
+            "tag_caption": _usable_ai_caption(tray),
             # No event reference — this is a DR-level attach.
             "daily_report_activity_id": None, "delay_id": None, "rfi_id": None,
             "qc_issue_id": None, "safety_event_id": None,
@@ -1243,7 +1367,7 @@ async def attach_trays_to_dr(
             "gps_lat": tray.get("exif_gps_lat"), "gps_lng": tray.get("exif_gps_lng"),
             "photo_class": "progress", "evidentiary_flag": False,
             "schedule_activity_id": None, "tags": [],
-            "caption": tray.get("ai_suggested_caption"),
+            "caption": _usable_ai_caption(tray),
             "is_supplement": False, "created_at": now_iso,
             "created_via_ai_suggestion": False, "ai_suggestion_id": None,
             "ai_confidence_at_tag_time": None,
@@ -1294,15 +1418,37 @@ async def analyze_batch(
         raise HTTPException(
             403, f"Role {role!r} cannot run batch AI analysis (admin/pm only)",
         )
-    # Per-project RBAC if project_id is specified.
-    if payload.project_id and role != "admin":
+    # Per-project RBAC if project_id is specified. Only an admin with
+    # access to all projects skips it (2026-11-16).
+    if payload.project_id and not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=payload.project_id,
         )
         if not ok:
             raise HTTPException(404, "Project not found")
+    _raise_if_photo_ai_unavailable()
     from services.photo_ai import batch_analyze_pending
+    if not payload.project_id and is_enforced(ctx) and not is_full_admin(ctx):
+        # No project given, per-project access on: walk the caller's own
+        # projects only, up to the same total limit.
+        allowed = await allowed_project_ids(ctx) or frozenset()
+        totals: dict = {"attempted": 0, "complete": 0, "skipped": 0,
+                        "budget_paused": 0, "failed": 0, "phash_reused": 0}
+        left = payload.limit
+        for pid in sorted(allowed):
+            if left <= 0:
+                break
+            part = await batch_analyze_pending(
+                tenant_id=ctx["tenant_id"], project_id=pid, limit=left,
+            )
+            for k in totals:
+                totals[k] += int(part.get(k) or 0)
+            left -= int(part.get("attempted") or 0)
+            if part.get("stopped_at_budget"):
+                totals["stopped_at_budget"] = True
+                break
+        return totals
     result = await batch_analyze_pending(
         tenant_id=ctx["tenant_id"],
         project_id=payload.project_id, limit=payload.limit,
@@ -1420,6 +1566,25 @@ async def get_ai_analysis(
     if not tray:
         raise HTTPException(404, "Tray photo not found")
     await _enforce_tray_access(ctx, tray, _ROLE_VIEW)
+    from services.photo_ai import (
+        _is_dev_mode, photo_ai_can_run, is_dev_stub_result,
+        AI_UNAVAILABLE_REASON,
+    )
+    # Made-up dev stub results (saved before 2026-11-16 when no AI key was
+    # set) are never shown as real findings outside dev mode, and a photo
+    # waiting for AI while AI can't run says so instead of "queued". Only
+    # the answer changes; the saved row is left as it is.
+    if not _is_dev_mode() and (
+        is_dev_stub_result(tray)
+        or (not photo_ai_can_run()
+            and tray.get("ai_analysis_status") in ("pending", "analyzing"))
+    ):
+        tray = {
+            "ai_analysis_status": "failed",
+            "ai_failure_reason": AI_UNAVAILABLE_REASON,
+            "ai_user_overridden": tray.get("ai_user_overridden"),
+            "ai_user_override_reason": tray.get("ai_user_override_reason"),
+        }
     return {
         "tray_id": tray_id,
         "ai_analysis_status": tray.get("ai_analysis_status"),
@@ -1461,7 +1626,8 @@ async def get_project_ai_stats(
     )
     if not proj:
         raise HTTPException(404, "Project not found")
-    if role != "admin":
+    # Only an admin with access to all projects skips the check (2026-11-16).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -1478,12 +1644,15 @@ async def get_project_ai_stats(
 
 
 # (7) GET /api/tenants/current/ai-budget (admin)
+# project-scope: tenant-level (company AI budget; all-projects admins only)
 @router.get("/tenants/current/ai-budget")
 async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
     if _user_role(ctx) not in _ROLE_BUDGET:
         raise HTTPException(
             403, "Admins only -- AI budget surfaces tenant-level spend",
         )
+    # Company setting: an admin limited to specific projects cannot see it.
+    require_full_admin(ctx)
     from services.photo_ai import check_budget
     return await check_budget(tenant_id=ctx["tenant_id"])
 
@@ -1495,6 +1664,7 @@ async def get_current_tenant_budget(ctx: dict = Depends(require_tenant)):
 # PATCH /tenants/current/ai-budget (admin) -- raise/lower the monthly
 # cap or flip ai_enabled. Writes a PHOTO_AI_BUDGET_UPDATED audit entry
 # so compliance can trace who changed the cap.
+# project-scope: tenant-level (company AI budget; all-projects admins only)
 @router.patch("/tenants/current/ai-budget")
 async def update_tenant_ai_budget(
     # Bug #44-final (2026-05-14) -- unquote the payload annotation and
@@ -1514,6 +1684,8 @@ async def update_tenant_ai_budget(
         raise HTTPException(
             403, "Admins only -- only admins can modify AI budget",
         )
+    # Company setting: all-projects admins only (2026-11-16).
+    require_full_admin(ctx)
     db = get_db()
     updates: dict = {}
     if payload.ai_enabled is not None:
@@ -1541,6 +1713,7 @@ async def update_tenant_ai_budget(
 
 # GET /tenants/current/photo-ai-cost-dashboard (admin)
 # Per-day spend buckets, top-10 expensive trays, model split, budget.
+# project-scope: tenant-level (company AI spend; all-projects admins only)
 @router.get("/tenants/current/photo-ai-cost-dashboard")
 async def get_cost_dashboard_endpoint(
     days: int = 30, ctx: dict = Depends(require_tenant),
@@ -1549,6 +1722,7 @@ async def get_cost_dashboard_endpoint(
         raise HTTPException(
             403, "Admins only -- cost dashboard surfaces tenant spend",
         )
+    require_full_admin(ctx)
     if days < 1 or days > 365:
         raise HTTPException(422, "days must be 1..365")
     from services.photo_ai import get_cost_dashboard
@@ -1557,6 +1731,7 @@ async def get_cost_dashboard_endpoint(
 
 # GET /tenants/current/photo-ai-timings (admin)
 # P50/P95/P99 call timings for the dashboard performance card.
+# project-scope: tenant-level (company AI timings; all-projects admins only)
 @router.get("/tenants/current/photo-ai-timings")
 async def get_timings_endpoint(
     days: int = 7, ctx: dict = Depends(require_tenant),
@@ -1565,6 +1740,7 @@ async def get_timings_endpoint(
         raise HTTPException(
             403, "Admins only -- timings expose ops latency data",
         )
+    require_full_admin(ctx)
     if days < 1 or days > 90:
         raise HTTPException(422, "days must be 1..90")
     from services.photo_ai import get_call_timing_percentiles
@@ -1576,6 +1752,7 @@ async def get_timings_endpoint(
 # GET /tenants/current/cui-compliance-report (admin)
 # Compliance evidence for federal auditors. Writes an audit op every
 # time it's pulled so the access itself is auditable.
+# project-scope: tenant-level (company compliance report; all-projects admins only)
 @router.get("/tenants/current/cui-compliance-report")
 async def get_cui_compliance_report_endpoint(
     days: int = 90, ctx: dict = Depends(require_tenant),
@@ -1584,6 +1761,7 @@ async def get_cui_compliance_report_endpoint(
         raise HTTPException(
             403, "Admins only -- compliance reports are admin-restricted",
         )
+    require_full_admin(ctx)
     if days < 1 or days > 365:
         raise HTTPException(422, "days must be 1..365")
     from services.photo_ai import get_cui_compliance_report
@@ -1686,6 +1864,11 @@ async def create_safety_event_from_photo(
             422,
             "Daily report's project does not match the photo's project",
         )
+    # The project the event is filed under must belong to the caller's
+    # company (404 otherwise).
+    if tray.get("project_id"):
+        from services.project_scope import require_project
+        await require_project(ctx, tray.get("project_id"))
 
     # Build the SafetyEventCreate body. Override fields take precedence
     # over AI-derived defaults.
@@ -1693,7 +1876,7 @@ async def create_safety_event_from_photo(
     inferred_event_type, inferred_severity, _ = _infer_severity_from_concerns(concerns)
     description = (
         (payload.description or "").strip()
-        or (tray.get("ai_suggested_caption") or "").strip()
+        or (_usable_ai_caption(tray) or "").strip()
         or f"AI-flagged photo (tray {tray_id[:8]}): {', '.join(concerns[:2]) or 'safety concern'}"
     )
     severity = (payload.severity or inferred_severity)
@@ -1761,7 +1944,7 @@ async def create_safety_event_from_photo(
         "captured_by": tray.get("uploaded_by"),
         "created_at": now_iso,
         "photo_class": tray.get("ai_suggested_class") or "safety",
-        "tag_caption": tray.get("ai_suggested_caption"),
+        "tag_caption": _usable_ai_caption(tray),
         "tagged_at": now_iso,
         "tagged_by": ctx["user"]["id"],
         "evidentiary_flag": True,           # safety photos are evidentiary
@@ -1828,7 +2011,8 @@ async def list_photos_flagged_by_ai(
     if not proj:
         raise HTTPException(404, "Project not found")
     role = _user_role(ctx)
-    if role != "admin":
+    # Only an admin with access to all projects skips the check (2026-11-16).
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -1871,6 +2055,7 @@ async def list_photos_flagged_by_ai(
 # Surfaces the calibration corpus for future fine-tuning work. Paginated
 # by cursor (created_at desc). Returns the raw (original_ai, user_
 # correction, reason, kind) tuples.
+# project-scope: tenant-level (company AI feedback; all-projects admins only)
 @router.get("/tenants/current/photo-ai-calibration")
 async def list_calibration_corpus(
     limit: int = 100, cursor: Optional[str] = None,
@@ -1880,6 +2065,7 @@ async def list_calibration_corpus(
         raise HTTPException(
             403, "Admins only -- calibration corpus contains user feedback",
         )
+    require_full_admin(ctx)
     if limit < 1 or limit > 500:
         limit = 100
     db = get_db()
@@ -1901,6 +2087,7 @@ async def list_calibration_corpus(
 
 # Bucket F Phase 3 -- pending-row sweeper. Admin-only manual trigger.
 # A lifespan-startup task in server.py also runs this on boot.
+# project-scope: tenant-level (company-wide sweep; all-projects admins only)
 @router.post("/photo-tray/sweep-stuck-pending")
 async def sweep_stuck_pending_endpoint(
     older_than_minutes: int = 5, limit: int = 100,
@@ -1910,6 +2097,8 @@ async def sweep_stuck_pending_endpoint(
         raise HTTPException(
             403, "Admins only -- this resets stuck-pending rows tenant-wide",
         )
+    # Resets rows in every project, so all-projects admins only.
+    require_full_admin(ctx)
     from services.photo_ai import sweep_stuck_pending
     result = await sweep_stuck_pending(
         tenant_id=ctx["tenant_id"],

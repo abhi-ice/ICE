@@ -262,7 +262,7 @@ def test_unplanned_activity_AF_prefix():
                       json={"description": "field cleanup"})
     assert r.status_code in (200, 201), r.text
     t = r.json()["task"]
-    assert t["activity_code"].startswith("AF")
+    assert t["activity_code"].startswith("FW-")
     assert t["created_in_field"] is True
     assert t["requires_pm_review"] is True
 

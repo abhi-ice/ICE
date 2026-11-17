@@ -251,13 +251,16 @@ async def _run(data_date):
 
 
 def test_flag_off_behind_task_does_not_slip(monkeypatch):
-    """Byte-identical to pre-B2: a behind task with NO logged delay produces
-    no projected dates, and its successor is untouched."""
+    """Flag off: the planned-percent slip (B2) is not applied. Since the
+    data-date forecast (2026-11-16) the behind task still moves, because the
+    work left (90% of 5 working days = 5 days, counted from the data date
+    Wed 5/6 as day 1) cannot finish before Tue 5/12. Its successor follows
+    through the normal cascade."""
     monkeypatch.delenv("FF_PROGRESS_CASCADE", raising=False)
     _seed_behind_chain()
     a, b = asyncio.run(_run(DD))
-    assert a["projected_finish_date"] is None
-    assert b["projected_finish_date"] is None
+    assert a["projected_finish_date"] == "2026-05-12"
+    assert b["projected_finish_date"] == "2026-05-15"
 
 
 def test_flag_on_behind_task_slips_and_cascades(monkeypatch):
@@ -377,8 +380,16 @@ def test_flag_off_does_not_clear_existing_projected_dates(monkeypatch):
         projected_finish_date="2026-05-12", slip_days=2,
     ))
     a, _ = asyncio.run(_run(DD))
-    # Flag off: no progress shift; no logged blocker -> the ORIGINAL cascade
-    # clears the stale projection (total_shift 0). Behind-ness is ignored.
+    # Flag off: no planned-percent shift. The finish shown now comes from
+    # the data-date forecast alone (5 working days left from Wed 5/6).
+    assert a["projected_finish_date"] == "2026-05-12"
+    # An on-track task under the same flag-off setup clears a stale value.
+    _STUB.reset()
+    _STUB.tasks.rows.append(_task(
+        "A", date(2026, 5, 4), date(2026, 5, 8), pct=60.0,
+        projected_finish_date="2026-05-12", slip_days=2,
+    ))
+    a, _ = asyncio.run(_run(DD))
     assert a["projected_finish_date"] is None
 
 

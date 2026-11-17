@@ -410,6 +410,7 @@ def test_voice_pin_issue_super_refused_pm_allowed_by_role(monkeypatch):
         run(ir.issue_voice_pin(payload, _ctx("super")))
     assert e.value.status_code == 403
     db = _DB()
+    db.projects.docs.append({"id": "p1", "tenant_id": "t1", "name": "P1"})
     monkeypatch.setattr(ir, "get_db", lambda: db)
     out = run(ir.issue_voice_pin(payload, _ctx("pm")))
     assert len(out["pin"]) == 6

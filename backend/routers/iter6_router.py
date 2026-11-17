@@ -23,9 +23,16 @@ from pydantic import Field
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant
+from services.project_access import check_project_access, check_record_access, project_scope_filter
 
 
 router = APIRouter(tags=["iter6"])
+
+# Per-project access (2026-11-16). Routes with a project id or a project
+# record id in the URL (daily report, photo, recovery suggestion, submittal,
+# /projects/{project_id}/...) are checked by the route-level dependency
+# (services/project_access.enforce_project_scope). The handlers below add
+# the checks for ids sent in the body and limit the cross-project lists.
 
 
 # ============================================================
@@ -252,10 +259,13 @@ async def export_daily_report_pdf(
     from io import BytesIO
     import base64 as _b64
     from PIL import Image
-    from services.storage import aget_object
+    from services.storage import aget_object, key_belongs_to_tenant, open_image_capped
 
     async def _photo_data_uri(p: dict) -> Optional[str]:
-        path = p.get("thumbnail_path") or p.get("storage_path")
+        # Only read files stored under this company (a row pointed at
+        # another company's file shows "image unavailable" instead).
+        path = next((k for k in (p.get("thumbnail_path"), p.get("storage_path"))
+                     if k and key_belongs_to_tenant(k, ctx["tenant_id"])), None)
         if not path:
             return None
         try:
@@ -266,7 +276,8 @@ async def export_daily_report_pdf(
 
     def _thumb_data_uri(data: bytes) -> Optional[str]:
         try:
-            img = Image.open(BytesIO(data))
+            # Pixel-capped open: a "decompression bomb" is skipped.
+            img = open_image_capped(data)
             img.thumbnail((320, 320))  # in-place; keeps aspect ratio
             buf = BytesIO()
             fmt = "JPEG" if (img.mode in ("RGB", "L")) else "PNG"
@@ -282,7 +293,12 @@ async def export_daily_report_pdf(
     photo_cards: list[str] = []
     for p in photos:
         uri = await _photo_data_uri(p)
-        caption = _html_escape(p.get("caption") or "No caption")
+        raw_caption = p.get("caption") or ""
+        # Older photos may carry a placeholder caption from the no-AI-key
+        # stub ("[dev stub] ..."); never print that in a client report.
+        if isinstance(raw_caption, str) and raw_caption.strip().lower().startswith("[dev stub]"):
+            raw_caption = ""
+        caption = _html_escape(raw_caption or "No caption")
         captured = _html_escape(p.get("captured_at") or "—")
         if uri:
             img_tag = f"<img src='{uri}' alt='photo'/>"
@@ -313,6 +329,13 @@ async def export_daily_report_pdf(
 
     # External-mode flag in the page title so reviewers can tell at a glance
     title_suffix = ""
+    # A report filed as a no-work day says so, with its reason, right
+    # under the title in both the internal and the external copy.
+    from services.no_work_day import no_work_heading
+    _no_work = no_work_heading(dr)
+    no_work_html = (
+        f"<div class='no-work-heading'>{_html_escape(_no_work)}</div>" if _no_work else ""
+    )
     # `(proj or {{}})` inside the f-string below evaluated to a SET holding
     # a dict (TypeError -> 500) whenever the project row was missing.
     _proj_d = proj or {}
@@ -346,9 +369,11 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 .header-meta {{ width: 100%; margin: 6px 0 8px; border-collapse: collapse; font-size: 9pt; }}
 .header-meta th {{ background: #f1f5f9; color: #475569; padding: 4px 6px; border: 1px solid #cbd5e1; text-align: left; font-weight: 600; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.04em; width: 14%; }}
 .header-meta td {{ padding: 4px 6px; border: 1px solid #cbd5e1; vertical-align: top; background: #ffffff; color: #0f172a; }}
+.no-work-heading {{ font-size: 14pt; font-weight: 700; color: #92400e; background: #fef3c7; border-left: 4px solid #d97706; padding: 6px 10px; margin: 6px 0 4px; }}
 </style></head><body>
 <div class='audience'>{'INTERNAL' if is_internal else ''}</div>
 <h1>Daily Report — {_html_escape(proj['name'] if proj else dr['project_id'])}{title_suffix}</h1>
+{no_work_html}
 <!-- Feature DR Header Auto-Population (2026-05-20) -- formal project /
      contract / signature block. Same six fields shown on the live DR
      header in the UI. Same for internal and external exports. -->
@@ -438,6 +463,18 @@ async def weekly_rollup_pdf(project_id: str, week_starting: date, ctx: dict = De
         f"<tr><td>{_html_escape(k)}</td><td class='num'>{v:.1f}</td></tr>"
         for k, v in (rollup.get("hours_by_trade") or {}).items()
     ) or "<tr><td colspan='2' class='muted'>No trade hours.</td></tr>"
+    # Days in the week filed as no-work days, each with its heading.
+    from services.date_format import format_date_mmddyyyy
+    no_work_days = rollup.get("no_work_days") or []
+    no_work_section = (
+        "<h2>No work days</h2><table><thead><tr><th>Date</th><th>Report</th></tr></thead><tbody>"
+        + "".join(
+            f"<tr><td>{_html_escape(format_date_mmddyyyy(d.get('report_date')))}</td>"
+            f"<td>{_html_escape(d.get('heading'))}</td></tr>"
+            for d in no_work_days
+        )
+        + "</tbody></table>"
+    ) if no_work_days else ""
     html = f"""<!DOCTYPE html><html><head><meta charset='utf-8'><style>
 @page {{ size: Letter; margin: 0.7in; }}
 body {{ font-family: 'Helvetica', sans-serif; color: #0f172a; }}
@@ -462,6 +499,7 @@ td {{ padding: 5px 6px; border-bottom: 1px solid #e2e8f0; }}
 </div>
 <h2>Hours by trade</h2>
 <table><thead><tr><th>Trade</th><th>Hours</th></tr></thead><tbody>{trade_html}</tbody></table>
+{no_work_section}
 </body></html>"""
     pdf = await arender_pdf(html)
     return Response(
@@ -480,11 +518,14 @@ async def extract_photo_exif(photo_id: str, ctx: dict = Depends(require_tenant))
     fingerprinting (substitution for DINOv2 — pHash is deterministic and free)."""
     from PIL import Image, ExifTags
     import imagehash
-    from services.storage import aget_object
+    from services.storage import aget_object, key_belongs_to_tenant, open_image_capped
     db = get_db()
     p = await db.photos.find_one(tenant_filter(ctx["tenant_id"], {"id": photo_id}), {"_id": 0})
     if not p or not p.get("storage_path"):
         raise HTTPException(404, "Photo not found")
+    # Only read a file stored under this company.
+    if not key_belongs_to_tenant(p["storage_path"], ctx["tenant_id"]):
+        raise HTTPException(404, "File not found")
     try:
         data, _ct = await aget_object(p["storage_path"])
     except Exception as e:
@@ -492,7 +533,9 @@ async def extract_photo_exif(photo_id: str, ctx: dict = Depends(require_tenant))
 
     out: dict = {}
     try:
-        img = Image.open(io.BytesIO(data))
+        # Pixel-capped open: an oversized image is reported as an error
+        # here (the photo itself is kept), never decoded.
+        img = open_image_capped(data)
         exif_raw = img._getexif() or {}
         exif: dict = {}
         for k, v in exif_raw.items():
@@ -665,7 +708,10 @@ async def recovery_eval(project_id: Optional[str] = None, ctx: dict = Depends(re
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"status": "applied"})
     if project_id:
+        # Checked by the route-level dependency (project_id query parameter).
         f["project_id"] = project_id
+    else:
+        f = await project_scope_filter(ctx, f)
     recs = await db.ai_recovery_suggestions.find(f, {"_id": 0}).sort("applied_at", -1).limit(100).to_list(100)
     rows: list[dict] = []
     total_pred = 0.0
@@ -725,7 +771,8 @@ async def recovery_eval(project_id: Optional[str] = None, ctx: dict = Depends(re
 async def aging_detail(ctx: dict = Depends(require_tenant)):
     """Per-record aging breakdown for procurement dashboard."""
     db = get_db()
-    f = tenant_filter(ctx["tenant_id"])
+    # Per-project access (switch on): only the caller's projects.
+    f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]))
     now = datetime.now(timezone.utc)
 
     rfi_cut = (now - timedelta(days=5)).isoformat()[:10]
@@ -788,6 +835,11 @@ async def link_submittal(submittal_id: str, payload: SubmittalLinkUpdate, ctx: d
     updates = {k: v for k, v in payload.model_dump(mode="json").items() if v is not None}
     if not updates:
         raise HTTPException(400, "No fields")
+    # The submittal itself is checked by the route-level dependency; the
+    # activity it is linked to (body) must also be on a project the caller
+    # is assigned to.
+    if updates.get("schedule_activity_id"):
+        await check_record_access(ctx, "task", updates["schedule_activity_id"], write=True)
     res = await db.submittals.update_one(
         tenant_filter(ctx["tenant_id"], {"id": submittal_id}), {"$set": updates},
     )
@@ -858,6 +910,8 @@ async def compute_section(payload: SectionRequest, ctx: dict = Depends(require_t
     """Compute a vertical section (cut-line on plan → list of intersected
     rooms with their floors stacked). Returns segments per floor for the
     frontend to render as 2D rects."""
+    # The project is in the body: the caller must be assigned to it.
+    await check_project_access(ctx, payload.project_id, write=True)
     db = get_db()
     f = tenant_filter(ctx["tenant_id"], {"project_id": payload.project_id})
     floors = await db.floors.find(f, {"_id": 0}).sort("floor_number", 1).to_list(50)

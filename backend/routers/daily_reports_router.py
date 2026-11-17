@@ -17,8 +17,20 @@ from models import (
     EDIT_REASON_MIN_LEN,
     gen_id, utc_now, StrictModel,
 )
-from auth import require_tenant
+from auth import require_tenant, require_daily_report_writer
 from audit import write_audit
+# Per-project access (2026-11-16). Routes with a project id or a daily
+# report / activity / presence id in the URL are already checked by the
+# route-level dependency (services/project_access.enforce_project_scope).
+# The calls below cover ids that arrive in the request body, and lists.
+from services.project_access import (
+    check_project_access, check_record_access, project_scope_filter,
+)
+from services.project_scope import require_project
+# Report ownership (2026-11-16): a draft is changed only by its author, an
+# admin or a project manager; a submitted report is deleted only by an admin
+# or project manager. See services/edit_permissions.py.
+from services.edit_permissions import ensure_can_change_draft, ensure_can_delete_report
 
 logger = logging.getLogger("ice_schedule_ops.dr")
 
@@ -43,6 +55,26 @@ def _dr_locked_detail(status: Optional[str]) -> str:
 
 
 _SUBMIT_APPROVED_DETAIL = "This report was already approved and can't be submitted again."
+
+
+async def _refresh_actuals_after_report_lock(ctx: dict, project_id, daily_report_id: str) -> None:
+    """On submit and on approve: recompute actual start / finish for every
+    task on this report's rows, then run one schedule recompute for the
+    project. A task touched only by an older (back-dated) report gets its
+    actual dates here even when no row save triggered it. Percent complete
+    is never changed. Best effort: the report is already saved, so a failure
+    here is logged and never undoes the submit or approval."""
+    try:
+        from services.schedule_feedback import recompute_actuals_for_report
+        task_ids = await recompute_actuals_for_report(get_db(), ctx["tenant_id"], daily_report_id)
+        if task_ids and project_id:
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(
+                ctx["tenant_id"], project_id,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+    except Exception as exc:
+        logger.warning("actual-date refresh after report %s failed: %s", daily_report_id, exc)
 
 
 # Bucket D Phase 4 -- supplements appendix. Returns every event with
@@ -105,9 +137,13 @@ async def dr_activity_chips(
     dr_ids = list({r.get("daily_report_id") for r in rows if r.get("daily_report_id")})
     drs: dict[str, dict] = {}
     if dr_ids:
+        # Per-project access: only rows whose report is in a project the
+        # caller may see (no change while FF_PROJECT_ACCESS is off).
+        dr_q = await project_scope_filter(
+            ctx, tenant_filter(ctx["tenant_id"], {"id": {"$in": dr_ids}}),
+        )
         dr_docs = await db.daily_reports.find(
-            tenant_filter(ctx["tenant_id"], {"id": {"$in": dr_ids}}),
-            {"_id": 0, "id": 1, "report_date": 1},
+            dr_q, {"_id": 0, "id": 1, "report_date": 1},
         ).to_list(length=None)
         drs = {d["id"]: d for d in dr_docs}
     out: list[dict] = []
@@ -159,7 +195,9 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
         {"_id": 0},
     ).limit(200).to_list(200)
 
-    yesterday = (report_date - timedelta(days=1)).isoformat()
+    from services.schedule_feedback import start_of_day_pct, task_report_histories
+    from services.progress_ratchet import clamp_to_limits, limits_from_history
+    yesterday =(report_date - timedelta(days=1)).isoformat()
     # Existing rows we already have so we don't double-insert on refresh
     existing = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id},
@@ -169,14 +207,20 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
     next_pos = max((r["position"] for r in existing), default=-1) + 1
 
     inserted = 0
+    # Report history for every new task in one query (not one per task).
+    histories = await task_report_histories(
+        db, tenant_id, [t["id"] for t in tasks if t["id"] not in existing_ids])
+    prev_dr = await db.daily_reports.find_one(
+        tenant_filter(tenant_id, {"project_id": project_id, "report_date": yesterday}),
+        {"_id": 0, "id": 1},
+    )
     for t in tasks:
         if t["id"] in existing_ids:
             continue
-        prev_dr = await db.daily_reports.find_one(
-            tenant_filter(tenant_id, {"project_id": project_id, "report_date": yesterday}),
-            {"_id": 0, "id": 1},
-        )
-        prev_pct = float(t.get("pct_complete") or 0)
+        # A back-dated report starts from the earlier report's end-of-day,
+        # never from today's progress (see start_of_day_pct).
+        prev_pct = await start_of_day_pct(db, tenant_id, t, rd_iso,
+                                          history=histories.get(t["id"], []))
         if prev_dr:
             prev_row = await db.daily_report_activities.find_one(
                 {"daily_report_id": prev_dr["id"], "schedule_activity_id": t["id"]},
@@ -184,6 +228,10 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
             )
             if prev_row and prev_row.get("pct_complete_end_of_day") is not None:
                 prev_pct = float(prev_row["pct_complete_end_of_day"])
+        # Progress lock: a new row never starts below what an earlier
+        # submitted report recorded, nor above a later submitted one.
+        prev_pct = clamp_to_limits(prev_pct, limits_from_history(
+            histories.get(t["id"], []), rd_iso, exclude_dr_id=daily_report_id))
 
         loc_name = None
         if t.get("location_id"):
@@ -224,12 +272,13 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
     return inserted
 
 
-@router.post("/daily-reports", response_model=DailyReport)
+@router.post("/daily-reports", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Company check (404 for an unknown project) then the per-project
+    # access check (403 "You are not assigned to this project", which a
+    # phone keeps queued; recorded only while the switch is off).
+    proj = await require_project(ctx, payload.project_id, {"_id": 0})
     existing = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {
             "project_id": payload.project_id,
@@ -240,11 +289,23 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
     if existing:
         return DailyReport(**existing)
     doc = payload.model_dump(mode="json")
+    # Report ownership (2026-11-16): the author of a draft is the only field
+    # user who may change it. An admin or project manager who opens the day
+    # first (for example "+ New" in a gallery, or the date picker) is not
+    # counted as its author: they can change any draft anyway, and counting
+    # them would lock the superintendent out of the day's only report. The
+    # draft then has no author and is open to every field writer on the
+    # project, the same as an older report; who opened it is kept in
+    # opened_by. An admin or project manager can also hand a draft to
+    # another writer (PATCH /daily-reports/{id}/author).
+    from services.edit_permissions import is_privileged
+    opener_is_privileged = is_privileged(ctx)
     doc.update({
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
         "status": "draft",
-        "prepared_by": ctx["user"]["id"],
+        "prepared_by": None if opener_is_privileged else ctx["user"]["id"],
+        "opened_by": ctx["user"]["id"] if opener_is_privileged else None,
         "submitted_by": None,
         "submitted_at": None,
         "approved_by": None,
@@ -279,7 +340,7 @@ async def create_or_get_daily_report(payload: DailyReportCreate, ctx: dict = Dep
     return DailyReport(**doc)
 
 
-@router.post("/daily-reports/{daily_report_id}/refresh-grid")
+@router.post("/daily-reports/{daily_report_id}/refresh-grid", dependencies=[Depends(require_daily_report_writer)])
 async def refresh_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Re-run pre-populate against the current schedule. Picks up any
     activity whose [planned_start, planned_finish] now contains the report
@@ -290,6 +351,7 @@ async def refresh_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)
         raise HTTPException(404, "Daily report not found")
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     inserted = await _prepopulate_grid(
         tenant_id=ctx["tenant_id"], project_id=dr["project_id"],
         daily_report_id=daily_report_id, report_date=date.fromisoformat(dr["report_date"]),
@@ -306,65 +368,15 @@ async def list_daily_reports(project_id: str, ctx: dict = Depends(require_tenant
     return [DailyReport(**d) for d in docs]
 
 
-async def _progress_without_dr(db, tenant_id: str, task_id: str, dr_id: str, now_iso: str) -> dict:
-    """Task progress as if report dr_id never existed: the latest REMAINING
-    report that set progress wins; with none left, the value from before the
-    first report ever touched the task."""
-    pct_evs = await db.task_sync_events.find(
-        tenant_filter(tenant_id, {"task_id": task_id, "daily_report_id": {"$ne": dr_id},
-                                  "fields_updated.pct_complete": {"$exists": True}}),
-        {"_id": 0, "daily_report_activity_id": 1},
-    ).to_list(20000)
-    row_ids = list({e.get("daily_report_activity_id") for e in pct_evs if e.get("daily_report_activity_id")})
-    best = None
-    if row_ids:
-        rows = await db.daily_report_activities.find(
-            {"id": {"$in": row_ids}, "schedule_activity_id": task_id}, {"_id": 0},
-        ).to_list(len(row_ids))
-        drs = {d["id"]: d for d in await db.daily_reports.find(
-            tenant_filter(tenant_id, {"id": {"$in": list({r["daily_report_id"] for r in rows})}}),
-            {"_id": 0, "id": 1, "report_date": 1, "status": 1},
-        ).to_list(len(rows) or 1)}
-        for r in rows:
-            d = drs.get(r["daily_report_id"])
-            if d and (best is None or str(d.get("report_date")) > str(best[1].get("report_date"))):
-                best = (r, d)
-    if best:
-        r, d = best
-        pct = float(r.get("pct_complete_end_of_day") or 0)
-        out = {
-            "pct_complete": pct,
-            "status": "complete" if pct >= 100 else "in_progress" if pct > 0 else "not_started",
-            "last_synced_from_dr": {
-                "daily_report_id": d["id"], "daily_report_date": d.get("report_date"),
-                "synced_at": now_iso,
-                "sync_state": "provisional" if d.get("status") == "draft" else "confirmed",
-            },
-        }
-        if r.get("linked_crew_id"):
-            out["current_crew_id"] = r["linked_crew_id"]
-        return out
-    out: dict = {"last_synced_from_dr": None}
-    async for ev in db.task_sync_events.find(
-        tenant_filter(tenant_id, {"task_id": task_id}), {"_id": 0, "fields_updated": 1},
-    ).sort("triggered_at", 1):
-        for k in ("pct_complete", "status", "current_crew_id"):
-            fu = (ev.get("fields_updated") or {})
-            if k in fu and k not in out:
-                out[k] = (fu[k] or {}).get("before")
-        if all(k in out for k in ("pct_complete", "status", "current_crew_id")):
-            break
-    pct = float(out.get("pct_complete") or 0)
-    out["pct_complete"] = pct
-    if not out.get("status") or out["status"] == "deleted":
-        out["status"] = "complete" if pct >= 100 else "in_progress" if pct > 0 else "not_started"
-    return out
-
-
 async def _reverse_dr_schedule_effects(db, ctx: dict, dr: dict) -> dict:
     """Undo what this report wrote onto schedule tasks: progress, status,
-    crew and hours; soft-delete unplanned tasks it created. Progress is only
-    rolled back when this report is still the latest one that set it."""
+    crew and hours; soft-delete unplanned tasks it created. Progress is reset
+    only when this report is the one that currently sets it (the task's
+    last_synced_from_dr points at it): it then goes back to the end-of-day
+    of the latest-dated report row that remains (see
+    services.schedule_feedback.current_progress_from_reports). Progress set
+    outside reports (Microsoft Project sync, a Tasks page edit) or by a
+    later report is kept."""
     tid_tenant = ctx["tenant_id"]
     dr_id = dr["id"]
     rows = await db.daily_report_activities.find(
@@ -374,6 +386,7 @@ async def _reverse_dr_schedule_effects(db, ctx: dict, dr: dict) -> dict:
         tenant_filter(tid_tenant, {"daily_report_id": dr_id}), {"_id": 0},
     ).sort("triggered_at", 1).to_list(20000)
     evented = {ev.get("task_id") for ev in events if ev.get("task_id")}
+    from services.schedule_feedback import current_progress_from_reports
     hours_by_task: dict = {}
     for r in rows:
         t = r.get("schedule_activity_id")
@@ -398,13 +411,18 @@ async def _reverse_dr_schedule_effects(db, ctx: dict, dr: dict) -> dict:
             )
             removed.append(task_id)
             continue
-        task_set: dict = {"updated_at": now_iso, "progress_lock_at": now_iso}
+        task_set: dict = {"updated_at": now_iso}
         dr_hours = hours_by_task.get(task_id, 0.0)
         if dr_hours:
             task_set["actual_hours_to_date"] = max(
                 0.0, float(task.get("actual_hours_to_date") or 0) - dr_hours)
+        # Current progress = the latest-dated report row left once this
+        # report is gone (or the pre-report value when none is left), but
+        # only when this report is what set it.
         if (task.get("last_synced_from_dr") or {}).get("daily_report_id") == dr_id:
-            task_set.update(await _progress_without_dr(db, tid_tenant, task_id, dr_id, now_iso))
+            task_set["progress_lock_at"] = now_iso
+            task_set.update(await current_progress_from_reports(
+                db, tid_tenant, task_id, exclude_dr_id=dr_id))
         await db.tasks.update_one(
             tenant_filter(tid_tenant, {"id": task_id}),
             {"$set": task_set, "$pull": {"crew_assignment_history": {"daily_report_id": dr_id}}},
@@ -419,7 +437,7 @@ async def _reverse_dr_schedule_effects(db, ctx: dict, dr: dict) -> dict:
     return {"reverted": reverted, "removed": removed}
 
 
-@router.delete("/daily-reports/{daily_report_id}")
+@router.delete("/daily-reports/{daily_report_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None,
                               ctx: dict = Depends(require_tenant)):
     """Hard-delete a daily report and cascade. Submitted/approved reports
@@ -438,6 +456,10 @@ async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None
     )
     if not before:
         raise HTTPException(404, "Daily report not found")
+    # Ownership first: a submitted/approved report is deleted only by an
+    # admin or project manager (with a reason, below); a draft also by the
+    # person who started it.
+    ensure_can_delete_report(ctx, before)
     reason = (reason or "").strip()
     if before.get("status") != "draft" and len(reason) < EDIT_REASON_MIN_LEN:
         raise HTTPException(
@@ -495,9 +517,12 @@ async def delete_daily_report(daily_report_id: str, reason: Optional[str] = None
     # from any delays whose daily_report_id we just nulled out).
     if affected_task_ids:
         from services.task_status import compute_and_persist_status
-        from services.schedule_feedback import recompute_task_actuals
+        from services.schedule_feedback import recompute_task_actuals, settle_unstarted_status
         for tid in affected_task_ids:
             await recompute_task_actuals(db, ctx["tenant_id"], tid)
+            # 0% with no report showing work -> not started; work shown
+            # but under 100% -> in progress (the schedule follows the reports).
+            await settle_unstarted_status(db, ctx["tenant_id"], tid)
             await compute_and_persist_status(
                 db, ctx["tenant_id"], tid,
                 actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
@@ -528,6 +553,16 @@ async def get_daily_report(daily_report_id: str, ctx: dict = Depends(require_ten
     doc = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Daily report not found")
+    # The starter's name, for the "Started by ..." note another field user
+    # sees on this draft. Best-effort: a missing user leaves it empty.
+    author_id = doc.get("prepared_by") or doc.get("created_by")
+    if author_id:
+        try:
+            u = await db.users.find_one({"id": author_id}, {"_id": 0, "full_name": 1, "email": 1})
+            if u:
+                doc["prepared_by_name"] = u.get("full_name") or u.get("email")
+        except Exception:
+            pass
     return DailyReport(**doc)
 
 
@@ -582,6 +617,31 @@ async def _enrich_grid_rows(db, tenant_id: str, rows: list) -> list:
     return rows
 
 
+def _limits_fields(lim: dict) -> dict:
+    """Progress-lock range (services/progress_ratchet) as grid row fields."""
+    return {"progress_floor": lim.get("floor"), "progress_floor_from": lim.get("floor_from"),
+            "progress_ceiling": lim.get("ceiling"), "progress_ceiling_from": lim.get("ceiling_from")}
+
+
+async def _stamp_progress_limits(db, tenant_id: str, dr: dict, rows: list) -> list:
+    """Progress lock (2026-11-16): stamp each row with the end-of-day range
+    the OTHER submitted / approved reports allow, so the screens can stop the
+    slider there and say why. Read-time only, never persisted. Best effort:
+    a failure leaves the rows without limits (the save still checks)."""
+    try:
+        from services.progress_ratchet import progress_limits_for_tasks
+        lims = await progress_limits_for_tasks(
+            db, tenant_id, [r.get("schedule_activity_id") for r in rows],
+            dr.get("report_date"), exclude_dr_id=dr.get("id"))
+        for r in rows:
+            lim = lims.get(r.get("schedule_activity_id"))
+            if lim:
+                r.update(_limits_fields(lim))
+    except Exception:
+        logger.warning("progress limits for report %s failed", dr.get("id"), exc_info=True)
+    return rows
+
+
 async def _compute_grid_slider_gates(db, tenant_id: str, tasks: list) -> dict:
     """CPM B1 (2026-06-12) -- {task_id -> slider gate} for the grid's linked
     tasks. One extra $in query for the predecessor states, then the pure
@@ -616,20 +676,26 @@ async def _compute_grid_slider_gates(db, tenant_id: str, tasks: list) -> dict:
 async def get_grid(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     # ensure tenant ownership
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0, "id": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+                                         {"_id": 0, "id": 1, "report_date": 1})
     if not dr:
         raise HTTPException(404, "Daily report not found")
     rows = await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id}, {"_id": 0},
     ).sort("position", 1).to_list(200)
     await _enrich_grid_rows(db, ctx["tenant_id"], rows)
+    await _stamp_progress_limits(db, ctx["tenant_id"], dr, rows)
     return [DailyReportActivity(**r) for r in rows]
 
 
 @router.get("/daily-reports/{daily_report_id}/available-tasks")
 async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Return tasks PLANNED for the report's date that are NOT already in
-    the grid. This is the user-requested 'date-filtered task dropdown'."""
+    the grid. This is the user-requested 'date-filtered task dropdown'.
+
+    Not the website's picker: the "Add activity" dialog calls
+    GET /daily-reports/{id}/activity-picker (schedule_review_router); this
+    endpoint is kept for older clients only."""
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
@@ -637,12 +703,16 @@ async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require
     report_date = dr["report_date"]
     project_id = dr["project_id"]
     # tasks scheduled on this date — effective (slip-aware) window, same rule
-    # as _prepopulate_grid so the dropdown and the grid agree.
+    # as _prepopulate_grid so the dropdown and the grid agree — plus overdue
+    # unfinished tasks (planned finish before this date, still not done) so
+    # late work can still be reported on.
+    from services.schedule_filters import window_or_overdue, is_overdue
+    rd_iso = report_date.isoformat() if hasattr(report_date, "isoformat") else str(report_date)[:10]
     candidates = await db.tasks.find(
         tenant_filter(ctx["tenant_id"], {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
-            "$expr": _scheduled_window_expr(report_date),
+            "$expr": window_or_overdue(rd_iso, rd_iso),
         }),
         {"_id": 0},
     ).limit(200).to_list(200)
@@ -661,9 +731,11 @@ async def list_available_tasks(daily_report_id: str, ctx: dict = Depends(require
             "planned_start": t.get("planned_start"),
             "planned_finish": t.get("planned_finish"),
             "pct_complete": t.get("pct_complete"),
+            "overdue": is_overdue(t, rd_iso),
         }
         for t in candidates if t["id"] not in existing_ids
     ]
+    out.sort(key=lambda r: not r["overdue"])
     return out
 
 
@@ -675,12 +747,13 @@ class AddActivityRow(StrictModel):
     add_reason: Optional[str] = Field(default=None, max_length=500)
 
 
-@router.post("/daily-reports/{daily_report_id}/grid", response_model=DailyReportActivity)
+@router.post("/daily-reports/{daily_report_id}/grid", response_model=DailyReportActivity, dependencies=[Depends(require_daily_report_writer)])
 async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict = Depends(require_tenant)):
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    ensure_can_change_draft(ctx, dr)
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. Tiered
     # permission + add_reason if the DR is submitted/approved.
     from services.edit_permissions import enforce_locked_dr_add_policy
@@ -698,6 +771,9 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
     t = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.schedule_activity_id}), {"_id": 0})
     if not t:
         raise HTTPException(404, "Task not found")
+    # The activity comes from the request body: the caller must also be
+    # allowed to change the activity's own project (403 on a save).
+    await check_project_access(ctx, t.get("project_id"), write=True)
     pos_max = await db.daily_report_activities.find({"daily_report_id": daily_report_id}, {"position": 1}).sort("position", -1).limit(1).to_list(1)
     next_pos = (pos_max[0]["position"] + 1) if pos_max else 0
     loc_name = None
@@ -710,13 +786,23 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
         crew = await db.crews.find_one(tenant_filter(ctx["tenant_id"], {"id": t["crew_id"]}), {"_id": 0, "target_size": 1})
         if crew:
             target_size = int(crew.get("target_size") or 0)
+    # A back-dated report starts from the earlier report's end-of-day,
+    # never from today's progress (see start_of_day_pct).
+    from services.schedule_feedback import start_of_day_pct, task_report_history
+    from services.progress_ratchet import clamp_to_limits, limits_from_history
+    _hist = await task_report_history(db, ctx["tenant_id"], t["id"])
+    sod_pct = await start_of_day_pct(db, ctx["tenant_id"], t, dr.get("report_date"), history=_hist)
+    # Progress lock: the new row starts inside the range the submitted
+    # reports allow (never below an earlier one, never above a later one).
+    _lim = limits_from_history(_hist, dr.get("report_date"), exclude_dr_id=daily_report_id)
+    sod_pct = clamp_to_limits(sod_pct, _lim)
     row = {
         "id": gen_id(),
         "daily_report_id": daily_report_id,
         "schedule_activity_id": t["id"],
         "position": next_pos,
-        "pct_complete_start_of_day": float(t.get("pct_complete") or 0),
-        "pct_complete_end_of_day": float(t.get("pct_complete") or 0),
+        "pct_complete_start_of_day": sod_pct,
+        "pct_complete_end_of_day": sod_pct,
         "crew_count": target_size,
         "crew_id": t.get("crew_id"),
         "hours_worked": 0,
@@ -739,23 +825,96 @@ async def add_grid_row(daily_report_id: str, payload: AddActivityRow, ctx: dict 
             add_reason=payload.add_reason or "", after=row,
             request_id=ctx["request_id"],
         )
-    return DailyReportActivity(**row)
+    return DailyReportActivity(**row, **_limits_fields(_lim))
 
 
-@router.delete("/daily-report-activities/{row_id}")
-async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant)):
+@router.delete("/daily-report-activities/{row_id}", dependencies=[Depends(require_daily_report_writer)])
+async def remove_grid_row(row_id: str, ctx: dict = Depends(require_tenant),
+                          reason: Optional[str] = None,
+                          edit_reason: Optional[str] = None):
+    """Remove one activity row from a report's grid.
+
+    On a submitted or approved report this follows the same rules as
+    editing a row (enforce_locked_dr_edit_policy): a written reason is
+    required (query `reason`, or `edit_reason`), and on someone else's
+    report only an admin or project manager may do it. The removal is then
+    recorded in the audit trail with that reason."""
     db = get_db()
     row = await db.daily_report_activities.find_one({"id": row_id}, {"_id": 0})
     if not row:
         raise HTTPException(404, "Row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": row["daily_report_id"]}), {"_id": 0, "id": 1})
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": row["daily_report_id"]}),
+        {"_id": 0, "id": 1, "project_id": 1, "status": 1,
+         "prepared_by": 1, "created_by": 1},
+    )
     if not dr:
         raise HTTPException(404, "Row not found")
+    ensure_can_change_draft(ctx, dr)
+    from services.edit_permissions import enforce_locked_dr_edit_policy
+    _parent_dr, is_locked_delete, effective_reason = await enforce_locked_dr_edit_policy(
+        ctx=ctx, daily_report_id=row["daily_report_id"],
+        edit_reason=edit_reason or reason, event_type="activity", event_id=row_id,
+    )
     await db.daily_report_activities.delete_one({"id": row_id})
+    if is_locked_delete:
+        await write_audit(
+            tenant_id=ctx["tenant_id"], table_name="daily_report_activities",
+            op="ACTIVITY_GRID_DELETED_POST_SUBMIT", record_id=row_id,
+            before=row, after={"reason": effective_reason},
+            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+        )
+    # Take back what this row put on the schedule task: its hours and
+    # actual dates always; the task's current progress only when this row's
+    # report is the one that set it (last_synced_from_dr points at it). It
+    # then goes back to the latest-dated report row that remains (or the
+    # pre-report value when none is left). Progress set outside reports
+    # (Microsoft Project sync, a Tasks page edit) or by another report is
+    # kept.
+    from services.schedule_feedback import (
+        current_progress_from_reports, recompute_task_actuals, task_hours_from_reports,
+    )
+    task_id = row.get("schedule_activity_id")
+    task = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0}) if task_id else None
+    if task:
+        synced_here = (task.get("last_synced_from_dr") or {}).get("daily_report_id") == dr["id"]
+        now_iso = utc_now().isoformat()
+        task_set: dict = {}
+        if synced_here:
+            task_set.update({"updated_at": now_iso, "progress_lock_at": now_iso})
+            task_set.update(await current_progress_from_reports(db, ctx["tenant_id"], task_id))
+        hours = await task_hours_from_reports(db, ctx["tenant_id"], task_id)
+        if hours != float(task.get("actual_hours_to_date") or 0):
+            task_set["actual_hours_to_date"] = hours
+            task_set.setdefault("updated_at", now_iso)
+        if task_set:
+            await db.tasks.update_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"$set": task_set})
+            after = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": task_id}), {"_id": 0})
+            await write_audit(
+                tenant_id=ctx["tenant_id"], table_name="tasks", op="REVERSED_BY_DR_ROW_DELETE",
+                record_id=task_id, before=task, after=after,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+        act = await recompute_task_actuals(db, ctx["tenant_id"], task_id)
+        actuals_moved = bool(act) and (act.get("actual_start"), act.get("actual_finish")) != (
+            task.get("actual_start"), task.get("actual_finish"))
+        if synced_here or actuals_moved:
+            from services.schedule_feedback import settle_unstarted_status
+            await settle_unstarted_status(db, ctx["tenant_id"], task_id)
+            from services.task_status import compute_and_persist_status
+            await compute_and_persist_status(
+                db, ctx["tenant_id"], task_id,
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
+            from services.cpm import auto_recompute_after_event
+            await auto_recompute_after_event(
+                ctx["tenant_id"], dr.get("project_id") or task.get("project_id"),
+                actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+            )
     return {"ok": True}
 
 
-@router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity)
+@router.patch("/daily-report-activities/{row_id}", response_model=DailyReportActivity, dependencies=[Depends(require_daily_report_writer)])
 async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: dict = Depends(require_tenant)):
     """Bucket C1 Phase 1 — write-back foundation.
 
@@ -789,10 +948,11 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     dr = await db.daily_reports.find_one(
         tenant_filter(ctx["tenant_id"], {"id": before["daily_report_id"]}),
         {"_id": 0, "id": 1, "status": 1, "report_date": 1, "project_id": 1,
-         "submitted_by": 1, "submitted_at": 1},
+         "submitted_by": 1, "submitted_at": 1, "prepared_by": 1, "created_by": 1},
     )
     if not dr:
         raise HTTPException(404, "Row not found")
+    ensure_can_change_draft(ctx, dr)
     # Bucket D Addition 5 (2026-05-12) -- locked-DR edit policy. The
     # prior hard 403 on submitted/approved is replaced with the same
     # tiered permission flow used for event edits: 24h self-edit on
@@ -885,6 +1045,42 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             # If timestamp comparison fails for any weird reason, fall
             # through to normal write rather than blocking the user.
             pass
+
+    # Progress lock (2026-11-16): once a report is submitted or approved the
+    # activity can't go back below what it recorded on a later report, and a
+    # back-dated report can't claim more than a later submitted one. Going
+    # back means editing the report that recorded the higher value (itself
+    # checked against its own neighbours). A "complete" end-of-day status
+    # means 100%. Refused before anything is written (422,
+    # code progress_out_of_range). See services/progress_ratchet.py.
+    _implied_eod = updates.get("pct_complete_end_of_day")
+    if _implied_eod is None and updates.get("status_at_end_of_day") == "complete":
+        _implied_eod = 100.0
+    if _implied_eod is not None and before.get("schedule_activity_id"):
+        from services.progress_ratchet import progress_limits, ensure_in_range
+        ensure_in_range(float(_implied_eod), await progress_limits(
+            db, ctx["tenant_id"], before["schedule_activity_id"], dr.get("report_date"),
+            exclude_dr_id=dr["id"]))
+    # A row saved without a percent stamp (pct_set_at) counts as entered by a
+    # person when its end-of-day differs from its start-of-day, so editing
+    # only the start-of-day can change whether the row locks progress:
+    #   * a row that already counted keeps counting (stamped below), so
+    #     setting start-of-day equal to end-of-day can't quietly unlock it;
+    #   * a row that starts counting is range-checked like a percent save.
+    sod_stamp_set_at: Optional[str] = None
+    if ("pct_complete_start_of_day" in updates and _implied_eod is None
+            and not before.get("pct_set_at") and before.get("schedule_activity_id")):
+        from services.schedule_feedback import _row_sets_progress
+        _eod_now = float(before.get("pct_complete_end_of_day") or 0)
+        _was = _row_sets_progress(before)
+        _will = _row_sets_progress({**before, **updates})
+        if _was:
+            sod_stamp_set_at = utc_now().isoformat()
+        elif _will:
+            from services.progress_ratchet import progress_limits, ensure_in_range
+            ensure_in_range(_eod_now, await progress_limits(
+                db, ctx["tenant_id"], before["schedule_activity_id"], dr.get("report_date"),
+                exclude_dr_id=dr["id"]))
 
     # CPM B1 (2026-06-12) -- EOD-slider gate enforcement. FF_SLIDER_GATING.
     # A successor cannot earn progress its predecessors don't yet allow
@@ -980,6 +1176,20 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     row_updates["status_at_end_of_day"] = compute_auto_status(
         (task_before or {}).get("open_blocker_count", 0), _eod_for_status,
     )
+    # Hours typed on the row by a person replace any crew-derived hours, so
+    # removing a crew row later never wipes them (see sync_row_from_presence).
+    if "hours_worked" in updates and float(updates["hours_worked"] or 0) != float(before.get("hours_worked") or 0):
+        row_updates["hours_from_presence"] = False
+    # A person entered this row's end-of-day percent: from now on the row
+    # can decide the task's current progress. A row opened only for notes,
+    # crew or hours keeps a pre-filled percent that may be stale, so it
+    # never does (see services.schedule_feedback._row_sets_progress).
+    if "pct_complete_end_of_day" in updates or sod_stamp_set_at:
+        row_updates["pct_set_at"] = now_iso
+    # A start-of-day typed by a person is kept as typed: the automatic
+    # "was N%" refresh (schedule_feedback.refresh_start_of_day) skips it.
+    if "pct_complete_start_of_day" in updates:
+        row_updates["sod_set_at"] = now_iso
     row_updates["sync_state"] = "provisional"
     row_updates["last_sync_at"] = now_iso
     row_updates["task_external_modified_warning"] = False
@@ -1002,14 +1212,36 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                       "external_modified_after_sync": False}
     history_push: Optional[dict] = None
 
-    if "pct_complete_end_of_day" in updates:
+    # Back-dated reports (2026-11-16): only the LATEST-DATED report sets the
+    # task's current progress, status, crew and last-synced marker. A row on
+    # an older report is stored (and still counts for actual start/finish)
+    # but must not lower or raise today's progress. Same date: this save wins.
+    # Only a later row whose end-of-day a person entered counts; a later
+    # pre-filled row opened just for notes, crew or hours does not.
+    progress_kept_from: Optional[str] = None
+    if task_before and not notes_only:
+        from services.schedule_feedback import task_report_history, progress_rows
+        _later = [h for h in progress_rows(await task_report_history(
+                      db, ctx["tenant_id"], task_id, exclude_row_id=row_id))
+                  if str(h["_report_date"]) > str(dr.get("report_date") or "")[:10]]
+        if _later:
+            progress_kept_from = _later[-1]["_report_date"].isoformat()
+            # A back-dated save is history only: the task's progress does
+            # not change, so its edit stamps stay as they are. Stamping
+            # them would make the next save on the latest report (which
+            # still holds the old stamp) answer a false "updated
+            # externally" conflict.
+            task_set.pop("updated_at", None)
+            task_set.pop("progress_lock_at", None)
+
+    if "pct_complete_end_of_day" in updates and not progress_kept_from:
         new_pct = float(updates["pct_complete_end_of_day"])
         task_set["prev_pct_complete"] = before.get("pct_complete_end_of_day", 0)
         task_set["pct_complete"] = new_pct
         # Existing simple status mapping — Phase 2 will replace this with
         # the computed_status state machine.
         task_set["status"] = "complete" if new_pct >= 100 else "in_progress"
-    if "status_at_end_of_day" in updates:
+    if "status_at_end_of_day" in updates and not progress_kept_from:
         # Map the row's per-day status to the task's lifecycle status.
         # 'not_started' / 'blocked' from the grid mean the task isn't
         # finished — keep it in_progress unless EOD% above bumped it.
@@ -1018,15 +1250,19 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             task_set["status"] = "complete"
         elif row_status == "blocked":
             task_set["status"] = "in_progress"
-    if "hours_worked" in updates:
-        delta = float(updates["hours_worked"]) - float(before.get("hours_worked") or 0)
-        if delta:
-            task_set["actual_hours_to_date"] = float(task_before.get("actual_hours_to_date") or 0) + delta
+    if "hours_worked" in updates and task_before:
+        # Hours to date = the sum over ALL report rows for the task (this
+        # row is already saved above), not a running delta that can drift.
+        from services.schedule_feedback import task_hours_from_reports
+        _hours = await task_hours_from_reports(db, ctx["tenant_id"], task_id)
+        if _hours != float(task_before.get("actual_hours_to_date") or 0):
+            task_set["actual_hours_to_date"] = _hours
     crew_picked_for_presence = None
     if "linked_crew_id" in updates:
         new_crew = updates["linked_crew_id"]
         if new_crew != (task_before or {}).get("current_crew_id"):
-            task_set["current_crew_id"] = new_crew
+            if not progress_kept_from:
+                task_set["current_crew_id"] = new_crew
             history_push = {
                 "crew_id": new_crew,
                 "daily_report_id": before["daily_report_id"],
@@ -1036,13 +1272,16 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             # tying this trade to the activity at first shift, no zone.
             # User can refine zone/shift on the detailed roster later.
             crew_picked_for_presence = new_crew
-    # Always stamp the last-synced marker so the UI can show provisional.
-    task_set["last_synced_from_dr"] = {
-        "daily_report_id": before["daily_report_id"],
-        "daily_report_date": dr.get("report_date"),
-        "synced_at": now_iso,
-        "sync_state": "provisional" if dr.get("status") == "draft" else "confirmed",
-    }
+    # Stamp the last-synced marker so the UI can show provisional (only when
+    # this report is the one that sets current progress).
+    _sync_state = "provisional" if dr.get("status") == "draft" else "confirmed"
+    if not progress_kept_from:
+        task_set["last_synced_from_dr"] = {
+            "daily_report_id": before["daily_report_id"],
+            "daily_report_date": dr.get("report_date"),
+            "synced_at": now_iso,
+            "sync_state": _sync_state,
+        }
 
     update_doc: dict = {"$set": task_set}
     if history_push is not None:
@@ -1076,7 +1315,7 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
             "daily_report_activity_id": row_id,
             "triggered_by_user_id": ctx["user"]["id"],
             "triggered_at": now_iso,
-            "sync_state": task_set["last_synced_from_dr"]["sync_state"],
+            "sync_state": _sync_state,
             "fields_updated": fields_updated,
             # Phase 2/4 will populate these — Phase 1 leaves them empty.
             "cpm_recomputed": False,
@@ -1109,18 +1348,33 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
         _act_before = (task_before.get("actual_start"), task_before.get("actual_finish"))
         _act = await recompute_task_actuals(db, ctx["tenant_id"], task_id)
         _actuals_moved = bool(_act) and (_act.get("actual_start"), _act.get("actual_finish")) != _act_before
+        # 0% with no actual start is "not started", never "in progress"
+        # (the simple mapping above writes in_progress for any pct < 100).
+        if not progress_kept_from:
+            from services.schedule_feedback import settle_unstarted_status
+            if await settle_unstarted_status(db, ctx["tenant_id"], task_id):
+                await compute_and_persist_status(
+                    db, ctx["tenant_id"], task_id,
+                    actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+                )
         if _act.get("actual_start") and not task_before.get("actual_start"):
             try:
                 await detect_out_of_order(db, ctx["tenant_id"], task_id, dr.get("report_date"))
             except Exception as exc:
                 logging.getLogger(__name__).warning("out-of-order check failed: %s", exc)
-        if "pct_complete_end_of_day" in updates or _actuals_moved:
+        # The forecast reads percent complete (remaining work is forecast
+        # from the data date), so a changed percent always re-runs it, even
+        # with every schedule flag off (2026-11-16).
+        _pct_changed = ("pct_complete_end_of_day" in updates and not progress_kept_from
+                        and float(task_set.get("pct_complete", 0) or 0)
+                        != float(task_before.get("pct_complete") or 0))
+        if ("pct_complete_end_of_day" in updates and not progress_kept_from) or _actuals_moved:
             from services.feature_flags import progress_recompute_enabled_for
             _dr_project_id = dr.get("project_id") or task_before.get("project_id")
             _proj = await db.projects.find_one(
                 tenant_filter(ctx["tenant_id"], {"id": _dr_project_id}),
                 {"_id": 0, "schedule_mode": 1, "schedule_engine": 1}) or {}
-            if _actuals_moved or progress_recompute_enabled_for(_proj):
+            if _actuals_moved or _pct_changed or progress_recompute_enabled_for(_proj):
                 from services.cpm import auto_recompute_after_event
                 await auto_recompute_after_event(
                     ctx["tenant_id"], _dr_project_id,
@@ -1139,13 +1393,29 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                      "sub_id": crew_picked_for_presence},
                     {"_id": 0, "id": 1},
                 )
+                # Pull trade + company from the daily_presence aggregate
+                # row that the user added to the crew presence panel.
+                src = await db.daily_presence.find_one(
+                    {"id": crew_picked_for_presence},
+                    {"_id": 0, "trade": 1, "company_name": 1, "headcount": 1,
+                     "daily_report_id": 1, "schedule_activity_id": 1},
+                ) or {}
+                # The picked crew row is itself already linked to this
+                # activity on this report: it is counted already, so a
+                # second (auto-created) row would count it twice.
+                if (src.get("schedule_activity_id") == task_id
+                        and src.get("daily_report_id") == before["daily_report_id"]):
+                    existing = True
+                # When other crew rows are already linked to the activity,
+                # the row's crew count is their sum: the new row takes the
+                # picked crew's own headcount instead of copying that sum.
+                linked_others = await db.daily_presence.find_one(
+                    tenant_filter(ctx["tenant_id"], {
+                        "daily_report_id": before["daily_report_id"],
+                        "schedule_activity_id": task_id}),
+                    {"_id": 0, "id": 1},
+                ) if not existing else None
                 if not existing:
-                    # Pull trade + company from the daily_presence aggregate
-                    # row that the user added to the crew presence panel.
-                    src = await db.daily_presence.find_one(
-                        {"id": crew_picked_for_presence},
-                        {"_id": 0, "trade": 1, "company_name": 1},
-                    ) or {}
                     presence_doc = _presence_doc_with_derived({
                         "id": gen_id(),
                         "tenant_id": ctx["tenant_id"],
@@ -1155,7 +1425,9 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                         "sub_id": crew_picked_for_presence,
                         "company_name": src.get("company_name"),
                         "sub_name": src.get("company_name"),
-                        "headcount": int(updates.get("crew_count") or after.get("crew_count") or 0),
+                        "headcount": int(
+                            (src.get("headcount") or 0) if linked_others
+                            else (updates.get("crew_count") or after.get("crew_count") or 0)),
                         "hours_per_person": 8.0,
                         "shift": "first",
                         "schedule_activity_id": task_id,
@@ -1175,6 +1447,10 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                         record_id=presence_doc["id"], before=None, after=presence_doc,
                         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
                     )
+                    # The new crew row counts toward the activity right
+                    # away (row hours / crew, hours to date, actual dates).
+                    await _after_presence_change(ctx, before["daily_report_id"], [task_id],
+                                                 dr.get("project_id"))
             except Exception:
                 # Auto-create is best-effort — sync write-back already
                 # wrote the linked_crew_id; presence row failure shouldn't
@@ -1242,10 +1518,11 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                 if cand and (stamp is None or _stamp_is_newer(cand, stamp)):
                     stamp = cand
             if stamp:
-                return DailyReportActivity(**{**after, "task_updated_at": stamp})
+                return DailyReportActivity(**{**after, "task_updated_at": stamp,
+                                              "task_progress_kept_from": progress_kept_from})
         except Exception:
             logger.warning("grid PATCH: could not read back task stamp for task %s", task_id, exc_info=True)
-    return DailyReportActivity(**after)
+    return DailyReportActivity(**{**after, "task_progress_kept_from": progress_kept_from})
 
 
 def _parse_stamp(v):
@@ -1304,13 +1581,8 @@ class SubmitPayload(StrictModel):
     no_work_note: Optional[str] = None
 
 
-# Addition 3 -- the event collections that count as "did anything
-# happen on this day". Activities are counted separately because
-# they can be auto-prepopulated from the schedule grid.
-_NO_WORK_EVENT_COLLECTIONS = (
-    "delays", "rfis", "qc_issues", "safety_events",
-    "deliveries", "photos",
-)
+# Addition 3 -- what counts as "did anything happen on this day" lives in
+# services/no_work_day.WORK_EVENT_COLLECTIONS / report_is_empty.
 _NO_WORK_REASON_VALUES = {
     "weather", "holiday", "scheduled_non_work",
     "crew_unavailable", "tenant_restriction", "other",
@@ -1319,29 +1591,57 @@ _NO_WORK_REASON_VALUES = {
 
 async def _dr_is_empty(db, daily_report_id: str, tenant_id: str) -> bool:
     """True if the DR has no activity rows AND no events. Coordination
-    events use linked_daily_report_id (different field name)."""
-    has_activities = await db.daily_report_activities.count_documents(
-        {"daily_report_id": daily_report_id}, limit=1,
-    )
-    if has_activities:
-        return False
-    for coll in _NO_WORK_EVENT_COLLECTIONS:
-        n = await db[coll].count_documents(
-            tenant_filter(tenant_id, {"daily_report_id": daily_report_id}),
-            limit=1,
-        )
-        if n:
-            return False
-    coord = await db.coordination_events.count_documents(
-        tenant_filter(tenant_id, {"linked_daily_report_id": daily_report_id}),
-        limit=1,
-    )
-    if coord:
-        return False
-    return True
+    events use linked_daily_report_id (different field name). The rule
+    lives in services/no_work_day.report_is_empty (shared with the check
+    that clears the no-work-day heading once work is added after submit)."""
+    from services.no_work_day import report_is_empty
+    return await report_is_empty(db, tenant_id, daily_report_id)
 
 
-@router.post("/daily-reports/{daily_report_id}/submit", response_model=DailyReport)
+async def _ensure_report_progress_in_range(db, tenant_id: str, dr: dict) -> None:
+    """Refuse (422, code progress_out_of_range) when any row on this report
+    whose end-of-day a person entered is outside the range the OTHER
+    submitted / approved reports allow. The message names each activity."""
+    from services.schedule_feedback import progress_rows
+    from services.progress_ratchet import (
+        progress_limits_for_tasks, out_of_range_message, ProgressOutOfRangeError,
+    )
+    rows = await db.daily_report_activities.find(
+        {"daily_report_id": dr["id"]}, {"_id": 0},
+    ).sort("position", 1).to_list(5000)
+    rows = [r for r in progress_rows(rows) if r.get("schedule_activity_id")]
+    if not rows:
+        return
+    lims = await progress_limits_for_tasks(
+        db, tenant_id, [r["schedule_activity_id"] for r in rows],
+        dr.get("report_date"), exclude_dr_id=dr["id"])
+    bad = []
+    for r in rows:
+        lim = lims.get(r["schedule_activity_id"]) or {}
+        msg = out_of_range_message(float(r.get("pct_complete_end_of_day") or 0), lim)
+        if msg:
+            name = r.get("activity_description") or r.get("activity_code") or "An activity"
+            code = r.get("activity_code")
+            label = f"{code} {name}" if code and code != name else name
+            bad.append({"row_id": r["id"], "activity_code": code, "activity": label,
+                        "value": float(r.get("pct_complete_end_of_day") or 0),
+                        "message": msg, **_limits_fields(lim)})
+    if not bad:
+        return
+    lines = "; ".join(f"{b['activity']}: {b['message']}" for b in bad)
+    noun = "activity is" if len(bad) == 1 else "activities are"
+    first = bad[0]
+    raise ProgressOutOfRangeError(
+        f"This report can't be submitted yet: {len(bad)} {noun} outside what other "
+        f"submitted reports allow. {lines}",
+        # The top-level limits describe the first refused row; "rows" has all.
+        {"floor": first["progress_floor"], "floor_from": first["progress_floor_from"],
+         "ceiling": first["progress_ceiling"], "ceiling_from": first["progress_ceiling_from"]},
+        rows=bad,
+    )
+
+
+@router.post("/daily-reports/{daily_report_id}/submit", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
@@ -1357,6 +1657,12 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
         raise HTTPException(409, _SUBMIT_APPROVED_DETAIL)
     if before.get("status") == "submitted":
         return DailyReport(**before)
+    ensure_can_change_draft(ctx, before)
+    # Progress lock (2026-11-16): submitting locks this report's progress,
+    # so every row whose end-of-day a person entered must still sit inside
+    # the range the other submitted reports allow (an earlier report may
+    # have been submitted after this draft's row was saved).
+    await _ensure_report_progress_in_range(db, ctx["tenant_id"], before)
 
     # Addition 3 + Test 2G follow-up (2026-05-12) -- empty DR requires
     # explicit no-work-day ack. Returns BOTH the legacy `error` key
@@ -1513,6 +1819,7 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
             "updated_at": confirm_at,
         }},
     )
+    await _refresh_actuals_after_report_lock(ctx, before.get("project_id"), daily_report_id)
 
     after = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     await write_audit(
@@ -1541,6 +1848,7 @@ async def submit_daily_report(daily_report_id: str, payload: SubmitPayload, ctx:
 @router.get("/projects/{project_id}/weekly-rollup")
 async def weekly_rollup(project_id: str, week_starting: date, ctx: dict = Depends(require_tenant)):
     """Master prompt §10.4: auto-generated from 7 days of dailies."""
+    from services.no_work_day import no_work_days_summary
     db = get_db()
     start = week_starting
     end = start + timedelta(days=6)
@@ -1577,6 +1885,9 @@ async def weekly_rollup(project_id: str, week_starting: date, ctx: dict = Depend
         "ppc": ppc,
         "activities_completed": completed_planned,
         "total_planned_activities": total_planned,
+        # Reports filed as no-work days this week, each with its heading
+        # ("No work day — Weather"), so the summary says why a day is blank.
+        "no_work_days": no_work_days_summary(drs),
     }
 
 
@@ -1619,9 +1930,13 @@ async def export_daily_pdf(daily_report_id: str, ctx: dict = Depends(require_ten
     if not signer_name:
         signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
 
+    from services.no_work_day import no_work_heading
     proj = proj or {}
+    _no_work = no_work_heading(dr)
     lines = [
         f"DAILY REPORT — {proj.get('name') or dr['project_id']}",
+        # A no-work-day report says so, with its reason, under the title.
+        *([_no_work] if _no_work else []),
         # Feature DR Header Auto-Population (2026-05-20).
         f"Client:           {proj.get('client_name') or ''}",
         f"Station:          {proj.get('station_id') or ''}",
@@ -1691,6 +2006,11 @@ async def export_dr_via_client_template(
             "PDF template export not yet supported -- please upload an "
             "xlsx template.",
         )
+    # No AI key: a plain message instead of the raw key error.
+    from services.ai_unavailable import (
+        ensure_ai_available, CLIENT_TEMPLATE_UNAVAILABLE_MESSAGE,
+    )
+    ensure_ai_available(CLIENT_TEMPLATE_UNAVAILABLE_MESSAGE)
 
     # Activity rows from the DR grid.
     activities = await db.daily_report_activities.find(
@@ -1745,7 +2065,7 @@ async def export_dr_via_client_template(
     if not signer_name:
         signer_name = (ctx.get("user") or {}).get("full_name", "") or ""
 
-    # AI-powered injection. DrTemplateExportError -> 502 with the AI's
+    # AI-powered injection. DrTemplateExportError -> 422 with the AI's
     # error attached. No fallback to a heuristic engine (per spec).
     from services.storage import get_object
     from services.dr_template_export import (
@@ -1810,7 +2130,7 @@ _CLEARABLE_WEATHER_FIELDS = (
 )
 
 
-@router.patch("/daily-reports/{daily_report_id}", response_model=DailyReport)
+@router.patch("/daily-reports/{daily_report_id}", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     before = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
@@ -1818,6 +2138,7 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
         raise HTTPException(404, "Daily report not found")
     if before.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(before.get("status")))
+    ensure_can_change_draft(ctx, before)
     raw = payload.model_dump(mode="json")
     updates = {k: v for k, v in raw.items() if v is not None}
     # Day-1 round 2 (2026-10-25) -- the phone weather sheet clears a field
@@ -1831,6 +2152,9 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
             updates[k] = None
     if not updates:
         return DailyReport(**before)
+    # Who last edited it (the access report counts editors as well as
+    # authors when it looks for people working on unassigned projects).
+    updates["updated_by"] = ctx["user"]["id"]
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates},
     )
@@ -1838,6 +2162,67 @@ async def patch_daily_report(daily_report_id: str, payload: DailyReportUpdate, c
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="UPDATE",
         record_id=daily_report_id, before=before, after=after,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return DailyReport(**after)
+
+
+class DailyReportAuthorChange(StrictModel):
+    user_id: str = Field(min_length=1, max_length=200)
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.patch("/daily-reports/{daily_report_id}/author", response_model=DailyReport,
+              dependencies=[Depends(require_daily_report_writer)])
+async def change_daily_report_author(daily_report_id: str, payload: DailyReportAuthorChange,
+                                     ctx: dict = Depends(require_tenant)):
+    """Hand a draft to another field writer (2026-11-16). For an admin or
+    project manager only: when the report was opened by the wrong person
+    (a foreman before the superintendent, say) or its author is away, the
+    new author can finish and submit it. Drafts only; a submitted report
+    keeps the person who signed it. Written to the audit log."""
+    from services.edit_permissions import is_privileged
+    from auth import role_can_write_field_events
+    if not is_privileged(ctx):
+        raise HTTPException(403, "Only an admin or project manager can hand a report to someone else.")
+    db = get_db()
+    before = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Daily report not found")
+    if before.get("status") in _LOCKED_DR_STATUSES:
+        raise HTTPException(409, "Only a draft can be handed to someone else.")
+    member = await db.tenant_users.find_one(
+        {"tenant_id": ctx["tenant_id"], "user_id": payload.user_id, "status": "active"},
+        {"_id": 0, "role": 1, "access_scope": 1},
+    )
+    if not member:
+        raise HTTPException(422, "That person is not an active member of this company.")
+    target_role = (member.get("role") or "").strip().lower()
+    if not role_can_write_field_events(target_role):
+        raise HTTPException(422, "That person's role can't change daily reports.")
+    # With per-project access switched on, the new author must be assigned
+    # to the report's project (an all-projects admin always is).
+    from services.project_access import is_enforced
+    from auth import effective_access_scope
+    if is_enforced():
+        all_projects = (target_role == "admin" and effective_access_scope(
+            target_role, member.get("access_scope")) == "all")
+        if not all_projects and not await db.project_members.find_one(
+                {"tenant_id": ctx["tenant_id"], "project_id": before.get("project_id"),
+                 "user_id": payload.user_id}, {"_id": 0, "user_id": 1}):
+            raise HTTPException(422, "That person is not assigned to this report's project.")
+    await db.daily_reports.update_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}),
+        {"$set": {"prepared_by": payload.user_id, "updated_by": ctx["user"]["id"]}},
+    )
+    after = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="daily_reports", op="REPORT_AUTHOR_CHANGED",
+        record_id=daily_report_id,
+        before={"prepared_by": before.get("prepared_by"), "created_by": before.get("created_by")},
+        after={"prepared_by": payload.user_id, "reason": payload.reason},
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
     return DailyReport(**after)
@@ -2064,7 +2449,7 @@ def _fetch_weather(lat: float, lng: float, target_date: str) -> Optional[dict]:
     return result
 
 
-@router.post("/daily-reports/{daily_report_id}/weather-autofill", response_model=DailyReport)
+@router.post("/daily-reports/{daily_report_id}/weather-autofill", response_model=DailyReport, dependencies=[Depends(require_daily_report_writer)])
 async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_tenant)):
     """Geocode the project's city/state, fetch Open-Meteo forecast for the
     report_date, save into the DR doc. Idempotent — re-runs overwrite.
@@ -2102,6 +2487,7 @@ async def weather_autofill(daily_report_id: str, ctx: dict = Depends(require_ten
         raise HTTPException(404, "Daily report not found")
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": dr["project_id"]}), {"_id": 0})
     if not proj:
         raise HTTPException(404, "Project not found")
@@ -2249,14 +2635,25 @@ def _presence_doc_with_derived(doc: dict) -> dict:
     return doc
 
 
-@router.post("/daily-reports/{daily_report_id}/presence", response_model=DailyPresence)
+async def _after_presence_change(ctx: dict, daily_report_id: str, task_ids, project_id) -> None:
+    """See services.schedule_feedback.after_presence_change."""
+    from services.schedule_feedback import after_presence_change
+    await after_presence_change(get_db(), ctx["tenant_id"], daily_report_id, task_ids, project_id,
+                                actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+
+
+@router.post("/daily-reports/{daily_report_id}/presence", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    # Shared by three routes (one takes the report id from the body), so
+    # check the report's project here too. Answers are cached per request.
+    await check_project_access(ctx, dr.get("project_id"), write=True)
     if dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     if payload.daily_report_id != daily_report_id:
         raise HTTPException(400, "daily_report_id mismatch")
     doc = payload.model_dump(mode="json")
@@ -2320,6 +2717,8 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
         # Don't fail the presence write if the actualization hook hiccups.
         # The next leveling recompute will re-derive from default.
         pass
+    await _after_presence_change(ctx, daily_report_id, [doc.get("schedule_activity_id")],
+                                 dr.get("project_id"))
     return DailyPresence(**doc)
 
 
@@ -2330,7 +2729,7 @@ async def create_presence(daily_report_id: str, payload: DailyPresenceCreate, ct
 # above so the audit + denormalization + total_hours derivation stay
 # in one place. User reported 404 on this surface; URL-source confusion
 # across deploy versions was the most likely cause.
-@router.post("/daily-reports/{daily_report_id}/daily-presence", response_model=DailyPresence)
+@router.post("/daily-reports/{daily_report_id}/daily-presence", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def create_presence_alias(
     daily_report_id: str, payload: DailyPresenceCreate,
     ctx: dict = Depends(require_tenant),
@@ -2338,24 +2737,28 @@ async def create_presence_alias(
     return await create_presence(daily_report_id, payload, ctx)
 
 
-@router.post("/daily-presence", response_model=DailyPresence)
+@router.post("/daily-presence", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def create_presence_toplevel(
     payload: DailyPresenceCreate, ctx: dict = Depends(require_tenant),
 ):
     if not payload.daily_report_id:
         raise HTTPException(400, "daily_report_id required in body for top-level POST /daily-presence")
+    # The report id is in the body here, so the route-level check cannot
+    # see it: check the report's project explicitly (403 on a save).
+    await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
     return await create_presence(payload.daily_report_id, payload, ctx)
 
 
-@router.patch("/daily-presence/{presence_id}", response_model=DailyPresence)
+@router.patch("/daily-presence/{presence_id}", response_model=DailyPresence, dependencies=[Depends(require_daily_report_writer)])
 async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1, "prepared_by": 1, "created_by": 1})
     if dr and dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
     if updates:
@@ -2382,19 +2785,28 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
         record_id=presence_id, before=doc, after=after,
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # Old and new activity both re-sync (the crew row may have moved).
+    await _after_presence_change(
+        ctx, doc["daily_report_id"],
+        [doc.get("schedule_activity_id"), (after or {}).get("schedule_activity_id")],
+        (dr or {}).get("project_id") or doc.get("project_id"),
+    )
     return DailyPresence(**after)
 
 
-@router.delete("/daily-presence/{presence_id}")
+@router.delete("/daily-presence/{presence_id}", dependencies=[Depends(require_daily_report_writer)])
 async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     doc = await db.daily_presence.find_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}), {"_id": 0})
     if not doc:
         raise HTTPException(404, "Presence row not found")
-    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1})
+    dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": doc["daily_report_id"]}), {"_id": 0, "status": 1, "project_id": 1, "prepared_by": 1, "created_by": 1})
     if dr and dr.get("status") in _LOCKED_DR_STATUSES:
         raise HTTPException(409, _dr_locked_detail(dr.get("status")))
+    ensure_can_change_draft(ctx, dr)
     await db.daily_presence.delete_one(tenant_filter(ctx["tenant_id"], {"id": presence_id}))
+    await _after_presence_change(ctx, doc["daily_report_id"], [doc.get("schedule_activity_id")],
+                                 (dr or {}).get("project_id") or doc.get("project_id"))
     # Bucket C3b Phase 5 — audit the hard-delete (presence has no soft
     # delete; deletion erases the row, so the audit is the only trail).
     await write_audit(
@@ -2408,7 +2820,7 @@ async def delete_presence(presence_id: str, ctx: dict = Depends(require_tenant))
 # ============================================================
 # Unplanned activity creation from the field (super)
 # ============================================================
-@router.post("/daily-reports/{daily_report_id}/unplanned-activity")
+@router.post("/daily-reports/{daily_report_id}/unplanned-activity", dependencies=[Depends(require_daily_report_writer)])
 async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActivityCreate, ctx: dict = Depends(require_tenant)):
     """Field super creates a task NOT in the master schedule — the platform
     records it with `created_in_field=true` and `requires_pm_review=true`
@@ -2418,6 +2830,7 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     if not dr:
         raise HTTPException(404, "Daily report not found")
+    ensure_can_change_draft(ctx, dr)
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. The prior
     # 409 reject on submitted DRs is replaced with the tiered add
     # policy. Unplanned activities can now be added to locked DRs
@@ -2428,17 +2841,11 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
         add_reason=payload.add_reason, event_type="activity",
     )
 
-    # Auto-assign next activity_code (same convention as copilot/_tool_create_task)
-    last = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": dr["project_id"]}),
-        {"_id": 0, "activity_code": 1},
-    ).sort("activity_code", -1).limit(50).to_list(50)
-    next_n = 1
-    for r in last:
-        m = re.search(r"(\d+)$", r.get("activity_code", "") or "")
-        if m:
-            next_n = max(next_n, int(m.group(1)) + 1)
-    activity_code = f"AF{next_n:04d}"  # AF prefix = Activity-from-Field
+    # Next unused field-work code in this project (FW-0001, FW-0002, ...).
+    # Reserved through a per-project counter, so it is unique even when two
+    # activities are created at the same moment (2026-11-16).
+    from services.field_activity_codes import next_field_activity_code
+    activity_code = await next_field_activity_code(db, ctx["tenant_id"], dr["project_id"])
 
     today_iso = dr["report_date"]
     dur = float(payload.duration_days or 1)
@@ -2453,7 +2860,9 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
         "trade_code": payload.trade_code,
         "location_id": payload.location_id,
         "crew_id": payload.crew_id,
-        "status": "in_progress",
+        # Created at 0% with no actual start: not started yet, matching the
+        # report card (which shows not started until progress is logged).
+        "status": "not_started",
         "planned_start": today_iso,
         "planned_finish": finish,
         "duration_days": dur,
@@ -2503,7 +2912,7 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
         "delay_reason": None,
         "weather_impact_minutes": 0,
         "notes": payload.notes,
-        "status_at_end_of_day": "in_progress",
+        "status_at_end_of_day": "not_started",
         "activity_code": activity_code,
         "activity_description": payload.description,
         "location_name": loc_name,
@@ -2562,6 +2971,7 @@ async def approve_daily_report(daily_report_id: str, ctx: dict = Depends(require
     await db.daily_reports.update_one(
         tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"$set": updates},
     )
+    await _refresh_actuals_after_report_lock(ctx, before.get("project_id"), daily_report_id)
     after = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": daily_report_id}), {"_id": 0})
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="daily_reports", op="UPDATE",
@@ -2584,6 +2994,12 @@ async def _user_label_map(db, tenant_id: str, ids: list[str]) -> dict:
         nm = " ".join([p for p in [d.get("first_name"), d.get("last_name")] if p]).strip() or d.get("email") or d["id"][:8]
         out[d["id"]] = nm
     return out
+
+
+# Audit entry fields sent in the /context bundle (what the DR Audit trail
+# panel renders, plus id/record_id for keys).
+CONTEXT_AUDIT_FIELDS = {"_id": 0, "id": 1, "op": 1, "table_name": 1,
+                        "record_id": 1, "actor_id": 1, "created_at": 1}
 
 
 @router.get("/daily-reports/{daily_report_id}/context")
@@ -2612,6 +3028,7 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
     # row alongside the pre-existing task_updated_at optimistic-lock
     # token. Single $in query. METADATA / VIEW ONLY.
     await _enrich_grid_rows(db, ctx["tenant_id"], grid)
+    await _stamp_progress_limits(db, ctx["tenant_id"], dr, grid)
 
     # Bucket C3a Phase 3 — pre-populate constraint_type +
     # constraint_reference for any row that has no constraint set yet,
@@ -2689,11 +3106,16 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
         tenant_filter(ctx["tenant_id"], {"project_id": project_id, "delivery_date": dr["report_date"]}), {"_id": 0},
     ).sort("delivery_date", -1).to_list(100)
 
+    # The Audit trail panel only shows time, op, table and who -- it never
+    # reads before/after. Sending full before/after report copies made
+    # this key most of the bundle's size, so only the fields the panel
+    # uses go out. Same 100-row cap as before (the panel's count chip
+    # shows rows.length).
     audit_log = await db.audit_log.find(
         tenant_filter(ctx["tenant_id"], {"$or": [
             {"table_name": "daily_reports", "record_id": daily_report_id},
             {"table_name": "daily_presence", "record_id": {"$in": [p["id"] for p in presence]}} if presence else {"_unused": True},
-        ]}), {"_id": 0},
+        ]}), CONTEXT_AUDIT_FIELDS,
     ).sort("created_at", -1).limit(100).to_list(100)
 
     # Bucket D Task 2 -- enrich every supplement row with its parent

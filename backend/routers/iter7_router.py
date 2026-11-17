@@ -6,7 +6,7 @@
 3. Master document with project-type gating (new vs renovation) — feeds
    different system prompts into AI agents
 4. NIST 800-171 control mapping + audit-log integrity verifier
-5. Polygon suggester (Claude vision via emergentintegrations)
+5. Polygon suggester (Claude vision via services.anthropic_compat)
 6. Drawing OCR (pytesseract → sheet number / title / scale auto-extract)
 7. Voice PIN auth (numeric PIN issued by admin → JWT for capture-only role)
 8. Schedule integration of marketplace milestones (linked to schedule
@@ -18,25 +18,110 @@ WebSockets are exposed in a sibling module (ws_router.py).
 import asyncio
 import io
 import json
+import logging
 import os
 import random
 import re
 from datetime import datetime, timezone, timedelta, date
 from typing import Optional, Literal, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Form, Header
+from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from database import get_db, tenant_filter
 from models import gen_id, utc_now, StrictModel, ReadModel
 from auth import require_tenant, create_access_token
+from services.project_access import (
+    check_project_access, check_record_access, filter_rows, is_enforced,
+    allowed_project_ids, project_scope_filter, require_full_admin,
+)
 
 router = APIRouter(tags=["iter7"])
+
+# Per-project access (2026-11-16). Routes with a project id or a project
+# record id in the URL (/projects/{project_id}/..., /marketplace/release-
+# payment/{response_id}) are checked by the route-level dependency
+# (services/project_access.enforce_project_scope). The handlers below add
+# the checks for ids sent in the body and limit the cross-project lists.
+# Routes marked "# project-scope: tenant-level" are company-wide on purpose.
+_stripe_log = logging.getLogger("ice_schedule_ops.stripe")
 
 
 # ============================================================
 # 1. Stripe Connect — escrow-lite for marketplace
 # ============================================================
 PLATFORM_FEE_PCT = 0.05  # 5% platform fee on accepted bids
+
+
+# Stripe client (2026-11-15, Railway move). Calls go through the official
+# `stripe` package with STRIPE_API_KEY. Emergent hands out a test key that
+# only works through its own proxy library; when STRIPE_API_KEY is one of
+# those and emergentintegrations is installed, the old library is used so
+# this branch still runs unchanged on Emergent.
+def _stripe_api_key() -> str:
+    return (os.environ.get("STRIPE_API_KEY") or "").strip()
+
+
+def _emergent_stripe_classes():
+    """(StripeCheckout, CheckoutSessionRequest) from Emergent's library when
+    STRIPE_API_KEY is an Emergent proxy key and the library is installed;
+    otherwise None."""
+    if "emergent" not in _stripe_api_key().lower():
+        return None
+    try:
+        from emergentintegrations.payments.stripe.checkout import (
+            StripeCheckout, CheckoutSessionRequest,
+        )
+    except Exception:
+        return None
+    return StripeCheckout, CheckoutSessionRequest
+
+
+def _sget(obj: Any, key: str, default: Any = None) -> Any:
+    """Read a field from a Stripe object or a plain dict. Stripe objects
+    support obj[key] but not obj.get(key)."""
+    if obj is None:
+        return default
+    try:
+        val = obj[key]
+    except (KeyError, TypeError, IndexError, AttributeError):
+        val = getattr(obj, key, default) if not isinstance(obj, dict) else default
+    return default if val is None else val
+
+
+async def _stripe_create_checkout(api_key: str, *, amount_usd: float, currency: str,
+                                  success_url: str, cancel_url: str,
+                                  metadata: dict, product_name: str) -> tuple:
+    """Create a one-off Stripe Checkout payment. Returns (session_id, url)."""
+    import stripe
+    session = await asyncio.to_thread(
+        stripe.checkout.Session.create,
+        api_key=api_key,
+        mode="payment",
+        payment_method_types=["card"],
+        line_items=[{
+            "price_data": {
+                "currency": currency,
+                "product_data": {"name": product_name},
+                # Stripe takes the amount in cents.
+                "unit_amount": int(round(float(amount_usd) * 100)),
+            },
+            "quantity": 1,
+        }],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+    )
+    return _sget(session, "id"), _sget(session, "url")
+
+
+async def _stripe_get_status(api_key: str, session_id: str) -> tuple:
+    """Look up a Checkout session. Returns (status, payment_status)."""
+    import stripe
+    session = await asyncio.to_thread(
+        stripe.checkout.Session.retrieve, session_id, api_key=api_key,
+    )
+    return _sget(session, "status"), _sget(session, "payment_status")
 
 
 class AcceptBidRequest(StrictModel):
@@ -52,7 +137,6 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
     bid amount; the platform funds escrow (held until milestone reached).
     The bid response is bound to a schedule activity at acceptance, so the
     payment release condition is auditable from the schedule."""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout, CheckoutSessionRequest
     db = get_db()
 
     resp = await db.marketplace_responses.find_one({"id": payload.response_id}, {"_id": 0})
@@ -63,16 +147,20 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
     )
     if not posting:
         raise HTTPException(403, "You do not own this posting")
+    # The posting's project, and the activity the payment is tied to, must
+    # be ones the caller is assigned to.
+    await check_project_access(ctx, posting.get("project_id"), write=True)
+    if payload.schedule_activity_id:
+        await check_record_access(ctx, "task", payload.schedule_activity_id, write=True)
     if not resp.get("bid_amount_usd"):
         raise HTTPException(400, "Response has no bid amount")
     bid = float(resp["bid_amount_usd"])
     fee = round(bid * PLATFORM_FEE_PCT, 2)
 
-    api_key = os.environ.get("STRIPE_API_KEY")
+    api_key = _stripe_api_key()
     if not api_key:
         raise HTTPException(500, "STRIPE_API_KEY missing")
     host_url = str(request.base_url).rstrip("/")
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
 
     success_url = f"{payload.origin_url.rstrip('/')}/marketplace?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{payload.origin_url.rstrip('/')}/marketplace"
@@ -87,15 +175,26 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
         "bid_usd": f"{bid:.2f}",
         "kind": "escrow_fund",
     }
-    session = await stripe_checkout.create_checkout_session(CheckoutSessionRequest(
-        amount=bid, currency="usd",
-        success_url=success_url, cancel_url=cancel_url, metadata=metadata,
-    ))
+    legacy = _emergent_stripe_classes()
+    if legacy:
+        StripeCheckout, CheckoutSessionRequest = legacy
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
+        session = await stripe_checkout.create_checkout_session(CheckoutSessionRequest(
+            amount=bid, currency="usd",
+            success_url=success_url, cancel_url=cancel_url, metadata=metadata,
+        ))
+        checkout_session_id, checkout_url = session.session_id, session.url
+    else:
+        checkout_session_id, checkout_url = await _stripe_create_checkout(
+            api_key, amount_usd=bid, currency="usd",
+            success_url=success_url, cancel_url=cancel_url, metadata=metadata,
+            product_name=(posting.get("title") or "Marketplace bid")[:200],
+        )
 
     txn = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
-        "session_id": session.session_id,
+        "session_id": checkout_session_id,
         "amount_usd": bid,
         "platform_fee_usd": fee,
         "currency": "usd",
@@ -112,7 +211,7 @@ async def accept_bid(payload: AcceptBidRequest, request: Request, ctx: dict = De
         "created_at": utc_now().isoformat(),
     }
     await db.payment_transactions.insert_one(txn.copy())
-    return {"url": session.url, "session_id": session.session_id}
+    return {"url": checkout_url, "session_id": checkout_session_id}
 
 
 @router.get("/marketplace/checkout-status/{session_id}")
@@ -120,27 +219,37 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
     """Frontend polls this after Stripe redirect to confirm payment + flip the
     bid response to 'accepted'. Idempotent — does not double-credit if called
     multiple times (we check txn.status first)."""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
     db = get_db()
     txn = await db.payment_transactions.find_one(
         tenant_filter(ctx["tenant_id"], {"session_id": session_id}), {"_id": 0},
     )
     if not txn:
         raise HTTPException(404, "Transaction not found")
+    # The posting the payment belongs to must be on one of the caller's
+    # projects (or have no project).
+    if txn.get("posting_id"):
+        await check_record_access(ctx, "marketplace_posting", txn["posting_id"], write=False)
     if txn["status"] in ("paid", "expired"):
         return {"payment_status": txn["payment_status"], "status": txn["status"], "amount_usd": txn["amount_usd"]}
 
-    api_key = os.environ.get("STRIPE_API_KEY")
-    host_url = str(request.base_url).rstrip("/")
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
-    status_obj = await stripe_checkout.get_checkout_status(session_id)
-    payment_status = status_obj.payment_status
-    new_status = "paid" if payment_status == "paid" else ("expired" if status_obj.status == "expired" else "pending")
+    api_key = _stripe_api_key()
+    if not api_key:
+        raise HTTPException(500, "STRIPE_API_KEY missing")
+    legacy = _emergent_stripe_classes()
+    if legacy:
+        StripeCheckout = legacy[0]
+        host_url = str(request.base_url).rstrip("/")
+        stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
+        status_obj = await stripe_checkout.get_checkout_status(session_id)
+        stripe_status, payment_status = status_obj.status, status_obj.payment_status
+    else:
+        stripe_status, payment_status = await _stripe_get_status(api_key, session_id)
+    new_status = "paid" if payment_status == "paid" else ("expired" if stripe_status == "expired" else "pending")
 
     await db.payment_transactions.update_one(
         {"id": txn["id"]},
         {"$set": {"payment_status": payment_status, "status": new_status,
-                  "stripe_status": status_obj.status,
+                  "stripe_status": stripe_status,
                   "completed_at": utc_now().isoformat() if new_status == "paid" else None}},
     )
 
@@ -173,26 +282,68 @@ async def checkout_status(session_id: str, request: Request, ctx: dict = Depends
     return {"payment_status": payment_status, "status": new_status, "amount_usd": txn["amount_usd"]}
 
 
+# project-scope: tenant-level (Stripe-signed webhook, no user)
 @router.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
-    """Stripe-signed webhook. Exposed as /api/webhook/stripe per playbook."""
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
-    api_key = os.environ.get("STRIPE_API_KEY")
-    host_url = str(request.base_url).rstrip("/")
-    stripe_checkout = StripeCheckout(api_key=api_key, webhook_url=f"{host_url}/api/webhook/stripe")
+    """Stripe-signed webhook. Exposed as /api/webhook/stripe per playbook.
+
+    The signature is checked with STRIPE_WEBHOOK_SECRET. If that secret is
+    not set, the event is accepted unsigned (as before) and a warning is
+    logged; set the secret in production."""
     body = await request.body()
     sig = request.headers.get("Stripe-Signature", "")
-    try:
-        evt = await stripe_checkout.handle_webhook(body, sig)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    legacy = _emergent_stripe_classes()
+    if legacy:
+        StripeCheckout = legacy[0]
+        host_url = str(request.base_url).rstrip("/")
+        stripe_checkout = StripeCheckout(api_key=_stripe_api_key(), webhook_url=f"{host_url}/api/webhook/stripe")
+        try:
+            evt = await stripe_checkout.handle_webhook(body, sig)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        session_id = evt.session_id
+        payment_status = evt.payment_status
+        event_type = evt.event_type
+        event_id = evt.event_id
+    else:
+        secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+        allow_unsigned = (os.environ.get("STRIPE_WEBHOOK_ALLOW_UNSIGNED") or "").strip().lower() in {"1", "true", "yes"}
+        if not secret and (not allow_unsigned or (_stripe_api_key() or "").startswith("sk_live_")):
+            # Without the signing secret anyone could post a fake "paid" event.
+            # STRIPE_WEBHOOK_ALLOW_UNSIGNED=1 is for local development only,
+            # and never applies with a live key.
+            _stripe_log.error("Stripe webhook: STRIPE_WEBHOOK_SECRET is not set; event refused.")
+            return JSONResponse(status_code=400, content={"ok": False, "error": "webhook secret not configured"})
+        try:
+            if secret:
+                import stripe
+                # Raises if the signature does not match. Once it passes,
+                # the body itself is trusted and read as plain JSON below.
+                stripe.Webhook.construct_event(body, sig, secret)
+            else:
+                _stripe_log.warning(
+                    "Stripe webhook: STRIPE_WEBHOOK_SECRET is not set, so the "
+                    "event signature was NOT checked. Set it in production."
+                )
+            event = json.loads(body or b"{}")
+        except Exception as e:
+            # A 4xx makes Stripe retry and show the failure, instead of
+            # quietly treating the event as delivered.
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
+        event_type = _sget(event, "type")
+        event_id = _sget(event, "id")
+        obj = _sget(_sget(event, "data", {}), "object", {})
+        # Only Checkout session events carry the session id we stored.
+        is_session = _sget(obj, "object") == "checkout.session"
+        session_id = _sget(obj, "id") if is_session else None
+        payment_status = _sget(obj, "payment_status") if is_session else None
     db = get_db()
-    if evt.session_id:
+    if session_id:
         await db.payment_transactions.update_one(
-            {"session_id": evt.session_id},
-            {"$set": {"payment_status": evt.payment_status,
-                      "webhook_event_type": evt.event_type,
-                      "webhook_event_id": evt.event_id}},
+            {"session_id": session_id},
+            {"$set": {"payment_status": payment_status,
+                      "webhook_event_type": event_type,
+                      "webhook_event_id": event_id}},
         )
     return {"ok": True}
 
@@ -277,6 +428,21 @@ async def escrow_summary(ctx: dict = Depends(require_tenant)):
     db = get_db()
     cursor = db.payment_transactions.find(tenant_filter(ctx["tenant_id"]), {"_id": 0})
     rows = await cursor.to_list(500)
+    # Per-project access (switch on): only payments for postings on the
+    # caller's projects, or postings with no project. Payment rows carry
+    # the posting id, not the project id, so the postings are looked up.
+    if is_enforced(ctx):
+        allowed = await allowed_project_ids(ctx)
+        if allowed is not None:
+            posting_ids = list({r.get("posting_id") for r in rows if r.get("posting_id")})
+            postings = await db.marketplace_postings.find(
+                tenant_filter(ctx["tenant_id"], {"id": {"$in": posting_ids}}),
+                {"_id": 0, "id": 1, "project_id": 1},
+            ).to_list(length=None)
+            project_of = {p["id"]: p.get("project_id") for p in postings}
+            rows = [r for r in rows
+                    if not project_of.get(r.get("posting_id"))
+                    or project_of.get(r.get("posting_id")) in allowed]
     funded = sum(r["amount_usd"] for r in rows if r["kind"] == "escrow_fund" and r.get("status") == "paid")
     released = sum(r["amount_usd"] for r in rows if r["kind"] == "payout" and r.get("status") == "released")
     in_escrow = funded - released
@@ -303,6 +469,10 @@ class KbEntryCreate(StrictModel):
 @router.post("/kb/entries")
 async def kb_create(payload: KbEntryCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A given project must belong to the caller's company (404 otherwise);
+    # an entry without a project stays allowed.
+    from services.project_scope import require_project_if_given
+    await require_project_if_given(ctx, getattr(payload, "project_id", None))
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -321,11 +491,18 @@ async def kb_create(payload: KbEntryCreate, ctx: dict = Depends(require_tenant))
 @router.get("/kb/entries")
 async def kb_list(ctx: dict = Depends(require_tenant), q: Optional[str] = None, limit: int = 50):
     db = get_db()
+    # Per-project access (switch on): entries from the caller's projects
+    # plus company-wide entries (no project), which were always shared.
     if q:
         from services.kb_search import search_kb
-        return await search_kb(ctx["tenant_id"], q, limit)
+        hits = await search_kb(ctx["tenant_id"], q, limit)
+        if isinstance(hits, list):
+            return await filter_rows(ctx, hits, include_company_level=True)
+        return hits
+    f = await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"]),
+                                   include_company_level=True)
     docs = await db.kb_entries.find(
-        tenant_filter(ctx["tenant_id"]), {"_id": 0},
+        f, {"_id": 0},
     ).sort("created_at", -1).limit(limit).to_list(limit)
     return docs
 
@@ -337,9 +514,10 @@ async def kb_ingest_historical(ctx: dict = Depends(require_tenant)):
     db = get_db()
     count = 0
 
+    # Per-project access (switch on): only the caller's projects are read.
     # Closed RFIs
     rfis = await db.rfis.find(
-        tenant_filter(ctx["tenant_id"], {"status": "answered"}),
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": "answered"})),
         {"_id": 0},
     ).to_list(500)
     for r in rfis:
@@ -365,7 +543,7 @@ async def kb_ingest_historical(ctx: dict = Depends(require_tenant)):
 
     # Resolved work items
     wis = await db.work_items.find(
-        tenant_filter(ctx["tenant_id"], {"status": {"$in": ["resolved", "closed"]}}),
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": {"$in": ["resolved", "closed"]}})),
         {"_id": 0},
     ).to_list(500)
     for w in wis:
@@ -422,9 +600,9 @@ async def upsert_master_doc(project_id: str, payload: MasterDocUpsert, ctx: dict
     db = get_db()
     if payload.project_id != project_id:
         raise HTTPException(400, "project_id mismatch")
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    # Shared company + assignment check (404 unknown, 403 not assigned).
+    from services.project_scope import require_project
+    await require_project(ctx, project_id)
     doc = {
         "id": f"masterdoc_{project_id}",
         "tenant_id": ctx["tenant_id"],
@@ -479,7 +657,7 @@ NIST_800_171 = [
      "implementation": "Role-permission matrix in auth.py; admin/pm/super/foreman/voice scopes.",
      "evidence_endpoint": "/api/users/me, role_required()"},
     {"id": "3.1.20", "family": "AC", "name": "Verify external information system connections",
-     "implementation": "Explicit allow-list of LLM providers (Emergent universal key only); CORS allow-list.",
+     "implementation": "Explicit allow-list of AI providers (Anthropic, OpenAI and Gemini keys held as server environment variables); CORS allow-list.",
      "evidence_endpoint": "/api/system/info"},
     {"id": "3.3.1", "family": "AU", "name": "Create and retain audit records",
      "implementation": "audit_logs collection with hash-chain (audit.py); every write logs actor+entity+diff.",
@@ -506,7 +684,7 @@ NIST_800_171 = [
      "implementation": "Field-issue (work_items) workflow with severity, assignment, resolution.",
      "evidence_endpoint": "/api/work-items"},
     {"id": "3.8.1", "family": "MP", "name": "Protect (i.e. physically control) media",
-     "implementation": "All binary uploads in Emergent Object Storage (audit-trailed access).",
+     "implementation": "All binary uploads in private S3-compatible object storage (audit-trailed access).",
      "evidence_endpoint": "/api/photos/:id/file, /api/drawing-revisions/:id/pdf"},
     {"id": "3.13.1", "family": "SC", "name": "Monitor and protect communications boundaries",
      "implementation": "K8s ingress + HTTPS-only; CORS controlled by env var.",
@@ -523,6 +701,7 @@ NIST_800_171 = [
 ]
 
 
+# project-scope: tenant-level (static control list)
 @router.get("/compliance/nist-800-171")
 async def nist_controls(ctx: dict = Depends(require_tenant)):
     """Return the full NIST 800-171 control mapping with implementation status.
@@ -542,11 +721,17 @@ async def nist_controls(ctx: dict = Depends(require_tenant)):
     }
 
 
+# project-scope: tenant-level (company-wide audit log; all-projects admins only)
 @router.get("/audit-log/verify-chain")
 async def verify_audit_chain(ctx: dict = Depends(require_tenant), limit: int = 5000):
     """Walk the audit-log hash chain forwards. Each row's stored hash must
     equal SHA-256(prev_hash + canonical_payload). Returns first divergence
-    (if any) plus total verified count."""
+    (if any) plus total verified count.
+
+    Admins only (2026-11-16), like /audit-log and /audit-log/verify. The
+    chain covers every project in the company, so an admin limited to
+    specific projects cannot run it."""
+    require_full_admin(ctx)
     import hashlib
     db = get_db()
     rows = await db.audit_logs.find(
@@ -587,28 +772,44 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
 
     Master prompt §22 — polygon_suggester agent.
     """
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    from services.anthropic_compat import LlmChat, UserMessage, ImageContent
+    from services.llm_keys import llm_api_key
     import base64
     from PIL import Image
     import pdf2image
 
     db = get_db()
+    # The drawing revision (body) must be on a project the caller is
+    # assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id, write=True)
     rev = await db.drawing_revisions.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.drawing_revision_id}), {"_id": 0},
     )
     if not rev or not (rev.get("storage_path") or rev.get("pdf_url")):
         raise HTTPException(404, "Revision PDF not found")
 
-    from services.storage import get_object
-    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    from services.storage import aget_object, key_belongs_to_tenant
+    _key = rev.get("storage_path") or rev.get("pdf_url")
+    # Only read a file stored under this company. (The rendered page goes
+    # through Pillow's own decompression-bomb check inside pdf2image.)
+    if not key_belongs_to_tenant(_key, ctx["tenant_id"]):
+        raise HTTPException(404, "File not found")
+    # Worker thread: a slow storage read must not freeze the server.
+    pdf_bytes, _ = await aget_object(_key)
+    if payload.page < 1:
+        raise HTTPException(422, "Page must be 1 or more")
     try:
         images = pdf2image.convert_from_bytes(pdf_bytes, first_page=payload.page,
                                               last_page=payload.page, dpi=150)
         img = images[0] if images else None
     except Exception as e:
-        raise HTTPException(500, f"pdf2image: {e}")
+        # Raw pdftoppm output goes to the server log only.
+        logging.getLogger("ice_schedule_ops.drawings").warning(
+            "suggest-polygon: could not render page %s of revision %s: %s",
+            payload.page, payload.drawing_revision_id, e)
+        raise HTTPException(422, "Could not read this PDF")
     if img is None:
-        raise HTTPException(500, "Could not render plan page")
+        raise HTTPException(422, f"Page {payload.page} is not in this PDF")
 
     # Crop if requested (scale crop_box from points to rendered px @ 150 dpi
     # vs default 72 dpi)
@@ -626,7 +827,7 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
     img.save(buf, format="PNG")
     img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    api_key = llm_api_key() or ""
     chat = LlmChat(
         api_key=api_key, session_id=f"poly-{payload.drawing_revision_id}",
         system_message=(
@@ -665,9 +866,12 @@ async def suggest_polygon(payload: PolygonSuggestRequest, ctx: dict = Depends(re
 # ============================================================
 # 6. Drawing OCR (pytesseract)
 # ============================================================
+_drawing_log = logging.getLogger("ice_schedule_ops.drawings")
+
+
 class DrawingOcrRequest(StrictModel):
     drawing_revision_id: str
-    page: int = 1
+    page: int = Field(default=1, ge=1)
 
 
 @router.post("/drawings/ocr")
@@ -680,26 +884,52 @@ async def drawing_ocr(payload: DrawingOcrRequest, ctx: dict = Depends(require_te
     import pdf2image
     import pytesseract
     db = get_db()
+    # The drawing revision (body) must be on a project the caller is
+    # assigned to.
+    await check_record_access(ctx, "drawing_revision", payload.drawing_revision_id, write=True)
     rev = await db.drawing_revisions.find_one(
         tenant_filter(ctx["tenant_id"], {"id": payload.drawing_revision_id}), {"_id": 0},
     )
-    if not rev:
+    if not rev or not (rev.get("storage_path") or rev.get("pdf_url")):
         raise HTTPException(404, "Revision not found")
-    from services.storage import get_object
-    pdf_bytes, _ = get_object(rev.get("storage_path") or rev.get("pdf_url"))
+    from services.storage import aget_object, key_belongs_to_tenant
+    _key = rev.get("storage_path") or rev.get("pdf_url")
+    # Only read a file stored under this company.
+    if not key_belongs_to_tenant(_key, ctx["tenant_id"]):
+        raise HTTPException(404, "File not found")
+    # Worker thread: a slow storage read must not freeze the server.
+    pdf_bytes, _ = await aget_object(_key)
+    # Read the page count first so a page past the end gets a clear message.
+    # Raw tool errors (pdftoppm / tesseract output) go to the server log only.
+    try:
+        page_total = int(pdf2image.pdfinfo_from_bytes(pdf_bytes).get("Pages") or 0)
+    except Exception as e:
+        _drawing_log.warning("drawing OCR: could not read PDF for revision %s: %s",
+                             payload.drawing_revision_id, e)
+        raise HTTPException(422, "Could not read this PDF")
+    if page_total < 1:
+        raise HTTPException(422, "Could not read this PDF")
+    if payload.page > page_total:
+        raise HTTPException(422, f"Page {payload.page} is out of range (1..{page_total})")
     try:
         images = pdf2image.convert_from_bytes(pdf_bytes, first_page=payload.page,
                                               last_page=payload.page, dpi=200)
-        img = images[0]
     except Exception as e:
-        raise HTTPException(500, f"pdf2image: {e}")
+        _drawing_log.warning("drawing OCR: could not render page %s of revision %s: %s",
+                             payload.page, payload.drawing_revision_id, e)
+        raise HTTPException(422, "Could not read this PDF")
+    if not images:
+        raise HTTPException(422, f"Page {payload.page} is out of range (1..{page_total})")
+    img = images[0]
     # Crop bottom-right 30% (typical title-block)
     W, H = img.size
     title_block = img.crop((int(W * 0.55), int(H * 0.65), W, H))
     try:
         text = pytesseract.image_to_string(title_block)
     except Exception as e:
-        raise HTTPException(500, f"tesseract: {e}")
+        _drawing_log.error("drawing OCR: tesseract failed on revision %s: %s",
+                           payload.drawing_revision_id, e)
+        raise HTTPException(500, "Could not read text from this page")
 
     # Heuristics
     extracted: dict = {"raw_text": text}
@@ -737,8 +967,22 @@ async def issue_voice_pin(payload: IssueVoicePinRequest, ctx: dict = Depends(req
     ttl_hours. The pin → JWT exchange is on /auth/voice-pin/exchange."""
     from auth import role_required
     role_required(ctx, ["admin", "pm"])
+    # The PIN is for one project: with the switch on, the caller must be
+    # assigned to it (403). An admin limited to specific projects can issue
+    # PINs for those projects. (/api/auth/ paths are skipped by the
+    # route-level check, so it is done here.)
     db = get_db()
-    pin = "".join(str(random.randint(0, 9)) for _ in range(6))
+    # The project must exist in the caller's company (a PIN for another
+    # company's project, or a made-up id, is refused).
+    if not await db.projects.find_one(
+        {"tenant_id": ctx["tenant_id"], "id": payload.project_id}, {"_id": 0, "id": 1}
+    ):
+        raise HTTPException(404, "Project not found")
+    await check_project_access(ctx, payload.project_id, write=True)
+    # 2026-11 security round: PINs come from the operating system's secure
+    # random source, not the predictable `random` module.
+    import secrets
+    pin = f"{secrets.randbelow(10 ** 6):06d}"
     expires_at = (utc_now() + timedelta(hours=payload.ttl_hours)).isoformat()
     doc = {
         "id": gen_id(),
@@ -761,20 +1005,52 @@ class ExchangePinRequest(StrictModel):
     tenant_slug: str
 
 
+# project-scope: tenant-level (public sign-in with a PIN)
 @router.post("/auth/voice-pin/exchange")
-async def exchange_voice_pin(payload: ExchangePinRequest):
-    """Public — voice user keys in their PIN, gets a 'voice' scope JWT."""
+async def exchange_voice_pin(payload: ExchangePinRequest, request: Request):
+    """Public — voice user keys in their PIN, gets a 'voice' scope JWT.
+
+    2026-11 security round:
+      * an unknown company and a wrong PIN get the same 401 reply, so the
+        endpoint cannot be used to discover company slugs;
+      * wrong tries are throttled, then 429 with Retry-After;
+      * only the company's id, display name and slug are returned.
+
+    2026-11-16:
+      * the throttle is 20 wrong tries per (company, client address) and 200
+        per company from all addresses (it was 20 per company, so one person
+        guessing could lock every PIN in the company), plus 50 per address;
+      * a PIN is used up in the same database step that checks it
+        (find_one_and_update on "not yet used and not expired"), so two
+        simultaneous requests can no longer both redeem one PIN."""
+    from auth import (check_throttle, record_failure, client_ip, IP_FAILURE_LIMIT,
+                      reserve_attempt, release_attempt)
     db = get_db()
+    ip = client_ip(request)
+    slug = (payload.tenant_slug or '').strip().lower()
+    slug_key = f"voicepin:slug:{slug}"
+    slug_ip_key = f"voicepin:slugip:{slug}|{ip}"
+    ip_key = f"voicepin:ip:{ip}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    # The company's rows are written before the PIN check, so simultaneous
+    # guesses cannot all slip past the limits; a good PIN removes them below.
+    # 50 per (company, address): a crew on one site connection mistyping a
+    # few PINs must not shut the whole company out.
+    rid = await reserve_attempt([(slug_ip_key, 50), (slug_key, 200)])
     tenant = await db.tenants.find_one({"slug": payload.tenant_slug}, {"_id": 0})
-    if not tenant:
-        raise HTTPException(404, "Tenant not found")
-    rec = await db.voice_pins.find_one(
-        {"tenant_id": tenant["id"], "pin": payload.pin, "redeemed_at": None}, {"_id": 0},
-    )
+    rec = None
+    if tenant:
+        now_iso = utc_now().isoformat()
+        rec = await db.voice_pins.find_one_and_update(
+            {"tenant_id": tenant["id"], "pin": payload.pin, "redeemed_at": None,
+             "expires_at": {"$gt": now_iso}},
+            {"$set": {"redeemed_at": now_iso}},
+            projection={"_id": 0},
+        )
     if not rec:
+        await record_failure([ip_key])
         raise HTTPException(401, "Invalid PIN")
-    if rec["expires_at"] < utc_now().isoformat():
-        raise HTTPException(401, "PIN expired")
+    await release_attempt(rid)
     user = {
         "id": f"voicepin_{rec['id']}",
         "tenant_id": tenant["id"],
@@ -784,10 +1060,8 @@ async def exchange_voice_pin(payload: ExchangePinRequest):
         "active_project_id": rec["project_id"],
     }
     token = create_access_token(user)
-    await db.voice_pins.update_one(
-        {"id": rec["id"]}, {"$set": {"redeemed_at": utc_now().isoformat()}},
-    )
-    return {"access_token": token, "token_type": "bearer", "user": user, "tenant": tenant}
+    tenant_view = {k: tenant.get(k) for k in ("id", "display_name", "slug")}
+    return {"access_token": token, "token_type": "bearer", "user": user, "tenant": tenant_view}
 
 
 # ============================================================
@@ -800,6 +1074,10 @@ async def check_escrow_releases(project_id: str, ctx: dict = Depends(require_ten
     milestone %, auto-release the payment.
 
     Non-fatal: errors are returned per-row, never raised."""
+    # /api/internal/ paths are skipped by the route-level check (they are
+    # meant for the worker), but this one takes a user sign-in, so the
+    # project is checked here.
+    await check_project_access(ctx, project_id, write=True)
     db = get_db()
     funded = await db.marketplace_responses.find(
         {"escrow_status": "funded", "schedule_activity_id": {"$ne": None}}, {"_id": 0},
@@ -837,8 +1115,10 @@ async def seed_recovery(ctx: dict = Depends(require_tenant)):
     from auth import role_required
     role_required(ctx, ["admin"])
     db = get_db()
+    # An admin limited to specific projects only seeds on those projects
+    # (switch on).
     task = await db.tasks.find_one(
-        tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]}}),
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]}})),
         {"_id": 0}, sort=[("planned_start", -1)],
     )
     if not task:

@@ -1,5 +1,6 @@
 """Auth router: register (creates org/tenant), login, me, team invites,
 admin password reset."""
+import asyncio
 import os
 import re
 import secrets
@@ -9,11 +10,22 @@ from pydantic import Field
 from database import get_db
 from models import (
     UserRegister, UserLogin, User, Tenant, TokenResponse,
-    InviteCreate, InviteAccept, StrictModel,
+    InviteCreate, InviteAccept, MemberAccessUpdate, StrictModel,
     gen_id, utc_now,
 )
-from auth import hash_password, verify_password, create_token, require_tenant
+from auth import (
+    hash_password, verify_password, create_token, require_tenant,
+    token_version_of, dummy_password_check, redact_secrets, INVITE_SECRET_KEYS,
+    check_throttle, record_failure, clear_failures, client_ip,
+    reserve_attempt, release_attempt,
+    ACCOUNT_FAILURE_LIMIT, ACCOUNT_TOTAL_FAILURE_LIMIT, IP_FAILURE_LIMIT,
+    effective_access_scope,
+)
 from audit import write_audit
+from services.project_access import (
+    is_full_admin, require_full_admin, ensure_keeps_full_admin,
+    allowed_project_ids, role_on_project_for, has_full_admin, LAST_FULL_ADMIN,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 team_router = APIRouter(prefix="/team", tags=["team"])
@@ -126,16 +138,44 @@ async def register(payload: UserRegister):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: UserLogin):
+async def login(payload: UserLogin, request: Request):
+    """2026-11 security round:
+      * throttled -- 10 failed tries per account from one client address,
+        100 per account across all addresses, and 50 per client address in
+        15 minutes, then 429 with Retry-After; a good sign-in clears the
+        account's count. (2026-11-16: the account limit used to be 10 from
+        anywhere, so a stranger could lock a supervisor out of their own
+        account by typing wrong passwords from another address.)
+      * an unknown email still runs one bcrypt check so the reply takes
+        the same time as a wrong password (no account discovery by timing).
+      * the token carries the user's token_version ("tv")."""
     db = get_db()
-    user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
-    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+    email_norm = payload.email.lower()
+    ip = client_ip(request)
+    account_key = f"login:acct:{email_norm}"
+    account_ip_key = f"login:acctip:{email_norm}|{ip}"
+    ip_key = f"login:ip:{ip}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    # The account's rows are written before the password check, so a burst
+    # of simultaneous guesses cannot all slip past the limits; a good
+    # sign-in clears them below.
+    await reserve_attempt([(account_ip_key, ACCOUNT_FAILURE_LIMIT),
+                           (account_key, ACCOUNT_TOTAL_FAILURE_LIMIT)])
+    user = await db.users.find_one({"email": email_norm}, {"_id": 0})
+    if not user:
+        dummy_password_check(payload.password)
+        ok = False
+    else:
+        ok = verify_password(payload.password, user.get("password_hash", ""))
+    if not ok:
+        await record_failure([ip_key])
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
     tenant = await db.tenants.find_one({"id": user["tenant_id"]}, {"_id": 0})
     if not tenant:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Tenant not found")
+    await clear_failures([account_key, account_ip_key])
     user_view = {k: v for k, v in user.items() if k != "password_hash"}
-    token = create_token(user["id"], tenant["id"], user["email"])
+    token = create_token(user["id"], tenant["id"], user["email"], token_version_of(user))
     return TokenResponse(access_token=token, user=User(**user_view), tenant=Tenant(**tenant))
 
 
@@ -159,17 +199,38 @@ async def my_tenants(ctx: dict = Depends(require_tenant)):
 # TEAM INVITES — admin invites teammates into the SAME tenant
 # ============================================================
 @router.post("/accept-invite", response_model=TokenResponse)
-async def accept_invite(payload: InviteAccept):
+async def accept_invite(payload: InviteAccept, request: Request):
     """Public route — code + new password produces an account joined to the
-    tenant that issued the code. Code is single-use; expires after 14 days."""
+    tenant that issued the code. Code is single-use; expires after 14 days.
+
+    2026-11 security round: wrong codes / wrong emails are throttled like
+    sign-in (10 per email from one address, 100 per email from anywhere,
+    50 per client address, per 15 minutes).
+
+    2026-11-16: the invite's project access is applied -- access_scope on
+    the membership (and the user record), and one project_members row per
+    project chosen on the invite that still exists. Invites made before
+    this carry neither field: admins get "all", everyone else no projects
+    (the same as before)."""
     db = get_db()
+    ip = client_ip(request)
+    email_key = f"invite:acct:{payload.email.lower()}"
+    email_ip_key = f"invite:acctip:{payload.email.lower()}|{ip}"
+    ip_key = f"invite:ip:{ip}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    rid = await reserve_attempt([(email_ip_key, ACCOUNT_FAILURE_LIMIT),
+                                 (email_key, ACCOUNT_TOTAL_FAILURE_LIMIT)])
     invite = await db.team_invites.find_one({"code": payload.code, "status": "pending"}, {"_id": 0})
     if not invite:
+        await record_failure([ip_key])
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invite not found or already used")
     if invite["email"].lower() != payload.email.lower():
+        await record_failure([ip_key])
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Email does not match the invite")
     if _is_platform_owner_email(payload.email):
         raise HTTPException(status.HTTP_403_FORBIDDEN, _RESERVED_EMAIL)
+    # Right code for the right email: not a guess, so it does not count.
+    await release_attempt(rid)
     expires = invite.get("expires_at")
     if expires and datetime.fromisoformat(expires.replace("Z", "+00:00")) < datetime.now(timezone.utc):
         await db.team_invites.update_one({"id": invite["id"]}, {"$set": {"status": "expired"}})
@@ -181,13 +242,16 @@ async def accept_invite(payload: InviteAccept):
     if not tenant:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant for this invite no longer exists")
 
+    role = invite.get("role") or "super"
+    scope = effective_access_scope(role, invite.get("access_scope"))
     user_id = gen_id()
     user_doc = {
         "id": user_id,
         "email": payload.email.lower(),
         "full_name": payload.full_name,
         "tenant_id": tenant["id"],
-        "role": invite.get("role") or "super",
+        "role": role,
+        "access_scope": scope,
         "password_hash": hash_password(payload.password),
         "created_at": utc_now().isoformat(),
     }
@@ -196,7 +260,8 @@ async def accept_invite(payload: InviteAccept):
         "id": gen_id(),
         "user_id": user_id,
         "tenant_id": tenant["id"],
-        "role": invite.get("role") or "super",
+        "role": role,
+        "access_scope": scope,
         "status": "active",
         "created_at": utc_now().isoformat(),
     })
@@ -205,6 +270,10 @@ async def accept_invite(payload: InviteAccept):
         "accepted_at": utc_now().isoformat(),
         "accepted_user_id": user_id,
     }})
+    if scope != "all" and invite.get("project_ids"):
+        await _assign_projects(db, tenant["id"], user_id, role,
+                               list(invite.get("project_ids") or []),
+                               added_by=invite.get("invited_by"))
 
     user_view = {k: v for k, v in user_doc.items() if k != "password_hash"}
     token = create_token(user_id, tenant["id"], payload.email.lower())
@@ -283,9 +352,14 @@ async def _send_invite_email_and_audit(db, ctx: dict, request: Request, invite: 
     Returns (email_result, invite_link)."""
     from services.invite_email import send_invite_email
     tenant_row = await db.tenants.find_one(
-        {"id": ctx["tenant_id"]}, {"_id": 0, "name": 1},
+        {"id": ctx["tenant_id"]},
+        {"_id": 0, "display_name": 1, "legal_name": 1, "name": 1},
     )
-    tenant_name = (tenant_row or {}).get("name") or "your team"
+    # Tenants store display_name / legal_name (see register); "name" is
+    # only a fallback for any older row that used it.
+    tenant_row = tenant_row or {}
+    tenant_name = (tenant_row.get("display_name") or tenant_row.get("legal_name")
+                   or tenant_row.get("name") or "your team")
     base_url = _invite_base_url(request)
     code = invite["code"]
     invite_link = f"{base_url}/accept-invite?code={code}" if base_url else f"/accept-invite?code={code}"
@@ -326,13 +400,96 @@ async def _send_invite_email_and_audit(db, ctx: dict, request: Request, invite: 
     return email_result, invite_link
 
 
+# ------------------------------------------------------------
+# Per-project access helpers (2026-11-16)
+# ------------------------------------------------------------
+async def _validated_project_ids(db, ctx: dict, project_ids) -> list[str]:
+    """Clean a requested project list: no blanks or repeats, every id must
+    be a project of the caller's company (422 naming the unknown ones), and a
+    caller limited to specific projects may only hand out their own."""
+    ids: list[str] = []
+    for pid in project_ids or []:
+        if isinstance(pid, str) and pid.strip() and pid.strip() not in ids:
+            ids.append(pid.strip())
+    if not ids:
+        return []
+    rows = await db.projects.find(
+        {"tenant_id": ctx["tenant_id"], "id": {"$in": ids}}, {"_id": 0, "id": 1},
+    ).to_list(length=None)
+    found = {r.get("id") for r in rows}
+    missing = [pid for pid in ids if pid not in found]
+    if missing:
+        raise HTTPException(422, f"These projects are not in your company: {', '.join(missing)}")
+    mine = await allowed_project_ids(ctx)
+    if mine is not None:
+        outside = [pid for pid in ids if pid not in mine]
+        if outside:
+            raise HTTPException(403, "You can only give access to projects you are assigned to.")
+    return ids
+
+
+async def _assign_projects(db, tenant_id: str, user_id: str, role: str,
+                           project_ids: list[str], *, added_by: str | None) -> list[str]:
+    """Add a project_members row for each project the user is not on yet.
+    Only projects that exist in the company are used. Returns the ids added."""
+    if not project_ids:
+        return []
+    rows = await db.projects.find(
+        {"tenant_id": tenant_id, "id": {"$in": list(project_ids)}}, {"_id": 0, "id": 1},
+    ).to_list(length=None)
+    real = {r.get("id") for r in rows}
+    existing = await db.project_members.find(
+        {"tenant_id": tenant_id, "user_id": user_id}, {"_id": 0, "project_id": 1},
+    ).to_list(length=None)
+    have = {r.get("project_id") for r in existing}
+    added = []
+    for pid in project_ids:
+        if pid not in real or pid in have or pid in added:
+            continue
+        doc = {
+            "id": gen_id(), "tenant_id": tenant_id, "project_id": pid,
+            "user_id": user_id, "role_on_project": role_on_project_for(role),
+            "added_at": utc_now().isoformat(), "added_by": added_by,
+        }
+        try:
+            await db.project_members.insert_one(doc)
+            added.append(pid)
+        except Exception:
+            # Unique index race: someone added the same row a moment ago.
+            pass
+    return added
+
+
+async def _is_company_member(db, tenant_id: str, user_id: str) -> dict | None:
+    """The user record when the user belongs to this company (home company,
+    or an active membership); otherwise None."""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not user:
+        return None
+    if user.get("tenant_id") == tenant_id:
+        return user
+    tu = await db.tenant_users.find_one(
+        {"tenant_id": tenant_id, "user_id": user_id, "status": "active"}, {"_id": 0, "id": 1},
+    )
+    return user if tu else None
+
+
 @team_router.post("/invites")
 async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Depends(require_tenant)):
-    if (ctx["user"].get("role") or "").lower() != "admin":
-        raise HTTPException(403, "Only tenant admins can invite teammates")
+    # 2026-11-16: inviting is a company-wide control -- admins limited to
+    # specific projects cannot invite.
+    require_full_admin(ctx, "Only an admin with access to all projects can invite teammates")
     if _is_platform_owner_email(payload.email):
         raise HTTPException(403, _RESERVED_EMAIL)
     db = get_db()
+    invite_scope = effective_access_scope(payload.role, payload.access_scope)
+    invite_projects = await _validated_project_ids(db, ctx, payload.project_ids)
+    if invite_scope == "all":
+        invite_projects = []
+    elif (payload.role or "").strip().lower() == "admin" and not invite_projects:
+        # A limited admin is held to their projects from day one, so with
+        # none they would see nothing.
+        raise HTTPException(422, "An admin limited to specific projects needs at least one project. Tick a project, or choose All projects.")
     if await db.users.find_one({"email": payload.email.lower(), "tenant_id": ctx["tenant_id"]}, {"_id": 0, "id": 1}):
         raise HTTPException(409, "User with this email is already a member")
     pending = await db.team_invites.find_one({
@@ -368,6 +525,8 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
         "tenant_id": ctx["tenant_id"],
         "email": payload.email.lower(),
         "role": payload.role,
+        "access_scope": invite_scope,
+        "project_ids": invite_projects,
         "code": code,
         "status": "pending",
         "invited_by": ctx["user"]["id"],
@@ -377,9 +536,12 @@ async def create_invite(payload: InviteCreate, request: Request, ctx: dict = Dep
         "accepted_user_id": None,
     }
     await db.team_invites.insert_one(invite.copy())
+    # 2026-11 security round: the audit row must never hold the invite
+    # code (anyone who could read the log could claim the invite).
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="team_invites", op="INSERT",
-        record_id=invite["id"], before=None, after=invite,
+        record_id=invite["id"], before=None,
+        after=redact_secrets(invite, INVITE_SECRET_KEYS),
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
 
@@ -423,15 +585,14 @@ async def list_invites(ctx: dict = Depends(require_tenant)):
         # as "pending" with a dead code until someone tried it.
         if d.get("status") == "pending" and _invite_is_expired(d):
             d["status"] = "expired"
-        if role != "admin":
+        if not is_full_admin(ctx):
             d.pop("code", None)
     return docs
 
 
 @team_router.delete("/invites/{invite_id}")
 async def revoke_invite(invite_id: str, ctx: dict = Depends(require_tenant)):
-    if (ctx["user"].get("role") or "").lower() != "admin":
-        raise HTTPException(403, "Only tenant admins can revoke invites")
+    require_full_admin(ctx, "Only an admin with access to all projects can revoke invites")
     db = get_db()
     res = await db.team_invites.update_one(
         {"id": invite_id, "tenant_id": ctx["tenant_id"], "status": "pending"},
@@ -442,19 +603,158 @@ async def revoke_invite(invite_id: str, ctx: dict = Depends(require_tenant)):
     return {"ok": True}
 
 
+# 2026-11 security round: an explicit list of the member fields the Team
+# page uses (id, email, full_name, role, created_at) plus harmless profile
+# fields. Everything else on the user record -- password hash, reset-token
+# hash and stamps, token_version -- stays on the server.
+_MEMBER_FIELDS = (
+    "id", "email", "full_name", "role", "tenant_id", "created_at",
+    "title", "phone", "status", "active_project_id",
+)
+# Added by list_members from the access records (2026-11-16), not copied
+# from the user record.
+_MEMBER_ACCESS_FIELDS = ("access_scope", "project_count", "project_ids")
+
+
 @team_router.get("/members")
 async def list_members(ctx: dict = Depends(require_tenant)):
+    """2026-11-16: each member also carries access_scope ("all" or
+    "assigned") and project_count; all-projects admins also get project_ids
+    (for the edit dialog)."""
     db = get_db()
+    projection = {"_id": 0, **{f: 1 for f in _MEMBER_FIELDS}, "access_scope": 1}
     members = await db.users.find(
-        {"tenant_id": ctx["tenant_id"]}, {"_id": 0, "password_hash": 0},
+        {"tenant_id": ctx["tenant_id"]}, projection,
     ).sort("created_at", 1).to_list(500)
-    return members
+    ids = [m.get("id") for m in members if m.get("id")]
+    scopes: dict = {}
+    projects: dict = {}
+    try:
+        rows = await db.tenant_users.find(
+            {"tenant_id": ctx["tenant_id"], "user_id": {"$in": ids}},
+            {"_id": 0, "user_id": 1, "access_scope": 1},
+        ).to_list(length=None)
+        scopes = {r.get("user_id"): r.get("access_scope") for r in rows}
+        pm_rows = await db.project_members.find(
+            {"tenant_id": ctx["tenant_id"], "user_id": {"$in": ids}},
+            {"_id": 0, "user_id": 1, "project_id": 1},
+        ).to_list(length=None)
+        for r in pm_rows:
+            projects.setdefault(r.get("user_id"), []).append(r.get("project_id"))
+    except Exception:
+        pass
+    full = is_full_admin(ctx)
+    out = []
+    for m in members:
+        # Filter again in Python as well, so nothing else can slip through.
+        row = {k: v for k, v in m.items() if k in _MEMBER_FIELDS}
+        uid = m.get("id")
+        row["access_scope"] = effective_access_scope(
+            m.get("role"), scopes.get(uid) or m.get("access_scope"))
+        row["project_count"] = len(projects.get(uid) or [])
+        if full:
+            row["project_ids"] = sorted(p for p in (projects.get(uid) or []) if p)
+        out.append(row)
+    return out
+
+
+@team_router.patch("/members/{user_id}/access")
+async def update_member_access(user_id: str, payload: MemberAccessUpdate,
+                               ctx: dict = Depends(require_tenant)):
+    """Change a member's role, an admin's scope ("all" / "assigned") and/or
+    the member's project list. All-projects admins only. Refuses (409) to
+    leave the company without an admin who has access to all projects."""
+    require_full_admin(ctx, "Only an admin with access to all projects can change team access")
+    db = get_db()
+    tid = ctx["tenant_id"]
+    target = await _is_company_member(db, tid, user_id)
+    if not target:
+        raise HTTPException(404, "Member not found")
+    is_home = target.get("tenant_id") == tid
+    membership = await db.tenant_users.find_one(
+        {"tenant_id": tid, "user_id": user_id}, {"_id": 0},
+    ) or {}
+    old_role = ((target.get("role") if is_home else membership.get("role")) or "").strip().lower()
+    old_scope = effective_access_scope(
+        old_role, membership.get("access_scope") or (target.get("access_scope") if is_home else None))
+    new_role = (payload.role or old_role).strip().lower()
+    if payload.access_scope is not None:
+        new_scope = effective_access_scope(new_role, payload.access_scope)
+    elif new_role == "admin" and old_role != "admin":
+        new_scope = "all"  # a new admin starts with every project (the default)
+    else:
+        new_scope = effective_access_scope(new_role, old_scope)
+    await ensure_keeps_full_admin(db, tid, user_id, new_role=new_role, new_scope=new_scope)
+    new_projects = None
+    if payload.project_ids is not None:
+        new_projects = await _validated_project_ids(db, ctx, payload.project_ids)
+    if new_role == "admin" and new_scope == "assigned":
+        if new_projects is not None:
+            has_projects = bool(new_projects)
+        else:
+            has_projects = bool(await db.project_members.find_one(
+                {"tenant_id": tid, "user_id": user_id}, {"_id": 0, "id": 1}))
+        if not has_projects:
+            raise HTTPException(422, "An admin limited to specific projects needs at least one project. Tick a project, or choose All projects.")
+
+    sets = {"access_scope": new_scope}
+    if new_role != old_role:
+        sets["role"] = new_role
+    if is_home:
+        await db.users.update_one({"id": user_id, "tenant_id": tid}, {"$set": sets})
+    await db.tenant_users.update_one(
+        {"tenant_id": tid, "user_id": user_id}, {"$set": sets},
+    )
+    was_full = old_role == "admin" and old_scope == "all"
+    if was_full and not (new_role == "admin" and new_scope == "all"):
+        # Check again now that the change is saved, in case another admin
+        # was limited or removed at the same moment; if nobody with access
+        # to all projects is left, put this member back and refuse.
+        if not await has_full_admin(db, tid):
+            def _restore(original: dict) -> dict:
+                back_set = {k: original[k] for k in sets if original.get(k) is not None}
+                back_unset = {k: "" for k in sets if original.get(k) is None}
+                upd: dict = {}
+                if back_set:
+                    upd["$set"] = back_set
+                if back_unset:
+                    upd["$unset"] = back_unset
+                return upd
+            if is_home:
+                await db.users.update_one({"id": user_id, "tenant_id": tid}, _restore(target))
+            if membership:
+                await db.tenant_users.update_one(
+                    {"tenant_id": tid, "user_id": user_id}, _restore(membership))
+            raise HTTPException(409, LAST_FULL_ADMIN)
+    added: list = []
+    removed: list = []
+    if new_projects is not None:
+        current = await db.project_members.find(
+            {"tenant_id": tid, "user_id": user_id}, {"_id": 0, "project_id": 1, "id": 1},
+        ).to_list(length=None)
+        keep = set(new_projects)
+        for row in current:
+            if row.get("project_id") not in keep:
+                await db.project_members.delete_one({"tenant_id": tid, "id": row.get("id")})
+                removed.append(row.get("project_id"))
+        added = await _assign_projects(db, tid, user_id, new_role, new_projects,
+                                       added_by=ctx["user"]["id"])
+    await write_audit(
+        tenant_id=tid, table_name="tenant_users", op="MEMBER_ACCESS_CHANGED",
+        record_id=user_id,
+        before={"role": old_role, "access_scope": old_scope},
+        after={"role": new_role, "access_scope": new_scope,
+               "projects_added": added, "projects_removed": removed},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    count = await db.project_members.count_documents({"tenant_id": tid, "user_id": user_id})
+    return {"ok": True, "user_id": user_id, "role": new_role, "access_scope": new_scope,
+            "project_count": count, "projects_added": added, "projects_removed": removed}
 
 
 @team_router.delete("/members/{user_id}")
 async def remove_member(user_id: str, ctx: dict = Depends(require_tenant)):
-    if (ctx["user"].get("role") or "").lower() != "admin":
-        raise HTTPException(403, "Only tenant admins can remove members")
+    require_full_admin(ctx, "Only an admin with access to all projects can remove members")
     if user_id == ctx["user"]["id"]:
         raise HTTPException(400, "Cannot remove yourself; ask another admin")
     db = get_db()
@@ -463,8 +763,24 @@ async def remove_member(user_id: str, ctx: dict = Depends(require_tenant)):
         raise HTTPException(404, "Member not found")
     if _is_platform_owner_email(user.get("email")):
         raise HTTPException(403, "The platform owner's account can't be removed here.")
+    target_is_full = await ensure_keeps_full_admin(db, ctx["tenant_id"], user_id, removing=True)
+    if target_is_full:
+        # Mark the admin as being removed (no longer counted), then check
+        # again, so two admins removing each other at the same moment cannot
+        # leave the company with no admin who has access to all projects.
+        await db.users.update_one({"id": user_id, "tenant_id": ctx["tenant_id"]},
+                                  {"$set": {"removal_pending": True}})
+        if not await has_full_admin(db, ctx["tenant_id"]):
+            await db.users.update_one({"id": user_id, "tenant_id": ctx["tenant_id"]},
+                                      {"$unset": {"removal_pending": ""}})
+            raise HTTPException(409, LAST_FULL_ADMIN)
     await db.tenant_users.update_many({"user_id": user_id, "tenant_id": ctx["tenant_id"]},
                                       {"$set": {"status": "revoked"}})
+    # Retire the removed member's sign-in tokens. Deleting the record next
+    # already blocks them; this keeps that true even if removal ever
+    # becomes a soft delete.
+    await db.users.update_one({"id": user_id, "tenant_id": ctx["tenant_id"]},
+                              {"$inc": {"token_version": 1}})
     await db.users.delete_one({"id": user_id, "tenant_id": ctx["tenant_id"]})
     return {"ok": True}
 
@@ -491,8 +807,7 @@ async def admin_reset_password(
 ):
     """Tenant-admin only. Sets a user's password_hash to a freshly-
     bcrypt'd version of the provided plaintext. Audit-logged."""
-    if (ctx["user"].get("role") or "").lower() != "admin":
-        raise HTTPException(403, "Only tenant admins can reset member passwords")
+    require_full_admin(ctx, "Only an admin with access to all projects can reset member passwords")
     db = get_db()
     user = await db.users.find_one(
         {"id": user_id, "tenant_id": ctx["tenant_id"]},
@@ -511,13 +826,11 @@ async def admin_reset_password(
         {"id": user_id, "tenant_id": ctx["tenant_id"]},
         {"$set": {"password_hash": new_hash,
                    "password_reset_at": utc_now().isoformat(),
-                   "password_reset_by": ctx["user"]["id"]}},
+                   "password_reset_by": ctx["user"]["id"]},
+         # 2026-11 security round: bumping token_version signs the member
+         # out everywhere -- every token issued before the reset stops working.
+         "$inc": {"token_version": 1}},
     )
-    # Bearer JWTs are stateless and will expire naturally; document that
-    # in the response so the operator knows tokens issued before the
-    # reset remain valid until expiry. (The Google-OAuth cookie session
-    # path was removed in the 2026-05-11 purge, so there's no longer
-    # anything else to invalidate here.)
     await write_audit(
         tenant_id=ctx["tenant_id"], table_name="users",
         op="ADMIN_PASSWORD_RESET",
@@ -532,8 +845,8 @@ async def admin_reset_password(
         "ok": True,
         "user_id": user_id,
         "email": user.get("email"),
-        "note": "User must re-login with the new password. Active JWTs "
-                "remain valid until expiry.",
+        "note": "User must sign in again with the new password. Every "
+                "earlier sign-in for this user has been signed out.",
     }
 
 
@@ -554,6 +867,9 @@ TENANT_SCOPED_COLLECTIONS = [
     "coordination_events", "photos", "specs", "submittals", "drawings",
     "schedule_imports", "schedule_revisions", "recovery_reports",
     "marketplace_listings", "notifications", "approvals", "audit_log",
+    # The audit log's per-company chain head goes with the log itself, so
+    # nothing keeps pointing at rows that no longer exist.
+    "audit_chain_heads",
     "team_invites", "users", "memberships", "tia_generations",
     "edit_requests", "photo_tray", "subcontractors", "suppliers",
 ]
@@ -566,9 +882,9 @@ async def close_account(ctx: dict = Depends(require_tenant)):
     password are removed alongside, so they can sign up again with
     the same email to start a brand-new organization.
     """
-    role = (ctx["user"].get("role") or "").lower()
-    if role != "admin":
-        raise HTTPException(403, "Only the tenant admin can close the account")
+    # 2026-11-16: closing the company is company-wide, so an admin limited
+    # to specific projects cannot do it.
+    require_full_admin(ctx, "Only an admin with access to all projects can close the account")
     db = get_db()
     tenant_id = ctx["tenant_id"]
     tenant = await db.tenants.find_one({"id": tenant_id}, {"_id": 0})
@@ -581,9 +897,33 @@ async def close_account(ctx: dict = Depends(require_tenant)):
     # admin's records.
     await write_audit(
         tenant_id=tenant_id, table_name="tenants", op="CLOSE_TENANT",
-        record_id=tenant_id, before=tenant, after={},
+        record_id=tenant_id, before=redact_secrets(tenant), after={},
         actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
     )
+    # 2026-11 security round: sign out everyone attached to this company.
+    # Users whose home is this company are deleted below; members from
+    # other companies keep their accounts, but their memberships here are
+    # closed and their old tokens retired.
+    try:
+        member_rows = await db.tenant_users.find(
+            {"tenant_id": tenant_id}, {"_id": 0, "user_id": 1},
+        ).to_list(length=None)
+        member_ids = {r.get("user_id") for r in member_rows if r.get("user_id")}
+        home_rows = await db.users.find(
+            {"tenant_id": tenant_id}, {"_id": 0, "id": 1},
+        ).to_list(length=None)
+        member_ids |= {r.get("id") for r in home_rows if r.get("id")}
+        if member_ids:
+            await db.users.update_many(
+                {"id": {"$in": sorted(member_ids)}}, {"$inc": {"token_version": 1}},
+            )
+        await db.tenant_users.update_many(
+            {"tenant_id": tenant_id}, {"$set": {"status": "revoked"}},
+        )
+    except Exception:
+        # Never leave a half-closed account because of this step; the
+        # deletes below still remove the home users and their tokens.
+        pass
     deleted_counts: dict[str, int] = {}
     for coll in TENANT_SCOPED_COLLECTIONS:
         try:
@@ -627,6 +967,7 @@ from services.password_reset_email import send_password_reset_email  # noqa: E40
 
 
 _RESET_TOKEN_TTL_MINUTES = 30
+_RESET_EMAIL_TASKS: set = set()
 
 
 class ForgotPasswordRequest(StrictModel):
@@ -710,6 +1051,18 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     """
     db = get_db()
     email_norm = (payload.email or "").strip().lower()
+    # 2026-11 security round: limit reset requests. Every request counts,
+    # whether or not the email exists, so a 429 reveals nothing: 5 per
+    # (email, address), 20 per email from all addresses, and 50 per client
+    # address in 15 minutes. The (email, address) bucket means a stranger
+    # elsewhere cannot block the real person's reset with 5 requests.
+    ip = client_ip(request)
+    email_key = f"forgot:acct:{email_norm}"
+    email_ip_key = f"forgot:acctip:{email_norm}|{ip}"
+    ip_key = f"forgot:ip:{ip}"
+    await check_throttle([(ip_key, IP_FAILURE_LIMIT)])
+    await reserve_attempt([(email_ip_key, 5), (email_key, 20)])
+    await record_failure([ip_key])
     user = await db.users.find_one({"email": email_norm}, {"_id": 0})
 
     plain_token = secrets.token_urlsafe(32)
@@ -764,28 +1117,43 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
             f"{base_url}/reset-password?token={plain_token}" if base_url
             else f"/reset-password?token={plain_token}"
         )
-        email_result = send_password_reset_email(
-            recipient_email=user["email"],
-            recipient_name=user.get("full_name"),
-            reset_token=plain_token,
-            reset_link=reset_link,
-            expires_minutes=_RESET_TOKEN_TTL_MINUTES,
-        )
-        op = "PASSWORD_RESET_EMAIL_SENT" if email_result.get("sent") else "PASSWORD_RESET_EMAIL_FAILED"
-        try:
-            await write_audit(
-                tenant_id=user.get("tenant_id"),
-                table_name="users", op=op, record_id=user["id"],
-                before={}, after={
-                    "email": user["email"],
-                    "provider_message_id": email_result.get("provider_message_id"),
-                    "error": email_result.get("error"),
-                },
-                actor_id=user["id"],
-                request_id=str(request.headers.get("x-request-id") or ""),
-            )
-        except Exception:
-            pass
+        request_id = str(request.headers.get("x-request-id") or "")
+
+        async def _send_and_audit():
+            # Sent off the request path: the email provider call is a
+            # blocking network call (it would hold up other requests), and a
+            # known email must not answer measurably slower than an unknown
+            # one.
+            try:
+                email_result = await asyncio.to_thread(
+                    send_password_reset_email,
+                    recipient_email=user["email"],
+                    recipient_name=user.get("full_name"),
+                    reset_token=plain_token,
+                    reset_link=reset_link,
+                    expires_minutes=_RESET_TOKEN_TTL_MINUTES,
+                )
+            except Exception as exc:  # never lose the audit row
+                email_result = {"sent": False, "error": str(exc)[:200]}
+            op = "PASSWORD_RESET_EMAIL_SENT" if email_result.get("sent") else "PASSWORD_RESET_EMAIL_FAILED"
+            try:
+                await write_audit(
+                    tenant_id=user.get("tenant_id"),
+                    table_name="users", op=op, record_id=user["id"],
+                    before={}, after={
+                        "email": user["email"],
+                        "provider_message_id": email_result.get("provider_message_id"),
+                        "error": email_result.get("error"),
+                    },
+                    actor_id=user["id"],
+                    request_id=request_id,
+                )
+            except Exception:
+                pass
+
+        _task = asyncio.create_task(_send_and_audit())
+        _RESET_EMAIL_TASKS.add(_task)  # keep a reference until it finishes
+        _task.add_done_callback(_RESET_EMAIL_TASKS.discard)
 
     return {
         "ok": True,
@@ -842,6 +1210,8 @@ async def reset_password(payload: ResetPasswordRequest, request: Request):
                 "password_reset_at": utc_now().isoformat(),
                 "password_reset_by": "self",
             },
+            # Sign out every earlier session (2026-11 security round).
+            "$inc": {"token_version": 1},
             "$unset": {
                 "password_reset_token_hash": "",
                 "password_reset_expires_at": "",

@@ -410,6 +410,7 @@ def _sectioned_pull_tasks():
 def test_pull_labels_by_section_keeps_existing_labels_and_ai_labels_the_rest(monkeypatch):
     from services.ms_project_ingest import build_pull_proposal
     monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _reset()
     # K1 already exists in ICE and someone labelled it closeout paperwork.
     _seed_task("K1", "2026-05-07", "2026-07-01")
@@ -439,6 +440,7 @@ def test_pull_labels_by_section_keeps_existing_labels_and_ai_labels_the_rest(mon
 def test_background_labelling_never_overwrites_a_reviewer_choice(monkeypatch):
     from services import ms_project_ingest as mpi
     monkeypatch.delenv("EMERGENT_LLM_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _reset()
     rows = mpi.worker_tasks_to_parsed_rows(_sectioned_pull_tasks(), [])
     for r in rows:

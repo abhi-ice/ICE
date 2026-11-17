@@ -44,6 +44,8 @@ const FAILURE_LABELS = {
   vision_api_error: "Anthropic Vision API returned an error",
   vision_timeout: "Vision call timed out (>30s)",
   vision_malformed_json: "AI response wasn't valid JSON",
+  // No AI key on the server (2026-11-16). Nothing made up is shown.
+  ai_unavailable: "AI analysis isn't available right now. Your photos are saved; try again later.",
 };
 
 const POLL_INTERVAL_MS = 3000;
@@ -161,15 +163,16 @@ export default function AiAnalysisCard({ trayId, isAdmin = false, onChanged }) {
   if (status === "failed") {
     const reason = data.ai_failure_reason || "unknown";
     const label = FAILURE_LABELS[reason] || `Analysis failed (${reason})`;
+    const unavailable = reason === "ai_unavailable";
     return (
       <div data-testid="ai-card-failed"
         className="p-3 border border-rose-200 rounded bg-rose-50 text-xs space-y-2">
         <div className="flex items-center gap-2 text-rose-900">
           <AlertTriangle className="h-3.5 w-3.5" />
-          <span className="font-medium">AI analysis failed</span>
+          <span className="font-medium">{unavailable ? "AI analysis unavailable" : "AI analysis failed"}</span>
         </div>
         <div className="text-rose-800">{label}</div>
-        <div className="text-xs text-rose-700 font-mono">{reason}</div>
+        {!unavailable && <div className="text-xs text-rose-700 font-mono">{reason}</div>}
         <button data-testid="ai-card-retry" onClick={triggerAnalyze} disabled={busy}
           className="h-7 px-2 rounded bg-rose-600 text-white text-xs hover:bg-rose-700 disabled:opacity-50 inline-flex items-center gap-1">
           <RefreshCw className={`h-3 w-3 ${busy ? "animate-spin" : ""}`} />

@@ -5,11 +5,12 @@ Emergent runtime):
 - PostgreSQL/pgvector → MongoDB; tenant isolation enforced at app layer
   via tenant_filter() in every query.
 - Celery + Redis → FastAPI BackgroundTasks (heavy jobs deferred).
-- LangGraph → emergentintegrations.LlmChat with multi-step prompt chains
-  (see services/ai_agents.py).
+- LangGraph → services.anthropic_compat.LlmChat (official Anthropic SDK)
+  with multi-step prompt chains (see services/ai_agents.py).
 - Clerk → JWT (HS256) with bcrypt; X-Tenant-ID header for tenant switch.
-- DOCKER COMPOSE & MinIO/S3 → not used; supervisor manages backend on
-  0.0.0.0:8001 per Emergent platform constraints.
+- File storage: S3-compatible bucket (STORAGE_BACKEND=s3, e.g. Railway)
+  or the Emergent object store; see services/storage.py. On Emergent,
+  supervisor runs the backend on 0.0.0.0:8001; on Railway, backend/Dockerfile.
 """
 import os
 import logging
@@ -24,32 +25,14 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-# === Anthropic direct-SDK shim (2026-05-18) =========================
-# Customer uses their own ANTHROPIC_API_KEY (set in .env) rather than
-# routing Claude through Emergent's gateway. We register a compat
-# module BEFORE any router imports emergentintegrations.llm.chat, so
-# all existing `from emergentintegrations.llm.chat import ...` lines
-# resolve to our shim and call api.anthropic.com directly.
-# Whisper STT (.llm.openai) and Stripe (.payments.stripe) keep using
-# EMERGENT_LLM_KEY -- they are NOT intercepted here.
-import sys  # noqa: E402
-if os.environ.get("ANTHROPIC_API_KEY"):
-    try:
-        from services import anthropic_compat as _anthropic_compat  # noqa: E402
-        sys.modules["emergentintegrations.llm.chat"] = _anthropic_compat
-        logging.getLogger("ice_schedule_ops").info(
-            "Anthropic direct-SDK shim active: emergentintegrations.llm.chat "
-            "-> services.anthropic_compat (ANTHROPIC_API_KEY)."
-        )
-    except Exception as _exc:  # pragma: no cover -- non-fatal boot
-        logging.getLogger("ice_schedule_ops").warning(
-            "Anthropic direct-SDK shim FAILED to load (%s); falling back "
-            "to Emergent gateway for Claude calls.", _exc,
-        )
-# ====================================================================
+# 2026-11-15 (Railway move): the old swap that pointed
+# emergentintegrations.llm.chat at services.anthropic_compat is gone. Every
+# AI module now imports services.anthropic_compat directly, so the app no
+# longer needs the emergentintegrations package to start.
 
 from database import get_db, close_db, tenant_filter  # noqa: E402
 from auth import require_tenant  # noqa: E402
+from services.project_access import enforce_project_scope  # noqa: E402
 from routers.auth_router import router as auth_router, team_router  # noqa: E402
 from routers.projects_router import router as projects_router  # noqa: E402
 from routers.tasks_router import router as tasks_router  # noqa: E402
@@ -126,7 +109,12 @@ async def _ensure_indexes():
     await _safe_create_index(db.tasks, [("tenant_id", 1), ("project_id", 1), ("planned_start", 1)])
     await _safe_create_index(db.daily_reports, [("tenant_id", 1), ("project_id", 1), ("report_date", 1)], unique=True)
     await _safe_create_index(db.daily_report_activities, [("daily_report_id", 1), ("position", 1)])
+    # 2026-11-16: per-task report history (actual dates, back-dated reports,
+    # hours to date) and the earliest progress event per task.
+    from services.schedule_feedback import ensure_history_indexes
+    await ensure_history_indexes(db, _safe_create_index)
     await _safe_create_index(db.audit_log, [("tenant_id", 1), ("created_at", -1)])
+    await _safe_create_index(db.audit_log, [("tenant_id", 1), ("table_name", 1), ("record_id", 1), ("created_at", -1)])
     await _safe_create_index(db.approvals, [("tenant_id", 1), ("status", 1)])
     await _safe_create_index(db.locations, [("tenant_id", 1), ("project_id", 1), ("floor_id", 1)])
     await _safe_create_index(db.crews, [("tenant_id", 1), ("crew_code", 1)], unique=True)
@@ -427,6 +415,45 @@ async def _ensure_indexes():
         [("tenant_id", 1), ("status", 1), ("generated_at", -1)],
         name="rr_tenant_status_generated",
     )
+    # Sign-in throttling rows: TTL (auto-removal after an hour) + lookup
+    # index. Safe to repeat; never raises (a failure is only logged).
+    # Its own try: a problem here must not stop the indexes below.
+    try:
+        from auth import ensure_auth_attempt_indexes
+        await ensure_auth_attempt_indexes(db)
+    except Exception as _exc:
+        logger.warning("auth_attempts index setup failed: %s", _exc)
+    # Per-project access (2026-11-16). project_members is read on every
+    # request that names a project, so its indexes are created here too
+    # (same definitions and names as migration 009, so nothing changes on a
+    # database that already has them). project_access_watch holds one row
+    # per (company, user, project, route, method).
+    await _safe_create_index(db.project_members,
+        [("tenant_id", 1), ("project_id", 1), ("user_id", 1)],
+        unique=True, name="pm_tenant_project_user_unique",
+    )
+    await _safe_create_index(db.project_members,
+        [("tenant_id", 1), ("user_id", 1)], name="pm_tenant_user",
+    )
+    await _safe_create_index(db.project_members,
+        [("tenant_id", 1), ("project_id", 1)], name="pm_tenant_project",
+    )
+    await _safe_create_index(db.project_access_watch,
+        [("tenant_id", 1), ("user_id", 1), ("project_id", 1), ("route", 1), ("method", 1)],
+        unique=True, name="paw_tenant_user_project_route_method",
+    )
+    await _safe_create_index(db.project_access_watch,
+        [("tenant_id", 1), ("last_at", -1)], name="paw_tenant_last_at",
+    )
+    # The route-level project check looks up the record named in the URL by
+    # its id alone (daily report, activity row, presence row, tray photo,
+    # voice note) to find its project. These collections had no index on id,
+    # so each lookup scanned the collection. Plain (not unique) indexes keep
+    # every daily-report save to one cheap lookup per step; the existing
+    # handlers' own lookups by id get faster too.
+    for coll in ("daily_reports", "daily_report_activities", "daily_presence",
+                 "photo_tray", "voice_annotations"):
+        await _safe_create_index(db[coll], [("id", 1)], name=f"{coll}_id")
 
 
 def _warn_if_platform_admins_unset() -> bool:
@@ -445,6 +472,30 @@ def _warn_if_platform_admins_unset() -> bool:
         "set PLATFORM_ADMIN_EMAILS",
     )
     return True
+
+
+def _log_startup_config() -> str:
+    """Log one line naming the file store in use and which AI keys are set.
+    Only names and yes/no are logged, never a value. Returns the line."""
+    try:
+        from services.storage import storage_backend
+        backend = storage_backend()
+    except Exception as exc:  # pragma: no cover -- never block startup
+        backend = f"unknown ({type(exc).__name__})"
+
+    def _present(name: str) -> str:
+        return "yes" if (os.environ.get(name) or "").strip() else "no"
+
+    line = (
+        f"Startup config: storage backend={backend}; "
+        f"ANTHROPIC_API_KEY set={_present('ANTHROPIC_API_KEY')}; "
+        f"EMERGENT_LLM_KEY set={_present('EMERGENT_LLM_KEY')}; "
+        f"OPENAI_API_KEY set={_present('OPENAI_API_KEY')}; "
+        f"STRIPE_API_KEY set={_present('STRIPE_API_KEY')}; "
+        f"STRIPE_WEBHOOK_SECRET set={_present('STRIPE_WEBHOOK_SECRET')}"
+    )
+    logger.info(line)
+    return line
 
 
 @asynccontextmanager
@@ -524,18 +575,24 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning("bcrypt runtime self-test: errored out: %s", e)
+    # Say which file store and which AI key this server uses (names only,
+    # never values), so a wrong setup is obvious in the deploy log.
+    _log_startup_config()
     # Init Emergent object storage (best-effort — voice/upload work even if it fails)
     # 2026-07-06 (prod-deploy-fix) -- init_storage() is a SYNC requests.post
     # with a 30s timeout to integrations.emergentagent.com. Run it in a
     # thread + shorter deadline so a slow init endpoint can't block the
     # k8s readiness probe. Uploads lazily re-init if _storage_key is None.
+    # 2026-11-15 (Railway move): only when the Emergent store is the one in
+    # use; the S3 bucket needs no start-up step.
     try:
-        from services.storage import init_storage
-        try:
-            await _asyncio.wait_for(_asyncio.to_thread(init_storage), timeout=8.0)
-            logger.info("Object storage initialized")
-        except _asyncio.TimeoutError:
-            logger.warning("Object storage init timed out (will re-init on first upload)")
+        from services.storage import init_storage, is_emergent_backend
+        if is_emergent_backend():
+            try:
+                await _asyncio.wait_for(_asyncio.to_thread(init_storage), timeout=8.0)
+                logger.info("Object storage initialized")
+            except _asyncio.TimeoutError:
+                logger.warning("Object storage init timed out (will re-init on first upload)")
     except Exception as e:
         logger.warning("Object storage init failed (uploads will retry): %s", e)
     # Bucket F Phase 3 -- pending-row sweeper on startup. Catches photos
@@ -896,6 +953,30 @@ async def lifespan(app: FastAPI):
     app.state.msp_impact_refresh_task = _asyncio.create_task(
         _periodic_msp_impact_refresh(),
     )
+
+    # Daily forecast refresh (2026-11-16). The impact-days forecast starts
+    # unfinished work no earlier than the project's today, so its stored
+    # dates go stale as days pass with no events. Every hour, each active
+    # impact-days project whose forecast was not yet refreshed on its own
+    # site-clock today is recomputed once (services/forecast_refresh.py).
+    # Microsoft Project (Mode 2) and enterprise projects are skipped.
+    async def _periodic_forecast_refresh():
+        from services.forecast_refresh import refresh_due_forecasts
+        first_pass = True
+        while True:
+            try:
+                # Short first sleep so the settings cache (feature flags)
+                # is loaded before the first pass decides each engine.
+                await _asyncio.sleep(120 if first_pass else 3600)
+                first_pass = False
+                await refresh_due_forecasts(get_db())
+            except _asyncio.CancelledError:
+                logger.info("forecast refresh task cancelled")
+                raise
+            except Exception as exc:
+                logger.warning("forecast refresh tick failed (non-fatal): %s", exc)
+
+    app.state.forecast_refresh_task = _asyncio.create_task(_periodic_forecast_refresh())
     logger.info("Lifespan: startup complete, yielding to app")
     yield
     # Cancel the recurring tasks before closing the DB so the next
@@ -912,6 +993,7 @@ async def lifespan(app: FastAPI):
         "submittal_sla_breach_task",
         "friday_recovery_task",
         "msp_impact_refresh_task",
+        "forecast_refresh_task",
         "runtime_settings_refresh_task",
     ):
         task = getattr(app.state, attr, None)
@@ -963,6 +1045,37 @@ def _json_safe_validation_errors(errors) -> list[dict]:
     return safe
 
 
+# A read-only role tried to change a daily report: same {"detail": text} body
+# every page already shows, plus code "role_read_only" for the offline queue.
+from auth import RoleReadOnlyError, role_read_only_handler  # noqa: E402
+app.add_exception_handler(RoleReadOnlyError, role_read_only_handler)
+
+# No AI key: a plain message plus code "ai_unavailable", so the offline
+# queue keeps a queued save for a later retry (services/ai_unavailable.py).
+from services.ai_unavailable import AiUnavailableError, ai_unavailable_handler  # noqa: E402
+app.add_exception_handler(AiUnavailableError, ai_unavailable_handler)
+
+# Someone other than the author tried to change or delete a draft report (or
+# a non-admin tried to delete a submitted one): plain message plus code
+# "not_report_author", so the offline queue stops retrying that save and
+# shows it to the user (services/edit_permissions.py).
+from services.edit_permissions import (  # noqa: E402
+    NotReportAuthorError, ReportNotDraftError, not_report_author_handler,
+)
+app.add_exception_handler(NotReportAuthorError, not_report_author_handler)
+app.add_exception_handler(ReportNotDraftError, not_report_author_handler)
+
+# An activity's end-of-day percent outside what the submitted reports allow
+# (it can't go below an earlier submitted report or above a later one):
+# plain message plus code "progress_out_of_range" and the limits, so the
+# screens can explain it and the offline queue stops retrying that save
+# (services/progress_ratchet.py).
+from services.progress_ratchet import (  # noqa: E402
+    ProgressOutOfRangeError, progress_out_of_range_handler,
+)
+app.add_exception_handler(ProgressOutOfRangeError, progress_out_of_range_handler)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = _json_safe_validation_errors(exc.errors())
@@ -989,6 +1102,23 @@ async def health():
     return {"status": "ok", "service": "ice-schedule-ops"}
 
 
+@api_router.get("/health/deep")
+async def health_deep():
+    """Like /api/health, but also checks the database answers within 3
+    seconds. 200 when it does, 503 when it does not. For an outside uptime
+    monitor; the platform health check stays on /api/health."""
+    import asyncio as _asyncio_health
+    try:
+        await _asyncio_health.wait_for(get_db().command("ping"), timeout=3.0)
+    except Exception as exc:
+        logger.warning("deep health check: database ping failed (%s)", type(exc).__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "service": "ice-schedule-ops", "database": "unreachable"},
+        )
+    return {"status": "ok", "service": "ice-schedule-ops", "database": "ok"}
+
+
 # Tenant info endpoint
 @api_router.get("/tenants/current")
 async def current_tenant(ctx: dict = Depends(require_tenant)):
@@ -1003,7 +1133,9 @@ api_router.include_router(projects_router)
 api_router.include_router(tasks_router)
 api_router.include_router(daily_reports_router)
 # dr_voice_router declares its own /api prefix, mount on the app root.
-app.include_router(dr_voice_router)
+# Per-project access check (services/project_access) on every route, the
+# same as the /api routes below.
+app.include_router(dr_voice_router, dependencies=[Depends(enforce_project_scope)])
 api_router.include_router(resources_router)
 api_router.include_router(field_events_router)
 api_router.include_router(docs_router)
@@ -1038,7 +1170,17 @@ api_router.include_router(backup_router)
 api_router.include_router(schedule_review_router)
 api_router.include_router(ws_router)
 
-app.include_router(api_router)
+# Per-project access (2026-11-16): one route-level check for every /api
+# route. It looks at project ids (and ids of records that belong to a
+# project) in the path and the project_id query parameter. Watch only while
+# FF_PROJECT_ACCESS is off; worker, cron, webhook, sign-in and health routes
+# are never checked (services/project_access.EXEMPT_PREFIXES).
+app.include_router(api_router, dependencies=[Depends(enforce_project_scope)])
+
+# Write-freeze switch for the server move (services/write_freeze.py). Added
+# BEFORE the CORS middleware so CORS wraps it and browsers can read the 503.
+from services.write_freeze import WriteFreezeMiddleware  # noqa: E402
+app.add_middleware(WriteFreezeMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

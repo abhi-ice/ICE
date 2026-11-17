@@ -1,4 +1,12 @@
-"""RFIs, change orders, submittals, work items, drawings, specs."""
+"""RFIs, change orders, submittals, work items, drawings, specs.
+
+Per-project access (2026-11-16): URLs with a project id or an RFI, work
+item or spec id are checked by the route-level dependency
+(services/project_access.enforce_project_scope). Creates check the body's
+project with the shared require_project (company check, then the access
+rule), and records the body points at (an RFI, a work item, a linked
+entity, a daily report) with check_record_access as a write, so a refusal
+is a 403 that a phone keeps queued."""
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from datetime import date
@@ -12,7 +20,10 @@ from models import (
     gen_id, utc_now,
 )
 from auth import require_tenant
+from services.edit_permissions import ensure_can_change_linked_report
 from audit import write_audit
+from services.project_scope import require_project
+from services.project_access import check_record_access
 
 router = APIRouter(tags=["procurement-docs"])
 
@@ -20,6 +31,16 @@ router = APIRouter(tags=["procurement-docs"])
 async def _next_number(db, tenant_id: str, project_id: str, collection: str, prefix: str) -> str:
     count = await db[collection].count_documents(tenant_filter(tenant_id, {"project_id": project_id}))
     return f"{prefix}-{count + 1:04d}"
+
+
+async def _check_linked_records(ctx: dict, pairs) -> None:
+    """Per-project access for records named in a request BODY (the URL is
+    checked by the route-level dependency). pairs is a list of (kind, id);
+    blank ids and unknown kinds are skipped. Always a write: a refusal is a
+    403, never a 404, so a phone keeps the queued save."""
+    for kind, rid in pairs:
+        if isinstance(rid, str) and rid:
+            await check_record_access(ctx, kind, rid, write=True)
 
 
 async def _project_today_iso(db, tenant_id: str, project_id: str) -> str:
@@ -207,6 +228,13 @@ async def _resolve_rfi_task_impacts(
 @router.post("/rfis", response_model=Rfi)
 async def create_rfi(payload: RfiCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
+    await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     rfi_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "rfis", "RFI")
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
@@ -372,6 +400,8 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
     before = await db.rfis.find_one(tenant_filter(ctx["tenant_id"], {"id": rfi_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "RFI not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     # Addition 4 -- locked-DR edit policy.
     from services.edit_permissions import (
         enforce_locked_dr_edit_policy, stamp_edit_metadata,
@@ -560,6 +590,8 @@ async def update_rfi(rfi_id: str, payload: RfiUpdate, ctx: dict = Depends(requir
 @router.post("/change-orders", response_model=ChangeOrder)
 async def create_co(payload: ChangeOrderCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [("rfi", payload.originating_rfi_id)])
     co_number = await _next_number(db, ctx["tenant_id"], payload.project_id, "change_orders", "CO")
     doc = payload.model_dump(mode="json")
     doc.update({
@@ -585,6 +617,7 @@ async def list_co(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.post("/work-items", response_model=WorkItem)
 async def create_work_item(payload: WorkItemCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await require_project(ctx, payload.project_id)
     now_iso = utc_now().isoformat()
     doc = payload.model_dump(mode="json")
     doc.update({
@@ -631,6 +664,11 @@ async def create_work_item_link(payload: WorkItemLinkCreate, ctx: dict = Depends
     wi = await db.work_items.find_one(tenant_filter(ctx["tenant_id"], {"id": payload.work_item_id}), {"_id": 0})
     if not wi:
         raise HTTPException(404, "Work item not found")
+    # Both ends of the link must be on projects the caller is assigned to.
+    await _check_linked_records(ctx, [
+        ("work_item", payload.work_item_id),
+        (payload.entity_type, payload.entity_id),
+    ])
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
@@ -653,10 +691,12 @@ async def list_work_item_links(work_item_id: str, ctx: dict = Depends(require_te
 @router.post("/drawings", response_model=Drawing)
 async def create_drawing(payload: DrawingCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
-        "revision_count": 1, "current_revision_id": None,
+        # No PDF uploaded yet; each upload adds one (upload_router).
+        "revision_count": 0, "current_revision_id": None,
         "qr_code_url": None, "status": "current",
         "created_at": utc_now().isoformat(),
     })
@@ -670,6 +710,19 @@ async def list_drawings(project_id: str, ctx: dict = Depends(require_tenant)):
     docs = await db.drawings.find(
         tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0},
     ).sort("sheet_number", 1).to_list(500)
+    # Count each drawing's uploaded revisions instead of trusting the stored
+    # revision_count: drawings created before 2026-11-16 started at 1, so
+    # their stored count is one too high. One grouped query for the whole
+    # list; nothing stored is changed.
+    counts: dict = {}
+    if docs:
+        rows = await db.drawing_revisions.aggregate([
+            {"$match": tenant_filter(ctx["tenant_id"], {"drawing_id": {"$in": [d["id"] for d in docs]}})},
+            {"$group": {"_id": "$drawing_id", "n": {"$sum": 1}}},
+        ]).to_list(None)
+        counts = {r["_id"]: r["n"] for r in rows}
+    for d in docs:
+        d["revision_count"] = counts.get(d["id"], 0)
     return [Drawing(**d) for d in docs]
 
 
@@ -677,6 +730,7 @@ async def list_drawings(project_id: str, ctx: dict = Depends(require_tenant)):
 @router.post("/specs", response_model=ProjectSpec)
 async def create_spec(payload: SpecCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    await require_project(ctx, payload.project_id)
     doc = payload.model_dump(mode="json")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],

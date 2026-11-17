@@ -137,7 +137,13 @@ export default function CalendarReconciliation() {
                     <td className="p-2 border border-slate-200 text-right">{r.delay_hours || 0}</td>
                     <td className="p-2 border border-slate-200 text-right">{r.production_hours || 0}</td>
                     <td className="p-2 border border-slate-200 text-right">{r.headcount_total || 0}</td>
-                    <td className="p-2 border border-slate-200 text-slate-500">{r.notes || ""}</td>
+                    <td className="p-2 border border-slate-200 text-slate-500">
+                      {/* A day whose report was filed as a no-work day shows its heading. */}
+                      {r.no_work_heading && (
+                        <div className="font-medium text-amber-800" data-testid={`reconciliation-no-work-${r.date}`}>{r.no_work_heading}</div>
+                      )}
+                      {r.notes || ""}
+                    </td>
                   </tr>
                 ))}
                 {!(data.rows || []).length && (

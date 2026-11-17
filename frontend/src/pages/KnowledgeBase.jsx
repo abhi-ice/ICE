@@ -51,7 +51,9 @@ export default function KnowledgeBase() {
 
   return (
     <div data-testid="kb-page" className="space-y-4">
-      <div className="flex items-center justify-between">
+      {/* Wraps below desktop width so the buttons drop below the title
+          instead of being cut off. lg and up keeps the old no-wrap row. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 lg:flex-nowrap lg:gap-0">
         <div>
           <div className="flex items-center gap-2">
             <BookOpen className="h-5 w-5 text-blue-600" />
@@ -59,7 +61,7 @@ export default function KnowledgeBase() {
           </div>
           <p className="text-sm text-slate-500 page-desc">Past resolutions, lessons learned, and answered RFIs. Cited by AI agents in every recommendation.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 lg:flex-nowrap">
           <Button data-testid="kb-ingest" onClick={ingest} disabled={busy} variant="outline" className="gap-1">
             <Sparkles className="h-4 w-4" /> {busy ? "Ingesting…" : "Ingest historical"}
           </Button>

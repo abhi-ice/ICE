@@ -14,7 +14,10 @@ DELETE /api/projects/{project_id}/members/{user_id}
 
 Permission rules
 ----------------
-- admin: full CRUD on any project's members in their tenant.
+- admin with access to all projects: full CRUD on any project's members
+  in their tenant.
+- admin limited to specific projects (2026-11-16): full CRUD on the
+  members of the projects they are assigned to; nothing elsewhere.
 - pm:    full CRUD on members of projects where THEY are a member
          with role_on_project=pm (can grant/revoke access to their
          own projects). Cannot manage members on projects they
@@ -29,7 +32,7 @@ Audit ops
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -41,6 +44,10 @@ from models import (
 )
 from auth import require_tenant, has_project_access, can_manage_project_members
 from audit import write_audit
+from services.project_access import (
+    is_full_admin, require_full_admin, is_enforced, role_on_project_for,
+    company_admins, WATCH_COLLECTION,
+)
 
 router = APIRouter(tags=["project-members"])
 
@@ -54,7 +61,20 @@ async def _enforce_manage(ctx: dict, project_id: str) -> None:
             f"Role {role!r} cannot manage project members "
             f"(admin or pm required)",
         )
+    if is_full_admin(ctx):
+        return
     if role == "admin":
+        # An admin limited to specific projects manages the members of the
+        # projects they are assigned to (any role on the project), and only
+        # those. Always on: no admin had this limit before 2026-11-16.
+        db = get_db()
+        own = await db.project_members.find_one(
+            {"tenant_id": ctx["tenant_id"], "project_id": project_id,
+             "user_id": ctx["user"]["id"]},
+            {"_id": 0, "id": 1},
+        )
+        if not own:
+            raise HTTPException(403, "You are not assigned to this project")
         return
     # PM must specifically be a PM on THIS project (not just any
     # project). Avoid relying on has_project_access since that
@@ -95,7 +115,7 @@ async def list_project_members(
         raise HTTPException(404, "Project not found")
     # RBAC: caller must have access to the project to see members.
     role = (ctx["user"].get("role") or "").lower()
-    if role != "admin":
+    if not is_full_admin(ctx):
         ok = await has_project_access(
             tenant_id=ctx["tenant_id"], user_id=ctx["user"]["id"],
             user_role=role, project_id=project_id,
@@ -277,8 +297,7 @@ async def remove_project_member(
     can remove anyone including other admins."""
     await _enforce_manage(ctx, project_id)
     if user_id == ctx["user"]["id"]:
-        role = (ctx["user"].get("role") or "").lower()
-        if role != "admin":
+        if not is_full_admin(ctx):
             raise HTTPException(
                 400,
                 "You can't remove yourself from a project you manage. "
@@ -333,3 +352,166 @@ async def list_eligible_members(
         {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1},
     ).to_list(length=len(eligible_ids))
     return users
+
+
+# =====================================================================
+# GET /api/admin/project-access/report  (2026-11-16)
+# =====================================================================
+# The "before you switch it on" report for per-project access
+# (FF_PROJECT_ACCESS). All-projects admins only. Lists what would go wrong
+# if the switch were turned on today, so the admin can assign people first.
+
+def _cutoff_date(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+
+
+@router.get("/admin/project-access/report")
+async def project_access_report(ctx: dict = Depends(require_tenant)):
+    require_full_admin(ctx)
+    db = get_db()
+    tid = ctx["tenant_id"]
+
+    projects = await db.projects.find(
+        {"tenant_id": tid}, {"_id": 0, "id": 1, "name": 1, "status": 1},
+    ).to_list(length=None)
+    project_names = {p.get("id"): p.get("name") for p in projects}
+
+    # Everyone in the company: home users plus active members from elsewhere.
+    home_users = await db.users.find(
+        {"tenant_id": tid},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1},
+    ).to_list(length=None)
+    memberships = await db.tenant_users.find(
+        {"tenant_id": tid}, {"_id": 0},
+    ).to_list(length=None)
+    tu_by_user = {m.get("user_id"): m for m in memberships if m.get("user_id")}
+    people: dict = {}
+    for u in home_users:
+        m = tu_by_user.get(u.get("id")) or {}
+        if m and (m.get("status") or "active") != "active":
+            continue
+        people[u.get("id")] = {"user_id": u.get("id"), "email": u.get("email"),
+                               "full_name": u.get("full_name"),
+                               "role": (u.get("role") or "").lower()}
+    foreign_ids = [uid for uid, m in tu_by_user.items()
+                   if uid not in people and m.get("status") == "active"]
+    if foreign_ids:
+        others = await db.users.find(
+            {"id": {"$in": foreign_ids}},
+            {"_id": 0, "id": 1, "email": 1, "full_name": 1},
+        ).to_list(length=None)
+        for u in others:
+            m = tu_by_user.get(u.get("id")) or {}
+            people[u.get("id")] = {"user_id": u.get("id"), "email": u.get("email"),
+                                   "full_name": u.get("full_name"),
+                                   "role": (m.get("role") or "viewer").lower()}
+    admins = await company_admins(db, tid)
+
+    members = await db.project_members.find(
+        {"tenant_id": tid}, {"_id": 0, "user_id": 1, "project_id": 1},
+    ).to_list(length=None)
+    by_user: dict = {}
+    by_project: dict = {}
+    for m in members:
+        by_user.setdefault(m.get("user_id"), set()).add(m.get("project_id"))
+        by_project.setdefault(m.get("project_id"), set()).add(m.get("user_id"))
+
+    def _person(uid):
+        p = dict(people.get(uid) or {"user_id": uid})
+        p["suggested_role_on_project"] = role_on_project_for(p.get("role"))
+        return p
+
+    users_without_projects = []
+    limited_admins_without_projects = []
+    for uid, p in people.items():
+        if by_user.get(uid):
+            continue
+        if p.get("role") == "admin":
+            if admins.get(uid) == "assigned":
+                limited_admins_without_projects.append(_person(uid))
+        else:
+            users_without_projects.append(_person(uid))
+
+    projects_without_members = [
+        {"project_id": p.get("id"), "project_name": p.get("name"), "status": p.get("status")}
+        for p in projects if not by_project.get(p.get("id"))
+    ]
+
+    # Daily reports from the last 30 days written by someone who is not
+    # assigned to that report's project (all-projects admins are fine).
+    since = _cutoff_date(30)
+    reports = await db.daily_reports.find(
+        {"tenant_id": tid, "report_date": {"$gte": since}},
+        {"_id": 0, "id": 1, "project_id": 1, "report_date": 1, "prepared_by": 1,
+         "submitted_by": 1, "updated_by": 1, "last_edited_by": 1, "created_by": 1},
+    ).to_list(length=None)
+    unassigned: dict = {}
+    for r in reports:
+        pid = r.get("project_id")
+        authors = {r.get(k) for k in ("prepared_by", "submitted_by", "updated_by",
+                                      "last_edited_by", "created_by")}
+        for uid in authors:
+            if not uid or admins.get(uid) == "all":
+                continue
+            if pid in (by_user.get(uid) or set()):
+                continue
+            row = unassigned.setdefault((uid, pid), {
+                **_person(uid), "project_id": pid,
+                "project_name": project_names.get(pid), "report_count": 0,
+                "last_report_date": None,
+            })
+            row["report_count"] += 1
+            if (r.get("report_date") or "") > (row["last_report_date"] or ""):
+                row["last_report_date"] = r.get("report_date")
+    daily_reports_by_unassigned = sorted(
+        unassigned.values(), key=lambda x: (x.get("last_report_date") or ""), reverse=True)
+
+    # Saves first (newest first within each group), then views, then rows
+    # that are only the phone's background warm-up: a refused save is work a
+    # supervisor's phone is holding, so it must never be pushed off the list
+    # by a pile of page views. Each group is read on its own so an older
+    # save is never cut by newer views.
+    WATCH_LIMIT = 500
+    wcol = db[WATCH_COLLECTION]
+    groups = [
+        {"tenant_id": tid, "write": True},
+        {"tenant_id": tid, "write": {"$ne": True}, "count": {"$gt": 0}},
+        {"tenant_id": tid, "write": {"$ne": True},
+         "$or": [{"count": {"$exists": False}}, {"count": {"$lte": 0}}]},
+    ]
+    watch = []
+    for q in groups:
+        room = WATCH_LIMIT - len(watch)
+        if room <= 0:
+            break
+        watch += await wcol.find(q, {"_id": 0}).sort("last_at", -1).to_list(room)
+    try:
+        watch_total = await wcol.count_documents({"tenant_id": tid})
+    except Exception:
+        watch_total = len(watch)
+    watch_rows = []
+    for w in watch:
+        uid = w.get("user_id")
+        p = _person(uid)
+        watch_rows.append({
+            **w,
+            "email": p.get("email") or w.get("user_email"),
+            "full_name": p.get("full_name"),
+            "project_name": project_names.get(w.get("project_id")),
+            "suggested_role_on_project": p.get("suggested_role_on_project"),
+            "now_assigned": w.get("project_id") in (by_user.get(uid) or set()),
+            # Left the company since: nothing to assign.
+            "still_member": uid in people,
+        })
+
+    return {
+        "enforced": is_enforced(),
+        "generated_at": utc_now().isoformat(),
+        "users_without_projects": users_without_projects,
+        "limited_admins_without_projects": limited_admins_without_projects,
+        "projects_without_members": projects_without_members,
+        "daily_reports_by_unassigned": daily_reports_by_unassigned,
+        "watch": watch_rows,
+        "watch_total": watch_total,
+        "projects": [{"id": p.get("id"), "name": p.get("name")} for p in projects],
+    }

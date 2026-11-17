@@ -78,6 +78,7 @@ import hashlib
 import logging
 import logging.handlers
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -328,17 +329,56 @@ def sha12(data: bytes) -> str:
 DOWNLOAD_CORRUPT = object()  # sentinel: bytes failed their hash check twice
 
 
+# A project id only ever becomes part of a file path on this machine as a
+# plain token (ICE ids are UUIDs: letters, digits and dashes). Anything with
+# a slash, backslash, colon, dot-dot or other punctuation is refused, so a
+# job can never make the worker read or write outside its own folders.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def safe_logical_id(value):
+    """The id as a string if it is a plain token, otherwise None."""
+    v = str(value or "").strip()
+    return v if _SAFE_ID_RE.match(v) else None
+
+
+def job_logical_id(job: dict) -> str:
+    """The id the worker uses for this job's folders and file names (same
+    order as always: project_file.logical_id, then project_id)."""
+    pf = job.get("project_file") or {}
+    return str(pf.get("logical_id") or job.get("project_id") or "").strip()
+
+
+def path_inside(base: str, path: str) -> bool:
+    """True when path (after resolving links and '..') sits inside base."""
+    try:
+        root = os.path.realpath(base)
+        full = os.path.realpath(path)
+        return os.path.normcase(os.path.commonpath([root, full])) == os.path.normcase(root)
+    except ValueError:  # different drives on Windows
+        return False
+
+
 def cache_path(cfg: dict, logical_id: str, filename: str) -> str:
-    folder = os.path.join(cfg["cache_dir"], logical_id or "project")
+    logical_id = logical_id or "project"
+    if not safe_logical_id(logical_id) or not safe_logical_id(filename.replace(".", "_")):
+        raise ValueError("refusing unsafe project id or file name for the cache")
+    folder = os.path.join(cfg["cache_dir"], logical_id)
+    path = os.path.join(folder, filename)
+    if not path_inside(cfg["cache_dir"], path):
+        raise ValueError("refusing a cache path outside the cache folder")
     os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, filename)
+    return path
 
 
 def prune_cache(cfg: dict, logical_id: str, keep: int = 3):
     """Drop all but the newest `keep` cached copies for a project — one ~.mpp
     lands per rev, so an active project would otherwise grow the cache
     without bound. Best-effort: a locked file is just left for next time."""
-    folder = os.path.join(cfg["cache_dir"], logical_id or "project")
+    logical_id = logical_id or "project"
+    if not safe_logical_id(logical_id):
+        return
+    folder = os.path.join(cfg["cache_dir"], logical_id)
     try:
         mpps = [os.path.join(folder, n) for n in os.listdir(folder)
                 if n.lower().endswith(".mpp")]
@@ -1155,9 +1195,12 @@ def resolve_project_file(job: dict, cfg: dict):
     if pf.get("expected_fullname"):
         return str(pf["expected_fullname"])
     logical = str(pf.get("logical_id") or job.get("project_id") or "").strip()
-    if not logical:
+    if not logical or not safe_logical_id(logical):
         return None
-    return os.path.join(cfg["project_dir"], f"{logical}.mpp")
+    path = os.path.join(cfg["project_dir"], f"{logical}.mpp")
+    if not path_inside(cfg["project_dir"], path):
+        return None
+    return path
 
 
 def execute_job(job: dict, cfg: dict, api: Api) -> dict:
@@ -1169,6 +1212,14 @@ def execute_job(job: dict, cfg: dict, api: Api) -> dict:
         return {**base, "status": "error",
                 "error": {"code": "unsupported_op",
                           "message": f"worker cannot handle op '{op}'"}}
+
+    logical = job_logical_id(job)
+    if logical and not safe_logical_id(logical):
+        # Never let an odd id reach a file path. Valid ICE ids always pass.
+        return {**base, "status": "error",
+                "error": {"code": "unsafe_project_id",
+                          "message": "the job's project id is not a plain id; "
+                                     "the worker will not use it in a file path"}}
 
     if op == "create":
         return execute_create(job, cfg, api, base)

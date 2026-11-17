@@ -27,6 +27,13 @@ from audit import write_audit
 from services.storage import put_object, get_object, make_path, record_file
 
 
+def _real_caption(cap):
+    """None for an empty caption or one the old no-AI-key stub wrote."""
+    if not isinstance(cap, str) or not cap.strip() or cap.strip().lower().startswith("[dev stub]"):
+        return None
+    return cap
+
+
 # ============================================================
 # Data gathering
 # ============================================================
@@ -281,7 +288,7 @@ async def _gather_data(
             continue
         p["ai_analysis_status"] = tray.get("ai_analysis_status")
         p["ai_suggested_class"] = tray.get("ai_suggested_class")
-        p["ai_suggested_caption"] = tray.get("ai_suggested_caption")
+        p["ai_suggested_caption"] = _real_caption(tray.get("ai_suggested_caption"))
         p["ai_suggested_event_type"] = tray.get("ai_suggested_event_type")
         p["ai_suggested_trade"] = tray.get("ai_suggested_trade")
         p["ai_confidence_score"] = tray.get("ai_confidence_score")
@@ -925,8 +932,8 @@ def _render_docx(data: dict) -> bytes:
         # Addition 3 -- explicit no-work-day acknowledgments surface
         # here so legal sees "this was a planned blank day" rather
         # than "looks like the super forgot to log anything."
-        ("no_work_reason", "No-work reason"),
-        ("no_work_note", "No-work note"),
+        # One plain heading per no-work day: "No work day — <reason>".
+        ("no_work_heading", "No-work day"),
     ])
 
     # SECTION 12

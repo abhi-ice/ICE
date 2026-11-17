@@ -195,6 +195,11 @@ def audit_calls(monkeypatch):
 
 def _use_db(monkeypatch, db):
     monkeypatch.setattr(drr, "get_db", lambda: db)
+    # Per-project access (2026-11-16): creating a report now goes through
+    # the shared project helpers, which read the database themselves.
+    from services import project_access, project_scope
+    monkeypatch.setattr(project_scope, "get_db", lambda: db)
+    monkeypatch.setattr(project_access, "get_db", lambda: db)
     return db
 
 

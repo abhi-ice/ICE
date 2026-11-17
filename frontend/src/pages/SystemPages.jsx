@@ -336,11 +336,13 @@ export function AuditLog() {
       )}
       {/* Phase 5 -- filter row. */}
       <div className="flex flex-wrap items-end gap-2 p-2 bg-slate-50 border border-slate-200 rounded text-sm">
-        <div>
+        {/* Phone width: long op names would make the select wider than
+            the screen, so it fills the row instead. sm and up unchanged. */}
+        <div className="min-w-0 w-full sm:w-auto">
           <label className="text-xs text-slate-500 block">Op</label>
           <select data-testid="audit-filter-op" value={opFilter}
             onChange={(e) => setOpFilter(e.target.value)}
-            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs">
+            className="h-8 px-2 rounded border border-slate-300 bg-white text-xs w-full max-w-full sm:w-auto">
             <option value="">All ops</option>
             {AUDIT_OP_GROUPS.map((g) => (
               <optgroup key={g.label} label={g.label}>
@@ -394,8 +396,8 @@ export function AiAgentsPage() {
     <div data-testid="agents-page" className="space-y-4">
       <div className="flex items-center gap-2"><Bot className="h-5 w-5" /><h1 className="text-2xl font-semibold">AI agents</h1></div>
       <p className="text-sm text-muted-foreground page-desc">
-        Multi-step agent workflows. SUBSTITUTION: master prompt §6 specified LangGraph; on Emergent we
-        use Anthropic via emergentintegrations.LlmChat with explicit graph-node functions.
+        Multi-step agent workflows, powered by Anthropic Claude. Each workflow runs as a
+        series of explicit steps, one after another.
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {[
@@ -1843,6 +1845,20 @@ function WeeklyRollupTab() {
           <Stat label="Delay min" value={data.delay_minutes} />
           <Stat label="Weather min" value={data.weather_impact_minutes} />
           <Stat label="Activities completed" value={`${data.activities_completed} / ${data.total_planned_activities}`} />
+        </div>
+      )}
+      {/* Days this week filed as no-work days, each with its reason. */}
+      {data?.no_work_days?.length > 0 && (
+        <div className="bg-card border border-border rounded-lg p-4" data-testid="weekly-no-work-days">
+          <div className="font-medium text-sm mb-2">No work days</div>
+          <div className="space-y-1 text-sm">
+            {data.no_work_days.map((d) => (
+              <div key={d.daily_report_id || d.report_date} className="flex items-center gap-3">
+                <div className="font-mono">{formatDateDisplay(d.report_date)}</div>
+                <div>{d.heading}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {data?.hours_by_trade && (

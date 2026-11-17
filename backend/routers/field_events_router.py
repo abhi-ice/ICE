@@ -1,19 +1,43 @@
-"""Field events: delays, safety events, QC issues, photos. Master prompt §4.7."""
+"""Field events: delays, safety events, QC issues, photos. Master prompt §4.7.
+
+Per-project access (2026-11-16): routes with a project id or a delay, safety
+event, QC issue, photo or daily report id in the URL are checked by the
+route-level dependency (services/project_access.enforce_project_scope).
+Creates check the body's project with require_project, and every other
+record the body points at (a daily report, a drawing) with
+_check_linked_records, so nobody can hang a record off a project they are
+not assigned to. A refused save is a 403, which a phone keeps queued."""
 from datetime import date as _date, datetime as _datetime
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
 from database import get_db, tenant_filter
 from services.site_time import project_today
+from services.project_scope import require_project
+from services.project_access import check_record_access
 from models import (
     Delay, DelayCreate, DelayUpdate, SafetyEvent, SafetyEventCreate, SafetyEventUpdate,
     QcIssue, QcIssueCreate, QcIssueUpdate, QcReworkOutcome,
     Photo, PhotoCreate, PhotoUpdate, PhotoPinPayload,
     gen_id, utc_now,
 )
-from auth import require_tenant
+from auth import (
+    require_tenant, require_daily_report_writer,
+)
+from services.edit_permissions import ensure_can_change_linked_report
 from audit import write_audit
 
 router = APIRouter(tags=["field-events"])
+
+
+async def _check_linked_records(ctx: dict, pairs) -> None:
+    """Per-project access for records named in a request BODY (the URL is
+    already checked by the route-level dependency). pairs is a list of
+    (kind, id); blank ids are skipped. Always a write: a refusal is a 403
+    "You are not assigned to this project", never a 404, so a phone keeps
+    the queued save instead of dropping it."""
+    for kind, rid in pairs:
+        if isinstance(rid, str) and rid:
+            await check_record_access(ctx, kind, rid, write=True)
 
 
 # --- Delays ---
@@ -400,6 +424,14 @@ def _enrich_delay_for_read(d: dict) -> dict:
 @router.post("/delays", response_model=Delay)
 async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow. Strip the
     # add_reason out of the record (it's metadata, stamped by
@@ -423,11 +455,14 @@ async def create_delay(payload: DelayCreate, ctx: dict = Depends(require_tenant)
     # from DelayCreate's model dump above and is persisted as-is. Absent ->
     # None, and every anchor consumer falls back to the log date.
     _has_impact = any(float(i.get("projected_impact_days") or 0) > 0 for i in (impacts or []))
+    # Status the person picked (for example "Is it fixed yet?" -> Open) is
+    # saved exactly as picked (2026-11-16). Only when no status was sent does
+    # a delay with impact days default to In progress (it is actively pushing).
+    _status_picked = "status" in payload.model_fields_set and doc.get("status")
     doc.update({
         "id": gen_id(), "tenant_id": ctx["tenant_id"],
-        # A delay with impact days is actively pushing -> In progress.
-        "status": ("in_progress" if _has_impact and (doc.get("status") or "open") == "open"
-                   else doc.get("status") or "open"),
+        "status": (doc["status"] if _status_picked
+                   else "in_progress" if _has_impact else "open"),
         # Exact-push model: once resolved, the real days keep pushing until
         # Daily Report actual dates take over (task_status engine).
         "push_model": "exact",
@@ -558,6 +593,8 @@ async def update_delay(delay_id: str, payload: DelayUpdate, ctx: dict = Depends(
     before = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Delay not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)  # not a record field
     updates: dict = {k: v for k, v in raw.items() if v is not None}
@@ -896,6 +933,8 @@ async def delete_delay(delay_id: str, ctx: dict = Depends(require_tenant)):
     before = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not before:
         raise HTTPException(404, "Delay not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before)
     await db.delays.delete_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}))
 
     # CPM Part E (2026-05-15) -- auto-recompute fires immediately
@@ -928,12 +967,20 @@ async def generate_delay_ai_report(delay_id: str, ctx: dict = Depends(require_te
     """Generate (or regenerate) the AI narrative for this delay and persist
     it on the delay record. Idempotent — overwrites previous report."""
     from services.ai_agents import generate_delay_report
+    from services.ai_unavailable import (
+        AiUnavailableError, ensure_ai_available, DELAY_REPORT_UNAVAILABLE_MESSAGE,
+    )
     db = get_db()
     delay = await db.delays.find_one(tenant_filter(ctx["tenant_id"], {"id": delay_id}), {"_id": 0})
     if not delay:
         raise HTTPException(404, "Delay not found")
+    # No AI key: plain 422 "ai_unavailable" and the earlier report is kept
+    # (a failed call inside generate_delay_report raises the same answer).
+    ensure_ai_available(DELAY_REPORT_UNAVAILABLE_MESSAGE)
     delay = _enrich_delay_for_read(delay)
     report = await generate_delay_report(tenant_id=ctx["tenant_id"], delay=delay)
+    if not str(report or "").strip():
+        raise AiUnavailableError(DELAY_REPORT_UNAVAILABLE_MESSAGE)
     await db.delays.update_one(
         tenant_filter(ctx["tenant_id"], {"id": delay_id}),
         {"$set": {"ai_report": report, "ai_report_generated_at": utc_now().isoformat()}},
@@ -1099,6 +1146,14 @@ async def list_delay_reminders(daily_report_id: str, ctx: dict = Depends(require
 @router.post("/safety-events", response_model=SafetyEvent)
 async def create_safety(payload: SafetyEventCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1210,6 +1265,8 @@ async def update_safety_event(
     )
     if not before:
         raise HTTPException(404, "Safety event not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
@@ -1272,6 +1329,14 @@ async def update_safety_event(
 @router.post("/qc-issues", response_model=QcIssue)
 async def create_qc(payload: QcIssueCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, payload)
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("daily_report", payload.parent_daily_report_id),
+    ])
     doc = payload.model_dump(mode="json")
     # Addition 5 (2026-05-12) -- "add to locked DR" flow.
     add_reason = doc.pop("add_reason", None)
@@ -1393,6 +1458,8 @@ async def record_qc_rework_outcome(
     )
     if not qc:
         raise HTTPException(404, "QC issue not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, qc, payload)
     if qc.get("severity") != "rework_required":
         raise HTTPException(409, "QC issue is not flagged rework_required")
     from services.qc_rework_cascade import record_rework_outcome
@@ -1449,6 +1516,8 @@ async def update_qc_issue(
     )
     if not before:
         raise HTTPException(404, "QC issue not found")
+    # A read-only role may not file this on a daily report (403 role_read_only).
+    await ensure_can_change_linked_report(ctx, before, payload)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
@@ -1567,9 +1636,22 @@ async def _hash_storage_object(storage_path: str) -> Optional[str]:
         return None
 
 
-@router.post("/photos", response_model=Photo)
+@router.post("/photos", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)):
     db = get_db()
+    # The project must belong to the caller's company (404 otherwise).
+    await require_project(ctx, payload.project_id)
+    await _check_linked_records(ctx, [
+        ("daily_report", payload.daily_report_id),
+        ("drawing", payload.pin_drawing_id),
+    ])
+    # The file key comes from the client. It must be one of this
+    # company's stored files, checked BEFORE the object is read for its
+    # fingerprint, so a photo row can never be pointed at (or used to read)
+    # another company's file.
+    from services.storage import key_belongs_to_tenant
+    if not key_belongs_to_tenant(payload.storage_path, ctx["tenant_id"]):
+        raise HTTPException(status_code=404, detail="File not found")
     from datetime import timezone as _tz
     doc = payload.model_dump(mode="json")
     now = utc_now()
@@ -1626,7 +1708,7 @@ async def create_photo(payload: PhotoCreate, ctx: dict = Depends(require_tenant)
     return Photo(**doc)
 
 
-@router.patch("/photos/{photo_id}", response_model=Photo)
+@router.patch("/photos/{photo_id}", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(require_tenant)):
     """Caption + class + tags editable. File replacement intentionally
     NOT supported (tamper-evidence). Class change emits its own audit op
@@ -1637,6 +1719,7 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     )
     if not before:
         raise HTTPException(404, "Photo not found")
+    await ensure_can_change_linked_report(ctx, before)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     edit_reason = raw.pop("edit_reason", None)
     updates = {k: v for k, v in raw.items() if v is not None}
@@ -1686,7 +1769,7 @@ async def update_photo(photo_id: str, payload: PhotoUpdate, ctx: dict = Depends(
     return Photo(**after)
 
 
-@router.post("/photos/{photo_id}/pin", response_model=Photo)
+@router.post("/photos/{photo_id}/pin", response_model=Photo, dependencies=[Depends(require_daily_report_writer)])
 async def pin_photo(photo_id: str, payload: PhotoPinPayload, ctx: dict = Depends(require_tenant)):
     """Set or clear the drawing pin on a photo. Refreshes evidentiary_flag
     based on current photo_class + new pin state."""
@@ -1698,6 +1781,9 @@ async def pin_photo(photo_id: str, payload: PhotoPinPayload, ctx: dict = Depends
         raise HTTPException(404, "Photo not found")
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
+    # The drawing the photo is pinned to must be on a project the caller
+    # is assigned to (the photo itself is checked from the URL).
+    await _check_linked_records(ctx, [("drawing", updates.get("pin_drawing_id"))])
     # Recompute evidentiary_flag using NEW pin values where provided.
     new_x = updates.get("pin_x", before.get("pin_x"))
     new_y = updates.get("pin_y", before.get("pin_y"))

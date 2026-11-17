@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Response
 
 from auth import require_tenant, role_required
 from services import runtime_settings
+from services.project_access import require_full_admin
 
 router = APIRouter(tags=["admin-settings"])
 
@@ -47,6 +48,16 @@ FLAG_META = [
         "label": "Microsoft Project connector",
         "help": "Allows projects to be scheduled by Microsoft Project through the ICE worker running on a Windows machine. Each project still opts in via its Schedule engine setting.",
     },
+    {
+        "key": "FF_WRITE_FREEZE",
+        "label": "Pause saving (server move)",
+        "help": "While on, the server refuses every change and phones keep their saves queued until users move to the new server. Sign-in and this settings page still work. Turn on only during the move.",
+    },
+    {
+        "key": "FF_PROJECT_ACCESS",
+        "label": "Per-project access (off = watch only)",
+        "help": "While off, nobody is blocked, but every time someone opens or changes a project they are not assigned to, it is listed on the Project Access page so you can fix assignments first. While on, people only see and change the projects they are assigned to (admins with access to all projects see everything). Saves already waiting on phones for a project the person is not assigned to stay on the phone until they are assigned.",
+    },
 ]
 
 _ALLOWED = {m["key"] for m in FLAG_META}
@@ -67,7 +78,9 @@ def require_platform_admin(ctx: dict) -> None:
     worker. When it is not set, fall back to the company admin check."""
     allowed = _platform_admin_emails()
     if not allowed:
-        role_required(ctx, ["admin"])
+        # 2026-11-16: an admin limited to specific projects is not enough
+        # for these server-wide settings.
+        require_full_admin(ctx)
         return
     email = ((ctx.get("user") or {}).get("email") or "").strip().lower()
     if email not in allowed:
@@ -95,7 +108,7 @@ def _state() -> dict:
 
 @router.get("/admin/runtime-settings")
 async def get_settings(ctx: dict = Depends(require_tenant)):
-    role_required(ctx, ["admin"])
+    require_full_admin(ctx)
     await runtime_settings.refresh_cache()  # admin page load: show the freshest truth
     return _state()
 
@@ -126,7 +139,7 @@ async def rotate_msp_token(ctx: dict = Depends(require_tenant)):
 async def download_worker(ctx: dict = Depends(require_tenant)):
     require_platform_admin(ctx)
     worker_dir = Path(__file__).resolve().parents[2] / "worker"
-    if not worker_dir.is_dir():
+    if not (worker_dir / "msp_worker.py").is_file():
         raise HTTPException(status_code=404, detail="Worker package not found on this deployment")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

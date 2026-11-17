@@ -311,6 +311,7 @@ LOOKAHEAD_COLUMNS: list[tuple[str, str]] = [
     # Removed task_id (UUID), days_until_start, at_risk_flag,
     # risk_reasons, required_headcount, assigned_crew, predecessor_status,
     # has_blocker -- none of those appear in the Lookahead UI list view.
+    ("overdue_label",        "Overdue"),
     ("activity_code",        "Code"),
     ("description",          "Description"),
     ("trade",                "Trade"),
@@ -359,15 +360,13 @@ async def gather_lookahead_for_export(
     end_d = today_d + timedelta(days=days)
     # pt.72: slip-aware look-ahead window (effective = projected when slipped,
     # else planned), matching the Lookahead page + DR grid.
-    from services.schedule_filters import effective_schedule_overlap, effective_start
-    tasks = await db.tasks.find(
-        tenant_filter(tenant_id, {
-            "project_id": project_id,
-            "status": {"$ne": "deleted"},
-            "$expr": effective_schedule_overlap(today_d.isoformat(), end_d.isoformat()),
-        }),
-        {"_id": 0},
-    ).sort("planned_start", 1).to_list(length=500)
+    # Overdue unfinished tasks (planned finish before the window, still not
+    # done) are kept and listed first, matching the Lookahead page; two
+    # separately capped queries so they never push in-window work out.
+    from services.schedule_filters import find_window_and_overdue, effective_start, is_overdue
+    tasks, _ = await find_window_and_overdue(
+        db, tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        today_d.isoformat(), end_d.isoformat())
 
     # Build the activity_code -> status map (used for predecessor
     # status lookups). Pull all project tasks once.
@@ -486,6 +485,9 @@ async def gather_lookahead_for_export(
                 f"starts in {days_until_start}d but {pred_status}",
             )
 
+        overdue = is_overdue(t, today_d.isoformat())
+        if overdue:
+            risk_reasons.append("overdue: finish date passed, not complete")
         at_risk = bool(risk_reasons)
         if at_risk:
             at_risk_count += 1
@@ -519,6 +521,8 @@ async def gather_lookahead_for_export(
                 slip_wd = _date_diff_days(plan_fin, pf_iso)
 
         rows.append({
+            "overdue":              overdue,
+            "overdue_label":        "Overdue" if overdue else "",
             "activity_code":        t.get("activity_code"),
             "description":          t.get("description"),
             "trade":                t.get("trade_code") or t.get("required_trade") or "",
@@ -597,13 +601,14 @@ def _render_xlsx(
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
+    from services.xlsx_safe import set_text_cell
 
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_title[:31]   # XLSX sheet title 31-char cap
 
     # Subtitle row (merged across all columns).
-    ws.cell(row=1, column=1, value=header_subtitle)
+    set_text_cell(ws.cell(row=1, column=1), header_subtitle)
     ws.merge_cells(start_row=1, start_column=1,
                     end_row=1, end_column=len(columns))
     ws.cell(row=1, column=1).font = Font(italic=True, color="555555")
@@ -636,7 +641,10 @@ def _render_xlsx(
             # render as TRUE / FALSE which is fine.
             if val is None:
                 val = ""
-            cell = ws.cell(row=ri, column=ci, value=val)
+            cell = ws.cell(row=ri, column=ci)
+            # Task names / codes are typed by users: never let them
+            # become live formulas in the spreadsheet.
+            set_text_cell(cell, val)
             if flagged:
                 cell.fill = at_risk_fill
 

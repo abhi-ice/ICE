@@ -80,9 +80,13 @@ def test_submitted_delete_short_reason(s, proj):
     s.patch(f"{API}/daily-report-activities/{rw['id']}", json={"pct_complete_end_of_day": 10, "hours_worked": 2})
     sub = s.post(f"{API}/daily-reports/{dr}/submit", json={})
     assert sub.status_code == 200 and sub.json()["status"] == "submitted", sub.text[:300]
-    assert s.delete(f"{API}/daily-reports/{dr}", params={"reason": "short"}).status_code == 422
-    assert s.delete(f"{API}/daily-reports/{dr}", params={"reason": "          x"}).status_code == 422
-    assert s.delete(f"{API}/daily-reports/{dr}", params={"reason": "valid reason here"}).status_code == 200
+    # 2026-11-16: only an admin or project manager may delete a submitted
+    # report, so this superintendent is refused whatever the reason (the
+    # reason rule itself is covered offline in test_dr_report_ownership.py).
+    for reason in ("short", "valid reason here"):
+        r = s.delete(f"{API}/daily-reports/{dr}", params={"reason": reason})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == "Only an admin or project manager can delete a submitted report."
 
 
 # Older DR deleted while newer exists -> % kept, hours subtracted

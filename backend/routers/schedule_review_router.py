@@ -21,10 +21,13 @@ from services.schedule_feedback import (
 
 
 async def _project_or_404(db, ctx, project_id: str) -> dict:
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1, "name": 1})
-    if not proj:
-        raise HTTPException(404, "Project not found")
-    return proj
+    """The project, or 404 when it is not in the caller's company. Also
+    applies the per-project access rule (2026-11-16) through the shared
+    helper: with the switch on, an unassigned caller gets 404 on a read and
+    403 "You are not assigned to this project" on a save. `db` is kept for
+    the existing callers; the shared helper reads the database itself."""
+    from services.project_scope import require_project
+    return await require_project(ctx, project_id, {"_id": 0, "id": 1, "name": 1})
 
 router = APIRouter(tags=["schedule-review"])
 REVIEW_ROLES = ["pm", "pe", "scheduling_engineer"]
@@ -50,7 +53,7 @@ async def activity_picker(daily_report_id: str, ctx: dict = Depends(require_tena
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "display_name": 1,
          "section_path": 1, "wbs": 1, "planned_start": 1, "planned_finish": 1,
          "projected_start_date": 1, "projected_finish_date": 1, "pct_complete": 1,
-         "trade_code": 1},
+         "trade_code": 1, "status": 1},
     ).to_list(5000)
     in_grid = {r["schedule_activity_id"] for r in await db.daily_report_activities.find(
         {"daily_report_id": daily_report_id}, {"_id": 0, "schedule_activity_id": 1}).to_list(1000)}
@@ -91,7 +94,10 @@ def order_for_picker(tasks: list, report_date: str) -> list:
       later -- everything after that.
     Within each group: by start date, then schedule (WBS) order. Dates are
     the impacted ones when delays moved them. Each item gets `group` and
-    `late` (should have finished before the report date)."""
+    `late`: the same overdue rule as the look-ahead and the dashboard
+    (planned finish before the report date, not complete, under 100%; see
+    services.schedule_filters.is_overdue)."""
+    from services.schedule_filters import is_overdue
     from datetime import date, timedelta
 
     try:
@@ -103,10 +109,9 @@ def order_for_picker(tasks: list, report_date: str) -> list:
     rank = {"now": 0, "soon": 1, "later": 2}
     for t in tasks:
         start = str(t.get("projected_start_date") or t.get("planned_start") or "")[:10]
-        finish = str(t.get("projected_finish_date") or t.get("planned_finish") or "")[:10]
         t["group"] = ("now" if start and start <= today
                       else "soon" if start and start <= soon_end else "later")
-        t["late"] = bool(finish) and finish < today
+        t["late"] = is_overdue(t, today)
     tasks.sort(key=lambda t: (
         rank[t["group"]],
         str(t.get("projected_start_date") or t.get("planned_start") or "9999")[:10],
@@ -162,9 +167,7 @@ async def list_name_suggestions(project_id: str, status: str = "pending",
 async def generate_names(project_id: str, ctx: dict = Depends(require_tenant)):
     role_required(ctx, REVIEW_ROLES)
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    await _project_or_404(db, ctx, project_id)
     await db.projects.update_one(tenant_filter(ctx["tenant_id"], {"id": project_id}),
                                  {"$set": {"activity_names_job": {"status": "running",
                                                                   "started_at": utc_now().isoformat()}}})
@@ -203,6 +206,15 @@ class NameDecisions(StrictModel):
 async def approve_names(payload: NameDecisions, ctx: dict = Depends(require_tenant)):
     role_required(ctx, REVIEW_ROLES)
     db = get_db()
+    # Per-project access (2026-11-16): the suggestion ids come in the body,
+    # so the route-level check cannot see them. Check every one BEFORE
+    # anything is written, so a refused batch changes nothing (403 "You are
+    # not assigned to this project" with the switch on; recorded only while
+    # it is off).
+    from services.project_access import check_record_access
+    for it in payload.items:
+        await check_record_access(ctx, "activity_name_suggestion", it.id, write=True,
+                                  route="/activity-name-suggestions/approve")
     done = 0
     for it in payload.items:
         s = await db.activity_name_suggestions.find_one(
@@ -318,6 +330,8 @@ async def reject_logic(proposal_id: str, payload: LogicDecision, ctx: dict = Dep
 
 
 # ------------------------------------------------------------- weekly digest
+# project-scope: tenant-level (secret-authenticated cron, no user; each
+# project's digest goes only to that project's members, see schedule_digest)
 @router.post("/cron/schedule-digest")
 async def cron_schedule_digest(request: Request):
     # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
@@ -349,7 +363,7 @@ async def digest_preview(project_id: str, ctx: dict = Depends(require_tenant)):
     db = get_db()
     await _project_or_404(db, ctx, project_id)
     d = await build_digest(db, ctx["tenant_id"], project_id)
-    d["recipients"] = [u["email"] for u in await digest_recipients(db, ctx["tenant_id"])]
+    d["recipients"] = [u["email"] for u in await digest_recipients(db, ctx["tenant_id"], project_id)]
     return d
 
 
@@ -358,9 +372,7 @@ async def digest_send_now(project_id: str, ctx: dict = Depends(require_tenant)):
     role_required(ctx, REVIEW_ROLES)
     from services.schedule_digest import send_project_digest
     db = get_db()
-    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1, "name": 1})
-    if not proj:
-        raise HTTPException(404, "Project not found")
+    proj = await _project_or_404(db, ctx, project_id)
     return await send_project_digest(db, ctx["tenant_id"], proj)
 
 

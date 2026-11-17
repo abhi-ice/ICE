@@ -123,6 +123,7 @@ def _build_with_own_client(db_name: str, fileobj) -> dict:
         client.close()
 
 
+# project-scope: tenant-level (platform owner only; a copy of the whole database)
 @router.get("/admin/backup/download")
 async def download_backup(ctx: dict = Depends(require_tenant)):
     email = _require_platform_owner(ctx)
