@@ -53,6 +53,9 @@ router = APIRouter(tags=["admin-backup"])
 
 _LOCK = asyncio.Lock()
 _BATCH = 500
+# Search index data (services/search) is rebuilt from the records
+# themselves, and its vectors would make the zip much bigger.
+_SKIP_COLLECTIONS = {"search_chunks", "search_queue", "search_state"}
 _CHUNK = 256 * 1024
 _SKIP_INDEX_KEYS = {"v", "ns", "key", "background"}
 
@@ -88,7 +91,8 @@ def build_backup(db, fileobj) -> dict:
     and return the manifest. Runs in a worker thread, never on the event
     loop."""
     started = datetime.now(timezone.utc)
-    names = sorted(n for n in db.list_collection_names() if not n.startswith("system."))
+    names = sorted(n for n in db.list_collection_names()
+                   if not n.startswith("system.") and n not in _SKIP_COLLECTIONS)
     manifest = {
         "format": "ice-backup-v1",
         "database": db.name,

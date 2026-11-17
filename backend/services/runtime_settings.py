@@ -44,6 +44,7 @@ ALLOWED_FLAGS = (
     "FF_SCHEDULE_MODE_2",
     "FF_WRITE_FREEZE",
     "FF_PROJECT_ACCESS",
+    "FF_SEARCH_EVERYTHING",
 )
 
 _cache: dict = {}
