@@ -97,9 +97,11 @@ def progress_rows(history: list) -> list:
 
 async def task_report_histories(db, tenant_id: str, task_ids: list,
                                 exclude_dr_id: Optional[str] = None,
-                                exclude_row_id: Optional[str] = None) -> dict:
+                                exclude_row_id: Optional[str] = None,
+                                include_untouched: bool = False) -> dict:
     """task_report_history for many tasks with two queries in total
-    ({task_id: history}; a task with no rows maps to [])."""
+    ({task_id: history}; a task with no rows maps to []). include_untouched
+    keeps rows that were added but never touched (see _row_has_report)."""
     out: dict = {tid: [] for tid in task_ids}
     if not task_ids:
         return out
@@ -108,7 +110,7 @@ async def task_report_histories(db, tenant_id: str, task_ids: list,
     ).to_list(None)
     rows = [r for r in rows
             if r.get("daily_report_id") != exclude_dr_id and r.get("id") != exclude_row_id
-            and _row_has_report(r)]
+            and (include_untouched or _row_has_report(r))]
     if not rows:
         return out
     drs = await db.daily_reports.find(
@@ -131,7 +133,8 @@ async def task_report_histories(db, tenant_id: str, task_ids: list,
 
 async def task_report_history(db, tenant_id: str, task_id: str,
                               exclude_dr_id: Optional[str] = None,
-                              exclude_row_id: Optional[str] = None) -> list:
+                              exclude_row_id: Optional[str] = None,
+                              include_untouched: bool = False) -> list:
     """Every report row that records something about the task, oldest report
     date first. Each row carries `_report_date` (a date), `_report_status`
     and `_report_id`. Rows whose report no longer exists are left out.
@@ -140,7 +143,8 @@ async def task_report_history(db, tenant_id: str, task_id: str,
     Use progress_rows() on the result to get only the rows that decide the
     task's current progress."""
     return (await task_report_histories(db, tenant_id, [task_id], exclude_dr_id=exclude_dr_id,
-                                        exclude_row_id=exclude_row_id))[task_id]
+                                        exclude_row_id=exclude_row_id,
+                                        include_untouched=include_untouched))[task_id]
 
 
 def _status_for_pct(pct: float) -> str:
@@ -238,8 +242,64 @@ async def start_of_day_pct(db, tenant_id: str, task: dict, report_date,
     return float((await pre_report_progress(db, tenant_id, task["id"], history))["pct_complete"])
 
 
+# ---------------------------------------------------------------- start of day
+async def refresh_start_of_day(db, tenant_id: str, task_id: str) -> int:
+    """Keep each report row's start-of-day ("was N%") equal to the progress
+    the task actually had going into that day (2026-11-16): the end-of-day
+    of the most recent EARLIER-dated report row whose percent a person
+    entered. Run whenever a report row's percent changes, a row or report is
+    deleted, or a report is submitted, so correcting an older report (for
+    example lowering 11/16 from 45% to 30%) also corrects the "was" shown on
+    the following days. A row with no earlier progress row keeps its own
+    start-of-day (it holds the value from before any report).
+
+    Never changes which rows count as entered progress: an older row with no
+    pct_set_at stamp that counts only because its end-of-day differs from its
+    start-of-day is stamped first, and an untouched pre-filled row (end-of-day
+    equal to its start-of-day) moves its end-of-day along with it so it stays
+    untouched. Left alone: a start-of-day a person typed (sod_set_at) and
+    untouched rows on submitted or approved reports. Each write only applies
+    if the row was not saved since it was read. Rows on the same date all
+    start from the previous date's value. Returns the number of rows changed."""
+    history = await task_report_history(db, tenant_id, task_id, include_untouched=True)
+    changed = 0
+    prev_eod = None   # end-of-day carried into the current date
+    cur_date, cur_best = None, None  # entered rows seen on the current date
+    for r in history:
+        rd = r["_report_date"]
+        if rd != cur_date:
+            if cur_best is not None:
+                prev_eod = cur_best
+            cur_date, cur_best = rd, None
+        sets = _row_sets_progress(r)
+        locked = r.get("_report_status") in ("submitted", "approved")
+        # Leave alone: a start-of-day a person typed, and untouched rows on
+        # submitted or approved reports (their printed record stays as is).
+        skip = bool(r.get("sod_set_at")) or (locked and not sets)
+        if prev_eod is not None and not skip:
+            old_sod = float(r.get("pct_complete_start_of_day") or 0)
+            if old_sod != float(prev_eod):
+                upd = {"pct_complete_start_of_day": prev_eod}
+                if sets and not r.get("pct_set_at"):
+                    upd["pct_set_at"] = r.get("updated_at") or r.get("created_at") or utc_now().isoformat()
+                if not sets:
+                    upd["pct_complete_end_of_day"] = prev_eod
+                # Only if nobody saved the row since it was read.
+                flt = {"id": r["id"],
+                       "pct_complete_start_of_day": r.get("pct_complete_start_of_day"),
+                       "pct_complete_end_of_day": r.get("pct_complete_end_of_day"),
+                       "pct_set_at": r.get("pct_set_at")}
+                res = await db.daily_report_activities.update_one(flt, {"$set": upd})
+                changed += res.modified_count
+        if sets:
+            eod = float(r.get("pct_complete_end_of_day") or 0)
+            cur_best = eod if cur_best is None else max(cur_best, eod)
+    return changed
+
+
 # ---------------------------------------------------------------- actuals
-async def recompute_task_actuals(db, tenant_id: str, task_id: str) -> dict:
+async def recompute_task_actuals(db, tenant_id: str, task_id: str,
+                                 refresh_sod: bool = True) -> dict:
     """actual_start = earliest report date the activity was worked (progress
     made, hours logged, or at 100%); actual_finish = the first report date it
     reached 100% with no later report back below 100%. Rows are read in
@@ -248,6 +308,11 @@ async def recompute_task_actuals(db, tenant_id: str, task_id: str) -> dict:
     a report entered out of date order is judged correctly. Imported
     (MS Project) actuals and actual dates set by hand (actuals_source
     "manual") are never overwritten."""
+    try:
+        if refresh_sod:
+            await refresh_start_of_day(db, tenant_id, task_id)
+    except Exception:  # never block the actual-date recompute on this
+        logging.getLogger(__name__).warning("start-of-day refresh failed for task %s", task_id, exc_info=True)
     task = await db.tasks.find_one(
         tenant_filter(tenant_id, {"id": task_id}),
         # "id" is projected so a task with no actual-date fields yet still

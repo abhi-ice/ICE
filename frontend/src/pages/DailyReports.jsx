@@ -91,7 +91,7 @@ import VoiceIntakePanel from "../components/VoiceIntakePanel";
 // component, new home).
 import EodSlider from "../components/dr/EodSlider";
 import {
-  progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
+  progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage, progressLimitsOf, reportDay,
 } from "../lib/progressLimits";
 // v7 guided flow — COMMON_TRADES moved to components/dr/drFlowShared.jsx
 // (values unchanged; pt.47/pt.62 notes preserved there) so the flow's crew
@@ -993,16 +993,32 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
     } catch { /* queue unreadable — validate on server data only */ }
     if (presence.length + queuedCrew === 0 && hasProgress) {
       errors.push(
-        "Crew presence is empty but activities show recorded progress. "
-        + "Either add a trade row to the presence panel, or unmark the activity "
-        + "progress (zero progress + no crew = no-work day, which you can submit "
-        + "via the no-work-day modal).",
+        "No crew is listed, but activities show progress. Add the crew that "
+        + "worked, or set the progress back (no progress and no crew can be "
+        + "filed as a no-work day).",
       );
+    }
+    // Progress lock (2026-11-16): a row outside what other submitted reports
+    // allow is refused by the server at submit; say so up front.
+    // Same rule as the server: only rows whose percent a person entered
+    // (stamped, or changed from start of day) are checked; a pre-filled row
+    // never set by hand is not refused.
+    for (const r of grid) {
+      if (!r.pct_set_at && (r.pct_complete_end_of_day ?? 0) === (r.pct_complete_start_of_day ?? 0)) continue;
+      const { floor, floorFrom, ceiling, ceilingFrom } = progressLimitsOf(r);
+      const v = Number(r.pct_complete_end_of_day ?? 0);
+      const name = r.activity_description || r.activity_code || "An activity";
+      if (floorFrom && v < floor) {
+        errors.push(`${name}: progress can't go below ${floor}% — the ${reportDay(floorFrom)} report already recorded ${floor}%. Raise it, or edit the ${reportDay(floorFrom)} report.`);
+      } else if (ceilingFrom && v > ceiling) {
+        errors.push(`${name}: progress can't go above ${ceiling}% — the ${reportDay(ceilingFrom)} report recorded ${ceiling}%. Lower it, or edit the ${reportDay(ceilingFrom)} report first.`);
+      }
     }
     // The "every row untouched" case: only a hard-block when grid IS
     // non-empty. Empty grid is a valid no-work day candidate.
     const untouched = grid.filter((r) =>
-      (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
+      !r.pct_set_at
+      && (r.pct_complete_end_of_day ?? null) === r.pct_complete_start_of_day
       && (!r.status_at_end_of_day || r.status_at_end_of_day === "not_started")
     );
     // Round 7 (2026-07-06): a row whose EOD slider is GATE-LOCKED by its
@@ -1346,6 +1362,7 @@ function DailyReportDetail({ id, intakeMode = "manual", onBack }) {
         onBack={onBack}
         busy={busy}
         submit={submit}
+        checkSubmit={validate}
         submitNoWorkDay={submitNoWorkDay}
         noWorkModal={noWorkModal}
         setNoWorkModal={setNoWorkModal}

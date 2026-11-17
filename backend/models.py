@@ -1321,6 +1321,10 @@ class DailyReportActivity(ReadModel):
     position: int
     pct_complete_start_of_day: float = 0
     pct_complete_end_of_day: float = 0
+    # When a person entered the end-of-day percent (None = pre-filled, never
+    # set by hand) and when a person typed the start-of-day by hand.
+    pct_set_at: Optional[str] = None
+    sod_set_at: Optional[str] = None
     crew_count: int = 0
     crew_id: Optional[str] = None
     # Phase E — FK to daily_presence row picked from the grid dropdown.

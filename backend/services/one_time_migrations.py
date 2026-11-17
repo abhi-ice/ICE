@@ -97,7 +97,9 @@ async def _recompute_actuals_from_reports(db) -> dict:
                 continue
             counts["tasks_checked"] += 1
             try:
-                upd = await recompute_task_actuals(db, t["tenant_id"], t["id"])
+                # Actual dates only: older reports' start-of-day values are left
+                # exactly as they were saved (no "was N%" refresh here).
+                upd = await recompute_task_actuals(db, t["tenant_id"], t["id"], refresh_sod=False)
             except Exception as exc:
                 counts["tasks_failed"] += 1
                 log.warning("actual-date recompute failed for task %s: %s", t["id"], exc)

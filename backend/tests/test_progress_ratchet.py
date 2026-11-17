@@ -570,3 +570,99 @@ def test_voice_progress_reaches_the_schedule(monkeypatch):
         assert t["last_synced_from_dr"]["daily_report_id"] == d16
         assert calls["recompute"] > before["recompute"]
     _run(body)
+
+
+# ------------------------------------------------------- start of day ("was")
+def test_correcting_an_earlier_report_updates_was_on_later_days():
+    """Lowering 11/16 from 45% to 30% must also change the "was" (start of
+    day) shown on 11/17 and 11/18, without changing their own end-of-day or
+    turning an untouched pre-filled row into entered progress."""
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid, tid = await _setup(db, tenant)
+        d16, r16 = await _day(db, tenant, pid, tid, ctx, "2026-11-16", 45)
+        d17, r17 = await _day(db, tenant, pid, tid, ctx, "2026-11-17", 50, status="draft")
+        # 11/18: added but the percent never touched (pre-filled at 50).
+        d18 = await _report(db, tenant, pid, "2026-11-18")
+        r18 = await _add(ctx, d18, tid)
+        rows = {r["id"]: r for r in await db.daily_report_activities.find(
+            {"schedule_activity_id": tid}, {"_id": 0}).to_list(None)}
+        assert rows[r17]["pct_complete_start_of_day"] == 45
+        assert rows[r18.id]["pct_complete_start_of_day"] == 50
+        await _save(ctx, r16, pct_complete_end_of_day=30, edit_reason=REASON)
+        rows = {r["id"]: r for r in await db.daily_report_activities.find(
+            {"schedule_activity_id": tid}, {"_id": 0}).to_list(None)}
+        assert rows[r17]["pct_complete_start_of_day"] == 30
+        assert rows[r17]["pct_complete_end_of_day"] == 50
+        assert rows[r18.id]["pct_complete_start_of_day"] == 50  # still follows 11/17
+        assert not rows[r18.id].get("pct_set_at")
+        # Lower 11/17 to 40: 11/18's untouched row follows (was 40, still untouched).
+        await _save(ctx, r17, pct_complete_end_of_day=40)
+        r = await db.daily_report_activities.find_one({"id": r18.id}, {"_id": 0})
+        assert r["pct_complete_start_of_day"] == 40 and r["pct_complete_end_of_day"] == 40
+        assert not r.get("pct_set_at")
+        assert (await _task(db, tenant, tid))["pct_complete"] == 40
+    _run(body)
+
+
+def test_was_refresh_keeps_old_unstamped_progress_rows_counted():
+    """A row saved before pct_set_at existed counts as progress only because
+    end-of-day differs from start-of-day; moving its start-of-day must not
+    make it look untouched."""
+    from services.schedule_feedback import refresh_start_of_day, _row_sets_progress
+
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid, tid = await _setup(db, tenant)
+        d16, r16 = await _day(db, tenant, pid, tid, ctx, "2026-11-16", 30)
+        d17, r17 = await _day(db, tenant, pid, tid, ctx, "2026-11-17", 50, status="draft")
+        # Make 11/17 look like a row saved before the stamp existed (start 0,
+        # end 30, no pct_set_at): after the refresh its start becomes 30 too.
+        await db.daily_report_activities.update_one(
+            {"id": r17}, {"$unset": {"pct_set_at": ""},
+                          "$set": {"pct_complete_start_of_day": 0, "pct_complete_end_of_day": 30}})
+        await refresh_start_of_day(db, tenant, tid)
+        r = await db.daily_report_activities.find_one({"id": r17}, {"_id": 0})
+        assert r["pct_complete_start_of_day"] == 30 and r["pct_complete_end_of_day"] == 30
+        assert _row_sets_progress(r)
+    _run(body)
+
+
+def test_was_refresh_leaves_hand_typed_start_and_locked_untouched_rows():
+    from services.schedule_feedback import refresh_start_of_day
+
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid, tid = await _setup(db, tenant)
+        d16, r16 = await _day(db, tenant, pid, tid, ctx, "2026-11-16", 45)
+        d17, r17 = await _day(db, tenant, pid, tid, ctx, "2026-11-17", 50)
+        # A person types 11/17's start-of-day by hand (with a reason).
+        await _save(ctx, r17, pct_complete_start_of_day=40, edit_reason=REASON)
+        # 11/18: untouched pre-filled row, then the report is approved.
+        d18 = await _report(db, tenant, pid, "2026-11-18")
+        r18 = await _add(ctx, d18, tid)
+        await _lock(db, d18, "approved")
+        before18 = await db.daily_report_activities.find_one({"id": r18.id}, {"_id": 0})
+        await _save(ctx, r16, pct_complete_end_of_day=30, edit_reason=REASON)
+        await refresh_start_of_day(db, tenant, tid)
+        r = await db.daily_report_activities.find_one({"id": r17}, {"_id": 0})
+        assert r["pct_complete_start_of_day"] == 40 and r.get("sod_set_at")
+        after18 = await db.daily_report_activities.find_one({"id": r18.id}, {"_id": 0})
+        assert (after18["pct_complete_start_of_day"], after18["pct_complete_end_of_day"]) == \
+            (before18["pct_complete_start_of_day"], before18["pct_complete_end_of_day"])
+    _run(body)
+
+
+def test_one_time_job_does_not_refresh_was():
+    from services.schedule_feedback import recompute_task_actuals
+
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid, tid = await _setup(db, tenant)
+        d16, r16 = await _day(db, tenant, pid, tid, ctx, "2026-11-16", 45)
+        d17, r17 = await _day(db, tenant, pid, tid, ctx, "2026-11-17", 50, status="draft")
+        await db.daily_report_activities.update_one({"id": r16}, {"$set": {"pct_complete_end_of_day": 20}})
+        await recompute_task_actuals(db, tenant, tid, refresh_sod=False)
+        r = await db.daily_report_activities.find_one({"id": r17}, {"_id": 0})
+        assert r["pct_complete_start_of_day"] == 45
+    _run(body)

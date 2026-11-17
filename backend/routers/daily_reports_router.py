@@ -1186,6 +1186,10 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
     # never does (see services.schedule_feedback._row_sets_progress).
     if "pct_complete_end_of_day" in updates or sod_stamp_set_at:
         row_updates["pct_set_at"] = now_iso
+    # A start-of-day typed by a person is kept as typed: the automatic
+    # "was N%" refresh (schedule_feedback.refresh_start_of_day) skips it.
+    if "pct_complete_start_of_day" in updates:
+        row_updates["sod_set_at"] = now_iso
     row_updates["sync_state"] = "provisional"
     row_updates["last_sync_at"] = now_iso
     row_updates["task_external_modified_warning"] = False

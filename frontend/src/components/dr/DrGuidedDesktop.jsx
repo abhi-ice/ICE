@@ -200,7 +200,7 @@ export default function DrGuidedDesktop({
   locked, reload, onBack, busy, submit, submitNoWorkDay,
   noWorkModal, setNoWorkModal, approve, onDownloadPdf,
   onDownloadClientTemplate, clientTemplatePresent,
-  submitRowErrors, online, queueSize,
+  submitRowErrors, online, queueSize, checkSubmit,
 }) {
   const [openActId, setOpenActId] = useState(null);
   // Read-only roles (viewer, submittal technician, scheduling engineer) can
@@ -1132,12 +1132,26 @@ export default function DrGuidedDesktop({
     if (report.status === "submitted") { approve(); return; }
     if (report.status === "approved") { onDownloadPdf("internal"); return; }
     const un = model.filter((mm) => !mm.updated);
+    // The same checks Submit runs (crew vs progress, progress lock), shown
+    // here so nothing claims "Nothing here blocks you" and then refuses.
+    let blockers = [];
+    try { blockers = (checkSubmit ? checkSubmit().errors : []) || []; } catch { blockers = []; }
     setDlg({
       kind: "custom", title: "Submit report", sub: dateSub,
       body: (
         <>
           <div className="gq">Does this look right?</div>
-          <div className="ggloss">One last look before it goes to the office. Nothing here blocks you.</div>
+          <div className="ggloss">{blockers.length
+            ? "One last look before it goes to the office."
+            : "One last look before it goes to the office. Nothing here blocks you."}</div>
+          {blockers.length > 0 && (
+            <div className="reviewwarn" data-testid="dr-submit-blockers">
+              <b>Fix {blockers.length === 1 ? "this" : "these"} before submitting:</b>
+              <ul style={{ margin: "6px 0 0 18px", listStyle: "disc" }}>
+                {blockers.map((m, i) => <li key={i}>{m}</li>)}
+              </ul>
+            </div>
+          )}
           <div className="sumwrap">
             <div className="sumrow"><span className="sl">Weather</span>
               <span className="sv">{report?.weather_conditions
@@ -1179,7 +1193,7 @@ export default function DrGuidedDesktop({
         <>
           <button className="btn" onClick={() => setDlg(null)}>Keep editing</button>
           <span style={{ flex: 1 }} />
-          <button className="btn green" disabled={busy} onClick={() => { setDlg(null); submit(() => {}); }}>
+          <button className="btn green" disabled={busy || blockers.length > 0} onClick={() => { setDlg(null); submit(() => {}); }}>
             {busy ? "Submitting…" : "Submit report"}
           </button>
         </>
