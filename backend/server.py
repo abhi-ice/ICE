@@ -492,7 +492,8 @@ def _log_startup_config() -> str:
         f"EMERGENT_LLM_KEY set={_present('EMERGENT_LLM_KEY')}; "
         f"OPENAI_API_KEY set={_present('OPENAI_API_KEY')}; "
         f"STRIPE_API_KEY set={_present('STRIPE_API_KEY')}; "
-        f"STRIPE_WEBHOOK_SECRET set={_present('STRIPE_WEBHOOK_SECRET')}"
+        f"STRIPE_WEBHOOK_SECRET set={_present('STRIPE_WEBHOOK_SECRET')}; "
+        f"VOYAGE_API_KEY set={_present('VOYAGE_API_KEY')}"
     )
     logger.info(line)
     return line
@@ -977,6 +978,18 @@ async def lifespan(app: FastAPI):
                 logger.warning("forecast refresh tick failed (non-fatal): %s", exc)
 
     app.state.forecast_refresh_task = _asyncio.create_task(_periodic_forecast_refresh())
+
+    # Search everything (2026-11-17, services/search). Three loops that idle
+    # while FF_SEARCH_EVERYTHING is off: the change-stream listener (queues
+    # every write on an indexed collection), the worker (builds and embeds
+    # chunks) and the nightly reconcile. They create their indexes the first
+    # time the flag is seen on, never at startup.
+    from services.search.listener import run_listener_loop as _search_listener
+    from services.search.worker import run_worker_loop as _search_worker
+    from services.search.reconcile import run_nightly_loop as _search_nightly
+    app.state.search_listener_task = _asyncio.create_task(_search_listener(get_db))
+    app.state.search_worker_task = _asyncio.create_task(_search_worker(get_db))
+    app.state.search_nightly_task = _asyncio.create_task(_search_nightly(get_db))
     logger.info("Lifespan: startup complete, yielding to app")
     yield
     # Cancel the recurring tasks before closing the DB so the next
@@ -994,6 +1007,9 @@ async def lifespan(app: FastAPI):
         "friday_recovery_task",
         "msp_impact_refresh_task",
         "forecast_refresh_task",
+        "search_listener_task",
+        "search_worker_task",
+        "search_nightly_task",
         "runtime_settings_refresh_task",
     ):
         task = getattr(app.state, attr, None)

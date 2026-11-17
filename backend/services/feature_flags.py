@@ -72,6 +72,14 @@ def project_access_enabled() -> bool:
     return _enabled("FF_PROJECT_ACCESS")
 
 
+def search_everything_enabled() -> bool:
+    """Search everything (2026-11-17) -- whole-database retrieval search for
+    the assistant (services/search). Default OFF. When OFF nothing is queued
+    or indexed, the search worker idles and the assistant's tool list is
+    unchanged."""
+    return _enabled("FF_SEARCH_EVERYTHING")
+
+
 def schedule_mode_for_project(project: dict) -> str:
     """The schedule mode for a project: 'mode2' (MS Project engine) or 'mode1'
     (our internal CPM engine, the default). Read from the project doc's

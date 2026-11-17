@@ -42,4 +42,28 @@ def has_llm_key() -> bool:
     return llm_api_key() is not None
 
 
-__all__ = ["anthropic_api_key", "emergent_llm_key", "llm_api_key", "has_llm_key"]
+VOYAGE_DEFAULT_BASE = "https://api.voyageai.com/v1"
+
+
+def voyage_api_key() -> Optional[str]:
+    """The Voyage AI key used by search (embeddings and reranking), or None.
+    Created in MongoDB Atlas (AI Models) or on voyageai.com; set on Railway
+    with scripts/set_voyage_key.ps1."""
+    return (os.environ.get("VOYAGE_API_KEY") or "").strip() or None
+
+
+def voyage_api_base() -> str:
+    """Where Voyage calls go: https://ai.mongodb.com/v1 for keys made in
+    Atlas, https://api.voyageai.com/v1 for keys made on voyageai.com."""
+    return ((os.environ.get("VOYAGE_API_BASE") or "").strip() or VOYAGE_DEFAULT_BASE).rstrip("/")
+
+
+def has_voyage_key() -> bool:
+    """True when a Voyage key is configured."""
+    return voyage_api_key() is not None
+
+
+__all__ = [
+    "anthropic_api_key", "emergent_llm_key", "llm_api_key", "has_llm_key",
+    "voyage_api_key", "voyage_api_base", "has_voyage_key",
+]
