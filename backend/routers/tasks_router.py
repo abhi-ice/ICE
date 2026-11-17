@@ -157,19 +157,13 @@ async def list_tasks(project_id: str, ctx: dict = Depends(require_tenant)):
     # planned_pct(today) into 'behind' won't update otherwise. Cheap
     # because compute_and_persist_status is idempotent ($set only fires
     # if a value moved). For projects with hundreds of tasks this adds a
-    # few hundred no-op queries on each list call — acceptable for ICE-
-    # scale (<500 activities per project per Bucket C1 design).
-    from services.task_status import compute_and_persist_status
-    refreshed = []
-    for d in docs:
-        new_fields = await compute_and_persist_status(
-            db, ctx["tenant_id"], d["id"],
-            actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
-        )
-        if new_fields:
-            d.update({k: v for k, v in new_fields.items() if k != "updated_at"})
-        refreshed.append(d)
-    return [Task(**d) for d in refreshed]
+    # 2026-11-17: done with a few bulk queries for the whole list (the
+    # per-task form cost ~7 database round trips per activity, about 4.5 s
+    # for 235 activities once the database was no longer on the same box).
+    from services.task_status import refresh_statuses
+    await refresh_statuses(db, ctx["tenant_id"], docs,
+                           actor_id=ctx["user"]["id"], request_id=ctx["request_id"])
+    return [Task(**d) for d in docs]
 
 
 @router.get("/tasks/{task_id}", response_model=Task)
