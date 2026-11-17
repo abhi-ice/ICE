@@ -192,9 +192,12 @@ async def ai_copilot(payload: CopilotMessage, ctx: dict = Depends(require_tenant
     # so the assistant never reads or writes another company's project.
     await require_project_if_given(ctx, payload.project_id)
     # The daily report in focus (body) must be on a project the caller is
-    # assigned to as well.
+    # assigned to as well. Having a report open is not a change, so it is
+    # checked as a read: someone who may only read the report can still ask
+    # about it. Each write tool checks the write rules itself (project
+    # assignment, read-only roles, draft author, locked report).
     if payload.daily_report_id:
-        await check_record_access(ctx, "daily_report", payload.daily_report_id, write=True)
+        await check_record_access(ctx, "daily_report", payload.daily_report_id, write=False)
     # No AI key: plain message, and no assistant turn is saved (before
     # 2026-11-16 the raw key error was saved and shown as the reply).
     from services.ai_unavailable import ensure_ai_available, COPILOT_UNAVAILABLE_MESSAGE

@@ -60,3 +60,12 @@ def test_empty_message_is_fast():
     async def stub(prompt):
         raise AssertionError("should not be called")
     assert _run(mr.classify("   ", chat_factory=stub)) == "fast"
+
+
+def test_three_way_intent_maps_to_models():
+    for raw, intent, route in (("change", "change", "deep"), (" Lookup.", "lookup", "fast"),
+                               ("deep", "deep", "deep"), ("fast", "lookup", "fast")):
+        async def stub(prompt, raw=raw):
+            return raw
+        assert _run(mr.classify_intent("log a delay", chat_factory=stub)) == intent
+        assert _run(mr.classify("log a delay", chat_factory=stub)) == route

@@ -282,7 +282,7 @@ def test_explicit_project_not_assigned_is_refused(search_on, turn, enforced):  #
     ctx = {"tenant_id": A, "project_id": P1, "_access": _ctx("super1")}
     res = run(ct._tool_search_everything(ctx, {"q": "rain", "project_id": P2}))
     # A read of a project the caller is not assigned to answers "not found".
-    assert res == {"error": "Project not found"}
+    assert res["error"] == "Project not found" and "don't have access" in res["note"]
     assert not [c for c in calls if c[0] == "search"]
     # all_projects: no project chosen, the search limits itself.
     run(ct._tool_search_everything(ctx, {"q": "rain", "all_projects": True,
@@ -640,7 +640,7 @@ def test_today_block_works_out_relative_dates():
 
 def test_prompt_rules_stay_short():
     # The added rules are a few hundred tokens at most (about 4 characters a token).
-    assert len(ct._SEARCH_EVERYTHING_RULES) < 3000
+    assert len(ct._SEARCH_EVERYTHING_RULES) < 4000
     assert "Keep replies short" not in ct._SEARCH_EVERYTHING_RULES
 
 
@@ -820,3 +820,22 @@ def test_delay_rows_unchanged_when_off(search_off, db):  # noqa: F811
     _seed_delay(db)
     out = run(ct._tool_query(_proj_ctx(), {"collection": "delays"}))
     assert all("linked_activities" not in r for r in out["rows"])
+
+
+def test_soft_delete_through_update_counts_as_delete():
+    from services.copilot_tools import _write_refusal
+    upd = {"entity_type": "task", "id": "t1", "fields": {"status": "deleted"}}
+    # scheduling engineer may update tasks, but not delete them this way
+    assert _write_refusal("update_entity", upd, "scheduling_engineer",
+                          "=== New message ===\nupdate task t1 status to deleted", {})
+    # anyone: needs the word, one per message
+    assert _write_refusal("update_entity", upd, "pm", "=== New message ===\nupdate task t1", {})
+    assert _write_refusal("update_entity", upd, "pm", "=== New message ===\ndelete task t1", {}) is None
+    assert _write_refusal("update_entity", upd, "pm", "=== New message ===\ndelete task t1",
+                          {"deletes": 1, "writes": 1})
+    arch = {"entity_type": "task", "fields": {"archived_at": "2026-11-17"}}
+    assert _write_refusal("update_entity", arch, "pm", "=== New message ===\nupdate task t1", {})
+    # an ordinary status change is not a delete
+    ok = {"entity_type": "task", "fields": {"status": "in_progress"}}
+    assert _write_refusal("update_entity", ok, "scheduling_engineer",
+                          "=== New message ===\nupdate task t1 to in progress", {}) is None

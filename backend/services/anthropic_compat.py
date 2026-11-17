@@ -172,6 +172,8 @@ class LlmChat:
         self._model: str = "claude-sonnet-4-5-20250929"
         self._max_tokens: int = _DEFAULT_MAX_TOKENS
         self._temperature: Optional[float] = None
+        self._effort: Optional[str] = None
+        self._no_thinking: bool = False
         # Earlier turns of this conversation, in Anthropic message format.
         self._history: list = []
         # Emergent client, created on first use of the fallback path.
@@ -195,6 +197,21 @@ class LlmChat:
     def with_max_tokens(self, max_tokens: int) -> "LlmChat":
         if isinstance(max_tokens, int) and max_tokens > 0:
             self._max_tokens = max_tokens
+        return self
+
+    def with_effort(self, effort: str) -> "LlmChat":
+        """How much the model may think before answering ("low", "medium",
+        "high"). Low keeps tiny one-word checks from spending their whole
+        answer budget on thinking."""
+        if effort in ("low", "medium", "high"):
+            self._effort = effort
+        return self
+
+    def without_thinking(self) -> "LlmChat":
+        """Answer straight away with no thinking step. For tiny one-word
+        checks: thinking can otherwise use the whole answer budget and leave
+        the reply empty."""
+        self._no_thinking = True
         return self
 
     def with_temperature(self, temperature: float) -> "LlmChat":
@@ -263,6 +280,13 @@ class LlmChat:
             kwargs["system"] = self._system_message
         if self._temperature is not None:
             kwargs["temperature"] = self._temperature
+        extra: dict = {}
+        if self._effort:
+            extra["output_config"] = {"effort": self._effort}
+        if self._no_thinking:
+            extra["thinking"] = {"type": "disabled"}
+        if extra:
+            kwargs["extra_body"] = extra
 
         # Turn Anthropic's error classes into messages that contain the
         # status codes and words the callers look for (rate limit, 429, 401,

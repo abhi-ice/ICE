@@ -66,7 +66,22 @@ async def _guard(ctx: dict, project_id, *, write: bool, tool: str = "") -> Optio
         await check_project_access(_access_ctx(ctx), project_id, write=write,
                                    route=f"copilot:{tool}" if tool else "copilot")
     except HTTPException as e:
+        if _search_on():
+            return {"error": str(e.detail),
+                    "note": ("The user is not assigned to this project (or it does not exist). "
+                             "Tell them plainly they don't have access to it, give no details "
+                             "of it, and do not answer with another project's data instead.")}
         return {"error": str(e.detail)}
+    if _search_on():
+        # A project id from another company (or a made-up one) is refused
+        # plainly instead of quietly matching nothing.
+        try:
+            exists = await get_db().projects.find_one(
+                tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 1})
+        except Exception:
+            exists = True  # a lookup hiccup never blocks; tools still filter by company
+        if not exists:
+            return {"error": "Project not found"}
     return None
 
 
@@ -121,19 +136,82 @@ async def _daily_report_guard(ctx: dict, tool: str, args: dict) -> Optional[dict
             coll_name = DELETABLE_ENTITIES.get(et)
             row = None
             if coll_name:
-                flt = None
                 if args.get("id"):
-                    flt = {"id": args.get("id")}
-                elif et == "rfi" and args.get("rfi_number"):
-                    flt = {"rfi_number": args.get("rfi_number")}
-                if flt and all(isinstance(v, str) for v in flt.values()):
-                    row = await get_db()[coll_name].find_one(
-                        tenant_filter(ctx["tenant_id"], flt), {"_id": 0})
+                    if isinstance(args.get("id"), str):
+                        row = await get_db()[coll_name].find_one(
+                            tenant_filter(ctx["tenant_id"], {"id": args["id"]}), {"_id": 0})
+                elif tool == "delete_entity":
+                    # The same record the tool will act on (see _find_by_code);
+                    # when it is not found or not clear, the tool says so.
+                    row, _err = await _find_by_code(ctx, et, args)
             fields = args.get("fields") if isinstance(args.get("fields"), dict) else None
             await ensure_can_change_linked_report(ctx, row, fields)
     except HTTPException as e:
         return {"error": str(e.detail)}
     return None
+
+
+# A submitted or approved daily report is locked: the assistant's report
+# tools (record_presence, mark_activity_status, create_unplanned_activity)
+# never change it. Changes after submission go through the report screens,
+# which ask for a reason or an approved edit request. The locked statuses
+# come from the screens' own rules so the two cannot drift apart.
+from services.edit_permissions import _LOCKED_STATUSES as _LOCKED_REPORT_STATUSES  # noqa: E402
+
+
+def _report_locked_error(dr: Optional[dict]) -> Optional[dict]:
+    """The error dict for a locked report, else None."""
+    if dr and dr.get("status") in _LOCKED_REPORT_STATUSES:
+        return {"error": "daily report locked"}
+    return None
+
+
+# Lookups by number (delete_entity): which field holds the number for each
+# record type.
+_CODE_FIELDS = {"task": "activity_code", "rfi": "rfi_number",
+                "submittal": "submittal_number"}
+
+
+async def _find_by_code(ctx: dict, et: str, args: dict) -> tuple:
+    """Find one record by its number (activity code, RFI number or submittal
+    number). Returns (record, error); both None when no number was given.
+
+    With a project selected only that project is searched, so "delete RFI-001"
+    never reaches another project's RFI-001. With no project selected the
+    caller's projects are searched, and when the number is used on more than
+    one of them the caller is asked which one instead of one being picked."""
+    field = _CODE_FIELDS.get(et)
+    code = (args or {}).get(field) if field else None
+    if not isinstance(code, str) or not code:
+        return None, None
+    coll_name = DELETABLE_ENTITIES.get(et)
+    q: dict = {field: code}
+    # A project named in the call (for example after the user answered
+    # "which project?") comes ahead of the project on screen. The caller's
+    # access to it is checked before the tool runs.
+    arg_project = (args or {}).get("project_id")
+    project_id = (arg_project if isinstance(arg_project, str) and arg_project
+                  else ctx.get("project_id"))
+    if project_id:
+        q["project_id"] = project_id
+    else:
+        q = await _scope(ctx, q)
+    q["status"] = {"$ne": "deleted"}  # an already-deleted record does not count
+    rows = await get_db()[coll_name].find(
+        tenant_filter(ctx["tenant_id"], q), {"_id": 0},
+    ).limit(5).to_list(5)
+    if not rows:
+        where = "in this project" if project_id else "in your projects"
+        return None, {"error": f"{et} {code} not found {where}"}
+    if len(rows) > 1:
+        return None, {"error": (f"More than one {et} is numbered {code} (in different "
+                                f"projects). Ask the user which project, then call "
+                                f"delete_entity again with that project's project_id "
+                                f"(or select the project first)."),
+                      # Only the caller's own projects were searched.
+                      "project_ids": sorted({r.get("project_id") for r in rows
+                                             if r.get("project_id")})}
+    return rows[0], None
 
 
 async def _scope(ctx: dict, q: dict, field: str = "project_id", *,
@@ -227,11 +305,43 @@ MAX_DELETES_PER_TURN = 1
 _DELETE_WORDS = re.compile(r"\b(delete|remove|erase|get rid of|cancel|void)\b", re.I)
 
 
-def _write_refusal(tool: str, args: dict, role: str, message: str,
-                   counts: dict) -> Optional[str]:
-    """Why this write must not run, or None. Plain-language reasons the
-    model passes on to the user."""
+_SOFT_DELETE_STATUSES = {"deleted", "archived", "void", "voided", "removed"}
+
+
+def _is_soft_delete(args: dict) -> bool:
+    """True when an update_entity call would delete or archive a record."""
+    fields = (args or {}).get("fields") if isinstance(args, dict) else None
+    if not isinstance(fields, dict):
+        return False
+    status = str(fields.get("status") or "").strip().lower()
+    return (status in _SOFT_DELETE_STATUSES
+            or any(fields.get(k) for k in ("deleted_at", "archived_at", "is_deleted")))
+
+
+# Sign-off fields: an approval or review is a person's decision, recorded by
+# that person, never by the assistant (whatever the role or switch).
+_SIGN_OFF_FIELDS = {"requires_pm_review", "pm_reviewed", "pm_reviewed_at", "pm_reviewed_by",
+                    "approved_by", "approved_at", "reviewed_by", "reviewed_at",
+                    "approval_status", "signed_off_by", "signed_off_at"}
+
+
+def _touches_sign_off(args: dict) -> bool:
+    fields = (args or {}).get("fields") if isinstance(args, dict) else None
+    return isinstance(fields, dict) and any(str(k).lower() in _SIGN_OFF_FIELDS for k in fields)
+
+
+def _role_refusal(tool: str, args: dict, role: str) -> Optional[str]:
+    """Why this role may not use this write tool, or None. Applies whatever
+    the search switch is set to: a limited role must not be able to write
+    through the assistant just because the switch is off."""
     role = (role or "").lower()
+    if tool == "update_entity" and _touches_sign_off(args):
+        return ("Not done: approvals and reviews are signed off by a person in the app, "
+                "not through the assistant. Open the record and approve it there.")
+    if tool == "update_entity" and _is_soft_delete(args):
+        # Setting status to deleted/archived (or a deleted_at date) is a
+        # delete: the same role rules apply.
+        tool = "delete_entity"
     allowed = _ROLE_WRITE_TOOLS.get(role)
     if allowed is not None and tool not in allowed:
         return (f"Not done: your role ({role or 'unknown'}) can't make this change through "
@@ -240,7 +350,21 @@ def _write_refusal(tool: str, args: dict, role: str, message: str,
         et = str((args or {}).get("entity_type") or "").lower()
         if et not in _ROLE_ENTITY_TYPES.get(role, set()):
             return f"Not done: your role ({role}) can't change {et or 'that kind of'} records."
-    if not _asks_for_change(message):
+    return None
+
+
+def _write_refusal(tool: str, args: dict, role: str, message: str,
+                   counts: dict, change_asked: Optional[bool] = None) -> Optional[str]:
+    """Why this write must not run, or None. Plain-language reasons the
+    model passes on to the user. The role rules (_role_refusal) come first;
+    the wording and per-message limits below apply while search is on."""
+    refusal = _role_refusal(tool, args, role)
+    if refusal:
+        return refusal
+    if tool == "update_entity" and _is_soft_delete(args):
+        # A soft delete follows the delete wording and one-per-message rules.
+        tool = "delete_entity"
+    if not (_asks_for_change(message) if change_asked is None else change_asked):
         return ("Not done: your message did not ask for a change. "
                 "Say exactly what to create or change and I will do it.")
     if tool == "delete_entity":
@@ -411,7 +535,10 @@ _SEARCH_EVERYTHING_RULES = """
   - Look before saying "no". Before you say an activity, company, person, record or event does not exist, is not in the records, or has no progress, you must have called a tool in this turn that looked for it (search_everything, query, get_daily_report, get_schedule_analysis). When the user names a scope, trade, activity, activity code, company or person that is not in the context sent with the request, call search_everything (or query on tasks for an activity code) first, in this turn, without asking permission. Never answer about a different activity in place of the one the user named. When a search or query finds nothing, say what you checked (which records, which dates) and stop; do not guess about progress, field work or the schedule.
   - For "how many" questions use get_schedule_analysis (view 'summary' gives total, complete, in progress and not started) or query (use its total when it gives one), never the sample list.
   - Only say what the tool results say. Never give a reason, cause or impact ("because", "due to", "caused by") unless a tool result states it; a constraint, float value or critical-path flag is not a reason. planned_finish is the plan; when you give a forecast finish, quote projected_finish_date.
-  - Never call a field missing or empty when a tool in this turn returned a value for it (for example pct_complete on a task row). When results give only a short or partial name (for example a first word of a company name), report it as given and say the full name is not shown; do not say the name is absent.
+  - Never call a field missing or empty when a tool in this turn returned a value for it (for example pct_complete on a task row). When a result gives only a short name of a company or person (like "Lawal"), search_everything again for just that name to find the full name and role; never say a name is absent when a result in this turn mentions it.
+  - Weather lives on each daily report: use get_daily_report per date (or query daily_reports weather_ fields) and check delays.
+  - Report open + "X didn't show, put that in": log it on that report now (create_delay); ask for details after. OTHER PROJECT records are never this project's.
+  - Activity progress: use query (tasks, daily_report_activities) or get_schedule_analysis, not search alone. "[phone on file...]" means a value exists; never call it missing. After a write, describe only what the tool result says was saved.
   - Use the TODAY line for relative dates and pass date_from/date_to to search_everything (or a date filter to query).
   - query field names: daily_reports report_date; tasks activity_code, pct_complete, planned_finish, projected_finish_date. If query warns that no record has a field, check the name against valid_fields; if it is right, the answer is none.
 """.rstrip("\n")
@@ -427,6 +554,15 @@ def _tool_catalogue(search_on: bool) -> str:
         1,
     )
     cat = cat.replace("\n\n  - get_status ", _SEARCH_EVERYTHING_ENTRY + "\n\n  - get_status ", 1)
+    # delete_entity takes project_id to pick the project when a number is
+    # used on more than one. With the switch OFF the "which project" error
+    # names project_id itself, so the OFF list above stays unchanged.
+    cat = cat.replace(
+        "rfi_number?: str, submittal_number?: str}",
+        "rfi_number?: str, submittal_number?: str, project_id?: str}  (project_id picks "
+        "the project when the number is used on more than one)",
+        1,
+    )
     return cat + _SEARCH_EVERYTHING_RULES
 
 WRITE_TOOLS = {
@@ -523,6 +659,17 @@ async def _tool_search_specs(ctx: dict, args: dict) -> dict:
     except Exception as e:
         return {"error": f"spec search failed: {str(e)[:160]}"}
     if not hits:
+        if _search_on():
+            try:
+                loaded = await get_db().project_specs.count_documents(
+                    tenant_filter(ctx["tenant_id"], {"project_id": project_id}))
+            except Exception:
+                loaded = 1  # unknown: keep the older wording
+            if not loaded:
+                return {"results": [], "count": 0, "specs_loaded": False,
+                        "note": ("no specifications have been uploaded for this project, so "
+                                 "there is nothing to quote. Say so plainly; do not name or "
+                                 "suggest section numbers.")}
         return {"results": [], "count": 0,
                 "note": "no spec section matched that query — try different keywords (the specs ARE ingested)"}
     db = get_db()
@@ -773,7 +920,9 @@ async def _kb_block_scoped(ctx: dict, project_id: Optional[str], message: str) -
     body = "\n".join(
         _neutralise_markers(
             f"  [{h['cite']}] {h.get('label') or ''}"
-            + (f" ({h['project_name']})" if h.get("project_name") else "")
+            + ((f" (OTHER PROJECT: {h.get('project_name') or 'another project'} - not this project's records)"
+                if h.get("project_id") and h.get("project_id") != project_id
+                else f" ({h['project_name']})" if h.get("project_name") else ""))
             + f"\n    {(h.get('excerpt') or '')[:400]}")
         for h in hits
     )
@@ -1179,6 +1328,45 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
     return out
 
 
+_ROLE_WRITE_NOTE = {
+    "viewer": "can only read. They cannot create, change or delete anything through you",
+    "voice": "can only read. They cannot create, change or delete anything through you",
+    "submittal_tech": "can create and change submittals only",
+    "scheduling_engineer": "can create and change schedule activities only",
+}
+
+
+async def _user_block(ctx: dict, role: str) -> str:
+    """Who is asking (search switch ON): their role, what they may change
+    and which projects they can open, so the reply states a limit plainly
+    instead of offering a change that would be refused."""
+    role = (role or "").lower()
+    can = _ROLE_WRITE_NOTE.get(role, "can create and change project records they are assigned to")
+    lines = [f"THE USER: role {role or 'unknown'}; they {can}. Never offer or promise a "
+             "change they cannot make; say plainly that their role can't and who can "
+             "(a project manager or admin). Approvals and reviews are done by a person "
+             "in the app, never by you."]
+    try:
+        from services.project_access import allowed_project_ids, is_enforced
+        actx = _access_ctx(ctx)
+        allowed = await allowed_project_ids(actx) if is_enforced(actx) else None
+        if allowed is not None:
+            names = []
+            if allowed:
+                rows = await get_db().projects.find(
+                    tenant_filter(ctx["tenant_id"], {"id": {"$in": list(allowed)},
+                                                     "status": {"$ne": "deleted"}}),
+                    {"_id": 0, "name": 1}).to_list(40)
+                names = sorted(r["name"] for r in rows if r.get("name"))
+            lines.append("Projects this user can open: " + ("; ".join(names) or "none")
+                         + ". If they ask about any other project, say they don't have access "
+                         "to it (or it doesn't exist) and give no details of it; never answer "
+                         "with the current project's data instead.")
+    except Exception:
+        pass
+    return "\n".join(lines)
+
+
 def _today_block(today: date) -> str:
     """The date line put in front of the assistant (search switch ON), with
     the common relative periods already worked out so the model does not
@@ -1290,7 +1478,7 @@ async def _tool_get_project_context(ctx: dict, args: dict) -> dict:
         except Exception: return 0
     counts = {
         "tasks_total": await _count("tasks", {"status": {"$ne": "deleted"}}),
-        "tasks_critical": await _count("tasks", {"is_critical": True, "status": {"$ne": "deleted"}}),
+        "tasks_critical": await _count("tasks", {**{"$or": [{"is_critical_path": True}, {"is_critical": True}]}, "status": {"$ne": "deleted"}}),
         "tasks_slipping": await _count("tasks", {"slip_days": {"$gt": 0}}),
         "tasks_blocked": await _count("tasks", {"open_blocker_count": {"$gt": 0}}),
         "rfis_open": await _count("rfis", {"status": {"$nin": ["answered", "closed"]}}),
@@ -1338,7 +1526,7 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
     base = tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}})
     proj_fields = {"_id": 0, "activity_code": 1, "description": 1,
                    "planned_start": 1, "planned_finish": 1, "pct_complete": 1,
-                   "status": 1, "is_critical": 1, "slip_days": 1,
+                   "status": 1, "is_critical": 1, "is_critical_path": 1, "slip_days": 1,
                    "open_blocker_count": 1, "open_blocker_summary": 1,
                    "trade": 1, "duration_days": 1}
     # Search switch ON: slipping rows also carry the forecast finish and the
@@ -1347,7 +1535,7 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
     slip_fields = ({**proj_fields, "projected_finish_date": 1, "remaining_float_days": 1}
                    if _search_on() else proj_fields)
     if view == "critical_path":
-        rows = await db.tasks.find({**base, "is_critical": True}, proj_fields).sort("planned_start", 1).limit(80).to_list(80)
+        rows = await db.tasks.find({**base, **{"$or": [{"is_critical_path": True}, {"is_critical": True}]}}, proj_fields).sort("planned_start", 1).limit(80).to_list(80)
     elif view == "slipping":
         rows = await db.tasks.find({**base, "slip_days": {"$gt": 0}}, slip_fields).sort("slip_days", -1).limit(30).to_list(30)
     elif view == "upcoming":
@@ -1388,7 +1576,7 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
             "view": "summary",
             "counts": {
                 "total": await _cnt({}),
-                "critical_path": await _cnt({"is_critical": True}),
+                "critical_path": await _cnt({"$or": [{"is_critical_path": True}, {"is_critical": True}]}),
                 "slipping": await _cnt({"slip_days": {"$gt": 0}}),
                 "blocked": await _cnt({"open_blocker_count": {"$gt": 0}}),
                 "in_progress": await _cnt({"status": "in_progress"}),
@@ -1493,6 +1681,29 @@ async def _tool_get_status(ctx: dict, args: dict) -> dict:
     return {"entity_type": et, "rows": docs}
 
 
+_TASK_CODE_RE = re.compile(r"^A(\d+)$")
+
+
+async def _next_task_code(db, tenant_id: str, project_id: str) -> str:
+    """The next A-number code not yet used in this project (A0001, A0002 ...).
+
+    The old rule took the trailing number of the alphabetically-last code and
+    added one, so with mixed code styles (or A9 sorting after A0010) it could
+    hand out a code another task in the project already had."""
+    rows = await db.tasks.find(
+        tenant_filter(tenant_id, {"project_id": project_id}),
+        {"_id": 0, "activity_code": 1},
+    ).to_list(None)
+    # One above the highest A-number in use, whatever its zero padding ("A1"
+    # and "A0001" both count as 1), so the new code cannot already be taken.
+    highest = 0
+    for r in rows:
+        m = _TASK_CODE_RE.match(str(r.get("activity_code") or "").strip().upper())
+        if m:
+            highest = max(highest, int(m.group(1)))
+    return f"A{highest + 1:04d}"
+
+
 async def _tool_create_task(ctx: dict, args: dict) -> dict:
     if "description" not in args:
         return {"error": "description required"}
@@ -1501,17 +1712,7 @@ async def _tool_create_task(ctx: dict, args: dict) -> dict:
     if not project_id:
         return {"error": "no active project — set project_id"}
 
-    # Auto-assign next activity_code
-    last = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id}),
-        {"_id": 0, "activity_code": 1},
-    ).sort("activity_code", -1).limit(1).to_list(1)
-    next_n = 1
-    for r in last:
-        m = re.search(r"(\d+)$", r.get("activity_code", "") or "")
-        if m:
-            next_n = int(m.group(1)) + 1
-    activity_code = f"A{next_n:04d}"
+    activity_code = await _next_task_code(db, ctx["tenant_id"], project_id)
     today = await project_today_for(db, ctx["tenant_id"], project_id)
     ps = args.get("planned_start") or today.isoformat()
     dur = int(args.get("duration_days") or 5)
@@ -1747,11 +1948,18 @@ async def _tool_create_crew(ctx: dict, args: dict) -> dict:
         "hourly_burdened_cost": args.get("hourly_burdened_cost"),
         "target_size": int(args.get("target_size", 4)),
         "notes": args.get("notes"),
+        "company_name": args.get("company_name") or args.get("external_company"),
         "status": "active",
         "created_at": utc_now().isoformat(),
     }
+    if args.get("is_self_perform") is False or str(args.get("is_self_perform")).lower() == "false":
+        # The crew record has no self-perform field; the note keeps it.
+        doc["notes"] = "; ".join(x for x in (doc["notes"], "Subcontractor crew (not self-perform)") if x)
     await db.crews.insert_one(doc.copy())
-    return {"created": {"resource": "crew", "id": doc["id"], "crew_code": crew_code, "name": doc["name"], "trade": doc["trade"]}}
+    return {"created": {"resource": "crew", "id": doc["id"], "crew_code": crew_code,
+                        "name": doc["name"], "trade": doc["trade"],
+                        "target_size": doc["target_size"], "company_name": doc["company_name"],
+                        "notes": doc["notes"]}}
 
 
 async def _tool_create_person(ctx: dict, args: dict) -> dict:
@@ -1872,6 +2080,20 @@ async def _tool_create_location(ctx: dict, args: dict) -> dict:
     return {"created": {"resource": "location", "id": doc["id"], "name": doc["name"], "code": doc["code"]}}
 
 
+async def _report_date_for(ctx: dict, args: dict) -> Optional[str]:
+    """The date of the daily report a new record is filed on, if any."""
+    rid = ctx.get("daily_report_id") or (args or {}).get("daily_report_id")
+    if not isinstance(rid, str) or not rid:
+        return None
+    try:
+        dr = await get_db().daily_reports.find_one(
+            tenant_filter(ctx["tenant_id"], {"id": rid}), {"_id": 0, "report_date": 1})
+    except Exception:
+        return None
+    d = (dr or {}).get("report_date")
+    return str(d)[:10] if d else None
+
+
 async def _tool_create_delay(ctx: dict, args: dict) -> dict:
     if "description" not in args:
         return {"error": "description required"}
@@ -1881,11 +2103,12 @@ async def _tool_create_delay(ctx: dict, args: dict) -> dict:
         "tenant_id": ctx["tenant_id"],
         "project_id": ctx.get("project_id"),
         "daily_report_id": ctx.get("daily_report_id") or args.get("daily_report_id"),
-        "date": args.get("date") or await project_today_iso_for(db, ctx["tenant_id"], ctx.get("project_id")),
+        "date": args.get("date") or await _report_date_for(ctx, args)
+                or await project_today_iso_for(db, ctx["tenant_id"], ctx.get("project_id")),
         "description": args["description"],
         "severity": args.get("severity", "moderate"),
         "delay_days": float(args.get("delay_days", args.get("delay_minutes", 0)) or 0) if args.get("delay_days") is not None or args.get("delay_minutes") is not None else None,
-        "reason_category": args.get("reason_category", "weather"),
+        "reason_category": args.get("reason_category") or "other",
         "status": "open",
         "reported_by": ctx["user"]["id"],
         "reported_at": utc_now().isoformat(),
@@ -2038,6 +2261,25 @@ DELETABLE_ENTITIES = {
 }
 
 
+_SHORT_ID = re.compile(r"^[0-9a-fA-F]{6,35}$")
+
+
+async def _resolve_short_id(ctx: dict, coll_name: str, target_id):
+    """The full id for a shortened one (the first characters of an id, as
+    the app shows them). Returns the id unchanged when it already matches a
+    record, is not a short id, or matches none or several records."""
+    if not isinstance(target_id, str) or not _SHORT_ID.match(target_id):
+        return target_id
+    coll = get_db()[coll_name]
+    if await coll.find_one(tenant_filter(ctx["tenant_id"], {"id": target_id}), {"_id": 1}):
+        return target_id
+    rows = await coll.find(
+        tenant_filter(ctx["tenant_id"], {"id": re.compile("^" + re.escape(target_id.lower())),
+                                         "status": {"$ne": "deleted"}}),
+        {"_id": 0, "id": 1}).limit(2).to_list(2)
+    return rows[0]["id"] if len(rows) == 1 else target_id
+
+
 async def _tool_delete_entity(ctx: dict, args: dict) -> dict:
     """Soft-delete (status='deleted') any record by id or by code lookup."""
     et = args.get("entity_type")
@@ -2049,21 +2291,15 @@ async def _tool_delete_entity(ctx: dict, args: dict) -> dict:
     # Lookup
     target_id = args.get("id")
     if not target_id:
-        # try lookup by code
-        if et == "task" and args.get("activity_code"):
-            d = await coll.find_one(tenant_filter(ctx["tenant_id"],
-                                                  {"activity_code": args["activity_code"]}), {"_id": 0})
-            if d: target_id = d["id"]
-        elif et == "rfi" and args.get("rfi_number"):
-            d = await coll.find_one(tenant_filter(ctx["tenant_id"],
-                                                  {"rfi_number": args["rfi_number"]}), {"_id": 0})
-            if d: target_id = d["id"]
-        elif et == "submittal" and args.get("submittal_number"):
-            d = await coll.find_one(tenant_filter(ctx["tenant_id"],
-                                                  {"submittal_number": args["submittal_number"]}), {"_id": 0})
-            if d: target_id = d["id"]
+        # Lookup by number, in the selected project only (see _find_by_code).
+        d, err = await _find_by_code(ctx, et, args)
+        if err:
+            return err
+        if d:
+            target_id = d["id"]
     if not target_id:
         return {"error": "id (or activity_code/rfi_number/submittal_number) required"}
+    target_id = await _resolve_short_id(ctx, coll_name, target_id)
     # The record's project must be one the caller is assigned to.
     denied = await _guard_row(ctx, coll_name, target_id, write=True, tool="delete_entity")
     if denied:
@@ -2090,6 +2326,7 @@ async def _tool_update_entity(ctx: dict, args: dict) -> dict:
     target_id = args.get("id")
     if not target_id:
         return {"error": "id required"}
+    target_id = await _resolve_short_id(ctx, coll_name, target_id)
     fields = args.get("fields") or {}
     if not isinstance(fields, dict):
         return {"error": "fields must be a dict"}
@@ -2100,6 +2337,9 @@ async def _tool_update_entity(ctx: dict, args: dict) -> dict:
     fields, bad = split_patch_fields(fields)
     if bad:
         return {"error": f"invalid field name: {str(bad[0])[:64]!r}"}
+    if _touches_sign_off({"fields": fields}):
+        return {"error": ("approvals and reviews are signed off by a person in the app, "
+                          "not through the assistant")}
     # A record can only be moved onto a project of the caller's company.
     for _pk in ("project_id", "home_project_id"):
         _pv = fields.get(_pk)
@@ -2169,8 +2409,9 @@ async def _tool_record_presence(ctx: dict, args: dict) -> dict:
     denied = await _guard(ctx, dr.get("project_id"), write=True, tool="record_presence")
     if denied:
         return denied
-    if dr.get("status") == "submitted":
-        return {"error": "daily report locked"}
+    locked = _report_locked_error(dr)
+    if locked:
+        return locked
     doc = {
         "id": gen_id(),
         "tenant_id": ctx["tenant_id"],
@@ -2200,9 +2441,18 @@ async def _tool_mark_activity_status(ctx: dict, args: dict) -> dict:
     if not dr_id:
         return {"error": "no active daily_report_id"}
     db = get_db()
-    denied = await _guard_row(ctx, "daily_reports", dr_id, write=True, tool="mark_activity_status")
+    dr = await db.daily_reports.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": dr_id}),
+        {"_id": 0, "status": 1, "project_id": 1, "report_date": 1})
+    if not dr:
+        return {"error": f"daily report {dr_id} not found"}
+    denied = await _guard(ctx, dr.get("project_id"), write=True, tool="mark_activity_status")
     if denied:
         return denied
+    # Same lock as record_presence and create_unplanned_activity.
+    locked = _report_locked_error(dr)
+    if locked:
+        return locked
     row = await db.daily_report_activities.find_one(
         {"daily_report_id": dr_id, "activity_code": code}, {"_id": 0},
     )
@@ -2235,8 +2485,7 @@ async def _tool_mark_activity_status(ctx: dict, args: dict) -> dict:
     task_id = row.get("schedule_activity_id")
     if implied is not None and task_id:
         from services.progress_ratchet import progress_limits, out_of_range_message, error_dict
-        dr = await db.daily_reports.find_one(
-            tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0, "report_date": 1}) or {}
+        # dr (loaded above) already holds report_date.
         lim = await progress_limits(db, ctx["tenant_id"], task_id, dr.get("report_date"),
                                     exclude_dr_id=dr_id)
         msg = out_of_range_message(float(implied), lim)
@@ -2277,11 +2526,15 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
     dr = await db.daily_reports.find_one(tenant_filter(ctx["tenant_id"], {"id": dr_id}), {"_id": 0})
     if not dr:
         return {"error": f"daily report {dr_id} not found"}
-    if dr.get("status") == "submitted":
-        return {"error": "daily report locked"}
+    # Project access first, then the lock (as in record_presence and
+    # mark_activity_status), so a caller not on the project learns nothing
+    # about the report's status.
     denied = await _guard(ctx, dr.get("project_id"), write=True, tool="create_unplanned_activity")
     if denied:
         return denied
+    locked = _report_locked_error(dr)
+    if locked:
+        return locked
     # Same unique per-project field-work code as the daily report screen.
     from services.field_activity_codes import next_field_activity_code
     activity_code = await next_field_activity_code(db, ctx["tenant_id"], dr["project_id"])
@@ -2463,9 +2716,10 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
     # Model routing (switch ON only): start the quick fast-or-deep check now
     # so it runs while the project context below is loaded.
     route_task = None
-    if search_on and not daily_report_id:
+    if search_on:
         from services import model_router as _mr
-        route_task = asyncio.ensure_future(_mr.classify(_new_message_text(message)))
+        route_task = asyncio.ensure_future(_mr.classify_intent(
+            _new_message_text(message), editing_report=bool(daily_report_id)))
 
     # access_ctx is the caller's request context (role and project access
     # in the active company). Older callers that do not pass it get one
@@ -2635,16 +2889,16 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                     + "\n".join(photo_summary_lines)
                     + "\nWhen the user asks to draft a QC issue or safety event from photos, "
                     "examine them visually and produce a concrete description (no markdown). "
-                    "When generating description text the user will paste into a form, put it "
-                    "verbatim into the 'reply' field — do NOT call create_qc_issue / "
-                    "create_safety_event tools yourself; the user will use the Send-to-form "
-                    "button to insert it."
+                    "Put the drafted text in full in the 'reply' field. Do NOT call "
+                    "create_qc_issue / create_safety_event to create the record unless "
+                    "the user asks you to create it."
                 )
 
     if search_on:
         # Today's date on the project's own clock, so "last week" or
         # "yesterday" can be turned into real dates.
         blocks.insert(0, _today_block(await project_today_for(db, tenant_id, project_id)))
+        blocks.insert(1, await _user_block(ctx, user_role))
 
     user_text = "\n\n".join(blocks) + f"\n\nUser request: {message}"
     if not blocks:
@@ -2653,27 +2907,31 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
     # Switch OFF: today's single model. Switch ON: fast or deep model for
     # this turn (see _pick_model), possibly moving up mid-turn.
     route_how = None
+    intent = None
     if search_on:
         model = _pick_model(message, daily_report_id, photo_attachments)  # keyword fallback
         route_how = "rules"
+        if route_task is not None:
+            try:
+                intent = await route_task
+            except Exception:
+                intent = None
+        if intent in ("lookup", "deep", "change"):
+            model = model_fast() if intent == "lookup" else model_deep()
+            route_how = "classifier"
         if daily_report_id or photo_attachments:
             model, route_how = model_deep(), "structural"
-            if route_task is not None:
-                route_task.cancel()
-        elif route_task is not None:
-            try:
-                label = await route_task
-            except Exception:
-                label = None
-            if label in ("fast", "deep"):
-                model = model_fast() if label == "fast" else model_deep()
-                route_how = "classifier"
     else:
         model = MODEL_NAME
     models_used: list[str] = [model]
     deep = model_deep()
     # Does the user's own new message ask for a change? (Switch ON only.)
-    change_asked = _asks_for_change(message) if search_on else True
+    # The three-way check above decides; the word rules only when it was
+    # unavailable.
+    if search_on:
+        change_asked = (intent == "change") if intent else _asks_for_change(message)
+    else:
+        change_asked = True
     write_counts: dict = {"writes": 0, "deletes": 0}
     registry = _tool_registry(search_on)
     chat = LlmChat(
@@ -2790,9 +3048,14 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
             tool = a.get("tool")
             args = a.get("args") or {}
             impl = registry.get(tool)
-            guard_msg = (_write_refusal(tool, args if isinstance(args, dict) else {},
-                                        user_role, message, write_counts)
-                         if search_on and tool in WRITE_TOOLS else None)
+            guard_msg = None
+            if tool in WRITE_TOOLS:
+                safe_args = args if isinstance(args, dict) else {}
+                # Role rules always apply; the wording and per-message
+                # limits only while search everything is on.
+                guard_msg = (_write_refusal(tool, safe_args, user_role, message,
+                                            write_counts, change_asked)
+                             if search_on else _role_refusal(tool, safe_args, user_role))
             if guard_msg:
                 rec = {"tool": tool, "args": args, "result": {"refused": guard_msg}}
             elif search_on and tool in WRITE_TOOLS and not change_asked \
@@ -2831,7 +3094,7 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
                     rec = {"tool": tool, "args": args, "result": res}
                     if tool in WRITE_TOOLS and not denied and not _result_has_error(rec):
                         write_counts["writes"] = write_counts.get("writes", 0) + 1
-                        if tool == "delete_entity":
+                        if tool == "delete_entity" or (tool == "update_entity" and _is_soft_delete(args)):
                             write_counts["deletes"] = write_counts.get("deletes", 0) + 1
                 except Exception as e:
                     rec = {"tool": tool, "args": args, "error": str(e)}
