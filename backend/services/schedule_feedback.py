@@ -263,27 +263,42 @@ async def refresh_start_of_day(db, tenant_id: str, task_id: str) -> int:
     start from the previous date's value. Returns the number of rows changed."""
     history = await task_report_history(db, tenant_id, task_id, include_untouched=True)
     changed = 0
-    prev_eod = None   # end-of-day carried into the current date
-    cur_date, cur_best = None, None  # entered rows seen on the current date
+    # End-of-day carried into the current date: from any earlier entered row
+    # (used for drafts), and from earlier SUBMITTED or APPROVED rows only
+    # (used for locked reports, so an unsubmitted draft never rewrites what
+    # a locked report says it started from).
+    prev_any, prev_locked = None, None
+    cur_date, cur_any, cur_locked = None, None, None
+    pre_value = None
     for r in history:
         rd = r["_report_date"]
         if rd != cur_date:
-            if cur_best is not None:
-                prev_eod = cur_best
-            cur_date, cur_best = rd, None
+            if cur_any is not None:
+                prev_any = cur_any
+            if cur_locked is not None:
+                prev_locked = cur_locked
+            cur_date, cur_any, cur_locked = rd, None, None
         sets = _row_sets_progress(r)
         locked = r.get("_report_status") in ("submitted", "approved")
         # Leave alone: a start-of-day a person typed, and untouched rows on
         # submitted or approved reports (their printed record stays as is).
         skip = bool(r.get("sod_set_at")) or (locked and not sets)
-        if prev_eod is not None and not skip:
+        target = prev_locked if locked else prev_any
+        if locked and target is None and prev_any is not None:
+            # A locked report whose only earlier rows are drafts starts from
+            # the task's progress before any report touched it.
+            if pre_value is None:
+                pre_value = float((await pre_report_progress(db, tenant_id, task_id, history))
+                                  .get("pct_complete") or 0)
+            target = pre_value
+        if target is not None and not skip:
             old_sod = float(r.get("pct_complete_start_of_day") or 0)
-            if old_sod != float(prev_eod):
-                upd = {"pct_complete_start_of_day": prev_eod}
+            if old_sod != float(target):
+                upd = {"pct_complete_start_of_day": target}
                 if sets and not r.get("pct_set_at"):
                     upd["pct_set_at"] = r.get("updated_at") or r.get("created_at") or utc_now().isoformat()
                 if not sets:
-                    upd["pct_complete_end_of_day"] = prev_eod
+                    upd["pct_complete_end_of_day"] = target
                 # Only if nobody saved the row since it was read.
                 flt = {"id": r["id"],
                        "pct_complete_start_of_day": r.get("pct_complete_start_of_day"),
@@ -293,7 +308,9 @@ async def refresh_start_of_day(db, tenant_id: str, task_id: str) -> int:
                 changed += res.modified_count
         if sets:
             eod = float(r.get("pct_complete_end_of_day") or 0)
-            cur_best = eod if cur_best is None else max(cur_best, eod)
+            cur_any = eod if cur_any is None else max(cur_any, eod)
+            if locked:
+                cur_locked = eod if cur_locked is None else max(cur_locked, eod)
     return changed
 
 

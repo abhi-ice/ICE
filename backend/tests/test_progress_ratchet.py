@@ -666,3 +666,17 @@ def test_one_time_job_does_not_refresh_was():
         r = await db.daily_report_activities.find_one({"id": r17}, {"_id": 0})
         assert r["pct_complete_start_of_day"] == 45
     _run(body)
+
+
+def test_draft_never_rewrites_a_locked_reports_was():
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid, tid = await _setup(db, tenant)
+        # 11/12 draft at 60 (back-dated, never submitted), 11/16 submitted at 40.
+        d12, r12 = await _day(db, tenant, pid, tid, ctx, "2026-11-12", 60, status="draft")
+        d16, r16 = await _day(db, tenant, pid, tid, ctx, "2026-11-16", 40)
+        await _save(ctx, r16, pct_complete_end_of_day=45, edit_reason=REASON)
+        r = await db.daily_report_activities.find_one({"id": r16}, {"_id": 0})
+        # Starts from the value before any report (0), not the draft's 60.
+        assert r["pct_complete_start_of_day"] == 0
+    _run(body)
