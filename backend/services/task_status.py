@@ -281,6 +281,138 @@ async def compute_and_persist_status(
     return new_fields
 
 
+async def open_blockers_for_tasks(db, tenant_id: str, task_ids: list[str]) -> dict:
+    """count_open_blockers for many tasks at once: a handful of queries in
+    total instead of five per task (the per-task form costs a database round
+    trip each, which adds up to seconds on a project list). Returns
+    {task_id: (count, summary)} with exactly the summaries, order and caps
+    count_open_blockers would give each task."""
+    ids = list(dict.fromkeys(t for t in task_ids if t))
+    out: dict = {tid: [] for tid in ids}
+    if not ids:
+        return {}
+    id_set = set(ids)
+
+    delays: dict = {tid: [] for tid in ids}
+    async for d in db.delays.find(
+        tenant_filter(tenant_id, {"linked_task_ids": {"$in": ids},
+                                  "status": {"$in": ["open", "in_progress"]}}),
+        {"_id": 0, "id": 1, "severity": 1, "description": 1, "linked_task_ids": 1},
+    ):
+        for tid in set(d.get("linked_task_ids") or []) & id_set:
+            if len(delays[tid]) < 20:
+                delays[tid].append({"entity_type": "delay", "entity_id": d["id"],
+                                    "severity": d.get("severity"),
+                                    "label": (d.get("description") or "")[:80]})
+
+    rfis: dict = {tid: [] for tid in ids}
+    async for r in db.rfis.find(
+        tenant_filter(tenant_id, {"$or": [{"linked_task_ids": {"$in": ids}},
+                                          {"schedule_activity_id": {"$in": ids}}],
+                                  "status": {"$in": ["draft", "sent", "in_review"]}}),
+        {"_id": 0, "id": 1, "rfi_number": 1, "subject": 1, "priority": 1,
+         "linked_task_ids": 1, "schedule_activity_id": 1},
+    ):
+        hit = set(r.get("linked_task_ids") or []) | {r.get("schedule_activity_id")}
+        for tid in hit & id_set:
+            lst = rfis[tid]
+            if len(lst) < 20 and all(x["entity_id"] != r["id"] for x in lst):
+                lst.append({"entity_type": "rfi", "entity_id": r["id"],
+                            "severity": r.get("priority") or "normal",
+                            "label": f"RFI {r.get('rfi_number')}: {(r.get('subject') or '')[:60]}"})
+
+    subs: dict = {tid: [] for tid in ids}
+    async for sub in db.submittals.find(
+        tenant_filter(tenant_id, {"schedule_activity_id": {"$in": ids},
+                                  "status": {"$in": ["submitted", "in_review"]},
+                                  "sla_status": "breached"}),
+        {"_id": 0, "id": 1, "submittal_number": 1, "title": 1, "urgency_flag": 1,
+         "overdue_days": 1, "schedule_activity_id": 1},
+    ):
+        tid = sub.get("schedule_activity_id")
+        if tid in subs and len(subs[tid]) < 20:
+            od = sub.get("overdue_days")
+            label = f"{sub.get('submittal_number') or 'SUB'}: {(sub.get('title') or '')[:50]}"
+            if od:
+                label = f"{label} (+{od}d over SLA)"
+            subs[tid].append({"entity_type": "submittal", "entity_id": sub["id"],
+                              "severity": "critical" if sub.get("urgency_flag") else "high",
+                              "label": label})
+
+    links: dict = {tid: [] for tid in ids}
+    async for link in db.work_item_links.find(
+        {"entity_type": "task", "entity_id": {"$in": ids}},
+        {"_id": 0, "work_item_id": 1, "entity_id": 1},
+    ):
+        if len(links[link["entity_id"]]) < 50:
+            links[link["entity_id"]].append(link["work_item_id"])
+    wi_ids = list({w for lst in links.values() for w in lst})
+    open_wis: dict = {}
+    if wi_ids:
+        async for wi in db.work_items.find(
+            tenant_filter(tenant_id, {"id": {"$in": wi_ids},
+                                      "status": {"$nin": ["closed", "resolved"]}}),
+            {"_id": 0, "id": 1, "title": 1, "priority": 1},
+        ):
+            open_wis[wi["id"]] = wi
+
+    for tid in ids:
+        wis = []
+        mine = set(links[tid])
+        for wid, wi in open_wis.items():  # work_items order, as the per-task query
+            if wid in mine and len(wis) < 20:
+                wis.append({"entity_type": "work_item", "entity_id": wi["id"],
+                            "severity": wi.get("priority") or "normal",
+                            "label": (wi.get("title") or "")[:80]})
+        summary = delays[tid] + rfis[tid] + subs[tid] + wis
+        out[tid] = (len(summary), summary)
+    return out
+
+
+async def refresh_statuses(
+    db, tenant_id: str, tasks: list[dict], *,
+    actor_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> None:
+    """compute_and_persist_status for a list of already-loaded task documents
+    (one project's list), using a few bulk queries instead of several per
+    task. Updates each dict in place with the derived fields; writes (and
+    audits) only the tasks whose derived fields actually changed."""
+    if not tasks:
+        return
+    todays: dict = {}
+    for pid in {t.get("project_id") for t in tasks}:
+        todays[pid] = await project_today_for(db, tenant_id, pid)
+    blockers = await open_blockers_for_tasks(db, tenant_id, [t["id"] for t in tasks])
+    from audit import write_audit
+    for task in tasks:
+        count, summary = blockers.get(task["id"], (0, []))
+        new_fields = {
+            "computed_status": derive_status(
+                pct=float(task.get("pct_complete") or 0),
+                planned=planned_pct_at(task, todays[task.get("project_id")]),
+                has_blocker=count > 0,
+                work_category=task.get("work_category"),
+                task_status=task.get("status"),
+            ),
+            "has_open_blocker": count > 0,
+            "open_blocker_count": count,
+            "open_blocker_summary": summary,
+        }
+        if all(task.get(k) == v for k, v in new_fields.items()):
+            continue
+        before = {k: task.get(k) for k in ("computed_status", "has_open_blocker", "open_blocker_count")}
+        await db.tasks.update_one(tenant_filter(tenant_id, {"id": task["id"]}),
+                                  {"$set": {**new_fields, "updated_at": datetime.utcnow().isoformat()}})
+        await write_audit(
+            tenant_id=tenant_id, table_name="tasks", op="STATUS_COMPUTE",
+            record_id=task["id"], before=before,
+            after={k: new_fields.get(k) for k in ("computed_status", "has_open_blocker", "open_blocker_count")},
+            actor_id=actor_id, request_id=request_id or gen_id(),
+        )
+        task.update(new_fields)
+
+
 async def recompute_for_tasks(
     db, tenant_id: str, task_ids: list[str], *,
     today: Optional[date] = None,
