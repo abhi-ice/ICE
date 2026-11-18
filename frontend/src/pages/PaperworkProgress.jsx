@@ -122,7 +122,8 @@ export default function PaperworkProgress() {
     if (!activeId) return Promise.resolve();
     if (!silent) setLoading(true);
     return api.get(`/projects/${activeId}/tasks`)
-      .then(({ data }) => setTasks((data || []).filter((t) => PAPERWORK_CATS.includes(t.work_category))))
+      // Unplanned field work is not part of the schedule (2026-11-18).
+      .then(({ data }) => setTasks((data || []).filter((t) => PAPERWORK_CATS.includes(t.work_category) && !t.created_in_field)))
       .catch(() => toast.error("Failed to load paperwork tasks"))
       .finally(() => { if (!silent) setLoading(false); });
   };

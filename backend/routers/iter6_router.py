@@ -638,7 +638,9 @@ async def apply_recovery(recovery_id: str, payload: ApplyRecoveryRequest, ctx: d
         raise HTTPException(400, "Suggestion index out of range")
     chosen = suggestions[payload.suggestion_index]
     target_id = rec.get("target_activity_id")
-    target = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": target_id}), {"_id": 0})
+    # Unplanned field work is not part of the schedule (2026-11-18).
+    target = await db.tasks.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": target_id, "created_in_field": {"$ne": True}}), {"_id": 0})
     if not target:
         raise HTTPException(404, "Target activity not found")
 
@@ -867,7 +869,8 @@ async def auto_link_activities(project_id: str, ctx: dict = Depends(require_tena
         {"_id": 0},
     ).to_list(2000)
     tasks = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"},
+                                         "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "spec_section_codes": 1, "trade_code": 1, "description": 1, "activity_code": 1},
     ).to_list(5000)
     by_code: dict[str, list[dict]] = {}

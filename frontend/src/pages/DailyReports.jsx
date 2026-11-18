@@ -7966,7 +7966,8 @@ function FlowTaskChips({ projectId, value, onChange, label = "Linked tasks", opt
   useEffect(() => {
     if (!projectId) { setTasks([]); setLoaded(true); return undefined; }
     let cancelled = false;
-    api.get(`/projects/${projectId}/tasks`)
+    // Daily report pickers include unplanned field work (2026-11-18).
+    api.get(`/projects/${projectId}/tasks`, { params: { include_unplanned: true } })
       .then(({ data }) => { if (!cancelled) setTasks(Array.isArray(data) ? data : []); })
       .catch(() => { if (!cancelled) setTasks([]); })
       .finally(() => { if (!cancelled) setLoaded(true); });

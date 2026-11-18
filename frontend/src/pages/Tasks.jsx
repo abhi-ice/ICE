@@ -218,7 +218,8 @@ export default function Tasks() {
     return filtered;
   }, [tasks, sortBySlipDesc, showOnlyImpacted]);
 
-  const load = () => activeId && api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data));
+  // Unplanned field work is not part of the schedule (2026-11-18).
+  const load = () => activeId && api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks((data || []).filter((t) => !t.created_in_field)));
   useEffect(() => {
     if (!activeId) return;
     load();

@@ -123,21 +123,21 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
     # Every unfinished activity, judged on the schedule's own dates (not the
     # forecast): a stretched forecast on one activity must not push the next
     # ones off the owner's form.
+    # Unplanned field work is not part of the schedule (2026-11-18), reviewed or not.
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id,
                                   "status": {"$nin": ["deleted", "complete"]},
+                                  "created_in_field": {"$ne": True},
                                   "planned_start": {"$lte": end.isoformat()}}),
         {"_id": 0, "activity_code": 1, "description": 1, "planned_start": 1, "planned_finish": 1,
          "actual_start": 1, "pct_complete": 1, "status": 1, "work_category": 1,
-         "projected_finish_date": 1, "created_in_field": 1, "requires_pm_review": 1},
+         "projected_finish_date": 1},
     ).sort("planned_start", 1).to_list(20000)
 
     rows, notes = [], []
     for t in tasks:
         if _done(t):
             continue
-        if t.get("created_in_field") and t.get("requires_pm_review"):
-            continue  # field note not reviewed by a project manager yet
         s, f = task_span(t, start, end)
         if s is None:
             continue
@@ -172,6 +172,7 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
             delaying.append(str(dl["description"]).strip())
     async for t in db.tasks.find(
             tenant_filter(tenant_id, {"project_id": project_id, "has_open_blocker": True,
+                                      "created_in_field": {"$ne": True},
                                       "status": {"$nin": ["complete", "deleted"]}}),
             {"_id": 0, "description": 1, "open_blocker_summary": 1}).limit(20):
         summ = t.get("open_blocker_summary")

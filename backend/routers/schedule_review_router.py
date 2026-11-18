@@ -253,7 +253,9 @@ async def list_logic_proposals(project_id: str, status: str = "pending",
                                ctx: dict = Depends(require_tenant)):
     role_required(ctx, REVIEW_ROLES)
     return await get_db().logic_proposals.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": status}),
+        # Unplanned field work is not part of the schedule (2026-11-18).
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": status,
+                                         "kind": {"$ne": "unplanned_work"}}),
         {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
@@ -275,6 +277,8 @@ async def approve_logic(proposal_id: str, payload: LogicDecision, ctx: dict = De
     p = await db.logic_proposals.find_one(tenant_filter(ctx["tenant_id"], {"id": proposal_id}), {"_id": 0})
     if not p or p["status"] != "pending":
         raise HTTPException(404, "Proposal not found or already decided")
+    if p.get("kind") == "unplanned_work":
+        raise HTTPException(422, "Unplanned work stays on daily reports and is not part of the schedule.")
     preds = ([x.model_dump() for x in payload.predecessors] if payload.predecessors is not None
              else p.get("suggested_predecessors") or [])
     for x in preds:
@@ -282,7 +286,8 @@ async def approve_logic(proposal_id: str, payload: LogicDecision, ctx: dict = De
             raise HTTPException(422, f"Bad relationship type {x['type']}")
         x["type"] = x["type"].upper()
     proj_tasks = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": p["project_id"], "status": {"$ne": "deleted"}}),
+        tenant_filter(ctx["tenant_id"], {"project_id": p["project_id"], "status": {"$ne": "deleted"},
+                                         "created_in_field": {"$ne": True}}),
         {"_id": 0, "activity_code": 1, "predecessors": 1}).to_list(20000)
     graph = {t["activity_code"]: [pred_code(x) for x in (t.get("predecessors") or []) if pred_code(x)]
              for t in proj_tasks}
@@ -301,6 +306,8 @@ async def approve_logic(proposal_id: str, payload: LogicDecision, ctx: dict = De
             seen.add(c)
             stack.extend(graph.get(c, []))
     task_before = await db.tasks.find_one(tenant_filter(ctx["tenant_id"], {"id": p["task_id"]}), {"_id": 0})
+    if (task_before or {}).get("created_in_field"):
+        raise HTTPException(422, "Unplanned work stays on daily reports and is not part of the schedule.")
     await apply_logic_proposal(db, ctx["tenant_id"], p, preds)
     await db.logic_proposals.update_one(
         tenant_filter(ctx["tenant_id"], {"id": proposal_id}),

@@ -407,6 +407,8 @@ async def auto_diff_on_approval(
                 "project_id": project_id,
                 "activity_code": {"$in": later_codes},
                 "is_critical_path": True,
+                # Unplanned field work is not part of the schedule (2026-11-18).
+                "created_in_field": {"$ne": True},
             }),
             {"_id": 0, "activity_code": 1},
         ).to_list(5000)

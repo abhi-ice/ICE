@@ -662,8 +662,9 @@ async def get_onboarding(ctx: dict = Depends(require_tenant)):
             tenant_filter(ctx["tenant_id"], {"project_id": project_id}))) > 0
         state["08_specs"] = bool(await db.specs.find_one(
             tenant_filter(ctx["tenant_id"], {"project_id": project_id}), {"_id": 0}))
+        # Unplanned field work is not part of the schedule (2026-11-18).
         state["09_schedule"] = (await db.tasks.count_documents(
-            tenant_filter(ctx["tenant_id"], {"project_id": project_id}))) > 0
+            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "created_in_field": {"$ne": True}}))) > 0
         state["10_resources"] = (await db.crews.count_documents(
             tenant_filter(ctx["tenant_id"]))) > 0
         state["11_daily"] = (await db.daily_reports.count_documents(

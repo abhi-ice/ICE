@@ -21,11 +21,13 @@ DIGEST_ROLES = {"admin", "pm"}
 
 async def build_digest(db, tenant_id: str, project_id: str) -> dict:
     tf = lambda q: tenant_filter(tenant_id, {"project_id": project_id, **q})  # noqa: E731
-    logic = await db.logic_proposals.find(tf({"status": "pending"}), {"_id": 0}).sort("created_at", -1).to_list(50)
+    # Unplanned field work is not part of the schedule (2026-11-18).
+    logic = await db.logic_proposals.find(tf({"status": "pending", "kind": {"$ne": "unplanned_work"}}), {"_id": 0}).sort("created_at", -1).to_list(50)
     names_pending = await db.activity_name_suggestions.count_documents(tf({"status": "pending"}))
     delays = await db.delays.find(tf({"status": {"$in": OPEN_DELAY_STATUSES}}), {"_id": 0}).sort("logged_date", 1).to_list(100)
     slipped = await db.tasks.find(
-        tf({"status": {"$nin": ["deleted", "complete"]}, "slip_days": {"$gt": 0}}),
+        tf({"status": {"$nin": ["deleted", "complete"]}, "slip_days": {"$gt": 0},
+            "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "display_name": 1,
          "planned_finish": 1, "projected_finish_date": 1, "slip_days": 1, "is_currently_critical": 1},
     ).sort("slip_days", -1).to_list(30)
@@ -143,7 +145,8 @@ async def run_due_digests(db, now: datetime | None = None) -> list:
         # 7 AM send; later morning hours only retry a failed send.
         if local.weekday() != 4 or not 7 <= local.hour < 12:
             continue
-        if not await db.tasks.find_one({"project_id": p["id"], "status": {"$ne": "deleted"}}, {"_id": 0, "id": 1}):
+        if not await db.tasks.find_one({"project_id": p["id"], "status": {"$ne": "deleted"},
+                                        "created_in_field": {"$ne": True}}, {"_id": 0, "id": 1}):
             continue
         key = f"{p['id']}:{local.date().isoformat()}"
         # Claim: fresh run, or retry of a failed one (never a sent/running one).

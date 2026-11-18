@@ -38,7 +38,8 @@ export default function MarketplaceFull() {
   const load = () => {
     api.get("/marketplace/postings").then(({ data }) => setPostings(data));
     api.get("/marketplace/escrow-summary").then(({ data }) => setEscrow(data));
-    if (activeId) api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data));
+    // Unplanned field work is not part of the schedule (2026-11-18).
+    if (activeId) api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks((data || []).filter((t) => !t.created_in_field)));
   };
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);
 

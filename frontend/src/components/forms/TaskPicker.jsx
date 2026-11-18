@@ -41,7 +41,9 @@ export default function TaskPicker({
       setTasks([]); setTasksLoaded(true);
       return;
     }
-    api.get(`/projects/${projectId}/tasks`)
+    // Daily report events may link unplanned field work, which the task
+    // list hides unless asked (2026-11-18).
+    api.get(`/projects/${projectId}/tasks`, { params: { include_unplanned: true } })
       .then(({ data }) => setTasks(Array.isArray(data) ? data : []))
       .catch(() => setTasks([]))
       .finally(() => setTasksLoaded(true));

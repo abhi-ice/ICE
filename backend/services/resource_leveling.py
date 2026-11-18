@@ -796,6 +796,8 @@ async def recompute_demand_for_project(
             "project_id": project_id,
             "required_trade": {"$nin": [None, ""]},
             "status": {"$ne": "deleted"},
+            # Unplanned field work is not part of the schedule (2026-11-18).
+            "created_in_field": {"$ne": True},
         }),
         {"_id": 0, "id": 1, "required_trade": 1, "required_headcount": 1,
          "required_hours": 1, "planned_start": 1, "planned_finish": 1,
@@ -888,6 +890,7 @@ async def recompute_demand_for_dates(
             "project_id": project_id,
             "required_trade": {"$nin": [None, ""]},
             "status": {"$ne": "deleted"},
+            "created_in_field": {"$ne": True},
             "$expr": effective_schedule_overlap(
                 dates_list[0].isoformat(), dates_list[-1].isoformat()),
         }),

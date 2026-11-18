@@ -120,8 +120,10 @@ async def build_progress_shift_map_from_db(
     """
     from database import tenant_filter
     tasks = await db.tasks.find(
+        # Unplanned field work is not part of the schedule (2026-11-18).
         tenant_filter(tenant_id, {
             "project_id": project_id, "status": {"$ne": "deleted"},
+            "created_in_field": {"$ne": True},
         }),
         {"_id": 0, "id": 1, "planned_start": 1, "planned_finish": 1,
          "pct_complete": 1, "work_category": 1},

@@ -234,6 +234,8 @@ async def infer_trades_for_project(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$ne": "deleted"},
+            # Unplanned field work is not part of the schedule (2026-11-18).
+            "created_in_field": {"$ne": True},
             "$or": [
                 {"required_trade": {"$exists": False}},
                 {"required_trade": None},

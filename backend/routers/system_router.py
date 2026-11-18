@@ -437,7 +437,8 @@ async def dashboard_summary(
     open_delays = await db.delays.count_documents({**pf, "status": {"$nin": ["resolved", "closed"]}})
     pending_deliveries = await db.deliveries.count_documents({**pf, "status": {"$nin": ["delivered", "received", "rejected"]}})
     # schedule health: % of critical-path tasks with pct_complete < expected
-    cp_tasks = await db.tasks.find({**pf, "is_critical_path": True, "status": {"$ne": "deleted"}}, {"_id": 0, "pct_complete": 1}).to_list(2000)
+    # Unplanned field work is not part of the schedule (2026-11-18).
+    cp_tasks = await db.tasks.find({**pf, "is_critical_path": True, "status": {"$ne": "deleted"}, "created_in_field": {"$ne": True}}, {"_id": 0, "pct_complete": 1}).to_list(2000)
     schedule_health = 100
     if cp_tasks:
         avg_pct = sum(float(t.get("pct_complete") or 0) for t in cp_tasks) / len(cp_tasks)

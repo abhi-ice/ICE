@@ -110,7 +110,8 @@ export default function PerTaskImpactsInput({
     useEffect(() => {
         if (!projectId) return undefined;
         let cancelled = false;
-        api.get(`/projects/${projectId}/tasks`)
+        // Label lookup only; a delay may name unplanned field work (2026-11-18).
+        api.get(`/projects/${projectId}/tasks`, { params: { include_unplanned: true } })
             .then(({ data }) => {
                 if (cancelled) return;
                 const map = {};

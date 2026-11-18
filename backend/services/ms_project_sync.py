@@ -378,8 +378,10 @@ async def _build_push_change_set(db, tenant_id: str, project_id: str) -> dict:
     # follows the SITE's clock. Missing/legacy -> _project_today's Eastern
     # default (with a UTC fallback for a bad IANA name).
     tz_name = proj.get("timezone")
+    # Unplanned field work is not part of the schedule (2026-11-18).
     tasks = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "external_task_id": 1,
          "pct_complete": 1, "actual_start": 1, "actual_finish": 1,
          "calendar_id": 1},
@@ -546,7 +548,8 @@ async def enqueue_create_job(tenant_id, project_id, *, actor_id=None, request_id
         tenant_filter(tenant_id, {"id": project_id}),
         {"_id": 0, "name": 1, "start_date": 1}) or {}
     tasks = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "activity_code": 1, "description": 1, "duration_days": 1,
          "planned_start": 1, "planned_finish": 1, "is_milestone": 1, "predecessors": 1},
     ).to_list(5000)
@@ -859,7 +862,8 @@ async def _ingest_push_tasks(db, tenant_id, project_id, tasks, *, project_rowver
         if not code:
             continue
         ours = await db.tasks.find_one(
-            tenant_filter(tenant_id, {"project_id": project_id, "activity_code": code}),
+            tenant_filter(tenant_id, {"project_id": project_id, "activity_code": code,
+                                      "created_in_field": {"$ne": True}}),
             {"_id": 0, "id": 1, "planned_start": 1, "planned_finish": 1})
         if not ours:
             continue

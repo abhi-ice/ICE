@@ -19,7 +19,8 @@ export default function Recovery() {
   const loadEval = () => activeId && api.get(`/ai/recovery/eval-harness?project_id=${activeId}`).then(({ data }) => setEvalData(data));
   useEffect(() => {
     if (!activeId) return;
-    api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data.filter((t) => t.status !== "complete")));
+    // Unplanned field work is not part of the schedule (2026-11-18).
+    api.get(`/projects/${activeId}/tasks`).then(({ data }) => setTasks(data.filter((t) => t.status !== "complete" && !t.created_in_field)));
     loadHistory(); loadEval();
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [activeId]);

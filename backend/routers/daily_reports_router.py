@@ -187,10 +187,14 @@ async def _prepopulate_grid(tenant_id: str, project_id: str, daily_report_id: st
     db = get_db()
     rd_iso = report_date.isoformat()
     tasks = await db.tasks.find(
+        # Unplanned field work is not part of the schedule (2026-11-18).
+        # A new report is pre-filled with scheduled work only; the super adds
+        # unplanned work on purpose through the activity picker.
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$nin": ["deleted", "complete"]},
             "$expr": _scheduled_window_expr(rd_iso),
+            "created_in_field": {"$ne": True},
         }),
         {"_id": 0},
     ).limit(200).to_list(200)
@@ -663,6 +667,7 @@ async def _compute_grid_slider_gates(db, tenant_id: str, tasks: list) -> dict:
                 "project_id": project_id,
                 "activity_code": {"$in": list(pred_codes)},
                 "status": {"$ne": "deleted"},
+                "created_in_field": {"$ne": True},
             }),
             {"_id": 0, "activity_code": 1, "pct_complete": 1, "status": 1},
         ).to_list(len(pred_codes))
@@ -1109,6 +1114,7 @@ async def update_grid_row(row_id: str, payload: DailyReportActivityUpdate, ctx: 
                         "project_id": task_before.get("project_id"),
                         "activity_code": {"$in": pred_codes},
                         "status": {"$ne": "deleted"},
+                        "created_in_field": {"$ne": True},
                     }),
                     {"_id": 0, "activity_code": 1, "pct_complete": 1, "status": 1},
                 ).to_list(len(pred_codes))
@@ -2875,7 +2881,8 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
         "prev_pct_complete": 0,
         "is_milestone": False,
         "is_critical_path": False,
-        "lookahead_status": "in_window",
+        # Unplanned work stays on daily reports: never in the look-ahead.
+        "lookahead_status": "not_in_window",
         "predecessors": [],
         "created_in_field": True,
         "requires_pm_review": True,
@@ -2940,11 +2947,8 @@ async def create_unplanned_activity(daily_report_id: str, payload: UnplannedActi
             add_reason=payload.add_reason or "", after=row,
             request_id=ctx["request_id"],
         )
-    try:
-        from services.schedule_feedback import propose_for_unplanned
-        await propose_for_unplanned(db, ctx["tenant_id"], task_doc, dr.get("report_date"))
-    except Exception as exc:
-        logging.getLogger(__name__).warning("unplanned logic proposal failed: %s", exc)
+    # Unplanned work is not tied into the schedule logic, so no logic
+    # proposal is created for it (2026-11-18).
     return {"task": {k: v for k, v in task_doc.items() if k != "_id"},
             "grid_row": row}
 

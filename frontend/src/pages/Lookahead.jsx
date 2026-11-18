@@ -55,7 +55,8 @@ export default function Lookahead() {
   const refresh = async () => {
     if (!activeId) return;
     const { data } = await api.get(`/projects/${activeId}/lookahead?days=${days}`);
-    setRows(data);
+    // Unplanned field work is not part of the schedule (2026-11-18).
+    setRows((data || []).filter((r) => !r.created_in_field));
   };
   useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId, days]);
 

@@ -191,8 +191,10 @@ async def build_pull_proposal(
     or None when there is nothing to review (no rows)."""
     from services.schedule_diff import compute_schedule_diff
 
+    # Unplanned field work is not part of the schedule (2026-11-18).
     current = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0},
     ).to_list(5000)
     live_codes = {t.get("activity_code") for t in current if t.get("activity_code")}
@@ -215,7 +217,8 @@ async def build_pull_proposal(
     # on the older pull this one replaces.
     task_labels = {}
     deleted = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": "deleted"}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": "deleted",
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "activity_code": 1, "work_category": 1, "work_category_source": 1},
     ).to_list(5000)
     for t in deleted + current:   # live tasks win over soft-deleted ones

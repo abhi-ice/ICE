@@ -227,8 +227,10 @@ def _derive_implied_late_finish(
 
 async def compute_cpm(tenant_id: str, project_id: str) -> dict:
     db = get_db()
+    # Unplanned field work is not part of the schedule (2026-11-18).
     tasks = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0},
     ).to_list(10000)
     if not tasks:

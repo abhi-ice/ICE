@@ -95,8 +95,10 @@ async def upload_schedule_proposal(
     visible = visible_rows(parsed_rows)
 
     # Snapshot current tasks for diff
+    # Unplanned field work is not part of the schedule (2026-11-18).
     current_tasks = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"},
+                                         "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "planned_start": 1,
          "planned_finish": 1, "duration_days": 1, "predecessors": 1, "pct_complete": 1},
     ).to_list(5000)
@@ -341,7 +343,8 @@ async def approve_proposal(
         )
 
         existing = await db.tasks.find_one(
-            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": tc.activity_code}),
+            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": tc.activity_code,
+                                             "created_in_field": {"$ne": True}}),
             {"_id": 0},
         )
         # MS Project pulls carry the file's progress only for tasks ICE had not
@@ -444,7 +447,8 @@ async def approve_proposal(
             continue
         # Soft-delete to preserve audit linkage on tasks referenced elsewhere
         res = await db.tasks.update_one(
-            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": ac}),
+            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "activity_code": ac,
+                                             "created_in_field": {"$ne": True}}),
             {"$set": {"status": "deleted", "deleted_at": utc_now().isoformat(),
                       "deleted_by_proposal_id": proposal_id}},
         )
@@ -669,8 +673,10 @@ async def _recompute_diff_and_save(db, proposal: dict, ctx: dict):
     NOT auto-rerun (saves credits) — user clicks 'Re-run review' if they want.
     """
     project_id = proposal["project_id"]
+    # Unplanned field work is not part of the schedule (2026-11-18).
     current_tasks = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"},
+                                         "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "planned_start": 1,
          "planned_finish": 1, "duration_days": 1, "predecessors": 1, "pct_complete": 1},
     ).to_list(5000)

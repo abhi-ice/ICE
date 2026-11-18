@@ -49,8 +49,10 @@ async def _build_successor_map(tenant_id: str, project_id: str) -> tuple[dict, d
     Predecessors on tasks are stored as activity_codes, so we resolve via
     a code->id lookup."""
     db = get_db()
+    # Unplanned field work is not part of the schedule (2026-11-18).
     tasks = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
          "is_critical_path": 1, "total_float_days": 1, "computed_status": 1},
     ).to_list(20000)
