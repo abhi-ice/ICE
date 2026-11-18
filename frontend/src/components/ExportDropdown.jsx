@@ -36,6 +36,7 @@ export default function ExportDropdown({
                               //                    doesn't supply Content-
                               //                    Disposition filename
   formats = ["xlsx", "pdf"],
+  labels = null,             // optional { fmt: "Menu text" } for longer names
   disabled = false,
 }) {
   const [open, setOpen] = useState(false);
@@ -83,7 +84,7 @@ export default function ExportDropdown({
       a.click();
       a.remove();
       URL.revokeObjectURL(blobUrl);
-      toast.success(`${formatLabel(fmt)} export downloaded`);
+      toast.success(`${labels?.[fmt] || `${formatLabel(fmt)} export`} downloaded`);
     } catch (e) {
       const detail = e.response?.data?.detail
         || e.message
@@ -111,7 +112,7 @@ export default function ExportDropdown({
       {open && !busy && (
         <div
           data-testid={`${testidPrefix}-menu`}
-          className="absolute right-0 mt-1 w-36 bg-white border border-slate-200 rounded shadow-lg z-10"
+          className={`absolute right-0 mt-1 ${labels ? "w-72 max-w-[calc(100vw-2rem)] max-md:left-0 max-md:right-auto" : "w-36"} bg-white border border-slate-200 rounded shadow-lg z-10`}
         >
           {formats.map((fmt) => (
             <button
@@ -120,7 +121,7 @@ export default function ExportDropdown({
               onClick={() => download(fmt)}
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50 first:rounded-t last:rounded-b"
             >
-              {formatLabel(fmt)}
+              {labels?.[fmt] || formatLabel(fmt)}
             </button>
           ))}
         </div>

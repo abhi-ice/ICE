@@ -717,19 +717,26 @@ async def export_lookahead(
     project_id: str,
     format: str = Query(..., pattern="^(xlsx|pdf)$"),
     days: int = Query(default=14, ge=1, le=90),
+    layout: str = Query(default="list", pattern="^(list|grid)$"),
+    start: Optional[date] = None,
     ctx: dict = Depends(require_tenant),
 ):
-    """Stream the look-ahead window as XLSX or PDF. Fires
+    """Stream the look-ahead window as XLSX or PDF. layout=list is the
+    internal table; layout=grid is the owner's two-week day grid (always
+    14 days from a Monday). start picks the first day (default: today for
+    the list, this week's Monday for the grid). Fires
     LOOK_AHEAD_EXPORTED audit on the project record with format +
     task_count + at_risk_count + window_start + window_end in the
     payload. `days` query param controls the window length (default
     14 -- matches the frontend Lookahead.jsx default)."""
     await _verify_project_access(ctx, project_id)
+    if start is not None and not (date(2000, 1, 1) <= start <= date(2100, 12, 31)):
+        raise HTTPException(422, "Start date must be between 2000 and 2100.")
     from services.tasks_exports import render_lookahead_export
     try:
         blob, ct, fn, meta = await render_lookahead_export(
             tenant_id=ctx["tenant_id"], project_id=project_id,
-            fmt=format, days=days,
+            fmt=format, days=days, start_date=start, layout=layout,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc))
@@ -742,6 +749,7 @@ async def export_lookahead(
             record_id=project_id, before=None,
             after={
                 "format": format,
+                "layout": layout,
                 "task_count": meta.get("count", 0),
                 "at_risk_count": meta.get("at_risk_count", 0),
                 "window_start": meta.get("window_start"),
