@@ -26,7 +26,8 @@ from models import gen_id, utc_now, pred_code, pred_relationship
 log = logging.getLogger(__name__)
 
 OPEN_DELAY_STATUSES = ["open", "in_progress"]
-PAPERWORK = {"preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"}
+PAPERWORK = {"preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+             "contract_administration"}
 _bg_tasks: set = set()
 
 

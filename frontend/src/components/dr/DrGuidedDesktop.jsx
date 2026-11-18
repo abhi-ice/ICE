@@ -99,7 +99,8 @@ const OPT = {
 
 /* ================= local helpers (mirrors of DailyReports.jsx module helpers) ================= */
 function gridSectionOf(cat) {
-  if (cat === "preconstruction_paperwork" || cat === "construction_paperwork") return 1;
+  if (cat === "preconstruction_paperwork" || cat === "construction_paperwork"
+      || cat === "contract_administration") return 1;
   if (cat === "closeout_paperwork") return 3;
   return 2;
 }

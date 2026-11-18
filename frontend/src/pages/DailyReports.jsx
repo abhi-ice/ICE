@@ -2932,7 +2932,8 @@ const GRID_SECTIONS = [
 
 function gridSectionOf(workCategory) {
   if (workCategory === "preconstruction_paperwork"
-      || workCategory === "construction_paperwork") return 1;
+      || workCategory === "construction_paperwork"
+      || workCategory === "contract_administration") return 1;
   if (workCategory === "closeout_paperwork") return 3;
   return 2; // field_work + null / unknown -> Field Work
 }

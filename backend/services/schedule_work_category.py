@@ -49,6 +49,7 @@ WORK_CATEGORIES = frozenset({
     "construction_paperwork",
     "field_work",
     "closeout_paperwork",
+    "contract_administration",
 })
 DEFAULT_CATEGORY = "field_work"
 
@@ -103,7 +104,7 @@ work; under an installation/construction heading it is field work.
 The section never turns commissioning, testing or inspection into
 field work.
 
-THE FOUR CATEGORIES -- assign EXACTLY ONE to every task
+THE FIVE CATEGORIES -- assign EXACTLY ONE to every task
 -------------------------------------------------------
 field_work -- physical, hands-on construction by trade crews on site.
     The only category for work the superintendent personally directs
@@ -124,6 +125,13 @@ construction_paperwork -- NON-FIELD work DURING the construction
 closeout_paperwork -- NON-FIELD work AFTER substantial completion:
     punch-list closure, as-built / record drawings, O&M manuals,
     final close-out documentation, final completion.
+
+contract_administration -- the contract's own administration and
+    overhead, tied to the contract rather than to any piece of the
+    work: notice to proceed, contract award / execution, bonds,
+    insurance certificates, schedule of values, payment applications,
+    general conditions, supervision, project management that runs the
+    whole job. Never a submittal for a specific system or material.
 
 ILLUSTRATIVE EXAMPLES -- PATTERNS, NOT A FIXED KEYWORD LIST
 -----------------------------------------------------------
@@ -153,11 +161,16 @@ classify by matching a word.
   closeout_paperwork, e.g.: "Punch List Completion",
   "As-Built Drawings", "O&M Manuals", "Final Completion".
 
+  contract_administration, e.g.: "Notice to Proceed", "Bonds &
+  Insurance", "Contract Execution", "Schedule of Values",
+  "General Conditions", "Project Supervision".
+
 EDGE CASES
 ----------
-- Milestones -- zero-duration markers such as "Notice to Proceed",
-  "Substantial Completion", "Warranty Start" -- are not field work.
-  Bucket each milestone with the paperwork phase matching its timing.
+- Milestones -- zero-duration markers such as "Substantial Completion"
+  or "Warranty Start" -- are not field work. Bucket each milestone with
+  the paperwork phase matching its timing; a contract milestone such as
+  "Notice to Proceed" or "Contract Award" is contract_administration.
 - A submittal or procurement task appearing MID-schedule (e.g. a
   submittal that must clear before a later trade can start) is
   construction_paperwork, not preconstruction_paperwork.
@@ -173,10 +186,11 @@ OUTPUT
 ------
 Return one JSON object, with one entry for every task you classify:
 
-{"tags": [{"activity_code": "<code>", "work_category": "<one of the 4 values>"}, ...]}
+{"tags": [{"activity_code": "<code>", "work_category": "<one of the 5 values>"}, ...]}
 
 - work_category must be EXACTLY one of: preconstruction_paperwork,
-  construction_paperwork, field_work, closeout_paperwork (lowercase).
+  construction_paperwork, field_work, closeout_paperwork,
+  contract_administration (lowercase).
 - Use the exact activity_code from the input for each entry.
 - Output JSON only -- no markdown, no code fences, no commentary."""
 

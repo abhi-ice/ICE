@@ -11,8 +11,10 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 
-const PAPERWORK_CATS = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"];
+const PAPERWORK_CATS = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+  "contract_administration"];
 const CAT_LABEL = {
+  contract_administration: "Contract administration",
   preconstruction_paperwork: "Preconstruction paperwork",
   construction_paperwork: "Construction paperwork",
   closeout_paperwork: "Closeout paperwork",

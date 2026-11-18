@@ -54,6 +54,8 @@ _CATEGORY_TO_SECTION = {
     "construction_paperwork": SECTION_PAPERWORK,
     "field_work": SECTION_FIELD_WORK,
     "closeout_paperwork": SECTION_CLOSEOUT,
+    # Contract administration (bonds, insurance, NTP...) reads as paperwork.
+    "contract_administration": SECTION_PAPERWORK,
 }
 
 
