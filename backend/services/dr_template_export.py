@@ -70,7 +70,8 @@ def _new_chat(session_id: str, system_message: str) -> LlmChat:
     ).with_model(MODEL_PROVIDER, MODEL_NAME)
 
 
-async def _track_usage(tenant_id: str, request_id: str, latency_ms: int, ok: bool):
+async def _track_usage(tenant_id: str, request_id: str, latency_ms: int, ok: bool,
+                       feature: str = "dr_template_export"):
     """Mirrors ai_agents._track_usage. Best-effort -- a write failure
     here must not block the export response."""
     try:
@@ -81,7 +82,7 @@ async def _track_usage(tenant_id: str, request_id: str, latency_ms: int, ok: boo
             "request_id": request_id,
             "service": MODEL_PROVIDER,
             "model": MODEL_NAME,
-            "feature": "dr_template_export",
+            "feature": feature,
             "latency_ms": latency_ms,
             "ok": ok,
             "created_at": utc_now().isoformat(),
@@ -280,8 +281,15 @@ def _extract_template_snapshot(wb) -> dict:
     sheets: dict[str, dict] = {}
     for ws in wb.worksheets:
         cells: list[dict] = []
-        for row in ws.iter_rows():
-            for cell in row:
+        # Only the cells that exist, in row order: iter_rows would walk the
+        # whole rectangle up to the farthest used cell.
+        stored = getattr(ws, "_cells", None)
+        if stored is not None:
+            ordered = [stored[k] for k in sorted(stored)]
+        else:
+            ordered = [c for row in ws.iter_rows() for c in row]
+        for cell in ordered[:20000]:
+            if cell is not None:
                 if cell.value is None:
                     continue
                 v = cell.value

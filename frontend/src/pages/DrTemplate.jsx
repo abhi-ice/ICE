@@ -14,7 +14,32 @@ import BackButton from "../components/BackButton";
 
 const ADMIN_OR_PM = new Set(["admin", "pm"]);
 
-export default function DrTemplate() {
+// One page for every client template (2026-11-18): the daily report form and
+// the two-week look-ahead form work the same way. The daily report keeps its
+// original texts and test ids.
+const KINDS = {
+  dr: {
+    endpoint: "dr-template", testid: "dr-template", back: "/daily-reports", backLabel: "Daily Reports",
+    title: "Client DR Template",
+    intro: "Upload your client's daily report template. ICE will fill it with DR data when you export.",
+    removeTitle: "Remove the saved client DR template?",
+    help: "Upload your client's Excel daily report template. Supported format: .xlsx",
+  },
+  lookahead: {
+    endpoint: "lookahead-template", testid: "lookahead-template", back: "/lookahead", backLabel: "Look-ahead",
+    title: "Client Look-ahead Template",
+    intro: "Upload your client's two-week look-ahead form. ICE fills it from the schedule when you export \"Client format\" on the Look-ahead page.",
+    removeTitle: "Remove the saved client look-ahead template?",
+    help: "Upload your client's Excel look-ahead form, blank or with an old period filled in. Supported format: .xlsx",
+  },
+};
+
+export function LookaheadTemplate() {
+  return <DrTemplate kind="lookahead" />;
+}
+
+export default function DrTemplate({ kind = "dr" }) {
+  const K = KINDS[kind] || KINDS.dr;
   const { projectId } = useParams();
   const navigate = useNavigate();
   const userRole = (getUser()?.role || "").toLowerCase();
@@ -27,7 +52,7 @@ export default function DrTemplate() {
   const reload = async () => {
     try {
       setLoading(true);
-      const { data } = await api.get(`/projects/${projectId}/dr-template`);
+      const { data } = await api.get(`/projects/${projectId}/${K.endpoint}`);
       setMeta(data);
     } catch (e) {
       toast.error(e.response?.data?.detail || "Failed to load template info");
@@ -56,7 +81,7 @@ export default function DrTemplate() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      await api.post(`/projects/${projectId}/dr-template`, fd, {
+      await api.post(`/projects/${projectId}/${K.endpoint}`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
       toast.success("Template saved.");
@@ -75,7 +100,7 @@ export default function DrTemplate() {
     }
     // pt.37: themed modal (was window.confirm).
     const ok = await confirmAction({
-      title: "Remove the saved client DR template?",
+      title: K.removeTitle,
       message: "Client-format exports will be disabled until a new one is uploaded.",
       confirmText: "Remove template",
       icon: "trash",
@@ -83,7 +108,7 @@ export default function DrTemplate() {
     if (!ok) return;
     setBusy(true);
     try {
-      await api.delete(`/projects/${projectId}/dr-template`);
+      await api.delete(`/projects/${projectId}/${K.endpoint}`);
       toast.success("Template removed.");
       await reload();
     } catch (err) {
@@ -101,21 +126,18 @@ export default function DrTemplate() {
   return (
     /* pt.36: dropped p-6 -- AppLayout main already pads p-6. Kept
        space-y-4 + max-w-3xl since those control inner layout. */
-    <div data-testid="dr-template-page" className="space-y-4 max-w-3xl">
+    <div data-testid={`${K.testid}-page`} className="space-y-4 max-w-3xl">
       {/* pt.37: Option E back-button pill. */}
-      <BackButton to="/daily-reports" label="Daily Reports" testid="dr-template-back" />
+      <BackButton to={K.back} label={K.backLabel} testid={`${K.testid}-back`} />
 
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Client DR Template</h1>
-        <p className="text-sm text-muted-foreground page-desc">
-          Upload your client's daily report template. ICE will fill it with DR
-          data when you export.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight">{K.title}</h1>
+        <p className="text-sm text-muted-foreground page-desc">{K.intro}</p>
       </div>
 
       {!canManage && (
         <div className="rounded border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-sm"
-          data-testid="dr-template-readonly-banner">
+          data-testid={`${K.testid}-readonly-banner`}>
           You can view the current template state below. Only project admins
           or PMs can upload, replace, or remove the template.
         </div>
@@ -124,55 +146,53 @@ export default function DrTemplate() {
       {loading ? (
         <div className="text-sm text-muted-foreground">Loading…</div>
       ) : meta?.present ? (
-        <div className="surface p-4 space-y-3" data-testid="dr-template-info">
+        <div className="surface p-4 space-y-3" data-testid={`${K.testid}-info`}>
           <div className="flex items-center gap-2">
             <FileSpreadsheet className="h-5 w-5 text-blue-600" />
-            <span className="font-medium" data-testid="dr-template-filename">
+            <span className="font-medium" data-testid={`${K.testid}-filename`}>
               {meta.file_name}
             </span>
           </div>
           <div className="text-xs text-slate-600 space-y-1">
-            <div>Uploaded: <span data-testid="dr-template-uploaded-at">{fmtDate(meta.uploaded_at)}</span></div>
-            <div>By: <span data-testid="dr-template-uploaded-by">{meta.uploaded_by_name || "—"}</span></div>
+            <div>Uploaded: <span data-testid={`${K.testid}-uploaded-at`}>{fmtDate(meta.uploaded_at)}</span></div>
+            <div>By: <span data-testid={`${K.testid}-uploaded-by`}>{meta.uploaded_by_name || "—"}</span></div>
           </div>
           <div className="flex flex-wrap gap-2 pt-2">
             <label
               className={`h-9 px-3 rounded text-sm inline-flex items-center gap-1 cursor-pointer ${canManage ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}
               title={canManage ? undefined : "Admin / PM only"}
-              data-testid="dr-template-replace-label">
+              data-testid={`${K.testid}-replace-label`}>
               <Upload className="h-4 w-4" /> Replace Template
               <input type="file" accept=".xlsx" className="hidden"
                 disabled={!canManage || busy}
                 onChange={onPick}
-                data-testid="dr-template-replace-input" />
+                data-testid={`${K.testid}-replace-input`} />
             </label>
             <button onClick={onRemove}
               disabled={!canManage || busy}
               className="h-9 px-3 rounded border border-red-200 bg-white text-red-700 text-sm inline-flex items-center gap-1 hover:bg-red-50 disabled:opacity-50"
               title={canManage ? undefined : "Admin / PM only"}
-              data-testid="dr-template-remove">
+              data-testid={`${K.testid}-remove`}>
               <Trash2 className="h-4 w-4" /> Remove Template
             </button>
           </div>
         </div>
       ) : (
-        <div className="surface p-6 space-y-3 border-dashed" data-testid="dr-template-empty">
+        <div className="surface p-6 space-y-3 border-dashed" data-testid={`${K.testid}-empty`}>
           <div className="text-sm text-slate-700">
             No template uploaded yet for this project.
           </div>
           <label
             className={`h-12 px-4 rounded border-2 border-dashed flex items-center justify-center gap-2 text-sm font-medium cursor-pointer ${canManage ? "border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100" : "border-slate-200 text-slate-400 cursor-not-allowed"}`}
-            data-testid="dr-template-upload-label">
+            data-testid={`${K.testid}-upload-label`}>
             <Upload className="h-4 w-4" />
             {busy ? "Uploading…" : "Save Template"}
             <input type="file" accept=".xlsx" className="hidden"
               disabled={!canManage || busy}
               onChange={onPick}
-              data-testid="dr-template-upload-input" />
+              data-testid={`${K.testid}-upload-input`} />
           </label>
-          <p className="text-xs text-slate-500">
-            Upload your client's Excel daily report template. Supported format: .xlsx
-          </p>
+          <p className="text-xs text-slate-500">{K.help}</p>
         </div>
       )}
     </div>

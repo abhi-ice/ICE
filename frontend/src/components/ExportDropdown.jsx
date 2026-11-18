@@ -86,7 +86,14 @@ export default function ExportDropdown({
       URL.revokeObjectURL(blobUrl);
       toast.success(`${labels?.[fmt] || `${formatLabel(fmt)} export`} downloaded`);
     } catch (e) {
-      const detail = e.response?.data?.detail
+      // A file request gets its error body as a Blob: read the server's
+      // plain-language reason out of it.
+      let body = e.response?.data;
+      if (body instanceof Blob) {
+        try { body = JSON.parse(await body.text()); } catch { body = null; }
+      }
+      const detail = body?.detail
+        || body?.message
         || e.message
         || "Export failed";
       toast.error(`Export failed -- ${typeof detail === "string" ? detail : "try again"}`);

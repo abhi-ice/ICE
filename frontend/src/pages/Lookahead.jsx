@@ -7,6 +7,7 @@ import api from "../lib/api";
 import { useProjects } from "../lib/projects";
 import { toast } from "../components/ui/sonner";
 import ExportDropdown from "../components/ExportDropdown";
+import { Link } from "react-router-dom";
 // CPM Part F (2026-05-15) -- shared display helpers for Impacted
 // Start / Impacted Finish / Slip columns. The local slipDays() helper
 // that used to live in this file was promoted to lib/dateUtil so
@@ -39,6 +40,17 @@ export default function Lookahead() {
   // Empty = "this week" on the SITE's clock (the server picks the Monday
   // in the project's time zone); a date is sent only once someone picks one.
   const [gridStart, setGridStart] = useState("");
+  // Client look-ahead template (2026-11-18): when the project has the
+  // client's own form uploaded, "Client format" fills that form.
+  const [clientTemplate, setClientTemplate] = useState(null);
+  useEffect(() => {
+    if (!activeId) { setClientTemplate(null); return; }
+    let cancelled = false;
+    api.get(`/projects/${activeId}/lookahead-template`)
+      .then(({ data }) => { if (!cancelled) setClientTemplate(data?.present ? data : null); })
+      .catch(() => { if (!cancelled) setClientTemplate(null); });
+    return () => { cancelled = true; };
+  }, [activeId]);
 
   const refresh = async () => {
     if (!activeId) return;
@@ -114,11 +126,11 @@ export default function Lookahead() {
           </div>
           {/* Bug #43 (2026-05-12) -- Look-ahead export. Honors the
               currently-selected `days` window. */}
-          {/* Owner form (2026-11-18): the owner's one-page two-week day grid
-              (activities x Mon-Sun, an X per working day). It always covers
-              14 days from the Monday of the week picked here. */}
-          <label className="ml-2 flex items-center gap-1 text-xs text-slate-500" title="The owner form covers two weeks starting on this date's Monday">
-            Owner form week of
+          {/* Two-week forms (2026-11-18): the built-in day grid and the
+              client's own uploaded form both cover 14 days from the Monday
+              of the week picked here. */}
+          <label className="ml-2 flex items-center gap-1 text-xs text-slate-500" title="The 2-week grid and the client form cover two weeks starting on this date's Monday">
+            2-week forms, week of
             <input
               type="date"
               data-testid="lookahead-grid-start"
@@ -130,19 +142,31 @@ export default function Lookahead() {
           <ExportDropdown
             label="Export"
             testidPrefix="lookahead-export"
-            formats={["xlsx", "pdf", "grid-xlsx", "grid-pdf"]}
+            formats={["xlsx", "pdf", "grid-xlsx", "grid-pdf", ...(clientTemplate ? ["client-xlsx"] : [])]}
             labels={{
               xlsx: "Table (Excel)",
               pdf: "Table (PDF)",
-              "grid-xlsx": "Owner form, 2-week grid (Excel)",
-              "grid-pdf": "Owner form, 2-week grid (PDF)",
+              "grid-xlsx": "2-week grid (Excel)",
+              "grid-pdf": "2-week grid (PDF)",
+              "client-xlsx": "Client format (Excel)",
             }}
-            buildUrl={(fmt) => (fmt.startsWith("grid-")
-              ? `/projects/${activeId}/lookahead/export?format=${fmt.slice(5)}&layout=grid${gridStart ? `&start=${gridStart}` : ""}`
-              : `/projects/${activeId}/lookahead/export?format=${fmt}&days=${days}`)}
-            filenameHint={(fmt) => `lookahead_${(activeId || "").slice(0, 8)}.${fmt.replace("grid-", "")}`}
+            buildUrl={(fmt) => {
+              const wk = gridStart ? `&start=${gridStart}` : "";
+              if (fmt === "client-xlsx") return `/projects/${activeId}/lookahead/export?format=xlsx&layout=client${wk}`;
+              if (fmt.startsWith("grid-")) return `/projects/${activeId}/lookahead/export?format=${fmt.slice(5)}&layout=grid${wk}`;
+              return `/projects/${activeId}/lookahead/export?format=${fmt}&days=${days}`;
+            }}
+            filenameHint={(fmt) => `lookahead_${(activeId || "").slice(0, 8)}.${fmt.replace(/^(grid|client)-/, "")}`}
             disabled={!activeId}
           />
+          <Link
+            to={activeId ? `/projects/${activeId}/lookahead-template` : "#"}
+            data-testid="lookahead-client-template-link"
+            className="h-9 max-md:min-h-[44px] px-3 rounded border border-slate-200 bg-white text-sm inline-flex items-center hover:bg-slate-50"
+            title={clientTemplate ? `Client form: ${clientTemplate.file_name}` : "Upload the client's look-ahead form"}
+          >
+            {clientTemplate ? "Client template" : "Upload client template"}
+          </Link>
         </div>
       </div>
 

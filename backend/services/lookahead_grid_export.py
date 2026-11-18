@@ -157,7 +157,11 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
         if not any(marks):
             continue
         rows.append({"name": t.get("description") or t.get("activity_code") or "",
-                     "code": t.get("activity_code"), "marks": marks, "sort": (s, t.get("planned_start") or "")})
+                     "code": t.get("activity_code"), "marks": marks,
+                     "pct": float(t.get("pct_complete") or 0),
+                     "planned_start": t.get("planned_start"), "planned_finish": t.get("planned_finish"),
+                     "actual_start": t.get("actual_start"),
+                     "sort": (s, t.get("planned_start") or "")})
     rows.sort(key=lambda r: (r["sort"][0], str(r["sort"][1]), r["name"]))
 
     delaying = []
@@ -176,29 +180,20 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
 
     addr = ", ".join(x for x in [proj.get("address_line1"), proj.get("city"),
                                  " ".join(y for y in [proj.get("state"), proj.get("postal_code")] if y)] if x)
-    # Header block, top left. With an owner's representative set on the
-    # project, the form carries that firm's name and tagline (it is their
-    # form), then the project and the prime contractor; otherwise the
-    # project and who prepared it.
+    # Header block, top left: the project's own facts. A client that wants
+    # its own branding uploads its form (services/lookahead_template_export).
     place = ", ".join(y for y in [proj.get("client_name"), addr] if y)
-    rep = (proj.get("owner_rep_name") or "").strip()
-    header = []  # (text, kind) kind: org | org_sub | title | line
-    if rep:
-        header.append((rep, "org"))
-        if proj.get("owner_rep_tagline"):
-            header.append((proj["owner_rep_tagline"], "org_sub"))
+    header = []  # (text, kind) kind: title | line
     if proj.get("name"):
         header.append((proj["name"], "title"))
     if place:
         header.append((place, "line"))
-    if proj.get("prime_contractor_name"):
-        header.append((f"GC: {proj['prime_contractor_name']}", "line"))
-    if not rep and proj.get("contractor_name"):
+    if proj.get("contractor_name"):
         header.append((f"Prepared by: {proj['contractor_name']}", "line"))
     return {
         "project": proj,
         "header": header,
-        "footer": (proj.get("owner_form_footer") or "").strip(),
+        "footer": "",
         "title_lines": [x for x in [proj.get("name"), place] if x],
         "contract_number": proj.get("contract_number") or "",
         "project_number": proj.get("station_id") or proj.get("project_number") or "",
@@ -230,8 +225,7 @@ def render_grid_xlsx(g: dict) -> bytes:
     for i in range(14):
         ws.column_dimensions[chr(ord("B") + i)].width = 6.2
 
-    styles = {"org": Font(name="Arial", bold=True, size=13), "org_sub": Font(name="Arial", italic=True, size=9),
-              "title": Font(name="Arial", bold=True, size=11), "line": Font(name="Arial", size=10)}
+    styles = {"title": Font(name="Arial", bold=True, size=11), "line": Font(name="Arial", size=10)}
     for i, (txt, kind) in enumerate(g["header"], start=1):
         c = ws.cell(row=i, column=1)
         set_text_cell(c, txt)
@@ -361,8 +355,8 @@ def _grid_pdf_html(g: dict) -> tuple[str, str]:
     td.right { width: 34%; }
     .t1 { font-weight: bold; font-size: 12pt; }
     .t2, .line { font-size: 9.5pt; }
-    .org { font-weight: bold; font-size: 14pt; letter-spacing: 0.5px; }
-    .org_sub { font-style: italic; font-size: 9pt; margin-bottom: 6px; }
+
+
     .title { font-weight: bold; font-size: 11pt; }
     .footer { text-align: center; font-weight: bold; font-size: 8.5pt; margin-top: 14px; }
     table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; }

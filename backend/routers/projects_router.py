@@ -481,6 +481,117 @@ async def get_dr_template_meta(
     }
 
 
+# ============================================================
+# Client look-ahead template (2026-11-18). Same rules as the client
+# daily report template above, for the client's own two-week
+# look-ahead form: one per project, .xlsx, admin or PM uploads /
+# replaces / removes, anyone on the project can see whether one is
+# set. The look-ahead "Client format" export fills it
+# (services/lookahead_template_export.py).
+# ============================================================
+_LA_FIELDS = ("lookahead_template_file_url", "lookahead_template_file_name",
+              "lookahead_template_uploaded_at", "lookahead_template_uploaded_by")
+
+
+@router.post("/projects/{project_id}/lookahead-template")
+async def upload_lookahead_template(
+    project_id: str,
+    file: UploadFile = File(...),
+    ctx: dict = Depends(require_tenant),
+):
+    if not can_manage_project_members((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(403, "Only project admins or PMs can upload a look-ahead template.")
+    db = get_db()
+    proj = await db.projects.find_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0})
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    filename = file.filename or "lookahead_template.xlsx"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext != "xlsx":
+        raise HTTPException(400, f"Only .xlsx look-ahead templates are accepted (got .{ext or '?'}).")
+    from services.storage import read_upload_limited, UploadTooLarge
+    try:
+        data = await read_upload_limited(file, 10 * 1024 * 1024)
+    except UploadTooLarge:
+        raise HTTPException(413, "That file is larger than 10 MB. Save the form without pictures "
+                                 "or extra sheets and try again.")
+    if not data:
+        raise HTTPException(400, "Uploaded file is empty.")
+
+    def _opens(b: bytes) -> bool:
+        try:
+            from io import BytesIO
+            from openpyxl import load_workbook
+            load_workbook(BytesIO(b), read_only=True).close()
+            return True
+        except Exception:
+            return False
+    from starlette.concurrency import run_in_threadpool
+    if not await run_in_threadpool(_opens, data):
+        raise HTTPException(400, "That file could not be opened as an Excel workbook.")
+    from services.storage import aput_object, make_path
+    path = make_path(ctx["tenant_id"], "lookahead_templates", "xlsx")
+    await aput_object(path, data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    now = utc_now().isoformat()
+    updates = dict(zip(_LA_FIELDS, (path, filename, now, ctx["user"]["id"])))
+    await db.projects.update_one(tenant_filter(ctx["tenant_id"], {"id": project_id}), {"$set": updates})
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="projects",
+        op="LOOKAHEAD_TEMPLATE_UPLOADED", record_id=project_id,
+        before={"lookahead_template_file_name": proj.get("lookahead_template_file_name")},
+        after={"lookahead_template_file_name": filename, "size_bytes": len(data)},
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"file_name": filename, "uploaded_at": now, "uploaded_by": ctx["user"]["id"],
+            "size_bytes": len(data)}
+
+
+@router.delete("/projects/{project_id}/lookahead-template")
+async def delete_lookahead_template(project_id: str, ctx: dict = Depends(require_tenant)):
+    if not can_manage_project_members((ctx["user"].get("role") or "").lower()):
+        raise HTTPException(403, "Only project admins or PMs can remove the look-ahead template.")
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "id": 1, "lookahead_template_file_name": 1})
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    if not proj.get("lookahead_template_file_name"):
+        return {"ok": True, "already_empty": True}
+    await db.projects.update_one(tenant_filter(ctx["tenant_id"], {"id": project_id}),
+                                 {"$set": {f: None for f in _LA_FIELDS}})
+    await write_audit(
+        tenant_id=ctx["tenant_id"], table_name="projects",
+        op="LOOKAHEAD_TEMPLATE_REMOVED", record_id=project_id,
+        before={"lookahead_template_file_name": proj.get("lookahead_template_file_name")}, after=None,
+        actor_id=ctx["user"]["id"], request_id=ctx["request_id"],
+    )
+    return {"ok": True}
+
+
+@router.get("/projects/{project_id}/lookahead-template")
+async def get_lookahead_template_meta(project_id: str, ctx: dict = Depends(require_tenant)):
+    """Template metadata only (no file bytes), for the look-ahead page."""
+    db = get_db()
+    proj = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}),
+        {"_id": 0, "id": 1, "lookahead_template_file_name": 1,
+         "lookahead_template_uploaded_at": 1, "lookahead_template_uploaded_by": 1})
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    name = proj.get("lookahead_template_file_name")
+    if not name:
+        return {"present": False}
+    by = proj.get("lookahead_template_uploaded_by")
+    by_name = ""
+    if by:
+        u = await db.users.find_one(tenant_filter(ctx["tenant_id"], {"id": by}), {"_id": 0, "full_name": 1})
+        by_name = (u or {}).get("full_name", "") or ""
+    return {"present": True, "file_name": name,
+            "uploaded_at": proj.get("lookahead_template_uploaded_at"),
+            "uploaded_by": by, "uploaded_by_name": by_name}
+
+
 # --- floors ---
 @router.post("/floors", response_model=Floor)
 async def create_floor(payload: FloorCreate, ctx: dict = Depends(require_tenant)):

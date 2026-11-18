@@ -945,7 +945,7 @@ async def render_tasks_export(
 
 async def render_lookahead_export(
     *, tenant_id: str, project_id: str, fmt: str, days: int = 14,
-    start_date: Optional[date] = None, layout: str = "list",
+    start_date: Optional[date] = None, layout: str = "list", request_id: str = "",
 ) -> tuple[bytes, str, str, dict]:
     """Returns (bytes, content_type, filename, meta) where meta has
     {count, at_risk_count, window_start, window_end}. (b'', '', '', {})
@@ -959,6 +959,12 @@ async def render_lookahead_export(
     five minutes after the schedule was corrected."""
     if fmt not in ("xlsx", "pdf"):
         raise ValueError(f"unknown format: {fmt!r}")
+    if layout == "client":
+        if fmt != "xlsx":
+            raise ValueError("The client-format look-ahead is an Excel file (the client's own form).")
+        from services.lookahead_template_export import render_lookahead_client_export
+        return await render_lookahead_client_export(
+            tenant_id=tenant_id, project_id=project_id, start_date=start_date, request_id=request_id)
     if layout == "grid":
         from services.lookahead_grid_export import render_lookahead_grid_export
         return await render_lookahead_grid_export(

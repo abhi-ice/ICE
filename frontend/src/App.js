@@ -16,7 +16,7 @@ import Tasks from "./pages/Tasks";
 import Lookahead from "./pages/Lookahead";
 import PaperworkProgress from "./pages/PaperworkProgress";
 import DailyReports from "./pages/DailyReports";
-import DrTemplate from "./pages/DrTemplate";
+import DrTemplate, { LookaheadTemplate } from "./pages/DrTemplate";
 import ProjectScopedList from "./pages/ProjectScopedList";
 import ResourceList, { Availability } from "./pages/Resources";
 import Approvals from "./pages/Approvals";
@@ -91,6 +91,7 @@ export default function App() {
                 project page to upload the client's required xlsx
                 daily-report template. Linked from the DR list page. */}
             <Route path="projects/:projectId/dr-template" element={<DrTemplate />} />
+            <Route path="projects/:projectId/lookahead-template" element={<LookaheadTemplate />} />
             <Route path="photos" element={<Photos />} />
             <Route path="photo-tray" element={<PhotoTray />} />
             <Route path="delays" element={<ProjectScopedList kind="delays" />} />

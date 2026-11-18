@@ -215,14 +215,6 @@ class ProjectCreate(StrictModel):
     # header cells blank, no error.
     station_id: Optional[str] = None
     contractor_name: Optional[str] = None
-    # Owner look-ahead form header (2026-11-18). Some owners have their
-    # construction manager / owner's representative issue the two-week
-    # look-ahead on that firm's own form. When set, the owner-form export
-    # prints this firm's name, tagline and footer, and the prime contractor.
-    owner_rep_name: Optional[str] = None
-    owner_rep_tagline: Optional[str] = None
-    owner_form_footer: Optional[str] = None
-    prime_contractor_name: Optional[str] = None
     owner_name: Optional[str] = None
     project_type: Optional[str] = None
     naics_code: Optional[str] = None
@@ -300,14 +292,6 @@ class ProjectUpdate(StrictModel):
     # ProjectUpdate so admins can backfill on existing projects.
     station_id: Optional[str] = None
     contractor_name: Optional[str] = None
-    # Owner look-ahead form header (2026-11-18). Some owners have their
-    # construction manager / owner's representative issue the two-week
-    # look-ahead on that firm's own form. When set, the owner-form export
-    # prints this firm's name, tagline and footer, and the prime contractor.
-    owner_rep_name: Optional[str] = None
-    owner_rep_tagline: Optional[str] = None
-    owner_form_footer: Optional[str] = None
-    prime_contractor_name: Optional[str] = None
     address_line1: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -357,14 +341,6 @@ class Project(ReadModel):
     # name surfaced in every Daily Report's auto-populated header.
     station_id: Optional[str] = None
     contractor_name: Optional[str] = None
-    # Owner look-ahead form header (2026-11-18). Some owners have their
-    # construction manager / owner's representative issue the two-week
-    # look-ahead on that firm's own form. When set, the owner-form export
-    # prints this firm's name, tagline and footer, and the prime contractor.
-    owner_rep_name: Optional[str] = None
-    owner_rep_tagline: Optional[str] = None
-    owner_form_footer: Optional[str] = None
-    prime_contractor_name: Optional[str] = None
     owner_name: Optional[str] = None
     contract_value_usd: Optional[float] = None
     address_line1: Optional[str] = None
@@ -408,6 +384,13 @@ class Project(ReadModel):
     supplier_ids: list[str] = Field(default_factory=list)
     dr_template_uploaded_at: Optional[datetime] = None
     dr_template_uploaded_by: Optional[str] = None
+    # Client look-ahead template (2026-11-18): the client's own two-week
+    # look-ahead form; the look-ahead "Client format" export fills it.
+    # Written only by the /lookahead-template endpoints.
+    lookahead_template_file_url: Optional[str] = None
+    lookahead_template_file_name: Optional[str] = None
+    lookahead_template_uploaded_at: Optional[datetime] = None
+    lookahead_template_uploaded_by: Optional[str] = None
     # CPM Mode 2 (2026-06-29) -- schedule engine for this project.
     #   "mode1" = our internal CPM engine (the default; import a file, we
     #             compute dates).

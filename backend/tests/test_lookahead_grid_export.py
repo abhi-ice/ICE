@@ -205,7 +205,7 @@ def test_task_span_overdue_with_stale_forecast_stays():
 
 
 @needs_db
-def test_grid_branding_and_project_calendar():
+def test_grid_header_and_project_calendar():
     from services.lookahead_grid_export import gather_lookahead_grid, render_grid_xlsx
     from openpyxl import load_workbook
 
@@ -224,17 +224,13 @@ def test_grid_branding_and_project_calendar():
         await db.calendars.insert_one({"id": "cal-p", "tenant_id": tenant, "project_id": pid, "name": "Site",
                                        "holidays": ["2026-11-27"], "work_days_per_week": 6})
         await db.projects.update_one({"id": pid}, {"$set": {
-            "calendar_id": "cal-p", "owner_rep_name": "Rep Group, LLC", "owner_rep_tagline": "Construction and Management",
-            "owner_form_footer": "Rep Group is an Equal Opportunity Employer", "prime_contractor_name": "Prime Co"}})
+            "calendar_id": "cal-p"}})
         g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=START)
         rows = {r["code"]: "".join("X" if m else "." for m in r["marks"]) for r in g["rows"]}
         assert rows["A-1"] == "XXX..X.XXX...."  # Thanksgiving + 11/27 off, Saturday worked
-        assert g["header"][:2] == [("Rep Group, LLC", "org"), ("Construction and Management", "org_sub")]
-        assert ("GC: Prime Co", "line") in g["header"]
-        assert not any(t.startswith("Prepared by") for t, _ in g["header"])
         ws = load_workbook(io.BytesIO(render_grid_xlsx(g))).active
         cells = [c.value for row in ws.iter_rows() for c in row if c.value]
-        assert "Rep Group, LLC" in cells and "Rep Group is an Equal Opportunity Employer" in cells
+        assert "Test Clinic Renovation" in cells and "Prepared by: Our Co" in cells
     _run(go)
 
 
