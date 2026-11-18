@@ -18,6 +18,14 @@ import { formatDateDisplay, slipDays, localISODate } from "../lib/dateUtil";
 const DAY_PX = 32; // pixels per day in Gantt
 const ROW_H = 32;
 
+// Monday of the week containing d, as YYYY-MM-DD in local time.
+function mondayIso(d) {
+  const m = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
+  const p = (n) => String(n).padStart(2, "0");
+  return `${m.getFullYear()}-${p(m.getMonth() + 1)}-${p(m.getDate())}`;
+}
+
 export default function Lookahead() {
   const { activeId, projects } = useProjects();
   const [days, setDays] = useState(14);
@@ -28,6 +36,9 @@ export default function Lookahead() {
   // controls. Defaults preserve pre-Part-F behavior (no sort, show all).
   const [sortBySlipDesc, setSortBySlipDesc] = useState(false);
   const [showOnlyImpacted, setShowOnlyImpacted] = useState(false);
+  // Empty = "this week" on the SITE's clock (the server picks the Monday
+  // in the project's time zone); a date is sent only once someone picks one.
+  const [gridStart, setGridStart] = useState("");
 
   const refresh = async () => {
     if (!activeId) return;
@@ -103,11 +114,33 @@ export default function Lookahead() {
           </div>
           {/* Bug #43 (2026-05-12) -- Look-ahead export. Honors the
               currently-selected `days` window. */}
+          {/* Owner form (2026-11-18): the owner's one-page two-week day grid
+              (activities x Mon-Sun, an X per working day). It always covers
+              14 days from the Monday of the week picked here. */}
+          <label className="ml-2 flex items-center gap-1 text-xs text-slate-500" title="The owner form covers two weeks starting on this date's Monday">
+            Owner form week of
+            <input
+              type="date"
+              data-testid="lookahead-grid-start"
+              value={gridStart || mondayIso(new Date())}
+              onChange={(e) => setGridStart(e.target.value)}
+              className="h-8 max-md:min-h-[44px] px-2 rounded border border-slate-200 text-xs text-slate-700"
+            />
+          </label>
           <ExportDropdown
             label="Export"
             testidPrefix="lookahead-export"
-            buildUrl={(fmt) => `/projects/${activeId}/lookahead/export?format=${fmt}&days=${days}`}
-            filenameHint={(fmt) => `lookahead_${(activeId || "").slice(0, 8)}.${fmt}`}
+            formats={["xlsx", "pdf", "grid-xlsx", "grid-pdf"]}
+            labels={{
+              xlsx: "Table (Excel)",
+              pdf: "Table (PDF)",
+              "grid-xlsx": "Owner form, 2-week grid (Excel)",
+              "grid-pdf": "Owner form, 2-week grid (PDF)",
+            }}
+            buildUrl={(fmt) => (fmt.startsWith("grid-")
+              ? `/projects/${activeId}/lookahead/export?format=${fmt.slice(5)}&layout=grid${gridStart ? `&start=${gridStart}` : ""}`
+              : `/projects/${activeId}/lookahead/export?format=${fmt}&days=${days}`)}
+            filenameHint={(fmt) => `lookahead_${(activeId || "").slice(0, 8)}.${fmt.replace("grid-", "")}`}
             disabled={!activeId}
           />
         </div>

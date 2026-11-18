@@ -342,7 +342,7 @@ async def gather_lookahead_for_export(
     db = get_db()
     proj = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}),
-        {"_id": 0, "id": 1, "name": 1, "contract_number": 1},
+        {"_id": 0, "id": 1, "name": 1, "contract_number": 1, "timezone": 1},
     )
     if not proj:
         return {
@@ -373,7 +373,7 @@ async def gather_lookahead_for_export(
     all_project_tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id}),
         {"_id": 0, "activity_code": 1, "computed_status": 1, "status": 1,
-         "has_open_blocker": 1, "pct_complete": 1},
+         "has_open_blocker": 1, "pct_complete": 1, "actual_start": 1},
     ).to_list(length=10000)
     status_by_code: dict[str, dict] = {}
     for t in all_project_tasks:
@@ -384,6 +384,9 @@ async def gather_lookahead_for_export(
                 "status": t.get("status"),
                 "has_blocker": bool(t.get("has_open_blocker")),
                 "pct_complete": float(t.get("pct_complete") or 0),
+                "started": bool(t.get("actual_start"))
+                or float(t.get("pct_complete") or 0) > 0
+                or t.get("status") in ("in_progress", "complete"),
             }
 
     # Crew name lookup. Resolve task.current_crew_id (most recent
@@ -438,6 +441,7 @@ async def gather_lookahead_for_export(
         # Predecessor status -- "all_complete" if every predecessor is
         # complete; else "X of Y complete"; else "blocked_by_<code>"
         # if a predecessor is itself blocked.
+        _begun = bool(t.get("actual_start")) or float(t.get("pct_complete") or 0) > 0
         preds = t.get("predecessors") or []
         if not isinstance(preds, list):
             preds = []
@@ -450,8 +454,10 @@ async def gather_lookahead_for_export(
                 # Predecessors may be strings (activity_code) or dicts
                 # (legacy structured form).
                 pcode = p if isinstance(p, str) else (
-                    p.get("activity_code") if isinstance(p, dict) else None
+                    (p.get("code") or p.get("activity_code"))
+                    if isinstance(p, dict) else None
                 )
+                ptype = (p.get("type") or "FS").upper() if isinstance(p, dict) else "FS"
                 if not pcode:
                     continue
                 ps = status_by_code.get(pcode)
@@ -460,9 +466,10 @@ async def gather_lookahead_for_export(
                 if (ps.get("computed_status") == "blocked"
                         or ps.get("has_blocker")):
                     blocked_preds.append(pcode)
-                if (ps.get("pct_complete") >= 100
+                done = (ps.get("pct_complete") >= 100
                         or ps.get("status") == "complete"
-                        or ps.get("computed_status") == "complete"):
+                        or ps.get("computed_status") == "complete")
+                if done or (ptype in ("SS", "SF") and ps.get("started")):
                     complete_count += 1
             if blocked_preds:
                 pred_status = f"blocked_by_{blocked_preds[0]}"
@@ -471,7 +478,9 @@ async def gather_lookahead_for_export(
                 pred_status = "all_complete"
             else:
                 pred_status = f"{complete_count} of {len(preds)} complete"
-                if complete_count < len(preds):
+                # Only a risk while the task is waiting to start: work
+                # already under way is not held up by an open predecessor.
+                if complete_count < len(preds) and not _begun:
                     risk_reasons.append(
                         f"{len(preds) - complete_count} predecessor(s) incomplete",
                     )
@@ -479,6 +488,7 @@ async def gather_lookahead_for_export(
         # Days-until-start gate -- if the task starts in <3 days but
         # predecessors aren't all complete, flag it.
         if (days_until_start is not None and 0 <= days_until_start <= 3
+                and not _begun
                 and pred_status != "all_complete"
                 and pred_status != "no_predecessors"):
             risk_reasons.append(
@@ -526,7 +536,7 @@ async def gather_lookahead_for_export(
             "activity_code":        t.get("activity_code"),
             "description":          t.get("description"),
             "trade":                t.get("trade_code") or t.get("required_trade") or "",
-            "planned_start":        ps_iso,
+            "planned_start":        _iso_date(t.get("planned_start")),
             "planned_finish":       plan_fin,
             "impacted_start":       _iso_date(t.get("projected_start_date")),
             "impacted_finish":      pf_iso,
@@ -935,20 +945,31 @@ async def render_tasks_export(
 
 async def render_lookahead_export(
     *, tenant_id: str, project_id: str, fmt: str, days: int = 14,
+    start_date: Optional[date] = None, layout: str = "list",
 ) -> tuple[bytes, str, str, dict]:
     """Returns (bytes, content_type, filename, meta) where meta has
-    {count, at_risk_count, window_start, window_end}. Caches 5min per
-    (project, fmt, days). (b'', '', '', {}) when project is missing/
-    cross-tenant."""
+    {count, at_risk_count, window_start, window_end}. (b'', '', '', {})
+    when project is missing/cross-tenant.
+
+    layout="list" is the internal table (codes, plan / impacted dates,
+    slip, float, status); layout="grid" is the owner's one-page day grid
+    (services/lookahead_grid_export.py). start_date picks the first day
+    (the grid always starts on that date's Monday). Not cached: a
+    look-ahead is small, and a cached file kept showing old dates for
+    five minutes after the schedule was corrected."""
     if fmt not in ("xlsx", "pdf"):
         raise ValueError(f"unknown format: {fmt!r}")
+    if layout == "grid":
+        from services.lookahead_grid_export import render_lookahead_grid_export
+        return await render_lookahead_grid_export(
+            tenant_id=tenant_id, project_id=project_id, fmt=fmt, start_date=start_date)
+    if layout != "list":
+        raise ValueError(f"unknown layout: {layout!r}")
     payload = await gather_lookahead_for_export(
-        tenant_id=tenant_id, project_id=project_id, days=days,
+        tenant_id=tenant_id, project_id=project_id, days=days, start_date=start_date,
     )
     if not payload.get("project"):
         return b"", "", "", {}
-    key = f"lookahead|{project_id}|{payload['filter_hash']}|{fmt}"
-    cached = _cache_get(key)
     short = _project_short_id(project_id)
     ymd = datetime.now(timezone.utc).strftime("%Y%m%d")
     filename = f"lookahead_{short}_{ymd}.{fmt}"
@@ -959,16 +980,14 @@ async def render_lookahead_export(
         "window_end": payload.get("window_end"),
         "days": int(payload.get("days", days)),
     }
-    if cached:
-        return cached[0], cached[1], filename, meta
     if fmt == "xlsx":
         blob = render_lookahead_xlsx(payload)
         ct = ("application/vnd.openxmlformats-officedocument."
               "spreadsheetml.sheet")
     else:
-        blob = render_lookahead_pdf(payload)
+        import asyncio
+        blob = await asyncio.to_thread(render_lookahead_pdf, payload)
         ct = "application/pdf"
-    _cache_put(key, blob, ct)
     return blob, ct, filename, meta
 
 

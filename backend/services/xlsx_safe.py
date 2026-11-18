@@ -75,9 +75,17 @@ def escape_row(values: Iterable[Any]) -> list:
     return [escape_formula(v) for v in values]
 
 
+_ILLEGAL_XLSX_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def set_text_cell(cell, value: Any) -> None:
     """Assign `value` to an openpyxl cell. If it is formula-like text, the
-    cell is forced to a plain text cell so it is shown, never run."""
+    cell is forced to a plain text cell so it is shown, never run.
+    Control characters Excel cannot store (a stray vertical tab or form
+    feed pasted into a description) are removed instead of failing the
+    whole file."""
+    if isinstance(value, str):
+        value = _ILLEGAL_XLSX_CHARS.sub("", value)
     cell.value = value
     if is_formula_like(value):
         # openpyxl marks "=..." strings as formulas ('f'); 's' stores the
