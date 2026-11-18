@@ -116,6 +116,59 @@ def is_overdue(task: dict, start_iso: str) -> bool:
     return pct < 100
 
 
+# Ongoing overhead (2026-11-18). An activity that runs the whole project --
+# general conditions, supervision, project management, site safety -- is
+# "level of effort": it belongs in the schedule (cost, billing, forecasts)
+# but not in a two-week look-ahead, which shows the field work coming up.
+# Recognised by its dates alone, never by its name: it spans at least
+# OVERHEAD_SHARE of the project's whole schedule (earliest planned start to
+# latest planned finish of the schedule's activities) and at least
+# OVERHEAD_MIN_DAYS calendar days.
+OVERHEAD_SHARE = 0.85
+OVERHEAD_MIN_DAYS = 60
+
+
+def _as_date(v):
+    from datetime import date, datetime
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
+def overhead_ids_from(tasks) -> set:
+    """Ids of the ongoing-overhead activities among `tasks` (each with id,
+    planned_start, planned_finish). Pure: no database."""
+    spans = []
+    for t in tasks:
+        s, f = _as_date(t.get("planned_start")), _as_date(t.get("planned_finish"))
+        if s and f and f >= s:
+            spans.append((t.get("id"), s, f))
+    if not spans:
+        return set()
+    p0 = min(s for _, s, _ in spans)
+    p1 = max(f for _, _, f in spans)
+    project_days = (p1 - p0).days
+    if project_days <= 0:
+        return set()
+    return {i for i, s, f in spans
+            if (f - s).days >= OVERHEAD_MIN_DAYS and (f - s).days >= OVERHEAD_SHARE * project_days}
+
+
+async def ongoing_overhead_ids(db, base_filter: dict) -> set:
+    """overhead_ids_from() over the schedule activities matching base_filter
+    (one project). Unplanned field work is not part of the schedule."""
+    rows = await db.tasks.find(
+        {**base_filter, "created_in_field": {"$ne": True}},
+        {"_id": 0, "id": 1, "planned_start": 1, "planned_finish": 1},
+    ).to_list(20000)
+    return overhead_ids_from(rows)
+
+
 async def find_window_and_overdue(db, base_filter: dict, start_iso: str, end_iso: str,
                                   window_limit: int = 500, overdue_limit: int = 200):
     """Look-ahead rows for [start_iso, end_iso] in two capped queries, so a
@@ -129,13 +182,17 @@ async def find_window_and_overdue(db, base_filter: dict, start_iso: str, end_iso
     window_ids are the ids found by the window query (1)."""
     # Unplanned field work is not part of the schedule (2026-11-18).
     base_filter = {**base_filter, "created_in_field": {"$ne": True}}
+    # Ongoing overhead (general conditions and the like) is not look-ahead work.
+    overhead = await ongoing_overhead_ids(db, base_filter)
+    if overhead:
+        base_filter = {**base_filter, "id": {"$nin": list(overhead)}}
     window = await db.tasks.find(
         {**base_filter, "$expr": effective_schedule_overlap(start_iso, end_iso)},
         {"_id": 0},
     ).sort("planned_start", 1).to_list(window_limit)
     window_ids = {d["id"] for d in window}
     extra = await db.tasks.find(
-        {**base_filter, "id": {"$nin": list(window_ids)},
+        {**base_filter, "id": {"$nin": list(window_ids | overhead)},
          "$expr": overdue_unfinished(start_iso, end_iso)},
         {"_id": 0},
     ).sort("planned_finish", 1).to_list(overdue_limit)
