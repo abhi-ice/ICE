@@ -179,7 +179,9 @@ export default function DelayForm({ projectId, reportDate, dailyReportId, initia
 
   useEffect(() => {
     if (!projectId) return;
-    api.get(`/projects/${projectId}/tasks`)
+    // A delay may be logged against unplanned field work from a daily report
+    // row; the task list hides it unless asked (2026-11-18).
+    api.get(`/projects/${projectId}/tasks`, { params: { include_unplanned: true } })
       .then(({ data }) => setTasks(Array.isArray(data) ? data : []))
       .catch(() => setTasks([]))
       .finally(() => setTasksLoaded(true));

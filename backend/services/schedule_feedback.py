@@ -713,8 +713,10 @@ async def _ai_refine_proposal(db, tenant_id: str, proposal_id: str) -> None:
     p = await db.logic_proposals.find_one(tenant_filter(tenant_id, {"id": proposal_id}), {"_id": 0})
     if not p:
         return
+    # Unplanned field work is not part of the schedule (2026-11-18).
     nearby = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": p["project_id"], "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": p["project_id"], "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "activity_code": 1, "description": 1, "display_name": 1, "wbs": 1,
          "planned_start": 1, "planned_finish": 1, "pct_complete": 1, "predecessors": 1},
     ).sort("planned_start", 1).to_list(400)
@@ -772,17 +774,15 @@ async def detect_out_of_order(db, tenant_id: str, task_id: str, report_date) -> 
 
 
 async def propose_for_unplanned(db, tenant_id: str, task: dict, report_date) -> None:
-    await _create_proposal(
-        db, tenant_id, task["project_id"], task, "unplanned_work",
-        {"predecessor_code": None, "report_date": str(report_date)}, [],
-        f"Unplanned work '{task.get('description')}' was logged on {report_date}. "
-        "AI will suggest where it ties into the schedule.",
-    )
+    # Unplanned work stays on daily reports and is never tied into the
+    # schedule logic, so no proposal is created (2026-11-18).
+    return None
 
 
 async def apply_logic_proposal(db, tenant_id: str, proposal: dict, predecessors: list) -> None:
+    # Never write schedule logic onto unplanned field work.
     await db.tasks.update_one(
-        tenant_filter(tenant_id, {"id": proposal["task_id"]}),
+        tenant_filter(tenant_id, {"id": proposal["task_id"], "created_in_field": {"$ne": True}}),
         {"$set": {"predecessors": predecessors, "updated_at": utc_now().isoformat()}},
     )
 
@@ -834,7 +834,8 @@ def heading_name(t: dict) -> Optional[str]:
 async def generate_name_suggestions(db, tenant_id: str, project_id: str, *, auto_approve: bool = False) -> dict:
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
-                                  "work_category": {"$nin": list(PAPERWORK)}}),
+                                  "work_category": {"$nin": list(PAPERWORK)},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "wbs": 1,
          "section_path": 1, "display_name": 1, "planned_start": 1, "planned_finish": 1},
     ).to_list(5000)

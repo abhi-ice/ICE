@@ -151,7 +151,8 @@ function RegisterTab() {
         api.get(`/projects/${activeId}/tasks`),
       ]);
       setList(s.data || []);
-      setTasks((t.data || []).filter((x) => x.status !== "deleted"));
+      // Unplanned field work is not part of the schedule (2026-11-18).
+      setTasks((t.data || []).filter((x) => x.status !== "deleted" && !x.created_in_field));
     } catch (e) {
       toast.error(e.response?.data?.detail || "Load failed");
     } finally {

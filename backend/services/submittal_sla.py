@@ -306,8 +306,9 @@ async def compute_must_approve_by(
     if procurement_lead_time_days < 0:
         return None
     db = get_db()
+    # Unplanned field work is not part of the schedule (2026-11-18).
     task = await db.tasks.find_one(
-        tenant_filter(tenant_id, {"id": schedule_activity_id}),
+        tenant_filter(tenant_id, {"id": schedule_activity_id, "created_in_field": {"$ne": True}}),
         {"_id": 0, "planned_start": 1},
     )
     if not task or not task.get("planned_start"):

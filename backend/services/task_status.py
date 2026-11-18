@@ -670,8 +670,10 @@ async def compute_projected_finish_dates(
             return {"recomputed": 0, "changed": [], "skipped": "enterprise_engine"}
         if schedule_mode_2_enabled() and schedule_mode_for_project(_proj) == "mode2":
             forecast_from_data_date = False
+    # Unplanned field work is not part of the schedule (2026-11-18).
     tasks = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0, "id": 1, "activity_code": 1, "predecessors": 1,
          "duration_days": 1, "pct_complete": 1, "status": 1, "work_category": 1,
          "planned_start": 1, "planned_finish": 1,
@@ -1093,6 +1095,7 @@ async def compute_remaining_float_for_tasks(
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {
             "project_id": project_id, "status": {"$ne": "deleted"},
+            "created_in_field": {"$ne": True},
         }),
         {"_id": 0, "id": 1, "total_float_days": 1,
          "remaining_float_days": 1, "is_currently_critical": 1,

@@ -127,6 +127,8 @@ async def find_window_and_overdue(db, base_filter: dict, start_iso: str, end_iso
     Returns (rows, window_ids): every row carries `overdue`; overdue rows
     come first (planned-start order), then the rest in planned-start order.
     window_ids are the ids found by the window query (1)."""
+    # Unplanned field work is not part of the schedule (2026-11-18).
+    base_filter = {**base_filter, "created_in_field": {"$ne": True}}
     window = await db.tasks.find(
         {**base_filter, "$expr": effective_schedule_overlap(start_iso, end_iso)},
         {"_id": 0},

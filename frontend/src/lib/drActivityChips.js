@@ -69,7 +69,9 @@ export function useTaskChips(projectId, taskIds) {
       setChips(buildMap(cached.list));
       return;
     }
-    api.get(`/projects/${projectId}/tasks`)
+    // Chips resolve ids from daily report rows, which may be unplanned field
+    // work; the list hides it unless asked (2026-11-18).
+    api.get(`/projects/${projectId}/tasks`, { params: { include_unplanned: true } })
       .then(({ data }) => {
         const list = Array.isArray(data) ? data : [];
         _taskCache.set(projectId, { ts: Date.now(), list });

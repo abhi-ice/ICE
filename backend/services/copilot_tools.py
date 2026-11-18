@@ -1267,6 +1267,11 @@ async def _tool_query(ctx: dict, args: dict) -> dict:
         q = await _scope(ctx, q, include_company_level=True)
     elif collection not in COMPANY_LEVEL and not (project_id and collection not in NOT_PROJECT_SCOPED):
         q = await _scope(ctx, q)
+    # Unplanned field work is not part of the schedule (2026-11-18). It is
+    # left out of activity answers unless the model asks for it by filtering
+    # on created_in_field itself.
+    if collection == "tasks" and "created_in_field" not in str(safe_filter):
+        q["created_in_field"] = {"$ne": True}
     # Sort: support "field" (asc) or "-field" (desc)
     sort_arg = args.get("sort")
     sort_field = None
@@ -1390,7 +1395,8 @@ async def _task_status_counts(db, tenant_id: str, project_id: str) -> Optional[d
     try:
         groups = await db.tasks.aggregate([
             {"$match": tenant_filter(tenant_id, {"project_id": project_id,
-                                                 "status": {"$ne": "deleted"}})},
+                                                 "status": {"$ne": "deleted"},
+                                                 "created_in_field": {"$ne": True}})},
             {"$group": {"_id": "$status", "n": {"$sum": 1}}},
         ]).to_list(50)
     except Exception:
@@ -1477,10 +1483,10 @@ async def _tool_get_project_context(ctx: dict, args: dict) -> dict:
         try: return await db[coll].count_documents(q)
         except Exception: return 0
     counts = {
-        "tasks_total": await _count("tasks", {"status": {"$ne": "deleted"}}),
-        "tasks_critical": await _count("tasks", {**{"$or": [{"is_critical_path": True}, {"is_critical": True}]}, "status": {"$ne": "deleted"}}),
-        "tasks_slipping": await _count("tasks", {"slip_days": {"$gt": 0}}),
-        "tasks_blocked": await _count("tasks", {"open_blocker_count": {"$gt": 0}}),
+        "tasks_total": await _count("tasks", {"status": {"$ne": "deleted"}, "created_in_field": {"$ne": True}}),
+        "tasks_critical": await _count("tasks", {**{"$or": [{"is_critical_path": True}, {"is_critical": True}]}, "status": {"$ne": "deleted"}, "created_in_field": {"$ne": True}}),
+        "tasks_slipping": await _count("tasks", {"slip_days": {"$gt": 0}, "created_in_field": {"$ne": True}}),
+        "tasks_blocked": await _count("tasks", {"open_blocker_count": {"$gt": 0}, "created_in_field": {"$ne": True}}),
         "rfis_open": await _count("rfis", {"status": {"$nin": ["answered", "closed"]}}),
         "submittals_open": await _count("submittals", {"status": {"$nin": ["approved", "closed"]}}),
         "delays_open": await _count("delays", {"status": {"$ne": "resolved"}}),
@@ -1497,7 +1503,7 @@ async def _tool_get_project_context(ctx: dict, args: dict) -> dict:
         base, {"_id": 0, "rfi_number": 1, "subject": 1, "status": 1, "date_initiated": 1},
     ).sort("date_initiated", -1).limit(5).to_list(5)
     top_blockers = await db.tasks.find(
-        {**base, "open_blocker_count": {"$gt": 0}},
+        {**base, "open_blocker_count": {"$gt": 0}, "created_in_field": {"$ne": True}},
         {"_id": 0, "activity_code": 1, "description": 1, "open_blocker_count": 1, "open_blocker_summary": 1},
     ).sort("open_blocker_count", -1).limit(5).to_list(5)
     return {
@@ -1523,7 +1529,8 @@ async def _tool_get_schedule_analysis(ctx: dict, args: dict) -> dict:
     if denied:
         return denied
     view = (args.get("view") or "summary").lower()
-    base = tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}})
+    base = tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"},
+                                            "created_in_field": {"$ne": True}})
     proj_fields = {"_id": 0, "activity_code": 1, "description": 1,
                    "planned_start": 1, "planned_finish": 1, "pct_complete": 1,
                    "status": 1, "is_critical": 1, "is_critical_path": 1, "slip_days": 1,
@@ -1667,7 +1674,7 @@ async def _tool_get_status(ctx: dict, args: dict) -> dict:
     else:
         f = await _scope(ctx, f)
     if et == "tasks":
-        docs = await db.tasks.find(f, {"_id": 0, "activity_code": 1, "description": 1,
+        docs = await db.tasks.find({**f, "created_in_field": {"$ne": True}}, {"_id": 0, "activity_code": 1, "description": 1,
                                         "pct_complete": 1, "status": 1, "planned_finish": 1}
                                     ).limit(20).to_list(20)
     elif et == "rfis":
@@ -2384,7 +2391,8 @@ async def _tool_link_submittal_to_activity(ctx: dict, args: dict) -> dict:
         return {"error": f"submittal {sn} not found"}
     task = await db.tasks.find_one(
         tenant_filter(ctx["tenant_id"], {"activity_code": code,
-                                         "project_id": ctx.get("project_id")}),
+                                         "project_id": ctx.get("project_id"),
+                                         "created_in_field": {"$ne": True}}),
         {"_id": 0},
     )
     if not task:
@@ -2560,7 +2568,8 @@ async def _tool_create_unplanned_activity(ctx: dict, args: dict) -> dict:
         "prev_pct_complete": 0,
         "is_milestone": False,
         "is_critical_path": False,
-        "lookahead_status": "in_window",
+        # Unplanned work lives only on daily reports, never in the look-ahead.
+        "lookahead_status": "not_in_window",
         "predecessors": [],
         "created_in_field": True,
         "requires_pm_review": True,
@@ -2787,7 +2796,8 @@ async def execute_copilot_turn(*, tenant_id: str, project_id: Optional[str],
         if proj:
             blocks.append(f"PROJECT: {proj['name']} (status={proj.get('status')})")
         recent_tasks = await db.tasks.find(
-            tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+            tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                      "created_in_field": {"$ne": True}}),
             {"_id": 0, "activity_code": 1, "description": 1, "pct_complete": 1,
              "planned_start": 1, "planned_finish": 1, "status": 1},
         ).sort("planned_start", -1).limit(15).to_list(15)

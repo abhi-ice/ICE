@@ -141,14 +141,20 @@ async def create_task(payload: TaskCreate, bg: BackgroundTasks = None,
 
 
 @router.get("/projects/{project_id}/tasks", response_model=list[Task])
-async def list_tasks(project_id: str, ctx: dict = Depends(require_tenant)):
+async def list_tasks(project_id: str, ctx: dict = Depends(require_tenant),
+                     include_unplanned: bool = Query(False)):
     db = get_db()
     # Sort by `sequence` (preserves source-file order from the schedule import)
     # then by planned_start (CSV/legacy rows without a sequence). Tasks with
     # no sequence (legacy or hand-created) sort AFTER imported ones because
     # MongoDB sorts None ascending — we use a high default at write time.
+    # Unplanned field work is not part of the schedule (2026-11-18). Daily
+    # report screens that label their own rows pass include_unplanned=true.
     docs = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id, "status": {"$ne": "deleted"},
+            **({} if include_unplanned else {"created_in_field": {"$ne": True}}),
+        }),
         {"_id": 0},
     ).sort([("sequence", 1), ("planned_start", 1), ("activity_code", 1)]).to_list(10000)
 
@@ -542,7 +548,8 @@ async def lookahead(
     start_iso, end_iso = start_d.isoformat(), end_d.isoformat()
     docs, window_ids = await find_window_and_overdue(
         db, tenant_filter(ctx["tenant_id"], {"project_id": project_id,
-                                             "status": {"$ne": "deleted"}}),
+                                             "status": {"$ne": "deleted"},
+                                             "created_in_field": {"$ne": True}}),
         start_iso, end_iso)
     # Mark the in-window rows in_window for downstream consumers, in one
     # write. Overdue rows outside the window are not marked.
@@ -625,6 +632,7 @@ async def dashboard_activities(
             break
         match = tenant_filter(ctx["tenant_id"], {
             "project_id": project_id, **open_work, **extra,
+            "created_in_field": {"$ne": True},
             "id": {"$nin": list(seen)},
         })
         pipeline = [

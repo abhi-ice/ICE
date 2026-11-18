@@ -57,7 +57,8 @@ export default function Dashboard() {
     let cancelled = false;
     setTasksLoading(true);
     api.get(`/projects/${activeId}/dashboard-activities`, { params: { days: 14, limit: 8 } })
-      .then(({ data }) => { if (!cancelled) setRecentTasks(data?.items || []); })
+      // Unplanned field work is not part of the schedule (2026-11-18).
+      .then(({ data }) => { if (!cancelled) setRecentTasks((data?.items || []).filter((t) => !t.created_in_field)); })
       .catch(() => { if (!cancelled) setRecentTasks([]); })
       .finally(() => { if (!cancelled) setTasksLoading(false); });
     api.get(`/projects/${activeId}/rfis`)

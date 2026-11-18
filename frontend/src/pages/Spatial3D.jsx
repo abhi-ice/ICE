@@ -59,7 +59,8 @@ export default function Spatial3D() {
       api.get(`/projects/${activeId}/drawings`),
       api.get(`/projects/${activeId}/spatial-metadata`),
     ]);
-    setFloors(f.data); setLocations(l.data); setTasks(t.data); setDrawings(d.data); setMeta(m.data);
+    // Unplanned field work is not part of the schedule (2026-11-18).
+    setFloors(f.data); setLocations(l.data); setTasks((t.data || []).filter((x) => !x.created_in_field)); setDrawings(d.data); setMeta(m.data);
   };
 
   useEffect(() => { activeId && refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [activeId]);

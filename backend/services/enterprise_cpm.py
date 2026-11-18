@@ -615,8 +615,10 @@ async def run_enterprise_cpm(tenant_id: str, project_id: str, *,
     project = await db.projects.find_one(
         tenant_filter(tenant_id, {"id": project_id}), {"_id": 0},
     ) or {}
+    # Unplanned field work is not part of the schedule (2026-11-18).
     raw = await db.tasks.find(
-        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                  "created_in_field": {"$ne": True}}),
         {"_id": 0},
     ).to_list(_SCALE_CAP)
     if not raw:

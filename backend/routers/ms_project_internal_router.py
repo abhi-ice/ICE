@@ -300,8 +300,10 @@ async def upload_ms_project_file(
     # AUTO-FIRST-SYNC: queue the right first job so no manual step is needed.
     auto_job = None
     try:
+        # Unplanned field work is not part of the schedule (2026-11-18).
         has_task = await db.tasks.find_one(
-            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+            tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"},
+                                             "created_in_field": {"$ne": True}}),
             {"_id": 0, "id": 1})
         if has_task:
             enq = await mps.enqueue_push_job(
@@ -392,7 +394,8 @@ async def generate_ms_project_file(project_id: str, ctx: dict = Depends(require_
             status_code=409,
             detail="A sync is already in progress — wait for it to finish.")
     rows = await db.tasks.find(
-        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id, "status": {"$ne": "deleted"},
+                                         "created_in_field": {"$ne": True}}),
         {"_id": 0, "activity_code": 1}).to_list(5000)
     if not any((r.get("activity_code") or "").strip() for r in rows):
         raise HTTPException(

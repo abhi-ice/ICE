@@ -158,7 +158,9 @@ async def copilot_answer(*, tenant_id: str, project_id: Optional[str], session_i
             context_blocks.append(f"PROJECT: {proj['name']} (status={proj.get('status')})")
         # top 8 in-window activities
         tasks = await db.tasks.find(
-            tenant_filter(tenant_id, {"project_id": project_id, "lookahead_status": {"$in": ["in_window", "proposed_new"]}}),
+            # Unplanned field work is not part of the schedule (2026-11-18).
+            tenant_filter(tenant_id, {"project_id": project_id, "lookahead_status": {"$in": ["in_window", "proposed_new"]},
+                                      "created_in_field": {"$ne": True}}),
             {"_id": 0, "activity_code": 1, "description": 1, "pct_complete": 1, "planned_start": 1, "planned_finish": 1},
         ).limit(8).to_list(8)
         if tasks:
@@ -237,7 +239,9 @@ Respond ONLY with the raw JSON array. No prose, no code fences."""
 
 async def recovery_suggestions(*, tenant_id: str, project_id: str, target_activity_id: str, trigger: str) -> dict:
     db = get_db()
-    target = await db.tasks.find_one(tenant_filter(tenant_id, {"id": target_activity_id}), {"_id": 0})
+    # Unplanned field work is not part of the schedule (2026-11-18): no recovery suggestions for it.
+    target = await db.tasks.find_one(tenant_filter(tenant_id, {"id": target_activity_id,
+                                                               "created_in_field": {"$ne": True}}), {"_id": 0})
     if not target:
         return {"suggestions": [], "error": "activity_not_found"}
     # cascade: walk successors via activity_code
@@ -257,7 +261,8 @@ async def recovery_suggestions(*, tenant_id: str, project_id: str, target_activi
         # the existing (tenant_id, project_id, ...) prefix so no
         # performance regression.
         succs = await db.tasks.find(
-            tenant_filter(tenant_id, {"project_id": project_id, "predecessors.code": code}),
+            tenant_filter(tenant_id, {"project_id": project_id, "predecessors.code": code,
+                                      "created_in_field": {"$ne": True}}),
             {"_id": 0, "activity_code": 1, "description": 1, "is_critical_path": 1, "planned_finish": 1},
         ).limit(15).to_list(15)
         for s in succs:

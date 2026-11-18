@@ -148,6 +148,8 @@ async def gather_tasks_for_export(
         tenant_filter(tenant_id, {
             "project_id": project_id,
             "status": {"$ne": "deleted"},
+            # Unplanned field work is not part of the schedule (2026-11-18).
+            "created_in_field": {"$ne": True},
         }),
         {"_id": 0},
     ).sort([("sequence", 1), ("planned_start", 1),
@@ -365,7 +367,8 @@ async def gather_lookahead_for_export(
     # separately capped queries so they never push in-window work out.
     from services.schedule_filters import find_window_and_overdue, effective_start, is_overdue
     tasks, _ = await find_window_and_overdue(
-        db, tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}),
+        db, tenant_filter(tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"},
+                                      "created_in_field": {"$ne": True}}),
         today_d.isoformat(), end_d.isoformat())
 
     # Build the activity_code -> status map (used for predecessor

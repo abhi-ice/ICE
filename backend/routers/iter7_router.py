@@ -1118,7 +1118,9 @@ async def seed_recovery(ctx: dict = Depends(require_tenant)):
     # An admin limited to specific projects only seeds on those projects
     # (switch on).
     task = await db.tasks.find_one(
-        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]}})),
+        # Unplanned field work is not part of the schedule (2026-11-18).
+        await project_scope_filter(ctx, tenant_filter(ctx["tenant_id"], {"status": {"$in": ["in_progress", "not_started"]},
+                                                                         "created_in_field": {"$ne": True}})),
         {"_id": 0}, sort=[("planned_start", -1)],
     )
     if not task:
