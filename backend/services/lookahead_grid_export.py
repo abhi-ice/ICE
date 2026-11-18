@@ -129,14 +129,19 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
                                   "status": {"$nin": ["deleted", "complete"]},
                                   "created_in_field": {"$ne": True},
                                   "planned_start": {"$lte": end.isoformat()}}),
-        {"_id": 0, "activity_code": 1, "description": 1, "planned_start": 1, "planned_finish": 1,
+        {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "planned_start": 1, "planned_finish": 1,
          "actual_start": 1, "pct_complete": 1, "status": 1, "work_category": 1,
          "projected_finish_date": 1},
     ).sort("planned_start", 1).to_list(20000)
+    # Ongoing overhead (general conditions and the like) is not look-ahead
+    # work: no row, no note (services/schedule_filters.ongoing_overhead_ids).
+    from services.schedule_filters import ongoing_overhead_ids
+    overhead = await ongoing_overhead_ids(db, tenant_filter(
+        tenant_id, {"project_id": project_id, "status": {"$ne": "deleted"}}))
 
     rows, notes = [], []
     for t in tasks:
-        if _done(t):
+        if _done(t) or t.get("id") in overhead:
             continue
         s, f = task_span(t, start, end)
         if s is None:

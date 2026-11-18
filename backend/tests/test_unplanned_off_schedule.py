@@ -151,3 +151,49 @@ def test_assistant_schedule_analysis_skips_unplanned():
     import inspect
     src = inspect.getsource(ct._tool_get_schedule_analysis)
     assert '"created_in_field": {"$ne": True}' in src
+
+
+# ---------------------------------------------------------------- ongoing overhead
+def test_overhead_rule_by_dates_only():
+    from services.schedule_filters import overhead_ids_from
+    tasks = [
+        {"id": "gc", "planned_start": "2026-05-06", "planned_finish": "2027-12-28"},   # whole job
+        {"id": "sub", "planned_start": "2026-03-10", "planned_finish": "2026-05-01"},  # early submittal
+        {"id": "end", "planned_start": "2027-12-28", "planned_finish": "2027-12-28"},  # milestone
+        {"id": "ahu", "planned_start": "2026-10-30", "planned_finish": "2027-03-04"},  # long, not whole job
+    ]
+    assert overhead_ids_from(tasks) == {"gc"}
+    # a short project: nothing is overhead below the minimum length
+    assert overhead_ids_from([{"id": "a", "planned_start": "2026-01-01", "planned_finish": "2026-01-20"},
+                              {"id": "b", "planned_start": "2026-01-05", "planned_finish": "2026-01-10"}]) == set()
+    assert overhead_ids_from([]) == set()
+
+
+def test_lookahead_and_exports_leave_out_overhead():
+    from routers import tasks_router as tr
+    from services import tasks_exports
+    from services.lookahead_grid_export import gather_lookahead_grid
+
+    async def go(db, tenant, pid):
+        await db.tasks.insert_many([
+            _task(tenant, pid, "GC", "General Conditions", "2026-05-06", "2027-12-28", pct_complete=30,
+                  status="in_progress", actual_start="2026-05-06"),
+            _task(tenant, pid, "PM", "Project Management", "2026-05-06", "2027-12-28",
+                  work_category="preconstruction_paperwork", pct_complete=30, status="in_progress",
+                  actual_start="2026-05-06"),
+            _task(tenant, pid, "SD", "Shop drawings", "2026-10-21", "2026-12-16", pct_complete=20,
+                  status="in_progress", actual_start="2026-10-21", work_category="construction_paperwork"),
+        ])
+        la = await tr.lookahead(pid, days=14, start=date(2026, 11, 18), ctx=_ctx(tenant))
+        assert _codes(la) == {"S-1", "SD"}
+        pay = await tasks_exports.gather_lookahead_for_export(
+            tenant_id=tenant, project_id=pid, days=14, start_date=date(2026, 11, 18))
+        assert _codes(pay["rows"]) == {"S-1", "SD"}
+        g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=date(2026, 11, 23))
+        assert {r["code"] for r in g["rows"]} == {"S-1"}
+        assert not any("General Conditions" in n or "Project Management" in n for n in g["notes"])
+        assert any("Shop drawings" in n for n in g["notes"])
+        # still in the schedule
+        rows = await tr.list_tasks(pid, ctx=_ctx(tenant), include_unplanned=False)
+        assert {"GC", "PM"} <= _codes(rows)
+    _run(go)
