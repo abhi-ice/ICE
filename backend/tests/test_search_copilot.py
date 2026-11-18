@@ -58,7 +58,8 @@ def _sha(s):
 
 @pytest.fixture
 def search_off(monkeypatch):
-    monkeypatch.delenv("FF_SEARCH_EVERYTHING", raising=False)
+    # Search is always on; only the server variable set to 0 turns it off.
+    monkeypatch.setenv("FF_SEARCH_EVERYTHING", "0")
     monkeypatch.delenv("COPILOT_MODEL_FAST", raising=False)
     monkeypatch.delenv("COPILOT_MODEL_DEEP", raising=False)
     runtime_settings.reset_cache_for_tests()

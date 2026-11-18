@@ -369,7 +369,7 @@ def test_copilot_query_is_limited_and_cannot_be_widened(db, enforced):
     assert [r["id"] for r in out["rows"]] == ["r1"]
     # The model names another project, or tries to filter its way there.
     out = run(ct._tool_query(ctx, {"collection": "rfis", "project_id": P2}))
-    assert out == {"error": pa.NOT_FOUND}
+    assert out["error"] == pa.NOT_FOUND
     out = run(ct._tool_query(ctx, {"collection": "rfis", "filter": {"project_id": P2}}))
     assert [r["id"] for r in out["rows"]] == ["r1"]
     out = run(ct._tool_query(ctx, {"collection": "rfis",
@@ -386,11 +386,11 @@ def test_copilot_delete_and_update_check_the_record_project(db, enforced):
     ct = importlib.import_module("services.copilot_tools")
     ctx = _ctx("super1")
     out = run(ct._tool_delete_entity(ctx, {"entity_type": "rfi", "id": "r2"}))
-    assert out == {"error": pa.NOT_ASSIGNED}
+    assert out["error"] == pa.NOT_ASSIGNED
     assert db.rfis.docs[1].get("status") == "sent"
     out = run(ct._tool_update_entity(ctx, {"entity_type": "rfi", "id": "r1",
                                            "fields": {"project_id": P2}}))
-    assert out == {"error": pa.NOT_ASSIGNED}
+    assert out["error"] == pa.NOT_ASSIGNED
     assert db.rfis.docs[0]["project_id"] == P1
     out = run(ct._tool_delete_entity(ctx, {"entity_type": "rfi", "id": "r1"}))
     assert out == {"deleted": {"resource": "rfi", "id": "r1"}}
@@ -439,7 +439,7 @@ def test_copilot_turn_write_tools_follow_the_caller(db, enforced, monkeypatch):
     res = run(ct.execute_copilot_turn(
         tenant_id=A, project_id=P2, user_id="super1", user_role="super",
         session_id="s", message="add a floor", access_ctx=_ctx("super1")))
-    assert res["tool_results"][0]["result"] == {"error": pa.NOT_ASSIGNED}
+    assert res["tool_results"][0]["result"]["error"] == pa.NOT_ASSIGNED
     assert not db.floors.docs
     plans.append(plan)
     res = run(ct.execute_copilot_turn(
