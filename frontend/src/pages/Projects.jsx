@@ -21,11 +21,6 @@ const EMPTY_FORM = {
   // surfaced in every Daily Report header. Both optional.
   station_id: "",
   contractor_name: "",
-  // Owner look-ahead form header (2026-11-18), all optional.
-  owner_rep_name: "",
-  owner_rep_tagline: "",
-  owner_form_footer: "",
-  prime_contractor_name: "",
   contract_value_usd: "",
   address_line1: "",
   city: "",
@@ -279,10 +274,6 @@ export default function Projects() {
       // Feature DR Header Auto-Population (2026-05-20).
       station_id: p.station_id || "",
       contractor_name: p.contractor_name || "",
-      owner_rep_name: p.owner_rep_name || "",
-      owner_rep_tagline: p.owner_rep_tagline || "",
-      owner_form_footer: p.owner_form_footer || "",
-      prime_contractor_name: p.prime_contractor_name || "",
       contract_value_usd: p.contract_value_usd != null ? String(p.contract_value_usd) : "",
       address_line1: p.address_line1 || "",
       city: p.city || "",
@@ -414,30 +405,6 @@ export default function Projects() {
                 <div>
                   <FieldLabel optional className="field-label">Contractor</FieldLabel>
                   <input data-testid="np-contractor" placeholder="e.g. Integrated Construction Enterprises, Inc." value={form.contractor_name} onChange={(e) => setForm({ ...form, contractor_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
-                </div>
-              </div>
-              {/* Owner look-ahead form header (2026-11-18). Printed on the
-                  look-ahead "Owner form" export when the owner's
-                  representative issues the look-ahead on its own form. */}
-              <div className="rounded border border-slate-200 p-3 space-y-3">
-                <div className="text-xs font-medium text-slate-600">Owner look-ahead form (optional)</div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <FieldLabel optional className="field-label">Owner's representative</FieldLabel>
-                    <input data-testid="np-owner-rep" placeholder="e.g. construction manager firm" value={form.owner_rep_name} onChange={(e) => setForm({ ...form, owner_rep_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
-                  </div>
-                  <div>
-                    <FieldLabel optional className="field-label">Representative tagline</FieldLabel>
-                    <input data-testid="np-owner-rep-tagline" placeholder="e.g. Construction and Management" value={form.owner_rep_tagline} onChange={(e) => setForm({ ...form, owner_rep_tagline: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
-                  </div>
-                  <div>
-                    <FieldLabel optional className="field-label">Prime contractor</FieldLabel>
-                    <input data-testid="np-prime-contractor" placeholder="When we are a subcontractor" value={form.prime_contractor_name} onChange={(e) => setForm({ ...form, prime_contractor_name: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
-                  </div>
-                  <div>
-                    <FieldLabel optional className="field-label">Form footer</FieldLabel>
-                    <input data-testid="np-owner-form-footer" placeholder="Line printed at the bottom of the form" value={form.owner_form_footer} onChange={(e) => setForm({ ...form, owner_form_footer: e.target.value })} className="w-full h-9 px-3 rounded border border-input bg-background" />
-                  </div>
                 </div>
               </div>
               <div>

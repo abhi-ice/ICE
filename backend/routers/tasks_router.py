@@ -717,7 +717,7 @@ async def export_lookahead(
     project_id: str,
     format: str = Query(..., pattern="^(xlsx|pdf)$"),
     days: int = Query(default=14, ge=1, le=90),
-    layout: str = Query(default="list", pattern="^(list|grid)$"),
+    layout: str = Query(default="list", pattern="^(list|grid|client)$"),
     start: Optional[date] = None,
     ctx: dict = Depends(require_tenant),
 ):
@@ -737,9 +737,22 @@ async def export_lookahead(
         blob, ct, fn, meta = await render_lookahead_export(
             tenant_id=ctx["tenant_id"], project_id=project_id,
             fmt=format, days=days, start_date=start, layout=layout,
+            request_id=ctx.get("request_id") or "",
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+    except HTTPException:
+        raise  # includes the AI-unavailable answer, which has its own handler
+    except Exception as exc:
+        # Client-format failures (no template, unreadable form, AI trouble)
+        # answer 422 with the reason, never 5xx (Cloudflare hides 5xx bodies).
+        if type(exc).__name__ == "DrTemplateExportError":
+            raise HTTPException(422, f"Client-format export failed: {exc}")
+        if layout == "client":
+            import logging
+            logging.getLogger(__name__).exception("client look-ahead export crashed")
+            raise HTTPException(422, f"Client-format export failed: {type(exc).__name__}")
+        raise
     if not blob:
         raise HTTPException(404, "Project not found")
     try:
