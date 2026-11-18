@@ -58,11 +58,6 @@ FLAG_META = [
         "label": "Per-project access (off = watch only)",
         "help": "While off, nobody is blocked, but every time someone opens or changes a project they are not assigned to, it is listed on the Project Access page so you can fix assignments first. While on, people only see and change the projects they are assigned to (admins with access to all projects see everything). Saves already waiting on phones for a project the person is not assigned to stay on the phone until they are assigned.",
     },
-    {
-        "key": "FF_SEARCH_EVERYTHING",
-        "label": "Search everything (assistant)",
-        "help": "Lets the assistant search all project records (daily reports, delays, RFIs, submittals, specs, photos and more) by meaning as well as by exact words, and answer with links to the records it used. People only ever get results from records they are allowed to see. While off, nothing is indexed and the assistant works as before.",
-    },
 ]
 
 _ALLOWED = {m["key"] for m in FLAG_META}

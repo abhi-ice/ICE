@@ -72,12 +72,16 @@ def project_access_enabled() -> bool:
     return _enabled("FF_PROJECT_ACCESS")
 
 
+_FALSY = {"0", "false", "no", "off"}
+
+
 def search_everything_enabled() -> bool:
     """Search everything (2026-11-17) -- whole-database retrieval search for
-    the assistant (services/search). Default OFF. When OFF nothing is queued
-    or indexed, the search worker idles and the assistant's tool list is
-    unchanged."""
-    return _enabled("FF_SEARCH_EVERYTHING")
+    the assistant (services/search). ALWAYS ON since 2026-11-17 (the user
+    removed the Settings switch). Only an explicit server variable
+    FF_SEARCH_EVERYTHING=0/false/off turns it off (emergency use and tests);
+    there is no Settings toggle and any old saved toggle value is ignored."""
+    return (os.environ.get("FF_SEARCH_EVERYTHING") or "").strip().lower() not in _FALSY
 
 
 def schedule_mode_for_project(project: dict) -> str:

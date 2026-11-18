@@ -428,3 +428,19 @@ def test_hidden_contact_details_leave_a_marker():
     t = dc.scrub("Frank mobile: (610) 333-7002, mail frank@example.com")
     assert "333-7002" not in t and "example.com" not in t
     assert "[phone on file" in t and "[email on file" in t
+
+
+def test_search_everything_is_always_on(monkeypatch):
+    from services import feature_flags, runtime_settings as rs
+    from routers import admin_settings_router as asr
+    monkeypatch.delenv("FF_SEARCH_EVERYTHING", raising=False)
+    assert feature_flags.search_everything_enabled() is True
+    # An old saved Settings value no longer turns it off.
+    monkeypatch.setattr(rs, "_cache", {"flags": {"FF_SEARCH_EVERYTHING": False}})
+    assert feature_flags.search_everything_enabled() is True
+    # No Settings switch any more.
+    assert "FF_SEARCH_EVERYTHING" not in rs.ALLOWED_FLAGS
+    assert all(m["key"] != "FF_SEARCH_EVERYTHING" for m in asr.FLAG_META)
+    # Emergency off by server variable only.
+    monkeypatch.setenv("FF_SEARCH_EVERYTHING", "0")
+    assert feature_flags.search_everything_enabled() is False
