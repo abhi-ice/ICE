@@ -40,6 +40,7 @@ const WORK_CATEGORY_OPTS = [
   ["construction_paperwork", "Construction paperwork"],
   ["field_work", "Field work"],
   ["closeout_paperwork", "Closeout paperwork"],
+  ["contract_administration", "Contract administration"],
 ];
 
 export default function ScheduleProposals() {

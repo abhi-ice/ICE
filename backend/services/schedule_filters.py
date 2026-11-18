@@ -61,7 +61,8 @@ _DONE_STATUSES = ["complete", "deleted"]
 # look-ahead. Tasks with no work category yet count as field work, so
 # nothing untagged disappears. Paperwork whose own dates fall inside the
 # window is still listed as before.
-PAPERWORK_CATEGORIES = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"]
+PAPERWORK_CATEGORIES = ["preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+                        "contract_administration"]
 
 
 def overdue_unfinished(start_iso: str, end_iso: str) -> dict:
@@ -182,7 +183,9 @@ async def find_window_and_overdue(db, base_filter: dict, start_iso: str, end_iso
     window_ids are the ids found by the window query (1)."""
     # Unplanned field work is not part of the schedule (2026-11-18).
     base_filter = {**base_filter, "created_in_field": {"$ne": True}}
-    # Ongoing overhead (general conditions and the like) is not look-ahead work.
+    # Contract administration (bonds, insurance, notice to proceed...) and
+    # ongoing overhead (general conditions and the like) are not look-ahead work.
+    base_filter = {**base_filter, "work_category": {"$ne": "contract_administration"}}
     overhead = await ongoing_overhead_ids(db, base_filter)
     if overhead:
         base_filter = {**base_filter, "id": {"$nin": list(overhead)}}

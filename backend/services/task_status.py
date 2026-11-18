@@ -74,6 +74,7 @@ def planned_pct_at(task: dict, today: date) -> float:
 # Submittals & Paperwork page (until the full submittal SLA model lands in v2).
 PAPERWORK_CATEGORIES = (
     "preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+    "contract_administration",
 )
 
 

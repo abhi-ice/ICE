@@ -547,11 +547,16 @@ RelationshipType = Literal["FS", "SS", "FF", "SF"]
 #       (demo, framing, rough-in, finishes, etc.).
 #   closeout_paperwork        -- paperwork AFTER substantial completion
 #       (testing/commissioning docs, punch list, as-builts, O&M).
+#   contract_administration   -- (2026-11-18) the contract's own admin and
+#       overhead: notice to proceed, bonds, insurance, contract execution,
+#       schedule of values / payment applications, general conditions and
+#       supervision. In the schedule (cost, billing), never in a look-ahead.
 WorkCategory = Literal[
     "preconstruction_paperwork",
     "construction_paperwork",
     "field_work",
     "closeout_paperwork",
+    "contract_administration",
 ]
 
 

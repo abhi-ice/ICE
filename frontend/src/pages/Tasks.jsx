@@ -31,12 +31,14 @@ const WORK_CATEGORY_LABELS = {
   construction_paperwork: "Construction paperwork",
   field_work: "Field work",
   closeout_paperwork: "Closeout paperwork",
+  contract_administration: "Contract administration",
 };
 const WORK_CATEGORY_TINT = {
   preconstruction_paperwork: "bg-violet-50 text-violet-700 border-violet-200",
   construction_paperwork: "bg-sky-50 text-sky-700 border-sky-200",
   field_work: "bg-emerald-50 text-emerald-700 border-emerald-200",
   closeout_paperwork: "bg-amber-50 text-amber-800 border-amber-200",
+  contract_administration: "bg-slate-50 text-slate-700 border-slate-200",
 };
 
 function WorkCategoryBadge({ category }) {

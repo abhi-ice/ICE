@@ -35,7 +35,11 @@ from typing import Optional
 from database import get_db, tenant_filter
 
 DAY_NAMES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
-PAPERWORK_CATEGORIES = {"preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"}
+PAPERWORK_CATEGORIES = {"preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+                        "contract_administration"}
+# Contract administration (bonds, insurance, notice to proceed, overhead) is
+# never part of a look-ahead: no row and no note.
+NEVER_IN_LOOKAHEAD = {"contract_administration"}
 
 
 def _d(v) -> Optional[date]:
@@ -141,7 +145,7 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
 
     rows, notes = [], []
     for t in tasks:
-        if _done(t) or t.get("id") in overhead:
+        if _done(t) or t.get("id") in overhead or t.get("work_category") in NEVER_IN_LOOKAHEAD:
             continue
         s, f = task_span(t, start, end)
         if s is None:

@@ -197,3 +197,37 @@ def test_lookahead_and_exports_leave_out_overhead():
         rows = await tr.list_tasks(pid, ctx=_ctx(tenant), include_unplanned=False)
         assert {"GC", "PM"} <= _codes(rows)
     _run(go)
+
+
+# ---------------------------------------------------------------- contract administration
+def test_contract_administration_never_in_lookahead():
+    from routers import tasks_router as tr
+    from services import tasks_exports
+    from services.lookahead_grid_export import gather_lookahead_grid
+    from services.schedule_work_category import WORK_CATEGORIES
+    from services.dr_activity_grid import section_for, SECTION_PAPERWORK
+    assert "contract_administration" in WORK_CATEGORIES
+    assert section_for("contract_administration") == SECTION_PAPERWORK
+
+    async def go(db, tenant, pid):
+        # not done yet and right inside the window: must still stay out
+        await db.tasks.insert_many([
+            _task(tenant, pid, "BI", "Bonds & Insurance", "2026-11-24", "2026-11-25",
+                  work_category="contract_administration"),
+            _task(tenant, pid, "NTP", "Notice to Proceed", "2026-11-23", "2026-11-23",
+                  work_category="contract_administration", is_milestone=True),
+            # overdue contract admin must not be pulled in either
+            _task(tenant, pid, "SOV", "Schedule of Values", "2026-10-01", "2026-10-05",
+                  work_category="contract_administration"),
+        ])
+        la = await tr.lookahead(pid, days=14, start=date(2026, 11, 18), ctx=_ctx(tenant))
+        assert _codes(la) == {"S-1"}
+        pay = await tasks_exports.gather_lookahead_for_export(
+            tenant_id=tenant, project_id=pid, days=14, start_date=date(2026, 11, 18))
+        assert _codes(pay["rows"]) == {"S-1"}
+        g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=date(2026, 11, 23))
+        assert {r["code"] for r in g["rows"]} == {"S-1"}
+        assert not any("Bonds" in n or "Notice" in n or "Schedule of Values" in n for n in g["notes"])
+        rows = await tr.list_tasks(pid, ctx=_ctx(tenant), include_unplanned=False)
+        assert {"BI", "NTP", "SOV"} <= _codes(rows)   # still in the schedule
+    _run(go)
