@@ -27,6 +27,15 @@ function mondayIso(d) {
   return `${m.getFullYear()}-${p(m.getMonth() + 1)}-${p(m.getDate())}`;
 }
 
+// Look-ahead rows vs paperwork (2026-11-20). A look-ahead lists the FIELD
+// work coming up. Submittals, shop drawings, fabrication and delivery
+// (any paperwork category) are shown in their own "Paperwork in this
+// window" table below, the same split the 2-week grid makes with its Notes.
+const PAPERWORK_CATEGORIES = new Set([
+  "preconstruction_paperwork", "construction_paperwork", "closeout_paperwork",
+]);
+const isPaperwork = (t) => PAPERWORK_CATEGORIES.has(t.work_category);
+
 export default function Lookahead() {
   const { activeId, projects } = useProjects();
   const [days, setDays] = useState(14);
@@ -77,6 +86,130 @@ export default function Lookahead() {
     // lists first; the stable sort keeps the order inside each group.
     return [...sorted].sort((a, b) => (b.overdue ? 1 : 0) - (a.overdue ? 1 : 0));
   }, [rows, sortBySlipDesc, showOnlyImpacted]);
+  const fieldRows = useMemo(() => displayRows.filter((t) => !isPaperwork(t)), [displayRows]);
+  const paperRows = useMemo(() => displayRows.filter(isPaperwork), [displayRows]);
+  const fieldCount = rows.filter((t) => !isPaperwork(t)).length;
+  const paperCount = rows.length - fieldCount;
+
+  const renderRow = (t) => {
+    // Bucket C1 Phase 4 — at-risk highlighting. Red when blocker
+    // present, amber when behind or projected_finish > planned.
+    //
+    // Followup-fix 3 (2026-05-07): the row tint already
+    // amber-tinted on projShifted, but the status PILL still
+    // displayed "on track" with slate color when
+    // computed_status was on_track and only the projection
+    // had moved. PMs scanning the column missed at-risk
+    // tasks. Now the pill text/color reflects projShifted
+    // even when the underlying computed_status is on_track.
+    const cs = t.computed_status || "on_track";
+    const slip = t._slip;
+    const projShifted = slip > 0;
+    const blocked = cs === "blocked" || t.has_open_blocker;
+    const atRisk = !blocked && cs !== "behind" && cs !== "complete" && projShifted;
+    // CPM Part F -- row tint precedence: blocked-red >
+    // projected-slip-rose > behind-amber > clean. Rose for
+    // Part F slip > 0 matches the Tasks page tint so the
+    // two surfaces look consistent.
+    // pt.31: blocked rows now use a stronger red tint
+    // (bg-red-100) so they read as MORE critical than at-risk
+    // (which stays rose-50). Was bg-red-50/50 which looked
+    // almost identical to at-risk and confused the eye.
+    const tint = blocked ? "bg-red-100"
+      : projShifted ? "bg-rose-50"
+      : cs === "behind" ? "bg-amber-50/50"
+      : "";
+    const csClass = cs === "complete" ? "pill-green"
+      : blocked ? "pill-red"
+      : cs === "behind" || atRisk ? "pill-amber"
+      : "pill-slate";
+    const pillLabel = blocked ? "blocked"
+      : cs === "complete" ? "complete"
+      : cs === "behind" ? "behind"
+      : atRisk ? "at risk"
+      : cs.replace(/_/g, " ");
+    return (
+      <tr key={t.id} data-testid={`lookahead-row-${t.activity_code}`} className={tint}>
+        <td>
+          {t.overdue
+            ? <span data-testid={`lookahead-overdue-${t.activity_code}`}
+                className="pill pill-red"
+                title="Planned finish has passed but the activity is not complete.">overdue</span>
+            : <span className="text-slate-300">—</span>}
+        </td>
+        <td className="font-mono text-xs">{t.activity_code}</td>
+        <td>{t.description}</td>
+        <td>{t.trade_code || "—"}</td>
+        {/* CPM Part G (2026-05-15) -- existing Plan start /
+            Plan finish columns routed through
+            formatDateDisplay for MM/DD/YYYY rendering
+            from the same chokepoint as the Impacted dates. */}
+        <td className="font-mono text-xs">{formatDateDisplay(t.planned_start)}</td>
+        <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
+        {/* CPM Part F -- Impacted Start. formatDateDisplay
+            renders "—" on null so fresh tasks (no
+            projection yet) show the em-dash. Part G now
+            outputs MM/DD/YYYY via this same helper. */}
+        <td
+          data-testid={`lookahead-impacted-start-${t.activity_code}`}
+          className="font-mono text-xs"
+        >
+          {formatDateDisplay(t.projected_start_date)}
+        </td>
+        <td
+          data-testid={`lookahead-impacted-finish-${t.activity_code}`}
+          className="font-mono text-xs"
+        >
+          {formatDateDisplay(t.projected_finish_date)}
+        </td>
+        <td
+          data-testid={`lookahead-slip-${t.activity_code}`}
+          className="tabular-nums text-xs"
+          title={slip > 0
+            ? `Projected slip +${slip} working days vs planned_finish`
+            : "No projected slip"}
+        >
+          {slip > 0
+            ? <span className="text-rose-700 font-semibold">+{slip}</span>
+            : <span className="text-slate-300">—</span>}
+        </td>
+        {/* CPM Bug 3.E (2026-05-16) -- remaining float cell,
+            SIGNED. Negative => task past its slack. RED
+            text when <= 0 (at/over the cliff), normal
+            when > 0, em-dash when null. Matches Tasks
+            page styling. */}
+        <td
+          data-testid={`lookahead-remaining-float-${t.activity_code}`}
+          className="tabular-nums text-xs"
+          title={(() => {
+            const r = t.remaining_float_days;
+            if (r == null) return "Remaining float not yet computed";
+            if (r > 0) return `${r} working days of float remaining`;
+            if (r === 0) return "Zero float remaining — at the edge";
+            return `All float consumed — ${Math.abs(r)} working days past slack, driving the project finish`;
+          })()}
+        >
+          {(() => {
+            const r = t.remaining_float_days;
+            if (r == null) return <span className="text-slate-300">—</span>;
+            if (r <= 0) return <span className="text-rose-700 font-semibold">{r}</span>;
+            return <span className="text-slate-700">{r}</span>;
+          })()}
+        </td>
+        <td>{t.pct_complete}%</td>
+        <td>
+          <span data-testid={`lookahead-status-${t.activity_code}`}
+            className={`pill ${csClass} inline-flex items-center gap-1`}
+            title={atRisk ? `Projected slip +${slip} working days` : undefined}>
+            {pillLabel}
+            {t.has_open_blocker && t.open_blocker_count
+              ? <span className="text-xs text-red-700/80">({t.open_blocker_count})</span>
+              : null}
+          </span>
+        </td>
+      </tr>
+    );
+  };
 
   // MS Project file pipeline (2026-07-02) -- Mode-2 projects recalculate
   // out-of-band in Microsoft Project. While the worker holds a job, show a
@@ -109,7 +242,7 @@ export default function Lookahead() {
             <CalendarRange className="h-5 w-5 text-blue-600" />
             <h1 className="text-2xl font-semibold tracking-tight">{days}-day lookahead</h1>
           </div>
-          <p className="text-sm text-slate-500">Date-bounded query · {rows.length} activities</p>
+          <p className="text-sm text-slate-500">Date-bounded query · {fieldCount} field activities{paperCount ? ` · ${paperCount} paperwork` : ""}</p>
         </div>
         <div className="flex max-md:flex-wrap items-center gap-2">
           {[7, 14, 21, 28].map((d) => (
@@ -238,139 +371,45 @@ export default function Lookahead() {
               <th title="Bucket C1 Phase 2 computed_status">Status</th>
             </tr></thead>
             <tbody>
-              {displayRows.map((t) => {
-                // Bucket C1 Phase 4 — at-risk highlighting. Red when blocker
-                // present, amber when behind or projected_finish > planned.
-                //
-                // Followup-fix 3 (2026-05-07): the row tint already
-                // amber-tinted on projShifted, but the status PILL still
-                // displayed "on track" with slate color when
-                // computed_status was on_track and only the projection
-                // had moved. PMs scanning the column missed at-risk
-                // tasks. Now the pill text/color reflects projShifted
-                // even when the underlying computed_status is on_track.
-                const cs = t.computed_status || "on_track";
-                const slip = t._slip;
-                const projShifted = slip > 0;
-                const blocked = cs === "blocked" || t.has_open_blocker;
-                const atRisk = !blocked && cs !== "behind" && cs !== "complete" && projShifted;
-                // CPM Part F -- row tint precedence: blocked-red >
-                // projected-slip-rose > behind-amber > clean. Rose for
-                // Part F slip > 0 matches the Tasks page tint so the
-                // two surfaces look consistent.
-                // pt.31: blocked rows now use a stronger red tint
-                // (bg-red-100) so they read as MORE critical than at-risk
-                // (which stays rose-50). Was bg-red-50/50 which looked
-                // almost identical to at-risk and confused the eye.
-                const tint = blocked ? "bg-red-100"
-                  : projShifted ? "bg-rose-50"
-                  : cs === "behind" ? "bg-amber-50/50"
-                  : "";
-                const csClass = cs === "complete" ? "pill-green"
-                  : blocked ? "pill-red"
-                  : cs === "behind" || atRisk ? "pill-amber"
-                  : "pill-slate";
-                const pillLabel = blocked ? "blocked"
-                  : cs === "complete" ? "complete"
-                  : cs === "behind" ? "behind"
-                  : atRisk ? "at risk"
-                  : cs.replace(/_/g, " ");
-                return (
-                  <tr key={t.id} data-testid={`lookahead-row-${t.activity_code}`} className={tint}>
-                    <td>
-                      {t.overdue
-                        ? <span data-testid={`lookahead-overdue-${t.activity_code}`}
-                            className="pill pill-red"
-                            title="Planned finish has passed but the activity is not complete.">overdue</span>
-                        : <span className="text-slate-300">—</span>}
-                    </td>
-                    <td className="font-mono text-xs">{t.activity_code}</td>
-                    <td>{t.description}</td>
-                    <td>{t.trade_code || "—"}</td>
-                    {/* CPM Part G (2026-05-15) -- existing Plan start /
-                        Plan finish columns routed through
-                        formatDateDisplay for MM/DD/YYYY rendering
-                        from the same chokepoint as the Impacted dates. */}
-                    <td className="font-mono text-xs">{formatDateDisplay(t.planned_start)}</td>
-                    <td className="font-mono text-xs">{formatDateDisplay(t.planned_finish)}</td>
-                    {/* CPM Part F -- Impacted Start. formatDateDisplay
-                        renders "—" on null so fresh tasks (no
-                        projection yet) show the em-dash. Part G now
-                        outputs MM/DD/YYYY via this same helper. */}
-                    <td
-                      data-testid={`lookahead-impacted-start-${t.activity_code}`}
-                      className="font-mono text-xs"
-                    >
-                      {formatDateDisplay(t.projected_start_date)}
-                    </td>
-                    <td
-                      data-testid={`lookahead-impacted-finish-${t.activity_code}`}
-                      className="font-mono text-xs"
-                    >
-                      {formatDateDisplay(t.projected_finish_date)}
-                    </td>
-                    <td
-                      data-testid={`lookahead-slip-${t.activity_code}`}
-                      className="tabular-nums text-xs"
-                      title={slip > 0
-                        ? `Projected slip +${slip} working days vs planned_finish`
-                        : "No projected slip"}
-                    >
-                      {slip > 0
-                        ? <span className="text-rose-700 font-semibold">+{slip}</span>
-                        : <span className="text-slate-300">—</span>}
-                    </td>
-                    {/* CPM Bug 3.E (2026-05-16) -- remaining float cell,
-                        SIGNED. Negative => task past its slack. RED
-                        text when <= 0 (at/over the cliff), normal
-                        when > 0, em-dash when null. Matches Tasks
-                        page styling. */}
-                    <td
-                      data-testid={`lookahead-remaining-float-${t.activity_code}`}
-                      className="tabular-nums text-xs"
-                      title={(() => {
-                        const r = t.remaining_float_days;
-                        if (r == null) return "Remaining float not yet computed";
-                        if (r > 0) return `${r} working days of float remaining`;
-                        if (r === 0) return "Zero float remaining — at the edge";
-                        return `All float consumed — ${Math.abs(r)} working days past slack, driving the project finish`;
-                      })()}
-                    >
-                      {(() => {
-                        const r = t.remaining_float_days;
-                        if (r == null) return <span className="text-slate-300">—</span>;
-                        if (r <= 0) return <span className="text-rose-700 font-semibold">{r}</span>;
-                        return <span className="text-slate-700">{r}</span>;
-                      })()}
-                    </td>
-                    <td>{t.pct_complete}%</td>
-                    <td>
-                      <span data-testid={`lookahead-status-${t.activity_code}`}
-                        className={`pill ${csClass} inline-flex items-center gap-1`}
-                        title={atRisk ? `Projected slip +${slip} working days` : undefined}>
-                        {pillLabel}
-                        {t.has_open_blocker && t.open_blocker_count
-                          ? <span className="text-xs text-red-700/80">({t.open_blocker_count})</span>
-                          : null}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-              {!displayRows.length && rows.length > 0 && (
+              {fieldRows.map(renderRow)}
+              {!fieldRows.length && rows.length > 0 && (
                 <tr><td colSpan="12" className="text-center py-8 text-sm text-slate-500">
-                  No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.
+                  {displayRows.length
+                    ? "No field work in this window. Paperwork is listed below."
+                    : <>No activities match the current filter. Toggle &ldquo;Show only impacted&rdquo; off to see all.</>}
                 </td></tr>
               )}
               {!rows.length && <tr><td colSpan="12" className="text-center py-8 text-sm text-slate-500">No activities in window.</td></tr>}
             </tbody>
           </table>
         </div>
+        {paperRows.length > 0 && (
+          <div data-testid="lookahead-paperwork" className="space-y-2">
+            <h2 className="text-sm font-semibold text-slate-700">
+              Paperwork in this window
+              <span className="ml-2 font-normal text-slate-500">
+                submittals, shop drawings, fabrication and delivery — not field work
+              </span>
+            </h2>
+            <div className="surface overflow-hidden">
+              <table className="dense-table">
+                <thead><tr>
+                  <th title="Planned finish has passed but the activity is not complete.">Overdue</th>
+                  <th>Code</th><th>Description</th><th>Trade</th>
+                  <th>Plan start</th><th>Plan finish</th>
+                  <th>Impacted Start</th><th>Impacted Finish</th><th>Slip (wd)</th>
+                  <th>Rem Float</th><th>%</th><th>Status</th>
+                </tr></thead>
+                <tbody>{paperRows.map(renderRow)}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
         </>
       )}
 
       {view === "gantt" && (
-        <GanttView rows={rows} days={days} onRefresh={refresh} />
+        <GanttView rows={rows.filter((t) => !isPaperwork(t))} days={days} onRefresh={refresh} />
       )}
     </div>
   );

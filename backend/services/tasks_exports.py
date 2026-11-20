@@ -328,6 +328,13 @@ LOOKAHEAD_COLUMNS: list[tuple[str, str]] = [
 ]
 
 
+# Paperwork work categories: listed apart from the field work in the
+# look-ahead table export (by category only, never by name).
+LOOKAHEAD_PAPERWORK = {"preconstruction_paperwork", "construction_paperwork", "closeout_paperwork"}
+PAPERWORK_SECTION_TITLE = ("Paperwork in this window "
+                           "(submittals, shop drawings, fabrication and delivery - not field work)")
+
+
 async def gather_lookahead_for_export(
     *, tenant_id: str, project_id: str, days: int = 14,
     start_date: Optional[date] = None,
@@ -551,11 +558,19 @@ async def gather_lookahead_for_export(
             # so _render_xlsx / _render_pdf can still tint at-risk rows
             # via the at_risk_key="at_risk_flag" pass-through.
             "at_risk_flag":         at_risk,
+            "paperwork":            (t.get("work_category") or "") in LOOKAHEAD_PAPERWORK,
         })
 
+    # Look-ahead rows vs paperwork (2026-11-20): the table lists the field
+    # work; submittals, shop drawings, fabrication and delivery go in their
+    # own "Paperwork in this window" section, as on the look-ahead page.
+    paperwork_rows = [r for r in rows if r["paperwork"]]
+    rows = [r for r in rows if not r["paperwork"]]
     return {
         "project": proj,
         "rows": rows,
+        "paperwork_rows": paperwork_rows,
+        "paperwork_count": len(paperwork_rows),
         "count": len(rows),
         "at_risk_count": at_risk_count,
         "tenant_id": tenant_id,
@@ -595,10 +610,13 @@ def render_lookahead_xlsx(payload: dict) -> bytes:
         header_subtitle=(
             f"Project: {(payload.get('project') or {}).get('name') or '—'} | "
             f"Look-ahead: {payload.get('window_start')} to {payload.get('window_end')} | "
-            f"Tasks: {payload.get('count', 0)} | "
+            f"Field activities: {payload.get('count', 0)} | "
+            f"Paperwork: {payload.get('paperwork_count', 0)} | "
             f"At-risk: {payload.get('at_risk_count', 0)}"
         ),
         at_risk_key="at_risk_flag",
+        extra_sections=([(PAPERWORK_SECTION_TITLE, payload["paperwork_rows"])]
+                        if payload.get("paperwork_rows") else None),
     )
 
 
@@ -606,6 +624,7 @@ def _render_xlsx(
     *, rows: list[dict], columns: list[tuple[str, str]],
     sheet_title: str, header_subtitle: str,
     at_risk_key: Optional[str] = None,
+    extra_sections: Optional[list] = None,
 ) -> bytes:
     """Shared XLSX renderer. Frozen header, bold header row, auto-fit
     columns. When at_risk_key is set, rows with truthy values in that
@@ -660,6 +679,29 @@ def _render_xlsx(
             set_text_cell(cell, val)
             if flagged:
                 cell.fill = at_risk_fill
+
+    # Extra titled sections below the main table (same columns), e.g. the
+    # look-ahead's paperwork list.
+    next_row = 3 + len(rows) + 1
+    for title, sec_rows in (extra_sections or []):
+        set_text_cell(ws.cell(row=next_row, column=1), title)
+        ws.cell(row=next_row, column=1).font = Font(bold=True, color="1A2845")
+        next_row += 1
+        for ci, (_, label) in enumerate(columns, start=1):
+            cell = ws.cell(row=next_row, column=ci, value=label)
+            cell.font = header_font
+            cell.fill = header_fill
+        next_row += 1
+        for row in sec_rows:
+            flagged = at_risk_key and bool(row.get(at_risk_key))
+            for ci, (key, _) in enumerate(columns, start=1):
+                val = row.get(key)
+                cell = ws.cell(row=next_row, column=ci)
+                set_text_cell(cell, "" if val is None else val)
+                if flagged:
+                    cell.fill = at_risk_fill
+            next_row += 1
+        next_row += 1
 
     # Freeze header: row 1 (subtitle) + row 2 (header) frozen.
     ws.freeze_panes = "A3"
@@ -719,7 +761,8 @@ def render_lookahead_pdf(payload: dict) -> bytes:
         "project_name": proj.get("name") or "—",
         "contract":    proj.get("contract_number") or "—",
         "generated_at": payload.get("generated_at", ""),
-        "count_label": f"Tasks in window: {payload.get('count', 0)}",
+        "count_label": (f"Field activities in window: {payload.get('count', 0)} | "
+                        f"Paperwork: {payload.get('paperwork_count', 0)}"),
         "extra_label": (
             f"Look-ahead: {format_date_mmddyyyy(payload.get('window_start'))} to "
             f"{format_date_mmddyyyy(payload.get('window_end'))} | At-risk: "
@@ -731,6 +774,8 @@ def render_lookahead_pdf(payload: dict) -> bytes:
         columns=LOOKAHEAD_COLUMNS, cover=cover,
         project_name=cover["project_name"],
         at_risk_key="at_risk_flag",
+        extra_sections=([(PAPERWORK_SECTION_TITLE, payload["paperwork_rows"])]
+                        if payload.get("paperwork_rows") else None),
     )
 
 
@@ -738,6 +783,7 @@ def _render_pdf(
     *, rows: list[dict], columns: list[tuple[str, str]],
     cover: dict, project_name: str,
     at_risk_key: Optional[str] = None,
+    extra_sections: Optional[list] = None,
 ) -> bytes:
     """Shared PDF renderer. Landscape orientation; cover page +
     paginated table; page footer with N of M + project name.
@@ -768,6 +814,10 @@ def _render_pdf(
             lines.append(" | ".join(
                 str(r.get(key) or "") for key, _ in columns
             ))
+        for title, sec_rows in (extra_sections or []):
+            lines += ["", title]
+            for r in sec_rows[:1000]:
+                lines.append(" | ".join(str(r.get(key) or "") for key, _ in columns))
         return ("\n".join(lines)).encode("utf-8")
 
     # Build the HTML.
@@ -775,19 +825,26 @@ def _render_pdf(
         f"<th>{_html.escape(str(label))}</th>"
         for _, label in columns
     )
-    body_rows = ""
-    for r in rows:
-        flagged = (
-            at_risk_key and bool(r.get(at_risk_key))
-        )
-        cls = " class='at-risk'" if flagged else ""
-        # CPM Part G -- pass the column key so date cells render
-        # MM/DD/YYYY (see _PDF_DATE_COLUMN_KEYS).
-        cells = "".join(
-            f"<td>{_format_cell_html(r.get(key), key)}</td>"
-            for key, _ in columns
-        )
-        body_rows += f"<tr{cls}>{cells}</tr>"
+    def _body(rs):
+        out = ""
+        for r in rs:
+            flagged = at_risk_key and bool(r.get(at_risk_key))
+            cls = " class='at-risk'" if flagged else ""
+            # CPM Part G -- pass the column key so date cells render
+            # MM/DD/YYYY (see _PDF_DATE_COLUMN_KEYS).
+            cells = "".join(
+                f"<td>{_format_cell_html(r.get(key), key)}</td>"
+                for key, _ in columns
+            )
+            out += f"<tr{cls}>{cells}</tr>"
+        return out
+    body_rows = _body(rows)
+    extra_tables = "".join(
+        f"<h2 class='section-title'>{_html.escape(title)}</h2>"
+        f"<table class='data-table'><thead><tr>{head_cells}</tr></thead>"
+        f"<tbody>{_body(sec_rows)}</tbody></table>"
+        for title, sec_rows in (extra_sections or [])
+    )
 
     extra_html = ""
     if cover.get("extra_label"):
@@ -819,6 +876,7 @@ def _render_pdf(
           <thead><tr>{head_cells}</tr></thead>
           <tbody>{body_rows}</tbody>
         </table>
+        {extra_tables}
       </section>
     </body></html>
     """
@@ -905,6 +963,10 @@ def _render_pdf(
       }}
       table.data-table tbody tr.at-risk td {{
         background: #fee2e2;
+      }}
+      h2.section-title {{
+        font-size: 10pt;
+        margin: 14px 0 6px 0;
       }}
     """
 

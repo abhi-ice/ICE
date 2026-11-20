@@ -177,6 +177,32 @@ def test_submit_keeps_imported_actuals(recompute_calls):
     _run(body)
 
 
+def test_imported_start_kept_and_reports_supply_finish(recompute_calls):
+    """A schedule update gave the actual start but no finish: later reports
+    never move the start, and they set the finish once the work hits 100%."""
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid = await _project(db, tenant)
+        tid = await _task(db, tenant, pid, 100, status="complete", actual_start="2026-10-08",
+                          actuals_source="schedule_update")
+        d09 = await _report(db, tenant, pid, "2026-11-09")
+        d12 = await _report(db, tenant, pid, "2026-11-12")
+        await _row(db, d09, tid, 40, 70, hours=8)
+        await _row(db, d12, tid, 70, 100, hours=8)
+
+        await drr.submit_daily_report(d09, drr.SubmitPayload(), ctx)
+        t = await _get(db, tenant, tid)
+        assert t["actual_start"] == "2026-10-08" and t["actuals_source"] == "schedule_update"
+
+        await drr.submit_daily_report(d12, drr.SubmitPayload(), ctx)
+        t = await _get(db, tenant, tid)
+        assert t["actual_start"] == "2026-10-08"
+        assert t["actuals_source"] == "schedule_update"
+        assert t["actual_finish"] == "2026-11-12"
+        assert t["pct_complete"] == 100
+    _run(body)
+
+
 def test_report_without_task_rows_skips_recompute(recompute_calls):
     async def body(db, tenant):
         pid = await _project(db, tenant)
