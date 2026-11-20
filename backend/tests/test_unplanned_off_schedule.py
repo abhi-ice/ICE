@@ -188,7 +188,18 @@ def test_lookahead_and_exports_leave_out_overhead():
         assert _codes(la) == {"S-1", "SD"}
         pay = await tasks_exports.gather_lookahead_for_export(
             tenant_id=tenant, project_id=pid, days=14, start_date=date(2026, 11, 18))
-        assert _codes(pay["rows"]) == {"S-1", "SD"}
+        # field work in the table; paperwork in its own section
+        assert _codes(pay["rows"]) == {"S-1"}
+        assert _codes(pay["paperwork_rows"]) == {"SD"}
+        assert pay["count"] == 1 and pay["paperwork_count"] == 1
+        for blob in (tasks_exports.render_lookahead_xlsx(pay), tasks_exports.render_lookahead_pdf(pay)):
+            assert blob[:4] in (b"PK\x03\x04", b"%PDF") or b"Paperwork in this window" in blob
+        import io
+        from openpyxl import load_workbook
+        ws = load_workbook(io.BytesIO(tasks_exports.render_lookahead_xlsx(pay))).active
+        vals = [c for r in ws.iter_rows(values_only=True) for c in r if c]
+        assert any("Paperwork in this window" in str(v) for v in vals)
+        assert vals.index("SD") > vals.index("S-1")
         g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=date(2026, 11, 23))
         assert {r["code"] for r in g["rows"]} == {"S-1"}
         assert not any("General Conditions" in n or "Project Management" in n for n in g["notes"])

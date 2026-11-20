@@ -246,7 +246,10 @@ def test_lookahead_skips_overdue_paperwork_but_keeps_in_window_paperwork():
         payload = await tasks_exports.gather_lookahead_for_export(
             tenant_id=tenant, project_id=pid, days=14, start_date=date(2026, 11, 16))
         ecodes = set(_codes(payload["rows"]))
-        assert "PW_LATE" not in ecodes and {"PW_IN", "FW_LATE"} <= ecodes
+        pcodes = set(_codes(payload["paperwork_rows"]))
+        # in-window paperwork is listed in its own section, never as a field row
+        assert "PW_LATE" not in ecodes | pcodes and "FW_LATE" in ecodes
+        assert "PW_IN" in pcodes and "PW_IN" not in ecodes
     _run(body)
 
 

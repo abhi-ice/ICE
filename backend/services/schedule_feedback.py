@@ -339,7 +339,12 @@ async def recompute_task_actuals(db, tenant_id: str, task_id: str,
     )
     if not task:
         return {}
-    if task.get("actual_start") and task.get("actuals_source") != "daily_report":
+    # An actual start that came from somewhere else (a schedule update, MS
+    # Project, or a person) is never replaced. If that source gave no actual
+    # finish yet, daily reports still supply the finish when the work reaches
+    # 100% (2026-11-20).
+    keep_start = bool(task.get("actual_start")) and task.get("actuals_source") != "daily_report"
+    if keep_start and task.get("actual_finish"):
         return {}
     # Actual dates a person set by hand on the schedule are kept too.
     if task.get("actuals_source") == "manual" and task.get("actual_finish"):
@@ -373,6 +378,13 @@ async def recompute_task_actuals(db, tenant_id: str, task_id: str,
             prev_eod = eod
     a_start = min(worked).isoformat() if worked else None
     a_finish = finish.isoformat() if finish else None
+    if keep_start:
+        # Only the finish comes from the reports; the start and its source stay.
+        if a_finish == task.get("actual_finish"):
+            return {}
+        upd = {"actual_finish": a_finish}
+        await db.tasks.update_one(tenant_filter(tenant_id, {"id": task_id}), {"$set": upd})
+        return upd
     upd = {"actual_start": a_start, "actual_finish": a_finish,
            "actuals_source": "daily_report" if a_start else None}
     if (task.get("actual_start"), task.get("actual_finish")) != (a_start, a_finish):

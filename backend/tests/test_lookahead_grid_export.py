@@ -181,7 +181,8 @@ def test_table_export_plan_start_and_predecessor_risk():
         ])
         pay = await tasks_exports.gather_lookahead_for_export(
             tenant_id=tenant, project_id=pid, days=14, start_date=date(2026, 11, 18))
-        rows = {r["activity_code"]: r for r in pay["rows"]}
+        # field work and the paperwork section together
+        rows = {r["activity_code"]: r for r in pay["rows"] + pay["paperwork_rows"]}
         # "Plan start" is the planned start, never the forecast start
         assert rows["A-2"]["planned_start"] == "2026-11-12"
         assert rows["A-2"]["impacted_start"] == "2026-11-18"
