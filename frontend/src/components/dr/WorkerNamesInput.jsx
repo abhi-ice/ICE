@@ -4,7 +4,7 @@
 // count doesn't erase them) but only the first `count` are saved.
 import { useEffect, useRef, useState } from "react";
 
-export const MAX_NAME_BOXES = 200;
+export const MAX_NAME_BOXES = 500;
 
 export function fitNames(names, count) {
   const n = Math.max(0, Math.min(MAX_NAME_BOXES, parseInt(count, 10) || 0));
@@ -18,8 +18,17 @@ export function cleanNames(names, count) {
 }
 
 export function missingNames(names, count) {
-  return cleanNames(names, count).filter((x) => !x).length;
+  // Workers beyond the box limit can't be named here: count them as missing.
+  const over = Math.max(0, (parseInt(count, 10) || 0) - MAX_NAME_BOXES);
+  return cleanNames(names, count).filter((x) => !x).length + over;
 }
+
+// Starting worker count for an edit screen: never below the names saved,
+// so opening the editor never drops a name the supervisor typed.
+export function editStartCount(crew) {
+  return Math.max(Number(crew?.headcount) || 0, (crew?.worker_names || []).length, 1);
+}
+
 
 // Controlled (value + onChange) or save-on-leave (value + onCommit).
 export default function WorkerNamesInput({

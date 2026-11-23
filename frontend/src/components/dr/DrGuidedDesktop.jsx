@@ -29,7 +29,7 @@ import "./drGuidedDesktop.css";
 import { sectionLabel } from "../../lib/sectionLabel";
 import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
 import { noWorkHeading } from "../../lib/noWorkDay";
-import { cleanNames, missingNames } from "./WorkerNamesInput";
+import { cleanNames, missingNames, editStartCount } from "./WorkerNamesInput";
 import { downloadCrewSignIn, SIGN_IN_LABELS } from "../../lib/crewSignIn";
 import {
   clampToProgressLimits, progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
@@ -561,16 +561,18 @@ export default function DrGuidedDesktop({
     save: "Save names", saving: "Saving…",
     steps: [
       { q: "How many workers?", gloss: "Workers on this activity. Lowering it drops the last names.",
-        fields: [{ k: "hc", label: "Workers", t: "stepper", def: Number(c.headcount) || 1, min: 1, stp: 1, req: 1 }] },
+        fields: [{ k: "hc", label: "Workers", t: "stepper", def: editStartCount(c), min: 1, stp: 1, req: 1 }] },
       { q: "Worker names", gloss: "One name per worker, for the sign-in sheet and certified payroll.",
         fields: [{ k: "names", label: "Worker names", t: "names", countKey: "hc", req: 1, def: [...(c.worker_names || [])] }] },
     ],
     onSave: async (a) => {
       if (needReason()) throw new Error("reason");
       const hc = Number(a.hc) || 1;
-      const res = await api.patch(`/daily-presence/${c.id}`, {
-        headcount: hc, worker_names: cleanNames(a.names, hc).filter(Boolean),
-      }).catch((e) => { toast.error(fmtErr(e, "Edit crew")); throw e; });
+      const body = { worker_names: cleanNames(a.names, hc).filter(Boolean) };
+      // Only send the count when it was changed, so a names-only edit
+      // never changes the crew's hours.
+      if (hc !== editStartCount(c)) body.headcount = hc;
+      const res = await api.patch(`/daily-presence/${c.id}`, body).catch((e) => { toast.error(fmtErr(e, "Edit crew")); throw e; });
       savedToast(res, "Crew updated.");
       touch(m.row.id);
       reload();
@@ -1402,8 +1404,10 @@ export default function DrGuidedDesktop({
                   {m.crew.map((c) => (
                     <span className="crewchip" key={c.id}>
                       <button type="button" className="crewedit" data-testid={`crew-edit-${c.id}`}
-                        title="Edit workers and names"
-                        onClick={() => openFlow(FLOW_crewEdit(m, c))}>
+                        title={locked ? "Report submitted: names can't be changed here" : "Edit workers and names"}
+                        onClick={() => (locked
+                          ? toast.info("This report was already submitted, so crew names can't be changed here. Write them on the printed sign-in sheet.")
+                          : openFlow(FLOW_crewEdit(m, c)))}>
                         {[c.company_name || "(company not named)", c.trade].filter(Boolean).join(" · ")} · {c.headcount} × {c.hours_per_person}h
                         {(c.worker_names || []).length ? ` · ${trunc(c.worker_names.join(", "), 60)}` : ""}
                         {missingNames(c.worker_names, c.headcount) > 0 && (

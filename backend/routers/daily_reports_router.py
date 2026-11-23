@@ -1,6 +1,7 @@
 """Daily-report router. Master prompt §10: pre-populate from 2WLA at 7am."""
 import logging
 import re
+import unicodedata
 import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pymongo.errors import DuplicateKeyError
@@ -2629,8 +2630,9 @@ async def list_presence(daily_report_id: str, ctx: dict = Depends(require_tenant
 def _clean_worker_names(names, headcount=None) -> list:
     """Trim each name, drop blanks, cap the length. Never refuses a save
     (offline saves must always go through), so odd input is tidied, not
-    rejected: a single text value is split on commas or line breaks, and
-    anything that is not text or a number is dropped. When the crew has a
+    rejected: a single text value is split on commas, semicolons or line
+    breaks, and anything that is not text or a number is dropped (invisible
+    formatting characters too). When the crew has a
     worker count, extra names beyond it are dropped so the names always
     match the workers."""
     if names is None:
@@ -2643,7 +2645,10 @@ def _clean_worker_names(names, headcount=None) -> list:
     for n in names:
         if isinstance(n, bool) or not isinstance(n, (str, int, float)):
             continue
-        n = " ".join(str(n).split())[:100]
+        if isinstance(n, float) and (n != n or n in (float("inf"), float("-inf"))):
+            continue
+        n = "".join(ch for ch in str(n) if unicodedata.category(ch) != "Cf")
+        n = " ".join(n.split())[:100]
         if n:
             out.append(n)
     try:
@@ -2797,6 +2802,10 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     ensure_can_change_draft(ctx, dr)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
+    if "worker_names" in updates and not isinstance(updates["worker_names"], (list, tuple, str)):
+        # A value that isn't a list or text can't be names: leave the saved
+        # names alone rather than wiping them (the save still goes through).
+        updates.pop("worker_names")
     if "worker_names" in updates or ("headcount" in updates and doc.get("worker_names")):
         # Names follow the worker count: lowering the count drops the extra
         # names, so the sign-in sheet never lists more people than worked.
@@ -3211,6 +3220,12 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
 # ============================================================
 # Crew sign-in sheet + payroll hours (Excel), from the crew rows
 # ============================================================
+# At most two sign-in workbooks are built at once, so a burst of large
+# exports can't tie up every server thread.
+import asyncio as _asyncio
+_CREW_EXPORT_SLOTS = _asyncio.Semaphore(2)
+
+
 @router.get("/projects/{project_id}/crew-sign-in/export")
 async def export_crew_sign_in(
     project_id: str, start: date, end: date,
@@ -3221,7 +3236,7 @@ async def export_crew_sign_in(
     worker for certified payroll. Read only."""
     from fastapi.responses import Response
     from starlette.concurrency import run_in_threadpool
-    from services.crew_signin_export import build_workbook, worker_lines
+    from services.crew_signin_export import build_workbook, worker_lines, worker_line_count
     from services.http_download import attachment_disposition
     if end < start:
         raise HTTPException(422, "The end date is before the start date.")
@@ -3252,9 +3267,8 @@ async def export_crew_sign_in(
     ).to_list(len(task_ids) or 1) if task_ids else []
     label = {t["id"]: (t.get("description") or t.get("name") or "") for t in tasks}
     status_by_report = {r["id"]: r.get("status") for r in reports}
-    total_workers = sum(min(max(int(float(c.get("headcount") or 0)), len(c.get("worker_names") or [])), 500)
-                        for c in crews)
-    if total_workers > 100000:
+    total_workers = sum(worker_line_count(c) for c in crews)
+    if total_workers > 30000:
         raise HTTPException(422, "Too many workers in this period for one file. Pick a shorter period.")
 
     def _build() -> bytes:
@@ -3269,7 +3283,8 @@ async def export_crew_sign_in(
 
     # Building the workbook is processor work: keep it off the server's main
     # loop so other people's requests are not held up while it runs.
-    blob = await run_in_threadpool(_build)
+    async with _CREW_EXPORT_SLOTS:
+        blob = await run_in_threadpool(_build)
     fn = f"{project.get('name') or 'Project'} - Crew sign-in and payroll hours {start.isoformat()} to {end.isoformat()}.xlsx"
     fn = re.sub(r'[\\/:*?"<>|]+', "", fn)
     return Response(

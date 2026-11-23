@@ -16,6 +16,7 @@ import { useState, useEffect, useRef } from "react";
 import { Download, Loader2 } from "lucide-react";
 import api from "../lib/api";
 import { toast } from "./ui/sonner";
+import { dispositionFilename } from "../lib/download";
 
 // Menu-item label for a format value. File-format acronyms stay uppercase
 // (PDF, XLSX); word-like formats (internal, external) render title-case.
@@ -43,6 +44,19 @@ export default function ExportDropdown({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const wrapperRef = useRef(null);
+  const menuRef = useRef(null);
+  const [shift, setShift] = useState(0);
+
+  // Keep the open menu fully on screen (narrow phones, long labels).
+  useEffect(() => {
+    if (!open) { setShift(0); return; }
+    const el = menuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    if (r.left < 8) setShift(8 - r.left);
+    else if (r.right > vw - 8) setShift(vw - 8 - r.right);
+  }, [open]);
 
   // Close on outside click so the menu doesn't get stuck open.
   useEffect(() => {
@@ -69,8 +83,8 @@ export default function ExportDropdown({
         || res.headers?.["Content-Disposition"]
         || "";
       let filename = filenameHint ? filenameHint(fmt) : `export.${fmt}`;
-      const m = cd.match(/filename="?([^";]+)"?/i);
-      if (m && m[1]) filename = m[1];
+      const named = dispositionFilename(cd);
+      if (named) filename = named;
       // Force a DOWNLOAD, not an in-browser preview. Re-wrap the bytes as
       // application/octet-stream: mobile Safari (iOS) ignores the `download`
       // attribute for a blob whose type is application/pdf and opens the PDF
@@ -120,6 +134,8 @@ export default function ExportDropdown({
       {open && !busy && (
         <div
           data-testid={`${testidPrefix}-menu`}
+          ref={menuRef}
+          style={shift ? { transform: `translateX(${shift}px)` } : undefined}
           className={`absolute right-0 mt-1 ${labels ? `w-72 max-w-[calc(100vw-2rem)]${menuAlign === "right" ? "" : " max-md:left-0 max-md:right-auto"}` : "w-36"} bg-white border border-slate-200 rounded shadow-lg z-10`}
         >
           {formats.map((fmt) => (

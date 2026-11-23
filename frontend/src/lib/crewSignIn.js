@@ -3,6 +3,7 @@
 // "week" = Monday to Sunday around it (a payroll week).
 import api from "./api";
 import { toast } from "../components/ui/sonner";
+import { dispositionFilename } from "./download";
 
 function iso(d) { return d.toISOString().slice(0, 10); }
 
@@ -34,8 +35,7 @@ export async function downloadCrewSignIn(projectId, reportDate, kind) {
   try {
     const res = await api.get(url, { responseType: "blob" });
     const cd = res.headers?.["content-disposition"] || "";
-    const m = cd.match(/filename="?([^";]+)"?/i);
-    const name = (m && m[1]) || `crew_sign_in_${String(reportDate).slice(0, 10)}.xlsx`;
+    const name = dispositionFilename(cd) || `crew_sign_in_${String(reportDate).slice(0, 10)}.xlsx`;
     const blobUrl = URL.createObjectURL(new Blob([res.data], { type: "application/octet-stream" }));
     const a = document.createElement("a");
     a.href = blobUrl; a.download = name;

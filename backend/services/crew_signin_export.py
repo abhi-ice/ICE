@@ -37,32 +37,57 @@ _DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MAX_LINES_PER_CREW = 500
 
 
+def _clean_names(crew: dict) -> list[str]:
+    return [str(n).strip() for n in (crew.get("worker_names") or []) if str(n or "").strip()]
+
+
+def _headcount(crew: dict) -> int:
+    try:
+        return max(0, int(float(crew.get("headcount") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def worker_line_count(crew: dict) -> int:
+    """How many sign-in lines a crew row gives: its worker count, or the
+    number of names when no count was entered, capped per crew."""
+    hc = _headcount(crew)
+    return min(hc if hc > 0 else len(_clean_names(crew)), MAX_LINES_PER_CREW)
+
+
 def worker_lines(report_date: str, crew: dict, task_label: str = "", locked: bool = False) -> list[dict]:
     """One line per worker on a crew row. Names come first; any workers
     beyond the names typed get a "Name not entered" line of their own
     (numbered, so two unnamed workers never merge into one person). The
     worker count decides how many lines there are, so the hours always
     match the report; with no count, each name is one worker."""
-    names = [str(n).strip() for n in (crew.get("worker_names") or []) if str(n or "").strip()]
-    try:
-        headcount = int(float(crew.get("headcount") or 0))
-    except (TypeError, ValueError):
-        headcount = 0
-    count = headcount if headcount > 0 else len(names)
-    count = min(count, MAX_LINES_PER_CREW)
+    names = _clean_names(crew)
+    headcount = _headcount(crew)
+    count = worker_line_count(crew)
     try:
         hours = float(crew.get("hours_per_person") or 0)
     except (TypeError, ValueError):
         hours = 0.0
+    if headcount == 0:
+        # Names but no worker count: the report counts 0 hours for this
+        # crew, so the sign-in lines carry 0 hours too (totals match).
+        hours = 0.0
+    # The same name twice on one crew is two people: number the repeats so
+    # the payroll sheet keeps them apart.
+    seen: dict[str, int] = {}
+    labels = []
+    for n in names[:count]:
+        seen[n] = seen.get(n, 0) + 1
+        labels.append(n if seen[n] == 1 else f"{n} ({seen[n]})")
     company = crew.get("company_name") or crew.get("sub_name") or ""
     out = []
     for i in range(count):
-        named = i < len(names)
+        named = i < len(labels)
         out.append({
             "date": report_date,
             "company": company,
             "trade": crew.get("trade") or "",
-            "name": names[i] if named else f"{MISSING_NAME} (worker {i + 1} of {count})",
+            "name": labels[i] if named else f"{MISSING_NAME} (worker {i + 1} of {count})",
             "named": named,
             "hours": hours,
             "task": task_label,
@@ -93,7 +118,7 @@ def build_workbook(project_name: str, start: date, end: date, lines: list[dict])
     # ---- Sheet 1: sign-in sheet ----
     ws = wb.active
     ws.title = "Sign-in sheet"
-    ws["A1"] = f"{project_name}: crew sign-in sheet"
+    set_text_cell(ws["A1"], f"{project_name}: crew sign-in sheet")
     ws["A1"].font = Font(name="Arial", bold=True, size=13)
     ws["A2"] = f"Period: {period}. From the crews logged on the daily reports."
     ws["A2"].font = _BODY_FONT
@@ -127,7 +152,7 @@ def build_workbook(project_name: str, start: date, end: date, lines: list[dict])
 
     # ---- Sheet 2: payroll hours by worker and week ----
     ps = wb.create_sheet("Payroll hours")
-    ps["A1"] = f"{project_name}: hours by worker, by week"
+    set_text_cell(ps["A1"], f"{project_name}: hours by worker, by week")
     ps["A1"].font = Font(name="Arial", bold=True, size=13)
     ps["A2"] = (f"Period: {period}. Use with your payroll records for certified payroll; "
                 "wage rates and classifications are not tracked here.")

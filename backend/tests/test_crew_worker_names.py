@@ -99,6 +99,18 @@ def test_names_saved_trimmed_and_editable():
             assert r2.worker_names == want, (raw, r2.worker_names)
             r2 = await drr.patch_presence(r2.id, DailyPresenceUpdate(worker_names=raw), ctx)
             assert r2.worker_names == want
+        # A value that can't be names leaves the saved names alone.
+        r3 = await drr.create_presence(dr, DailyPresenceCreate(
+            daily_report_id=dr, trade="Labor", headcount=2, hours_per_person=8,
+            worker_names=["Kim Ho", "Al Jo"]), ctx)
+        for bad in (42, True, {"a": 1}):
+            r3 = await drr.patch_presence(r3.id, DailyPresenceUpdate(worker_names=bad), ctx)
+            assert r3.worker_names == ["Kim Ho", "Al Jo"]
+        # Invisible formatting characters don't count as a name.
+        r4 = await drr.create_presence(dr, DailyPresenceCreate(
+            daily_report_id=dr, trade="Labor", headcount=2, hours_per_person=8,
+            worker_names=["\u200b", "Zoe\u200d Li"]), ctx)
+        assert r4.worker_names == ["Zoe Li"]
         # Old rows (no field at all) read back as an empty list.
         await db.daily_presence.update_one({"id": row.id}, {"$unset": {"worker_names": ""}})
         listed = await drr.list_presence(dr, ctx)
@@ -134,6 +146,21 @@ def test_workbook_text_safe_and_unnamed_rows_separate():
     # Two unnamed workers stay two rows of 8 hours, never one row of 16.
     assert len(pay) == 3 and all(r[4] == 8 for r in pay)
     assert ps.cell(row=5, column=2).data_type == "s"
+
+
+def test_titles_text_duplicates_and_zero_count():
+    from services.crew_signin_export import build_workbook
+    lines = worker_lines("2026-11-23", {"id": "c1", "headcount": 2, "hours_per_person": 8,
+                                        "worker_names": ["Bob", "Bob"]})
+    assert [ln["name"] for ln in lines] == ["Bob", "Bob (2)"]
+    # No worker count: names listed with 0 hours, matching the report total.
+    zero = worker_lines("2026-11-23", {"headcount": 0, "hours_per_person": 8, "worker_names": ["A"]})
+    assert len(zero) == 1 and zero[0]["hours"] == 0
+    blob = build_workbook("=HYPERLINK(\"http://x\",\"y\")", date(2026, 11, 23), date(2026, 11, 23), lines)
+    wb = load_workbook(io.BytesIO(blob))
+    assert wb["Sign-in sheet"]["A1"].data_type == "s" and wb["Payroll hours"]["A1"].data_type == "s"
+    pay = [r for r in wb["Payroll hours"].iter_rows(min_row=5, values_only=True) if r[0] and r[1]]
+    assert len(pay) == 2 and all(r[4] == 8 for r in pay)
 
 
 def test_export_sign_in_and_payroll():
