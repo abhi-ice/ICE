@@ -1467,6 +1467,9 @@ class DailyPresenceCreate(StrictModel):
     shift: Optional[PresenceShift] = "first"
     schedule_activity_id: Optional[str] = None  # link to specific task
     sub_name: Optional[str] = None      # alias the spec uses; we'll fill company_name from this if provided
+    # One name per worker, for the sign-in sheet and certified payroll.
+    # Optional so older screens, voice and offline saves still go through.
+    worker_names: Optional[List[str]] = None
 
 
 class DailyPresenceUpdate(StrictModel):
@@ -1481,6 +1484,7 @@ class DailyPresenceUpdate(StrictModel):
     shift: Optional[PresenceShift] = None
     schedule_activity_id: Optional[str] = None
     sub_name: Optional[str] = None
+    worker_names: Optional[List[str]] = None
 
 
 class DailyPresence(ReadModel):
@@ -1500,6 +1504,7 @@ class DailyPresence(ReadModel):
     shift: Optional[PresenceShift] = "first"
     schedule_activity_id: Optional[str] = None
     sub_name: Optional[str] = None
+    worker_names: List[str] = Field(default_factory=list)
     total_hours: float = 0.0  # computed at write time (headcount * hours_per_person)
     created_by: Optional[str] = None
     created_at: datetime

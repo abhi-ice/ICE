@@ -16,6 +16,7 @@
 //     fields:[{k,label,t,opts?,req?,ph?,def?,min?,stp?,mini?,tasks?}]}],
 //     onSave(answers) -> may return a Promise}
 import { useEffect, useMemo, useRef, useState } from "react";
+import WorkerNamesInput, { cleanNames, missingNames } from "./WorkerNamesInput";
 
 function hasVal(v) {
   if (v === undefined || v === null) return false;
@@ -36,9 +37,16 @@ function dispVal(v) {
   return String(v);
 }
 
-function FieldInput({ fd, value, showDone, onSet, onToggleDone, solo }) {
+function FieldInput({ fd, value, showDone, onSet, onToggleDone, solo, answers }) {
   const [filter, setFilter] = useState("");
   switch (fd.t) {
+    // One name box per worker; the count comes from another answer
+    // (fd.countKey), e.g. the "Workers" stepper on the crew flow.
+    case "names":
+      return (
+        <WorkerNamesInput count={(answers || {})[fd.countKey]} value={value}
+          onChange={(v) => onSet(fd.k, v)} inputClassName="gi" testid={`gf-${fd.k}`} />
+      );
     case "text":
       return (
         <input className="gi" value={value || ""} placeholder={fd.ph || ""}
@@ -222,7 +230,11 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
   const s = onSum ? null : vs[idx];
   const total = vs.length + 1;
 
-  const stepValid = (st) => !st || st.fields.every((fd) => !fd.req || hasVal(answers[fd.k]));
+  const fieldValid = (fd) => {
+    if (fd.t === "names") return !fd.req || missingNames(answers[fd.k], answers[fd.countKey]) === 0;
+    return !fd.req || hasVal(answers[fd.k]);
+  };
+  const stepValid = (st) => !st || st.fields.every(fieldValid);
   const canNext = onSum || stepValid(s);
 
   const set = (k, v) => { dirtyRef.current = true; setAnswers((p) => ({ ...p, [k]: v })); };
@@ -330,6 +342,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
       } else {
         filled.forEach((fd) => {
           let v = answers[fd.k];
+          if (fd.t === "names") v = cleanNames(v, answers[fd.countKey]).filter(Boolean);
           if (fd.opts && fd.opts.length && typeof fd.opts[0] === "object") {
             const toLabel = (val) => { const o = fd.opts.find((x) => x.value === val); return o ? o.label : val; };
             v = Array.isArray(v) ? v.map(toLabel) : toLabel(v);
@@ -382,7 +395,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
             {s.fields.map((fd) => {
               const solo = s.fields.length === 1;
               const input = (
-                <FieldInput key={fd.k} fd={fd} value={answers[fd.k]} solo={solo}
+                <FieldInput key={fd.k} fd={fd} value={answers[fd.k]} solo={solo} answers={answers}
                   showDone={showDone} onSet={set} onToggleDone={() => setShowDone((v) => !v)} />
               );
               if (solo) return input;

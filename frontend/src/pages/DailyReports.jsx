@@ -116,6 +116,21 @@ import { isFieldCreatedCode } from "../lib/fieldActivityCode";
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
 import { noWorkHeading } from "../lib/noWorkDay";
+import WorkerNamesInput, { cleanNames, missingNames } from "../components/dr/WorkerNamesInput";
+import { signInUrl, SIGN_IN_LABELS } from "../lib/crewSignIn";
+
+// Names on a saved crew card; flags workers whose names are still missing.
+function CrewNamesLine({ names, headcount }) {
+  const list = (names || []).filter(Boolean);
+  const blank = Math.max(0, (Number(headcount) || 0) - list.length);
+  if (!list.length && !blank) return null;
+  return (
+    <div className="text-xs" data-testid="crew-names-line" style={{ color: "var(--v4-fg-secondary)" }}>
+      {list.join(", ")}
+      {blank > 0 && <span className="wn-warn">{list.length ? " · " : ""}{blank} name{blank === 1 ? "" : "s"} missing</span>}
+    </div>
+  );
+}
 
 const RENOVATION_TYPES = ["renovation", "tenant_improvement"];
 
@@ -2416,7 +2431,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     }
   }
   const [drafts, setDrafts] = useState(() => (rows && rows.length === 0 && !locked)
-    ? [{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]
+    ? [{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "", worker_names: [] }]
     : []);
   // 2026-02-XX (Abhi) -- Subcontractor central repo integration.
   // pt.48 (2026-05-28): the Company dropdown now lists ONLY the subs
@@ -2441,7 +2456,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
     setDrafts((arr) => {
       const out = [...arr];
       while (out.length < draftsCount) {
-        out.push({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" });
+        out.push({ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "", worker_names: [] });
       }
       return out;
     });
@@ -2472,6 +2487,11 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
       toast.error("Trade is required");
       return false;
     }
+    const blankNames = missingNames(d.worker_names, d.headcount);
+    if (blankNames > 0) {
+      toast.error(blankNames === 1 ? "Type the name of every worker (1 name is blank)" : `Type the name of every worker (${blankNames} names are blank)`);
+      return false;
+    }
     setBusySaveIdx(idx);
     try {
       await api.post(`/daily-reports/${dailyReportId}/presence`, {
@@ -2479,6 +2499,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
         company_name: d.company_name?.trim() || "",
         headcount: Number(d.headcount) || 0,
         hours_per_person: Number(d.hours_per_person) || 0,
+        worker_names: cleanNames(d.worker_names, d.headcount),
         notes: d.notes || "",
         schedule_activity_id: d.schedule_activity_id || null,
         shift: "first",
@@ -2502,7 +2523,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   const addAnotherRow = async () => {
     if (drafts.length === 0) {
       // Open one fresh draft.
-      setDrafts([{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "" }]);
+      setDrafts([{ trade: "", company_name: "", headcount: 0, hours_per_person: 8, notes: "", schedule_activity_id: "", worker_names: [] }]);
       draftIdsRef.current.push(`d_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
       setDraftsCount((n) => n + 1);
       return;
@@ -2561,8 +2582,8 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
   ];
 
   // Total column count for empty-state rowspan calc -- header below has:
-  // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Notes, actions = 8
-  const COL_COUNT = 8;
+  // Company, Trade, Task, Headcount, Hrs/person, Sub-total, Worker names, Notes, actions = 9
+  const COL_COUNT = 9;
 
   // MOBILE (approved mockup): saved crews render as display CARDS and the
   // editable table stays hidden until the super taps "Add crew" (or a card's
@@ -2648,6 +2669,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                   {Number(r.headcount) || 0} workers × {(Number(r.hours_per_person) || 0).toFixed(1)} h
                 </span>
               </div>
+              <CrewNamesLine names={r.worker_names} headcount={r.headcount} />
               <div className="flex items-center min-h-[20px]">
                 {/* mobile: task NAME only — no activity_code beside it (Sid). */}
                 <span className="text-xs truncate" style={{ color: "var(--v4-fg-muted)" }}>
@@ -2706,6 +2728,7 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
               <th>Headcount</th>
               <th>Hrs/person</th>
               <th>Sub-total</th>
+              <th title="One name per worker, for the sign-in sheet and certified payroll">Worker names</th>
               <th>Notes</th>
               <th></th>
             </tr>
@@ -2737,9 +2760,19 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       placeholder=""
                       options={taskSelectOptions} />
                   </td>
-                  <td><input type="number" defaultValue={r.headcount} onBlur={(e) => patch(r.id, { headcount: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
+                  <td><input type="number" defaultValue={r.headcount} onBlur={(e) => {
+                    const hc = Number(e.target.value) || 0;
+                    if (hc === (Number(r.headcount) || 0)) return;
+                    patch(r.id, { headcount: hc, worker_names: cleanNames(r.worker_names, hc).filter(Boolean) });
+                  }} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
                   <td><input type="number" inputMode="decimal" step="0.5" defaultValue={r.hours_per_person} onBlur={(e) => patch(r.id, { hours_per_person: Number(e.target.value) })} disabled={locked} className="w-20 px-2 py-1 dr-mp-input rounded text-sm tabular-nums" /></td>
                   <td className="tabular-nums text-sm">{(r.total_hours ?? (r.headcount || 0) * (r.hours_per_person || 0)).toFixed(1)}</td>
+                  <td>
+                    <WorkerNamesInput count={r.headcount} value={r.worker_names} disabled={locked}
+                      testid={`presence-names-${r.id}`}
+                      inputClassName="px-2 py-1 dr-mp-input rounded text-sm"
+                      onCommit={(names) => patch(r.id, { worker_names: names.filter(Boolean) })} />
+                  </td>
                   <td><input defaultValue={r.notes || ""} onBlur={(e) => patch(r.id, { notes: e.target.value })} disabled={locked} className="w-44 px-2 py-1 dr-mp-input rounded text-sm" /></td>
                   <td>
                     {!locked && <button data-testid={`presence-delete-${r.id}`} onClick={() => remove(r.id)} className="text-red-600 hover:bg-red-50 p-1 rounded" title="Remove row"><Trash2 className="h-3.5 w-3.5" /></button>}
@@ -2800,6 +2833,12 @@ function PresencePanel({ rows, dailyReportId, locked, reload, projectId, grid = 
                       className="w-20 px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm tabular-nums" />
                   </td>
                   <td className="tabular-nums text-sm text-slate-500">{subtotal.toFixed(1)}</td>
+                  <td>
+                    <WorkerNamesInput count={d.headcount} value={d.worker_names}
+                      testid={`presence-draft-names-${idx}`}
+                      inputClassName="px-2 py-1 dr-mp-input dr-mp-input--draft rounded text-sm"
+                      onChange={(v) => setDraftField(idx, "worker_names", v)} />
+                  </td>
                   <td>
                     <input data-testid={`presence-draft-notes-${idx}`} value={d.notes}
                       onChange={(e) => setDraftField(idx, "notes", e.target.value)}
@@ -6458,6 +6497,7 @@ function GuidedDrFlow({
                   title={(locked && !lockedReasonOk) ? "Enter the edit reason above first" : "Tap to remove"}>
                   <CheckCircle2 className="h-3.5 w-3.5 dr-flow-ck" />
                   {(p.company_name || p.trade)}{p.headcount ? ` · ${p.headcount}×${p.hours_per_person || 0}h` : ""}
+                  {(p.worker_names || []).length > 0 && <span className="dr-flow-crewnames"> · {p.worker_names.join(", ")}</span>}
                 </button>
               ))}
               {/* Crew add: available on a live DR, and on a locked/submitted DR
@@ -6834,9 +6874,14 @@ function DrFlowExport({ id, report, testidPrefix = "dr-flow-export" }) {
     <ExportDropdown
       label="Export"
       testidPrefix={testidPrefix}
-      formats={["internal", "external"]}
-      buildUrl={(mode) => `/daily-reports/${id}/pdf-rich?mode=${mode}`}
-      filenameHint={(mode) => `daily_report_${report?.report_date || "report"}_${mode}.pdf`}
+      formats={report?.project_id ? ["internal", "external", "signin_day", "signin_week"] : ["internal", "external"]}
+      labels={SIGN_IN_LABELS}
+      buildUrl={(mode) => (mode.startsWith("signin_")
+        ? signInUrl(report?.project_id, report?.report_date, mode === "signin_week" ? "week" : "day")
+        : `/daily-reports/${id}/pdf-rich?mode=${mode}`)}
+      filenameHint={(mode) => (mode.startsWith("signin_")
+        ? `crew_sign_in_${report?.report_date || "report"}.xlsx`
+        : `daily_report_${report?.report_date || "report"}_${mode}.pdf`)}
     />
   );
 }
@@ -7655,6 +7700,7 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
   const [trade, setTrade] = useState("");
   const [headcount, setHeadcount] = useState(3);
   const [hours, setHours] = useState(8);
+  const [names, setNames] = useState([]);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (!project?.id) return;
@@ -7669,6 +7715,8 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
   }, [project?.id]);
   const save = async () => {
     if (!trade.trim()) return toast.error("Trade is required");
+    const blankNames = missingNames(names, headcount);
+    if (blankNames > 0) return toast.error(blankNames === 1 ? "Type the name of every worker (1 name is blank)" : `Type the name of every worker (${blankNames} names are blank)`);
     setBusy(true);
     try {
       const res = await api.post(`/daily-reports/${id}/presence`, {
@@ -7676,6 +7724,7 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
         company_name: company.trim(),
         headcount: Number(headcount) || 0,
         hours_per_person: Number(hours) || 0,
+        worker_names: cleanNames(names, headcount),
         notes: "",
         schedule_activity_id: activity?.schedule_activity_id || null,
         shift: "first",
@@ -7727,6 +7776,10 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
             <button type="button" onClick={() => setHours((n) => Number(n) + 0.5)}>+</button>
           </div>
         </div>
+      </div>
+      <div className="dr-flow-fld">
+        <label>Worker names *</label>
+        <WorkerNamesInput count={headcount} value={names} onChange={setNames} testid="dr-flow-crew-names" />
       </div>
       <div className="dr-flow-sheet-foot">
         <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>

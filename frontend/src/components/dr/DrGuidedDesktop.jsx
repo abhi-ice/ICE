@@ -29,6 +29,8 @@ import "./drGuidedDesktop.css";
 import { sectionLabel } from "../../lib/sectionLabel";
 import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
 import { noWorkHeading } from "../../lib/noWorkDay";
+import { cleanNames } from "./WorkerNamesInput";
+import { downloadCrewSignIn, SIGN_IN_LABELS } from "../../lib/crewSignIn";
 import {
   clampToProgressLimits, progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
 } from "../../lib/progressLimits";
@@ -528,6 +530,8 @@ export default function DrGuidedDesktop({
       { q: "How big was the crew?", gloss: "Workers on this activity, and the hours each one worked.",
         fields: [{ k: "hc", label: "Workers", t: "stepper", def: 3, min: 1, stp: 1, req: 1 },
                  { k: "hr", label: "Hours each", t: "stepper", def: 8, min: 0.5, stp: 0.5, req: 1 }] },
+      { q: "Worker names", gloss: "One name per worker, for the sign-in sheet and certified payroll.",
+        fields: [{ k: "names", label: "Worker names", t: "names", countKey: "hc", req: 1 }] },
       { q: "Notes — optional", optional: 1, gloss: "Anything the office should know about this crew? Skip if not.",
         fields: [{ k: "cnotes", label: "Notes", t: "text", ph: "e.g. left early for another job at 2 PM" }] },
     ],
@@ -538,6 +542,7 @@ export default function DrGuidedDesktop({
       if (!m.row.schedule_activity_id) { toast.error("This activity has no linked schedule task"); throw new Error("no-task"); }
       const res = await api.post(`/daily-reports/${id}/presence`, {
         trade: a.trade, company_name: (a.co || "").trim(), headcount: Number(a.hc) || 1,
+        worker_names: cleanNames(a.names, Number(a.hc) || 1).filter(Boolean),
         hours_per_person: Number(a.hr) || 8, notes: (a.cnotes || "").trim(),
         schedule_activity_id: m.row.schedule_activity_id || null, shift: "first",
         daily_report_id: id, ...addReasonPatch,
@@ -1373,6 +1378,7 @@ export default function DrGuidedDesktop({
                   {m.crew.map((c) => (
                     <span className="crewchip" key={c.id}>
                       {[c.company_name || "(company not named)", c.trade].filter(Boolean).join(" · ")} · {c.headcount} × {c.hours_per_person}h
+                      {(c.worker_names || []).length ? ` · ${trunc(c.worker_names.join(", "), 60)}` : ""}
                       {c.notes ? ` · “${trunc(c.notes, 22)}”` : ""}
                       <button className="cx" title="Remove" onClick={async () => {
                         if (needReason()) return;
@@ -1730,6 +1736,8 @@ export default function DrGuidedDesktop({
               {clientTemplatePresent && (
                 <button onClick={() => { setExportOpen(false); onDownloadClientTemplate(); }}>Client template</button>
               )}
+              <button onClick={() => { setExportOpen(false); downloadCrewSignIn(report.project_id, report.report_date, "day"); }}>{SIGN_IN_LABELS.signin_day}</button>
+              <button onClick={() => { setExportOpen(false); downloadCrewSignIn(report.project_id, report.report_date, "week"); }}>{SIGN_IN_LABELS.signin_week}</button>
             </div>
             <button className="btn small" data-export-toggle onClick={() => { setExportOpen((v) => !v); setNotesOpen(false); }}>
               Export &#9662;

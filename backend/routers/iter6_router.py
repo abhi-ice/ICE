@@ -219,9 +219,10 @@ async def export_daily_report_pdf(
         f"<td class='num'>{_html_escape(p.get('headcount') or 0)}</td>"
         f"<td class='num'>{_html_escape(p.get('hours_per_person') or 0)}</td>"
         f"<td class='num'>{(p.get('headcount') or 0) * (p.get('hours_per_person') or 0):.1f}</td>"
+        f"<td>{_html_escape(', '.join(p.get('worker_names') or []) or '—')}</td>"
         f"<td>{_html_escape(p.get('notes') or '')}</td></tr>"
         for p in presence
-    ) or "<tr><td colspan='7' class='muted'>No manpower recorded.</td></tr>"
+    ) or "<tr><td colspan='8' class='muted'>No manpower recorded.</td></tr>"
 
     def event_rows(items, *, fields):
         if not items:
@@ -403,7 +404,7 @@ h2 {{ font-size: 11pt; margin: 18px 0 6px; color: #1e293b; border-bottom: 1px so
 
 <h2>Manpower log ({len(presence)})</h2>
 <table>
-<thead><tr><th>Trade</th><th>Company</th><th>Task worked</th><th class='num'>Headcount</th><th class='num'>Hrs/person</th><th class='num'>Sub-total</th><th>Notes</th></tr></thead>
+<thead><tr><th>Trade</th><th>Company</th><th>Task worked</th><th class='num'>Headcount</th><th class='num'>Hrs/person</th><th class='num'>Sub-total</th><th>Workers</th><th>Notes</th></tr></thead>
 <tbody>{presence_rows_html}</tbody>
 </table>
 
