@@ -390,6 +390,7 @@ def _build_dr_snapshot(
             "headcount": hc,
             "hours_per_person": hpc,
             "total_hours": p_row.get("total_hours") or (hc * hpc),
+            "worker_names": p_row.get("worker_names") or [],
         }
 
     log = site_log or {}

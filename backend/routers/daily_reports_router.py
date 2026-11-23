@@ -2626,6 +2626,18 @@ async def list_presence(daily_report_id: str, ctx: dict = Depends(require_tenant
     return [DailyPresence(**d) for d in docs]
 
 
+def _clean_worker_names(names) -> list:
+    """Trim each name, drop blanks, cap the length. Never refuses a save
+    (offline saves must always go through), so odd input is tidied, not
+    rejected."""
+    out = []
+    for n in names or []:
+        n = " ".join(str(n or "").split())[:100]
+        if n:
+            out.append(n)
+    return out[:500]
+
+
 def _presence_doc_with_derived(doc: dict) -> dict:
     """Bucket C3b Phase 3 — sub_name/company_name reconciliation +
     total_hours computation. Done both at create and patch so the
@@ -2635,6 +2647,7 @@ def _presence_doc_with_derived(doc: dict) -> dict:
         doc["company_name"] = sub_name
     elif doc.get("company_name") and not sub_name:
         doc["sub_name"] = doc["company_name"]
+    doc["worker_names"] = _clean_worker_names(doc.get("worker_names"))
     headcount = float(doc.get("headcount") or 0)
     hours = float(doc.get("hours_per_person") or 0)
     doc["total_hours"] = round(headcount * hours, 2)
@@ -2767,6 +2780,8 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     ensure_can_change_draft(ctx, dr)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
+    if "worker_names" in updates:
+        updates["worker_names"] = _clean_worker_names(updates["worker_names"])
     if updates:
         # Recompute total_hours when headcount or hours_per_person moves.
         if "headcount" in updates or "hours_per_person" in updates:
@@ -3170,3 +3185,59 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
         "user_labels": user_labels,
     }
 
+
+
+# ============================================================
+# Crew sign-in sheet + payroll hours (Excel), from the crew rows
+# ============================================================
+@router.get("/projects/{project_id}/crew-sign-in/export")
+async def export_crew_sign_in(
+    project_id: str, start: date, end: date,
+    ctx: dict = Depends(require_tenant),
+):
+    """Every worker logged on this project's daily reports between start
+    and end (inclusive): a printable sign-in sheet and weekly hours per
+    worker for certified payroll. Read only."""
+    from fastapi.responses import Response
+    from services.crew_signin_export import build_workbook, worker_lines
+    if end < start:
+        raise HTTPException(422, "The end date is before the start date.")
+    if (end - start).days > 370:
+        raise HTTPException(422, "Pick a period of one year or less.")
+    db = get_db()
+    await check_project_access(ctx, project_id, write=False)
+    project = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1, "name": 1})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    reports = await db.daily_reports.find(
+        tenant_filter(ctx["tenant_id"], {
+            "project_id": project_id,
+            "report_date": {"$gte": start.isoformat(), "$lte": end.isoformat() + "￿"},
+        }),
+        {"_id": 0, "id": 1, "report_date": 1},
+    ).to_list(5000)
+    date_by_report = {r["id"]: str(r.get("report_date") or "")[:10] for r in reports}
+    crews = await db.daily_presence.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": {"$in": list(date_by_report)}}),
+        {"_id": 0},
+    ).to_list(50000) if date_by_report else []
+    task_ids = list({c["schedule_activity_id"] for c in crews if c.get("schedule_activity_id")})
+    tasks = await db.tasks.find(
+        tenant_filter(ctx["tenant_id"], {"id": {"$in": task_ids}}),
+        {"_id": 0, "id": 1, "description": 1, "name": 1},
+    ).to_list(len(task_ids) or 1) if task_ids else []
+    label = {t["id"]: (t.get("description") or t.get("name") or "") for t in tasks}
+    lines = []
+    for c in crews:
+        lines.extend(worker_lines(date_by_report.get(c.get("daily_report_id"), ""), c,
+                                  label.get(c.get("schedule_activity_id"), "")))
+    lines.sort(key=lambda x: (x["date"], x["company"], x["trade"], not x["named"], x["name"]))
+    blob = build_workbook(project.get("name") or "Project", start, end, lines)
+    safe = re.sub(r"[^A-Za-z0-9 _-]+", "", project.get("name") or "Project").strip() or "Project"
+    fn = f"{safe} - Crew sign-in and payroll hours {start.isoformat()} to {end.isoformat()}.xlsx"
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+    )

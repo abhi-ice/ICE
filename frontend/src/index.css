@@ -507,7 +507,7 @@ html[data-theme="dark"] .page-shell::before { display: none; }
    plain .w-full table, not .dense-table) is untouched. Desktop
    (>=768px) is byte-identical by construction (all media-gated).
    MAINTENANCE: labels are positional (td:nth-child) on the 8-col order
-   Company/Trade/Task/Headcount/Hrs-per-person/Sub-total/Notes/Actions
+   Company/Trade/Task/Headcount/Hrs-per-person/Sub-total/Worker-names/Notes/Actions
    (PresencePanel, DailyReports.jsx ~1873). Update if columns change.
    ============================================================ */
 @media (max-width: 767.98px) {
@@ -550,8 +550,9 @@ html[data-theme="dark"] .page-shell::before { display: none; }
     [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(4)::before { content: "Headcount"; }
     [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(5)::before { content: "Hours / person"; }
     [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(6)::before { content: "Sub-total hours"; }
-    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(7)::before { content: "Notes"; }
-    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(8)::before { content: none; }
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(7)::before { content: "Worker names"; }
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(8)::before { content: "Notes"; }
+    [data-testid="dr-presence-panel"] .dense-table tbody td:nth-child(9)::before { content: none; }
     /* form controls -> full width + comfortable height */
     [data-testid="dr-presence-panel"] .dense-table td .w-44,
     [data-testid="dr-presence-panel"] .dense-table td .w-36,
@@ -4890,6 +4891,8 @@ html[data-theme="dark"] .copilot-artifact-preview {
     color: var(--v4-fg-primary); min-height: 40px;
   }
   .dr-flow-ck { color: #10b981; }
+  .dr-flow-crewchip { max-width: 100%; text-align: left; }
+  .dr-flow-crewnames { color: var(--v4-fg-secondary); white-space: normal; }
   .dr-flow-addc {
     border: 1px dashed var(--v4-border-strong); color: var(--v4-fg-secondary);
     background: transparent; border-radius: 999px; padding: 8px 12px; font-size: 12.5px;
@@ -5280,3 +5283,11 @@ html[data-theme="dark"] .copilot-artifact-preview {
     50% { box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.25); }
   }
 }
+
+/* Worker names (one box per worker) on crew entry. */
+.wn-list { display: flex; flex-direction: column; gap: 4px; min-width: 11rem; }
+.wn-row { display: flex; align-items: center; gap: 6px; }
+.wn-num { font-size: 11px; color: var(--v4-fg-muted, #6b7280); width: 1.4rem; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.wn-input { flex: 1; min-width: 0; }
+.wn-warn { font-size: 11px; color: #b45309; }
+.wn-empty { font-size: 11px; color: var(--v4-fg-muted, #6b7280); }
