@@ -3220,6 +3220,84 @@ async def daily_report_context(daily_report_id: str, ctx: dict = Depends(require
 # ============================================================
 # Crew sign-in sheet + payroll hours (Excel), from the crew rows
 # ============================================================
+# ============================================================
+# Crew companies for the Add crew pickers, with each company's last crew
+# (worker names, count, hours) on this project so a supervisor doesn't
+# retype the same names every day.
+# ============================================================
+@router.get("/projects/{project_id}/crew-companies")
+async def crew_companies(project_id: str, ctx: dict = Depends(require_tenant)):
+    """Companies to pick from when adding a crew: the subcontractors linked
+    to this project (or, when none are linked, the company's whole
+    subcontractor list), plus any company already logged on this project's
+    crews. Each comes with its most recent named crew on this project."""
+    await check_project_access(ctx, project_id, write=False)
+    db = get_db()
+    project = await db.projects.find_one(
+        tenant_filter(ctx["tenant_id"], {"id": project_id}), {"_id": 0, "id": 1, "subcontractor_ids": 1})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    linked = [i for i in (project.get("subcontractor_ids") or []) if i]
+    sub_q = {"id": {"$in": linked}} if linked else {}
+    subs = await db.subcontractors.find(
+        tenant_filter(ctx["tenant_id"], sub_q), {"_id": 0, "name": 1, "trades": 1, "default_trade": 1},
+    ).sort("name", 1).to_list(500)
+    if linked and not subs:
+        # Linked ids that no longer exist: fall back to the whole list.
+        subs = await db.subcontractors.find(
+            tenant_filter(ctx["tenant_id"]), {"_id": 0, "name": 1, "trades": 1, "default_trade": 1},
+        ).sort("name", 1).to_list(500)
+    reports = await db.daily_reports.find(
+        tenant_filter(ctx["tenant_id"], {"project_id": project_id}),
+        {"_id": 0, "id": 1, "report_date": 1},
+    ).sort("report_date", -1).to_list(5000)
+    date_by_report = {r["id"]: str(r.get("report_date") or "")[:10] for r in reports}
+    crews = await db.daily_presence.find(
+        tenant_filter(ctx["tenant_id"], {"daily_report_id": {"$in": list(date_by_report)}}),
+        {"_id": 0, "daily_report_id": 1, "company_name": 1, "sub_name": 1, "trade": 1,
+         "headcount": 1, "hours_per_person": 1, "worker_names": 1, "created_at": 1},
+    ).to_list(20000) if date_by_report else []
+    crews.sort(key=lambda c: (date_by_report.get(c.get("daily_report_id"), ""), str(c.get("created_at") or "")),
+               reverse=True)
+    out: dict = {}
+    order: list = []
+
+    def _entry(name: str) -> dict:
+        key = " ".join(name.split()).lower()
+        if key not in out:
+            out[key] = {"name": " ".join(name.split()), "trade": "", "linked": False, "last_crew": None}
+            order.append(key)
+        return out[key]
+
+    for sub in subs:
+        name = (sub.get("name") or "").strip()
+        if not name:
+            continue
+        e = _entry(name)
+        e["linked"] = True
+        e["trade"] = sub.get("default_trade") or next(iter(sub.get("trades") or []), "") or ""
+    for c in crews:
+        name = (c.get("company_name") or c.get("sub_name") or "").strip()
+        if not name:
+            continue
+        e = _entry(name)
+        if not e["trade"] and c.get("trade"):
+            e["trade"] = c["trade"]
+        names = [n for n in (c.get("worker_names") or []) if str(n or "").strip()]
+        if e["last_crew"] is None and names:
+            e["last_crew"] = {
+                "worker_names": names,
+                "headcount": int(float(c.get("headcount") or 0)) or len(names),
+                "hours_per_person": c.get("hours_per_person"),
+                "trade": c.get("trade") or "",
+                "report_date": date_by_report.get(c.get("daily_report_id"), ""),
+            }
+    items = [out[k] for k in order]
+    # Linked subcontractors first (alphabetical), then other companies seen on crews.
+    items.sort(key=lambda e: (not e["linked"], e["name"].lower()))
+    return {"companies": items, "linked_count": len(linked)}
+
+
 # At most two sign-in workbooks are built at once, so a burst of large
 # exports can't tie up every server thread.
 import asyncio as _asyncio

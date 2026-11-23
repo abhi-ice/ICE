@@ -26,3 +26,28 @@ describe("download file name", () => {
     expect(dispositionFilename("")).toBe(null);
   });
 });
+
+describe("fill a new crew from the company's last crew", () => {
+  const { crewFill, companyFor } = require("./crewFill");
+  const cos = [
+    { name: "Metro Framing", trade: "Carpentry", last_crew: { worker_names: ["Jose Diaz", "Ana Ruiz"], headcount: 2, hours_per_person: 8, report_date: "2026-11-17" } },
+    { name: "Acme Electric", trade: "Electrical", last_crew: null },
+  ];
+  test("matches company names loosely", () => {
+    expect(companyFor(cos, "  metro   framing ")).toBe(cos[0]);
+    expect(companyFor(cos, "Nobody")).toBe(null);
+  });
+  test("fills names, count and hours from the last crew", () => {
+    const f = crewFill(cos, "Metro Framing", { names: [] });
+    expect(f.names).toEqual(["Jose Diaz", "Ana Ruiz"]);
+    expect(f.headcount).toBe(2);
+    expect(f.fromDate).toBe("2026-11-17");
+  });
+  test("never replaces names the supervisor typed", () => {
+    expect(crewFill(cos, "Metro Framing", { names: ["Typed Person"], filled: [] })).toBe(null);
+  });
+  test("switching company replaces names we filled", () => {
+    const f = crewFill(cos, "Acme Electric", { names: ["Jose Diaz", "Ana Ruiz"], filled: ["Jose Diaz", "Ana Ruiz"] });
+    expect(f.names).toEqual([]);
+  });
+});

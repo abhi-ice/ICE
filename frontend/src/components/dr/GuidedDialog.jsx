@@ -47,6 +47,32 @@ function FieldInput({ fd, value, showDone, onSet, onToggleDone, solo, answers })
         <WorkerNamesInput count={(answers || {})[fd.countKey]} value={value}
           onChange={(v) => onSet(fd.k, v)} inputClassName="gi" testid={`gf-${fd.k}`} />
       );
+    // Free text with a list to pick from (e.g. the project's subcontractors).
+    // Typing filters the list; any typed value is still accepted.
+    case "textpick": {
+      const opts = fd.opts || [];
+      const q = String(value || "").trim().toLowerCase();
+      const exact = opts.some((o) => String(o.label || o).toLowerCase() === q);
+      const shown = (q && !exact ? opts.filter((o) => String(o.label || o).toLowerCase().includes(q)) : opts).slice(0, 40);
+      return (
+        <div>
+          <input className="gi" value={value || ""} placeholder={fd.ph || ""}
+            onChange={(e) => onSet(fd.k, e.target.value)} data-testid={`gf-${fd.k}`} />
+          {shown.length > 0 && (
+            <div className="chipgrid" style={{ marginTop: 10 }} data-testid={`gf-${fd.k}-list`}>
+              {shown.map((o) => {
+                const label = o.label || o;
+                return (
+                  <button type="button" key={label} className={`gchip${String(value || "").trim().toLowerCase() === label.toLowerCase() ? " sel" : ""}`}
+                    onClick={() => onSet(fd.k, label)}>{label}</button>
+                );
+              })}
+            </div>
+          )}
+          {fd.emptyHint && opts.length === 0 && <div className="hint">{fd.emptyHint}</div>}
+        </div>
+      );
+    }
     case "text":
       return (
         <input className="gi" value={value || ""} placeholder={fd.ph || ""}
@@ -237,7 +263,16 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
   const stepValid = (st) => !st || st.fields.every(fieldValid);
   const canNext = onSum || stepValid(s);
 
-  const set = (k, v) => { dirtyRef.current = true; setAnswers((p) => ({ ...p, [k]: v })); };
+  // A field may fill other answers when it changes (fd.fill), e.g. picking a
+  // company fills in that company's last crew names.
+  const set = (k, v) => {
+    dirtyRef.current = true;
+    const fd = flow.steps.flatMap((st) => st.fields).find((f) => f.k === k);
+    setAnswers((p) => {
+      const extra = fd && fd.fill ? (fd.fill(v, p) || {}) : {};
+      return { ...p, [k]: v, ...extra };
+    });
+  };
 
   const next = async () => {
     if (busy || busyRef.current) return;
@@ -391,7 +426,7 @@ function FlowRunner({ flow, fromChooser, onClose, closeReq }) {
               {s.q}
               {s.fields.length === 1 && s.fields[0].req ? <> <span className="req">*</span></> : null}
             </div>
-            {s.gloss && <div className="ggloss">{s.gloss}</div>}
+            {s.gloss && <div className="ggloss">{typeof s.gloss === "function" ? s.gloss(answers) : s.gloss}</div>}
             {s.fields.map((fd) => {
               const solo = s.fields.length === 1;
               const input = (
