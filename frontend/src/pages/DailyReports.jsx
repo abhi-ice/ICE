@@ -6496,10 +6496,11 @@ function GuidedDrFlow({
                   className={`dr-flow-crewchip${pendingOffIds.has(p.id) ? " off" : ""}`}
                   onClick={() => {
                     if (pendingOffIds.has(p.id)) return;
+                    if (viewOnly) { toast.info(drPerms.bannerText || "You can only view this report."); return; }
                     if (locked) { toast.info("This report was already submitted, so crew names can't be changed here. Write them on the printed sign-in sheet."); return; }
                     setSheet({ kind: "crewEdit", activity: r, crew: p, onRemove: () => deletePresence(p.id) });
                   }}
-                  title={locked ? "Report submitted: names can't be changed here" : "Tap to edit names or remove"}>
+                  title={viewOnly ? "View only" : locked ? "Report submitted: names can't be changed here" : "Tap to edit names or remove"}>
                   <CheckCircle2 className="h-3.5 w-3.5 dr-flow-ck" />
                   {(p.company_name || p.trade)}{p.headcount ? ` · ${p.headcount}×${p.hours_per_person || 0}h` : ""}
                   {(p.worker_names || []).length > 0 && <span className="dr-flow-crewnames"> · {p.worker_names.join(", ")}</span>}
@@ -7719,9 +7720,9 @@ function FlowCrewEditForm({ crew, onSaved, onCancel, onRemove }) {
     setBusy(true);
     try {
       const body = { worker_names: cleanNames(names, headcount) };
-      // Only send the count when it was changed (a names-only edit never
-      // changes the crew's hours).
-      if (Number(headcount) !== startCount) body.headcount = Number(headcount) || 1;
+      // Send the count only when it differs from the saved one (a
+      // names-only edit never changes the crew's hours).
+      if (Number(headcount) !== (Number(crew.headcount) || 0)) body.headcount = Number(headcount) || 1;
       const res = await api.patch(`/daily-presence/${crew.id}`, body);
       flowSavedToast(res, "Crew updated");
       onSaved();

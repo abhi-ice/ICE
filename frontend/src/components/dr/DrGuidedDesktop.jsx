@@ -569,9 +569,9 @@ export default function DrGuidedDesktop({
       if (needReason()) throw new Error("reason");
       const hc = Number(a.hc) || 1;
       const body = { worker_names: cleanNames(a.names, hc).filter(Boolean) };
-      // Only send the count when it was changed, so a names-only edit
-      // never changes the crew's hours.
-      if (hc !== editStartCount(c)) body.headcount = hc;
+      // Send the count only when it differs from the saved one, so a
+      // names-only edit never changes the crew's hours.
+      if (hc !== (Number(c.headcount) || 0)) body.headcount = hc;
       const res = await api.patch(`/daily-presence/${c.id}`, body).catch((e) => { toast.error(fmtErr(e, "Edit crew")); throw e; });
       savedToast(res, "Crew updated.");
       touch(m.row.id);
