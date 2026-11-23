@@ -12,7 +12,9 @@ Rules (general, every project):
     project's current week (site-clock today); any Monday can be chosen.
   * Rows: field work only, not complete, whose schedule dates overlap the
     period, plus unfinished field work that is overdue (it is still to be
-    done). Schedule dates, not the forecast, decide this. Work
+    done). The dates are the forecast when the schedule has moved an
+    activity (a late predecessor), else the plan: the same rule as the
+    look-ahead page, so the form and the page always agree. Work
     added from a daily report that a project manager has not reviewed yet is
     left out, so field notes never reach the owner as schedule activities.
     Paperwork and procurement are not field work; the ones running in the
@@ -20,9 +22,10 @@ Rules (general, every project):
   * Days: an X on each working day of the project calendar (its workweek and
     holidays; federal holidays by default) between the activity's start and
     finish. The start is the actual start once work has begun, else the
-    planned start; work that should have started already but has not runs
-    from the first day of the period. The finish is the planned finish of
-    the current schedule; overdue work runs to its forecast finish.
+    forecast (or planned) start; work that should have started already but
+    has not runs from the first day of the period. The finish is the
+    forecast (or planned) finish; overdue work runs to the end of the period
+    when its finish has passed.
   * Items Delaying the Project: open delays and open blockers on the project.
 """
 from __future__ import annotations
@@ -93,19 +96,31 @@ def _done(t: dict) -> bool:
 
 
 def task_span(t: dict, start: date, end: date) -> tuple[Optional[date], Optional[date]]:
-    """The dates an activity is worked inside [start, end], or (None, None)."""
+    """The dates an activity is worked inside [start, end], or (None, None).
+
+    Same rule as the look-ahead page (services/schedule_filters): an activity
+    is in the period when its effective dates (forecast when the schedule has
+    moved it, else the plan) overlap the period, or when it is overdue (its
+    planned finish is before the period and it is not done). Overdue work and
+    work that should have started already run from the first day."""
+    from services.schedule_filters import is_overdue
     started = bool(t.get("actual_start")) or float(t.get("pct_complete") or 0) > 0
-    s = _d(t.get("actual_start")) if t.get("actual_start") else _d(t.get("planned_start"))
+    es = _d(t.get("projected_start_date")) or _d(t.get("planned_start"))
+    ef = _d(t.get("projected_finish_date")) or _d(t.get("planned_finish"))
+    overdue = is_overdue(t, start.isoformat())
+    in_window = bool(es and ef and es <= end and ef >= start)
+    # Work under way with no finish on record is still being worked.
+    open_ended = started and ef is None and bool(es or t.get("actual_start"))
+    if not (in_window or overdue or open_ended):
+        return None, None
+    s = _d(t.get("actual_start")) or es
     if s is None:
         return None, None
-    if not started and s < start:
+    if (not started and s < start) or (overdue and s > end):
         s = start  # should have started already: it runs from the first day
-    f = _d(t.get("planned_finish"))
+    f = ef
     if f is None or f < start:
-        # Overdue (or no finish on record) and not done: still to be worked.
-        # Use the forecast when it reaches the period, else the whole period.
-        pf = _d(t.get("projected_finish_date"))
-        f = pf if pf is not None and pf >= start else end
+        f = end  # overdue and not done: still to be worked across the period
     s, f = max(s, start), min(f, end)
     return (s, f) if s <= f else (None, None)
 
@@ -124,18 +139,18 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
     workweek, holidays = await _calendar(db, tenant_id, proj)
     working = [d.weekday() in workweek and d not in holidays for d in days]
 
-    # Every unfinished activity, judged on the schedule's own dates (not the
-    # forecast): a stretched forecast on one activity must not push the next
-    # ones off the owner's form.
+    # Every unfinished activity whose plan or forecast start reaches the
+    # period; task_span then places it on its forecast dates (as the page).
     # Unplanned field work is not part of the schedule (2026-11-18), reviewed or not.
     tasks = await db.tasks.find(
         tenant_filter(tenant_id, {"project_id": project_id,
                                   "status": {"$nin": ["deleted", "complete"]},
                                   "created_in_field": {"$ne": True},
-                                  "planned_start": {"$lte": end.isoformat()}}),
+                                  "$or": [{"planned_start": {"$lte": end.isoformat()}},
+                                          {"projected_start_date": {"$lte": end.isoformat()}}]}),
         {"_id": 0, "id": 1, "activity_code": 1, "description": 1, "planned_start": 1, "planned_finish": 1,
          "actual_start": 1, "pct_complete": 1, "status": 1, "work_category": 1,
-         "projected_finish_date": 1},
+         "projected_start_date": 1, "projected_finish_date": 1},
     ).sort("planned_start", 1).to_list(20000)
     # Ongoing overhead (general conditions and the like) is not look-ahead
     # work: no row, no note (services/schedule_filters.ongoing_overhead_ids).
@@ -147,10 +162,10 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
     for t in tasks:
         if _done(t) or t.get("id") in overhead or t.get("work_category") in NEVER_IN_LOOKAHEAD:
             continue
-        s, f = task_span(t, start, end)
-        if s is None:
-            continue
         started = bool(t.get("actual_start")) or float(t.get("pct_complete") or 0) > 0
+        s, f = (None, None) if not _is_field_work(t) else task_span(t, start, end)
+        if _is_field_work(t) and s is None:
+            continue
         if not _is_field_work(t):
             ps, pf = _d(t.get("planned_start")), _d(t.get("planned_finish"))
             planned_in = bool(ps and pf and ps <= end and pf >= start)
@@ -179,12 +194,20 @@ async def gather_lookahead_grid(*, tenant_id: str, project_id: str,
             {"_id": 0, "description": 1}).sort("reported_at", 1).limit(20):
         if dl.get("description"):
             delaying.append(str(dl["description"]).strip())
+    delay_texts = list(delaying)
     async for t in db.tasks.find(
             tenant_filter(tenant_id, {"project_id": project_id, "has_open_blocker": True,
                                       "created_in_field": {"$ne": True},
                                       "status": {"$nin": ["complete", "deleted"]}}),
             {"_id": 0, "description": 1, "open_blocker_summary": 1}).limit(20):
         summ = t.get("open_blocker_summary")
+        # Stored as a list of {label, ...}: show the plain labels, and skip a
+        # delay already listed above (same text).
+        if isinstance(summ, list):
+            labels = [str(x.get("label") or "").strip() if isinstance(x, dict) else str(x).strip() for x in summ]
+            # A delay's label is its description cut to 80 characters.
+            labels = [x for x in labels if x and not any(d.startswith(x.rstrip(". ")[:80]) for d in delay_texts)]
+            summ = "; ".join(labels)
         if summ:
             delaying.append(f"{t.get('description')}: {summ}")
 

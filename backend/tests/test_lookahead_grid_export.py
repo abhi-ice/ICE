@@ -42,10 +42,11 @@ def test_monday_of():
 
 
 def test_task_span_rules():
-    # in progress: actual start before the period -> from day 1 to planned finish
+    # in progress: actual start before the period -> from day 1 to the
+    # forecast finish (the same dates the look-ahead page shows)
     t = {"actual_start": "2026-10-08", "pct_complete": 35, "planned_start": "2026-10-08",
          "planned_finish": "2026-12-02", "projected_finish_date": "2026-12-23"}
-    assert task_span(t, START, END) == (START, date(2026, 12, 2))
+    assert task_span(t, START, END) == (START, END)
     # not started, planned start already passed -> starts day 1
     t = {"planned_start": "2026-11-12", "planned_finish": "2026-12-02", "pct_complete": 0}
     assert task_span(t, START, END) == (START, date(2026, 12, 2))
@@ -131,11 +132,10 @@ def test_grid_gather_rows_days_notes_and_delays():
         g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=date(2026, 11, 25))
         assert g["start"] == START and g["end"] == END  # snapped to Monday
         rows = {r["code"]: "".join("X" if m else "." for m in r["marks"]) for r in g["rows"]}
-        assert set(rows) == {"A-1", "A-2", "A-3"}
+        assert set(rows) == {"A-1", "A-2"}   # A-3's forecast start is after the period
         # Thanksgiving 11/26 (Thursday) and the weekends get no X
-        assert rows["A-1"] == "XXX.X..XXX...."
-        assert rows["A-2"] == "XXX.X..XXX...."
-        assert rows["A-3"] == "..........XX.."
+        assert rows["A-1"] == "XXX.X..XXXXX.."   # forecast finish 12/23
+        assert rows["A-2"] == "XXX.X..XXXXX.."   # forecast 11/18 to 12/08
         assert any("Shop drawings" in n and "20%" in n for n in g["notes"])
         assert not any("Old submittal" in n for n in g["notes"])
         assert g["delaying"] == ["Waiting on owner finish selection"]
@@ -153,10 +153,10 @@ def test_grid_renders_excel_and_pdf():
         pid = await _seed(db, tenant)
         blob, ct, fn, meta = await render_lookahead_export(
             tenant_id=tenant, project_id=pid, fmt="xlsx", layout="grid", start_date=START)
-        assert fn.startswith("two_week_look_ahead_20261123") and meta["count"] == 3
+        assert fn.startswith("two_week_look_ahead_20261123") and meta["count"] == 2
         ws = load_workbook(io.BytesIO(blob)).active
         cells = [c.value for row in ws.iter_rows() for c in row if c.value]
-        assert "Period: 11/23/26 to 12/6/26" in cells and "Fireproofing" in cells
+        assert "Period: 11/23/26 to 12/6/26" in cells and "Fireproofing" not in cells
         pdf, ct, fn, _ = await render_lookahead_export(
             tenant_id=tenant, project_id=pid, fmt="pdf", layout="grid", start_date=START)
         assert ct == "application/pdf" and pdf[:4] == b"%PDF"
@@ -218,7 +218,7 @@ def test_grid_header_and_project_calendar():
                                        "name": "Curing", "workweek": [0, 1, 2, 3, 4, 5, 6], "use_federal": False})
         g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=START)
         rows = {r["code"]: "".join("X" if m else "." for m in r["marks"]) for r in g["rows"]}
-        assert rows["A-1"] == "XXX.X..XXX...."
+        assert rows["A-1"] == "XXX.X..XXXXX.."
         assert g["header"][0] == ("Test Clinic Renovation", "title")
         assert ("Prepared by: Our Co", "line") in g["header"] and g["footer"] == ""
         # the project's own calendar, saved by the calendar screen: holidays + 6-day week
@@ -228,7 +228,7 @@ def test_grid_header_and_project_calendar():
             "calendar_id": "cal-p"}})
         g = await gather_lookahead_grid(tenant_id=tenant, project_id=pid, start_date=START)
         rows = {r["code"]: "".join("X" if m else "." for m in r["marks"]) for r in g["rows"]}
-        assert rows["A-1"] == "XXX..X.XXX...."  # Thanksgiving + 11/27 off, Saturday worked
+        assert rows["A-1"] == "XXX..X.XXXXXX."  # Thanksgiving + 11/27 off, Saturday worked
         ws = load_workbook(io.BytesIO(render_grid_xlsx(g))).active
         cells = [c.value for row in ws.iter_rows() for c in row if c.value]
         assert "Test Clinic Renovation" in cells and "Prepared by: Our Co" in cells
@@ -258,3 +258,37 @@ def test_set_text_cell_drops_control_characters():
     ws = Workbook().active
     set_text_cell(ws["A1"], "Sketch\x0bing\x0c plan\tok")
     assert ws["A1"].value == "Sketching plan\tok"
+
+
+def test_task_span_uses_forecast_dates():
+    """A late predecessor moves the activity: forecast dates win over the plan
+    (same dates as the look-ahead page)."""
+    from datetime import date
+    from services.lookahead_grid_export import task_span
+    s0, e0 = date(2026, 11, 23), date(2026, 12, 6)
+    waiting = {"planned_start": "2026-12-03", "planned_finish": "2026-12-11",
+               "projected_start_date": "2026-12-09", "projected_finish_date": "2026-12-17", "pct_complete": 0}
+    assert task_span(waiting, s0, e0) == (None, None)
+    running = {"planned_start": "2026-10-08", "planned_finish": "2026-12-02", "actual_start": "2026-10-08",
+               "projected_finish_date": "2026-12-08", "pct_complete": 80}
+    assert task_span(running, s0, e0) == (s0, e0)
+    plain = {"planned_start": "2026-11-30", "planned_finish": "2026-12-02", "pct_complete": 0}
+    assert task_span(plain, s0, e0) == (date(2026, 11, 30), date(2026, 12, 2))
+
+
+def test_task_span_matches_page_edge_cases():
+    from datetime import date
+    from services.lookahead_grid_export import task_span
+    s0, e0 = date(2026, 11, 23), date(2026, 12, 6)
+    # overdue on the plan, forecast after the period: still on the form (the page flags it)
+    t = {"planned_start": "2026-11-01", "planned_finish": "2026-11-10",
+         "projected_start_date": "2026-12-08", "projected_finish_date": "2026-12-12"}
+    assert task_span(t, s0, e0) == (s0, e0)
+    # stale forecast in the past, plan next month: not in this period (as the page)
+    t = {"planned_start": "2026-12-20", "planned_finish": "2026-12-30",
+         "projected_start_date": "2026-10-01", "projected_finish_date": "2026-10-05"}
+    assert task_span(t, s0, e0) == (None, None)
+    # started on percent with no actual start, forecast in the period
+    t = {"planned_start": "2026-12-10", "planned_finish": "2026-12-20", "pct_complete": 10,
+         "projected_start_date": "2026-11-24", "projected_finish_date": "2026-12-01"}
+    assert task_span(t, s0, e0) == (date(2026, 11, 24), date(2026, 12, 1))
