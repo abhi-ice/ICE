@@ -116,7 +116,7 @@ import { isFieldCreatedCode } from "../lib/fieldActivityCode";
 // flow's DR header (landing + review). The DR exports via /pdf-rich.
 import ExportDropdown from "../components/ExportDropdown";
 import { noWorkHeading } from "../lib/noWorkDay";
-import WorkerNamesInput, { cleanNames, missingNames } from "../components/dr/WorkerNamesInput";
+import WorkerNamesInput, { cleanNames, missingNames, editStartCount } from "../components/dr/WorkerNamesInput";
 import { signInUrl, SIGN_IN_LABELS } from "../lib/crewSignIn";
 
 // Names on a saved crew card; flags workers whose names are still missing.
@@ -6494,9 +6494,12 @@ function GuidedDrFlow({
               {thisPresence.map((p) => (
                 <button key={p.id} type="button" data-testid={`dr-flow-crewchip-${p.id}`}
                   className={`dr-flow-crewchip${pendingOffIds.has(p.id) ? " off" : ""}`}
-                  onClick={() => (!locked || lockedReasonOk) && !pendingOffIds.has(p.id)
-                    && setSheet({ kind: "crewEdit", activity: r, crew: p, onRemove: () => deletePresence(p.id) })}
-                  title={(locked && !lockedReasonOk) ? "Enter the edit reason above first" : "Tap to edit names or remove"}>
+                  onClick={() => {
+                    if (pendingOffIds.has(p.id)) return;
+                    if (locked) { toast.info("This report was already submitted, so crew names can't be changed here. Write them on the printed sign-in sheet."); return; }
+                    setSheet({ kind: "crewEdit", activity: r, crew: p, onRemove: () => deletePresence(p.id) });
+                  }}
+                  title={locked ? "Report submitted: names can't be changed here" : "Tap to edit names or remove"}>
                   <CheckCircle2 className="h-3.5 w-3.5 dr-flow-ck" />
                   {(p.company_name || p.trade)}{p.headcount ? ` · ${p.headcount}×${p.hours_per_person || 0}h` : ""}
                   {(p.worker_names || []).length > 0 && <span className="dr-flow-crewnames"> · {p.worker_names.join(", ")}</span>}
@@ -7706,7 +7709,8 @@ function FlowDeliveryForm({ id, project, activity, reportDate, locked, lockedRea
 // (fill in names on crews logged before names existed), or remove it.
 // PATCHes the crew row; names follow the worker count.
 function FlowCrewEditForm({ crew, onSaved, onCancel, onRemove }) {
-  const [headcount, setHeadcount] = useState(Number(crew.headcount) || 1);
+  const startCount = editStartCount(crew);
+  const [headcount, setHeadcount] = useState(startCount);
   const [names, setNames] = useState(() => [...(crew.worker_names || [])]);
   const [busy, setBusy] = useState(false);
   const save = async () => {
@@ -7714,10 +7718,11 @@ function FlowCrewEditForm({ crew, onSaved, onCancel, onRemove }) {
     if (blankNames > 0) return toast.error(blankNames === 1 ? "Type the name of every worker (1 name is blank)" : `Type the name of every worker (${blankNames} names are blank)`);
     setBusy(true);
     try {
-      const res = await api.patch(`/daily-presence/${crew.id}`, {
-        headcount: Number(headcount) || 0,
-        worker_names: cleanNames(names, headcount),
-      });
+      const body = { worker_names: cleanNames(names, headcount) };
+      // Only send the count when it was changed (a names-only edit never
+      // changes the crew's hours).
+      if (Number(headcount) !== startCount) body.headcount = Number(headcount) || 1;
+      const res = await api.patch(`/daily-presence/${crew.id}`, body);
       flowSavedToast(res, "Crew updated");
       onSaved();
     } catch (e) {
@@ -7741,8 +7746,11 @@ function FlowCrewEditForm({ crew, onSaved, onCancel, onRemove }) {
         <label>Worker names *</label>
         <WorkerNamesInput count={headcount} value={names} onChange={setNames} testid="dr-flow-crewedit-names" />
       </div>
+      <button type="button" className="dr-flow-crewedit-remove" data-testid="dr-flow-crewedit-remove" onClick={onRemove}>
+        Remove this crew
+      </button>
       <div className="dr-flow-sheet-foot">
-        <button className="dr-flow-sheet-cancel" data-testid="dr-flow-crewedit-remove" onClick={onRemove}>Remove crew</button>
+        <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
         <button className="dr-flow-sheet-save" data-testid="dr-flow-crewedit-save" disabled={busy} onClick={save}>
           {busy ? "Saving…" : "Save"}
         </button>

@@ -224,7 +224,7 @@ async def export_daily_report_pdf(
             names = names[:hc]
         blank = max(0, hc - len(names))
         if not names:
-            return '—'
+            return f'{blank} not named' if blank else '—'
         return ', '.join(names) + (f' (+{blank} not named)' if blank else '')
 
     presence_rows_html = "".join(
