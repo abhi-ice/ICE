@@ -21,6 +21,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from services.xlsx_safe import set_text_cell
+
 MISSING_NAME = "Name not entered"
 _HEAD_FILL = PatternFill("solid", start_color="1F2937")
 _HEAD_FONT = Font(name="Arial", bold=True, color="FFFFFF", size=10)
@@ -32,24 +34,40 @@ _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 _DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def worker_lines(report_date: str, crew: dict, task_label: str = "") -> list[dict]:
+MAX_LINES_PER_CREW = 500
+
+
+def worker_lines(report_date: str, crew: dict, task_label: str = "", locked: bool = False) -> list[dict]:
     """One line per worker on a crew row. Names come first; any workers
-    beyond the names typed get a "Name not entered" line."""
-    names = [n for n in (crew.get("worker_names") or []) if str(n).strip()]
-    headcount = int(crew.get("headcount") or 0)
-    count = max(headcount, len(names))
-    hours = float(crew.get("hours_per_person") or 0)
+    beyond the names typed get a "Name not entered" line of their own
+    (numbered, so two unnamed workers never merge into one person). The
+    worker count decides how many lines there are, so the hours always
+    match the report; with no count, each name is one worker."""
+    names = [str(n).strip() for n in (crew.get("worker_names") or []) if str(n or "").strip()]
+    try:
+        headcount = int(float(crew.get("headcount") or 0))
+    except (TypeError, ValueError):
+        headcount = 0
+    count = headcount if headcount > 0 else len(names)
+    count = min(count, MAX_LINES_PER_CREW)
+    try:
+        hours = float(crew.get("hours_per_person") or 0)
+    except (TypeError, ValueError):
+        hours = 0.0
     company = crew.get("company_name") or crew.get("sub_name") or ""
     out = []
     for i in range(count):
+        named = i < len(names)
         out.append({
             "date": report_date,
             "company": company,
             "trade": crew.get("trade") or "",
-            "name": names[i] if i < len(names) else MISSING_NAME,
-            "named": i < len(names),
+            "name": names[i] if named else f"{MISSING_NAME} (worker {i + 1} of {count})",
+            "named": named,
             "hours": hours,
             "task": task_label,
+            "locked": locked,
+            "crew_id": crew.get("id") or "",
         })
     return out
 
@@ -85,7 +103,11 @@ def build_workbook(project_name: str, start: date, end: date, lines: list[dict])
     for ln in lines:
         vals = [_fmt(ln["date"]), ln["company"], ln["trade"], ln["name"], ln["hours"], ln["task"], "", "", ""]
         for c, v in enumerate(vals, 1):
-            cell = ws.cell(row=r, column=c, value=v)
+            cell = ws.cell(row=r, column=c)
+            if isinstance(v, str):
+                set_text_cell(cell, v)   # typed text never becomes a live formula
+            else:
+                cell.value = v
             cell.font, cell.border = _BODY_FONT, _BORDER
         if not ln["named"]:
             ws.cell(row=r, column=4).font = _MISSING_FONT
@@ -113,23 +135,35 @@ def build_workbook(project_name: str, start: date, end: date, lines: list[dict])
     pcols = ["Week starting", "Worker name", "Company", "Trade"] + _DAY_NAMES + ["Total hours"]
     _header(ps, 4, pcols)
     groups: "OrderedDict[tuple, list]" = OrderedDict()
-    for ln in sorted(lines, key=lambda x: (x["date"], x["company"], x["trade"], x["name"])):
+    for ln in sorted(lines, key=lambda x: (x["date"], x["company"], x["trade"], not x["named"], x["name"] if x["named"] else "")):
         try:
             d = date.fromisoformat(str(ln["date"])[:10])
         except ValueError:
             continue
         monday = d - timedelta(days=d.weekday())
-        key = (monday, ln["name"], ln["company"], ln["trade"], ln["named"])
+        # A named worker is one row for the week. An unnamed worker can't be
+        # matched across days, so each one keeps a row of its own.
+        who = ln["name"] if ln["named"] else (ln["name"], ln["date"], ln.get("crew_id"))
+        key = (monday, who, ln["company"], ln["trade"], ln["named"])
         if key not in groups:
-            groups[key] = [0.0] * 7
-        groups[key][d.weekday()] += float(ln["hours"] or 0)
+            groups[key] = {"days": [0.0] * 7, "name": ln["name"], "locked": False}
+        groups[key]["days"][d.weekday()] += float(ln["hours"] or 0)
+        groups[key]["locked"] = groups[key]["locked"] or bool(ln.get("locked"))
     r = 5
     first = r
-    for (monday, name, company, trade, named), days in sorted(
-            groups.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][3], not kv[0][4], kv[0][1])):
-        vals = [monday.strftime("%m/%d/%Y"), name, company, trade] + [h or None for h in days]
+    any_missing_locked = any_missing_open = False
+    for (monday, _who, company, trade, named), g in sorted(
+            groups.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][3], not kv[0][4], kv[0][1] if kv[0][4] else "")):
+        if not named:
+            any_missing_locked = any_missing_locked or g["locked"]
+            any_missing_open = any_missing_open or not g["locked"]
+        vals = [monday.strftime("%m/%d/%Y"), g["name"], company, trade] + [h or None for h in g["days"]]
         for c, v in enumerate(vals, 1):
-            cell = ps.cell(row=r, column=c, value=v)
+            cell = ps.cell(row=r, column=c)
+            if isinstance(v, str):
+                set_text_cell(cell, v)
+            else:
+                cell.value = v
             cell.font, cell.border = _BODY_FONT, _BORDER
             if c >= 5:
                 cell.number_format = "0.0"
@@ -142,10 +176,15 @@ def build_workbook(project_name: str, start: date, end: date, lines: list[dict])
         ps.cell(row=r, column=11, value="Total").font = _BOLD
         t = ps.cell(row=r, column=12, value=f"=SUM(L{first}:L{r - 1})")
         t.font, t.number_format = _BOLD, "0.0"
-        if any(not k[4] for k in groups):
-            ps.cell(row=r + 2, column=1,
-                    value=f'"{MISSING_NAME}" means the supervisor logged more workers than names. '
-                          "Add the names on that day's report to complete the payroll.").font = _MISSING_FONT
+        notes = []
+        if any_missing_open:
+            notes.append(f'"{MISSING_NAME}" means the supervisor logged more workers than names. '
+                         "Add the names on that day's report (tap the crew) to complete the payroll.")
+        if any_missing_locked:
+            notes.append(f'Some "{MISSING_NAME}" lines are on reports that were already submitted, so the '
+                         "names can't be added in the app. Write them on the printed sheet.")
+        for i, text in enumerate(notes):
+            ps.cell(row=r + 2 + i, column=1, value=text).font = _MISSING_FONT
     else:
         ps.cell(row=5, column=1, value="No crews logged on daily reports in this period.").font = _BODY_FONT
     for c, w in enumerate([13, 26, 26, 18] + [7] * 7 + [11], 1):

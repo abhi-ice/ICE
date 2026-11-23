@@ -37,6 +37,7 @@ export default function ExportDropdown({
                               //                    Disposition filename
   formats = ["xlsx", "pdf"],
   labels = null,             // optional { fmt: "Menu text" } for longer names
+  menuAlign = "auto",        // "right": keep the menu right-aligned on phones too
   disabled = false,
 }) {
   const [open, setOpen] = useState(false);
@@ -119,7 +120,7 @@ export default function ExportDropdown({
       {open && !busy && (
         <div
           data-testid={`${testidPrefix}-menu`}
-          className={`absolute right-0 mt-1 ${labels ? "w-72 max-w-[calc(100vw-2rem)] max-md:left-0 max-md:right-auto" : "w-36"} bg-white border border-slate-200 rounded shadow-lg z-10`}
+          className={`absolute right-0 mt-1 ${labels ? `w-72 max-w-[calc(100vw-2rem)]${menuAlign === "right" ? "" : " max-md:left-0 max-md:right-auto"}` : "w-36"} bg-white border border-slate-200 rounded shadow-lg z-10`}
         >
           {formats.map((fmt) => (
             <button

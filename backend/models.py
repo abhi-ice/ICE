@@ -1469,7 +1469,8 @@ class DailyPresenceCreate(StrictModel):
     sub_name: Optional[str] = None      # alias the spec uses; we'll fill company_name from this if provided
     # One name per worker, for the sign-in sheet and certified payroll.
     # Optional so older screens, voice and offline saves still go through.
-    worker_names: Optional[List[str]] = None
+    # Any shape is accepted and tidied by the handler (never refuse a save).
+    worker_names: Optional[Any] = None
 
 
 class DailyPresenceUpdate(StrictModel):
@@ -1484,7 +1485,8 @@ class DailyPresenceUpdate(StrictModel):
     shift: Optional[PresenceShift] = None
     schedule_activity_id: Optional[str] = None
     sub_name: Optional[str] = None
-    worker_names: Optional[List[str]] = None
+    # Any shape is accepted and tidied by the handler (never refuse a save).
+    worker_names: Optional[Any] = None
 
 
 class DailyPresence(ReadModel):

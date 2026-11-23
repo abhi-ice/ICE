@@ -29,7 +29,7 @@ import "./drGuidedDesktop.css";
 import { sectionLabel } from "../../lib/sectionLabel";
 import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
 import { noWorkHeading } from "../../lib/noWorkDay";
-import { cleanNames } from "./WorkerNamesInput";
+import { cleanNames, missingNames } from "./WorkerNamesInput";
 import { downloadCrewSignIn, SIGN_IN_LABELS } from "../../lib/crewSignIn";
 import {
   clampToProgressLimits, progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
@@ -548,6 +548,30 @@ export default function DrGuidedDesktop({
         daily_report_id: id, ...addReasonPatch,
       }).catch((e) => { toast.error(fmtErr(e, "Add crew")); throw e; });
       savedToast(res, "Crew added.");
+      touch(m.row.id);
+      reload();
+    },
+  });
+
+  // Edit a saved crew's workers and names (fill in names on crews logged
+  // before names existed, fix a typo, or someone left early). PATCHes the
+  // same crew row; names follow the worker count.
+  const FLOW_crewEdit = (m, c) => ({
+    title: "Edit crew", sub: [c.company_name || "(company not named)", c.trade].filter(Boolean).join(" · "),
+    save: "Save names", saving: "Saving…",
+    steps: [
+      { q: "How many workers?", gloss: "Workers on this activity. Lowering it drops the last names.",
+        fields: [{ k: "hc", label: "Workers", t: "stepper", def: Number(c.headcount) || 1, min: 1, stp: 1, req: 1 }] },
+      { q: "Worker names", gloss: "One name per worker, for the sign-in sheet and certified payroll.",
+        fields: [{ k: "names", label: "Worker names", t: "names", countKey: "hc", req: 1, def: [...(c.worker_names || [])] }] },
+    ],
+    onSave: async (a) => {
+      if (needReason()) throw new Error("reason");
+      const hc = Number(a.hc) || 1;
+      const res = await api.patch(`/daily-presence/${c.id}`, {
+        headcount: hc, worker_names: cleanNames(a.names, hc).filter(Boolean),
+      }).catch((e) => { toast.error(fmtErr(e, "Edit crew")); throw e; });
+      savedToast(res, "Crew updated.");
       touch(m.row.id);
       reload();
     },
@@ -1377,9 +1401,16 @@ export default function DrGuidedDesktop({
                 <div className="chiprow">
                   {m.crew.map((c) => (
                     <span className="crewchip" key={c.id}>
-                      {[c.company_name || "(company not named)", c.trade].filter(Boolean).join(" · ")} · {c.headcount} × {c.hours_per_person}h
-                      {(c.worker_names || []).length ? ` · ${trunc(c.worker_names.join(", "), 60)}` : ""}
-                      {c.notes ? ` · “${trunc(c.notes, 22)}”` : ""}
+                      <button type="button" className="crewedit" data-testid={`crew-edit-${c.id}`}
+                        title="Edit workers and names"
+                        onClick={() => openFlow(FLOW_crewEdit(m, c))}>
+                        {[c.company_name || "(company not named)", c.trade].filter(Boolean).join(" · ")} · {c.headcount} × {c.hours_per_person}h
+                        {(c.worker_names || []).length ? ` · ${trunc(c.worker_names.join(", "), 60)}` : ""}
+                        {missingNames(c.worker_names, c.headcount) > 0 && (
+                          <span className="crewmissing"> · {missingNames(c.worker_names, c.headcount)} name{missingNames(c.worker_names, c.headcount) === 1 ? "" : "s"} missing</span>
+                        )}
+                        {c.notes ? ` · “${trunc(c.notes, 22)}”` : ""}
+                      </button>
                       <button className="cx" title="Remove" onClick={async () => {
                         if (needReason()) return;
                         // One DELETE per chip — a double-click's second call

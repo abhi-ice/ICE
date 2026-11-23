@@ -2626,15 +2626,32 @@ async def list_presence(daily_report_id: str, ctx: dict = Depends(require_tenant
     return [DailyPresence(**d) for d in docs]
 
 
-def _clean_worker_names(names) -> list:
+def _clean_worker_names(names, headcount=None) -> list:
     """Trim each name, drop blanks, cap the length. Never refuses a save
     (offline saves must always go through), so odd input is tidied, not
-    rejected."""
+    rejected: a single text value is split on commas or line breaks, and
+    anything that is not text or a number is dropped. When the crew has a
+    worker count, extra names beyond it are dropped so the names always
+    match the workers."""
+    if names is None:
+        return []
+    if isinstance(names, str):
+        names = re.split(r"[,;\n]+", names)
+    elif not isinstance(names, (list, tuple)):
+        return []
     out = []
-    for n in names or []:
-        n = " ".join(str(n or "").split())[:100]
+    for n in names:
+        if isinstance(n, bool) or not isinstance(n, (str, int, float)):
+            continue
+        n = " ".join(str(n).split())[:100]
         if n:
             out.append(n)
+    try:
+        hc = int(float(headcount or 0))
+    except (TypeError, ValueError):
+        hc = 0
+    if hc > 0:
+        out = out[:hc]
     return out[:500]
 
 
@@ -2647,7 +2664,7 @@ def _presence_doc_with_derived(doc: dict) -> dict:
         doc["company_name"] = sub_name
     elif doc.get("company_name") and not sub_name:
         doc["sub_name"] = doc["company_name"]
-    doc["worker_names"] = _clean_worker_names(doc.get("worker_names"))
+    doc["worker_names"] = _clean_worker_names(doc.get("worker_names"), doc.get("headcount"))
     headcount = float(doc.get("headcount") or 0)
     hours = float(doc.get("hours_per_person") or 0)
     doc["total_hours"] = round(headcount * hours, 2)
@@ -2780,8 +2797,12 @@ async def patch_presence(presence_id: str, payload: DailyPresenceUpdate, ctx: di
     ensure_can_change_draft(ctx, dr)
     raw = payload.model_dump(mode="json", exclude_unset=True)
     updates = {k: v for k, v in raw.items() if v is not None}
-    if "worker_names" in updates:
-        updates["worker_names"] = _clean_worker_names(updates["worker_names"])
+    if "worker_names" in updates or ("headcount" in updates and doc.get("worker_names")):
+        # Names follow the worker count: lowering the count drops the extra
+        # names, so the sign-in sheet never lists more people than worked.
+        updates["worker_names"] = _clean_worker_names(
+            updates.get("worker_names", doc.get("worker_names")),
+            updates.get("headcount", doc.get("headcount")))
     if updates:
         # Recompute total_hours when headcount or hours_per_person moves.
         if "headcount" in updates or "hours_per_person" in updates:
@@ -3199,7 +3220,9 @@ async def export_crew_sign_in(
     and end (inclusive): a printable sign-in sheet and weekly hours per
     worker for certified payroll. Read only."""
     from fastapi.responses import Response
+    from starlette.concurrency import run_in_threadpool
     from services.crew_signin_export import build_workbook, worker_lines
+    from services.http_download import attachment_disposition
     if end < start:
         raise HTTPException(422, "The end date is before the start date.")
     if (end - start).days > 370:
@@ -3215,7 +3238,7 @@ async def export_crew_sign_in(
             "project_id": project_id,
             "report_date": {"$gte": start.isoformat(), "$lte": end.isoformat() + "￿"},
         }),
-        {"_id": 0, "id": 1, "report_date": 1},
+        {"_id": 0, "id": 1, "report_date": 1, "status": 1},
     ).to_list(5000)
     date_by_report = {r["id"]: str(r.get("report_date") or "")[:10] for r in reports}
     crews = await db.daily_presence.find(
@@ -3228,16 +3251,29 @@ async def export_crew_sign_in(
         {"_id": 0, "id": 1, "description": 1, "name": 1},
     ).to_list(len(task_ids) or 1) if task_ids else []
     label = {t["id"]: (t.get("description") or t.get("name") or "") for t in tasks}
-    lines = []
-    for c in crews:
-        lines.extend(worker_lines(date_by_report.get(c.get("daily_report_id"), ""), c,
-                                  label.get(c.get("schedule_activity_id"), "")))
-    lines.sort(key=lambda x: (x["date"], x["company"], x["trade"], not x["named"], x["name"]))
-    blob = build_workbook(project.get("name") or "Project", start, end, lines)
-    safe = re.sub(r"[^A-Za-z0-9 _-]+", "", project.get("name") or "Project").strip() or "Project"
-    fn = f"{safe} - Crew sign-in and payroll hours {start.isoformat()} to {end.isoformat()}.xlsx"
+    status_by_report = {r["id"]: r.get("status") for r in reports}
+    total_workers = sum(min(max(int(float(c.get("headcount") or 0)), len(c.get("worker_names") or [])), 500)
+                        for c in crews)
+    if total_workers > 100000:
+        raise HTTPException(422, "Too many workers in this period for one file. Pick a shorter period.")
+
+    def _build() -> bytes:
+        lines = []
+        for c in crews:
+            rid = c.get("daily_report_id")
+            lines.extend(worker_lines(date_by_report.get(rid, ""), c,
+                                      label.get(c.get("schedule_activity_id"), ""),
+                                      locked=status_by_report.get(rid) in _LOCKED_DR_STATUSES))
+        lines.sort(key=lambda x: (x["date"], x["company"], x["trade"], not x["named"], x["name"] if x["named"] else ""))
+        return build_workbook(project.get("name") or "Project", start, end, lines)
+
+    # Building the workbook is processor work: keep it off the server's main
+    # loop so other people's requests are not held up while it runs.
+    blob = await run_in_threadpool(_build)
+    fn = f"{project.get('name') or 'Project'} - Crew sign-in and payroll hours {start.isoformat()} to {end.isoformat()}.xlsx"
+    fn = re.sub(r'[\\/:*?"<>|]+', "", fn)
     return Response(
         content=blob,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+        headers={"Content-Disposition": attachment_disposition(fn, fallback="crew_sign_in.xlsx")},
     )
