@@ -81,6 +81,24 @@ def test_names_saved_trimmed_and_editable():
         # A patch that does not mention names leaves them alone.
         row = await drr.patch_presence(row.id, DailyPresenceUpdate(notes="left at 2"), ctx)
         assert row.worker_names == ["Jose Diaz", "Ana Ruiz"]
+        # Lowering the count alone drops the extra names.
+        row = await drr.patch_presence(row.id, DailyPresenceUpdate(headcount=1), ctx)
+        assert row.worker_names == ["Jose Diaz"] and row.total_hours == 8
+        # More names than workers on create: cut to the count.
+        extra = await drr.create_presence(dr, DailyPresenceCreate(
+            daily_report_id=dr, trade="Labor", headcount=2, hours_per_person=8,
+            worker_names=["A", "B", "C"]), ctx)
+        assert extra.worker_names == ["A", "B"]
+        # Odd shapes are tidied, never refused (offline saves must go through).
+        for raw, want in (([None, "Bob", 123, {"x": 1}], ["Bob", "123"]),
+                          ("Ann Lee, Bob\nCy",["Ann Lee", "Bob", "Cy"]),
+                          (42, [])):
+            r2 = await drr.create_presence(dr, DailyPresenceCreate(
+                daily_report_id=dr, trade="Labor", headcount=5, hours_per_person=8,
+                worker_names=raw), ctx)
+            assert r2.worker_names == want, (raw, r2.worker_names)
+            r2 = await drr.patch_presence(r2.id, DailyPresenceUpdate(worker_names=raw), ctx)
+            assert r2.worker_names == want
         # Old rows (no field at all) read back as an empty list.
         await db.daily_presence.update_one({"id": row.id}, {"$unset": {"worker_names": ""}})
         listed = await drr.list_presence(dr, ctx)
@@ -91,11 +109,31 @@ def test_names_saved_trimmed_and_editable():
 def test_worker_lines_fill_missing_names():
     lines = worker_lines("2026-11-16", {"headcount": 3, "hours_per_person": 8,
                                         "worker_names": ["A One"], "trade": "Labor"})
-    assert [ln["name"] for ln in lines] == ["A One", MISSING_NAME, MISSING_NAME]
-    # More names than the count: nobody is dropped.
+    assert [ln["name"] for ln in lines] == [
+        "A One", f"{MISSING_NAME} (worker 2 of 3)", f"{MISSING_NAME} (worker 3 of 3)"]
+    # The worker count decides the lines, so hours match the report.
     lines = worker_lines("2026-11-16", {"headcount": 1, "hours_per_person": 8,
                                         "worker_names": ["A", "B"]})
-    assert len(lines) == 2
+    assert [ln["name"] for ln in lines] == ["A"]
+    # No count: each name is one worker. A huge count is capped.
+    assert len(worker_lines("2026-11-16", {"headcount": 0, "worker_names": ["A", "B"]})) == 2
+    assert len(worker_lines("2026-11-16", {"headcount": 99999})) == 500
+
+
+def test_workbook_text_safe_and_unnamed_rows_separate():
+    from services.crew_signin_export import build_workbook
+    lines = worker_lines("2026-11-23", {"id": "c1", "headcount": 3, "hours_per_person": 8,
+                                        "company_name": "=cmd|x", "trade": "Carp",
+                                        "worker_names": ["=SUM(A1)"]})
+    blob = build_workbook("P", date(2026, 11, 23), date(2026, 11, 23), lines)
+    wb = load_workbook(io.BytesIO(blob))
+    ws, ps = wb["Sign-in sheet"], wb["Payroll hours"]
+    assert ws.cell(row=5, column=4).value == "=SUM(A1)" and ws.cell(row=5, column=4).data_type == "s"
+    assert ws.cell(row=5, column=2).data_type == "s"
+    pay = [r for r in ps.iter_rows(min_row=5, values_only=True) if r[0] and r[1]]
+    # Two unnamed workers stay two rows of 8 hours, never one row of 16.
+    assert len(pay) == 3 and all(r[4] == 8 for r in pay)
+    assert ps.cell(row=5, column=2).data_type == "s"
 
 
 def test_export_sign_in_and_payroll():
@@ -113,12 +151,12 @@ def test_export_sign_in_and_payroll():
         rows = [r for r in ws.iter_rows(min_row=5, values_only=True) if r[0]]
         assert len(rows) == 6
         assert [r[3] for r in rows[:3]] == ["Ana Ruiz", "Jose Diaz", "Lee Park"]
-        assert rows[-1][3] == MISSING_NAME
+        assert rows[-1][3] == f"{MISSING_NAME} (worker 3 of 3)"
         ps = wb["Payroll hours"]
         pay = {r[1]: r for r in ps.iter_rows(min_row=5, values_only=True) if r[0] and r[1]}
         assert pay["Jose Diaz"][4] == 8 and pay["Jose Diaz"][5] == 8   # Mon, Tue
         assert pay["Lee Park"][4] == 8 and pay["Lee Park"][5] is None
-        assert MISSING_NAME in pay
+        assert any(str(k).startswith(MISSING_NAME) for k in pay)
         assert "Crew sign-in" in resp.headers["content-disposition"]
         # Range checks.
         with pytest.raises(Exception):

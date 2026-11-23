@@ -5939,6 +5939,7 @@ function GuidedDrFlow({
             notes: p.notes || "",
             schedule_activity_id: p.schedule_activity_id,
             shift: p.shift || "first",
+            worker_names: Array.isArray(p.worker_names) ? p.worker_names : [],
             daily_report_id: id,
           }).catch(() => { /* skip a bad row, keep going */ });
         }
@@ -6493,11 +6494,15 @@ function GuidedDrFlow({
               {thisPresence.map((p) => (
                 <button key={p.id} type="button" data-testid={`dr-flow-crewchip-${p.id}`}
                   className={`dr-flow-crewchip${pendingOffIds.has(p.id) ? " off" : ""}`}
-                  onClick={() => (!locked || lockedReasonOk) && deletePresence(p.id)}
-                  title={(locked && !lockedReasonOk) ? "Enter the edit reason above first" : "Tap to remove"}>
+                  onClick={() => (!locked || lockedReasonOk) && !pendingOffIds.has(p.id)
+                    && setSheet({ kind: "crewEdit", activity: r, crew: p, onRemove: () => deletePresence(p.id) })}
+                  title={(locked && !lockedReasonOk) ? "Enter the edit reason above first" : "Tap to edit names or remove"}>
                   <CheckCircle2 className="h-3.5 w-3.5 dr-flow-ck" />
                   {(p.company_name || p.trade)}{p.headcount ? ` · ${p.headcount}×${p.hours_per_person || 0}h` : ""}
                   {(p.worker_names || []).length > 0 && <span className="dr-flow-crewnames"> · {p.worker_names.join(", ")}</span>}
+                  {missingNames(p.worker_names, p.headcount) > 0 && (
+                    <span className="dr-flow-crewmissing"> · {missingNames(p.worker_names, p.headcount)} name{missingNames(p.worker_names, p.headcount) === 1 ? "" : "s"} missing</span>
+                  )}
                 </button>
               ))}
               {/* Crew add: available on a live DR, and on a locked/submitted DR
@@ -6876,6 +6881,7 @@ function DrFlowExport({ id, report, testidPrefix = "dr-flow-export" }) {
       testidPrefix={testidPrefix}
       formats={report?.project_id ? ["internal", "external", "signin_day", "signin_week"] : ["internal", "external"]}
       labels={SIGN_IN_LABELS}
+      menuAlign="right"
       buildUrl={(mode) => (mode.startsWith("signin_")
         ? signInUrl(report?.project_id, report?.report_date, mode === "signin_week" ? "week" : "day")
         : `/daily-reports/${id}/pdf-rich?mode=${mode}`)}
@@ -7167,7 +7173,7 @@ function FlowSheets({
   const doneAndClose = () => { reload(); close(); };
 
   const titles = {
-    crew: "Add crew", unplanned: "Add unplanned activity",
+    crew: "Add crew", crewEdit: "Edit crew", unplanned: "Add unplanned activity",
     delay: "Log delay", rfi: "Raise RFI", safety: "Safety event",
     qc: "QC issue", delivery: "Log delivery", coordination: "Coordination event",
   };
@@ -7181,6 +7187,10 @@ function FlowSheets({
       {kind === "crew" && (
         <FlowCrewForm id={id} project={project} activity={activity} grid={grid}
           onSaved={doneAndClose} onCancel={close} />
+      )}
+      {kind === "crewEdit" && sheet.crew && (
+        <FlowCrewEditForm crew={sheet.crew} onSaved={doneAndClose} onCancel={close}
+          onRemove={() => { close(); sheet.onRemove && sheet.onRemove(); }} />
       )}
       {kind === "unplanned" && (
         <FlowUnplannedForm id={id} locked={locked} lockedReason={addReason}
@@ -7686,6 +7696,55 @@ function FlowDeliveryForm({ id, project, activity, reportDate, locked, lockedRea
         <button className="dr-flow-sheet-cancel" onClick={onCancel}>Cancel</button>
         <button className="dr-flow-sheet-save" data-testid="dr-flow-delivery-save" disabled={busy} onClick={save}>
           {busy ? "Logging…" : "Log delivery"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Crew edit (phone) — tap a saved crew: change the worker count and names
+// (fill in names on crews logged before names existed), or remove it.
+// PATCHes the crew row; names follow the worker count.
+function FlowCrewEditForm({ crew, onSaved, onCancel, onRemove }) {
+  const [headcount, setHeadcount] = useState(Number(crew.headcount) || 1);
+  const [names, setNames] = useState(() => [...(crew.worker_names || [])]);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const blankNames = missingNames(names, headcount);
+    if (blankNames > 0) return toast.error(blankNames === 1 ? "Type the name of every worker (1 name is blank)" : `Type the name of every worker (${blankNames} names are blank)`);
+    setBusy(true);
+    try {
+      const res = await api.patch(`/daily-presence/${crew.id}`, {
+        headcount: Number(headcount) || 0,
+        worker_names: cleanNames(names, headcount),
+      });
+      flowSavedToast(res, "Crew updated");
+      onSaved();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save failed");
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="dr-flow-form">
+      <div className="dr-flow-muted-note">
+        {[crew.company_name, crew.trade].filter(Boolean).join(" · ")} · {crew.hours_per_person || 0}h each
+      </div>
+      <div className="dr-flow-fld">
+        <label>Workers *</label>
+        <div className="dr-flow-stp">
+          <button type="button" onClick={() => setHeadcount((n) => Math.max(1, Number(n) - 1))}>−</button>
+          <span className="dr-flow-stp-val" data-testid="dr-flow-crewedit-headcount">{headcount}</span>
+          <button type="button" onClick={() => setHeadcount((n) => Number(n) + 1)}>+</button>
+        </div>
+      </div>
+      <div className="dr-flow-fld">
+        <label>Worker names *</label>
+        <WorkerNamesInput count={headcount} value={names} onChange={setNames} testid="dr-flow-crewedit-names" />
+      </div>
+      <div className="dr-flow-sheet-foot">
+        <button className="dr-flow-sheet-cancel" data-testid="dr-flow-crewedit-remove" onClick={onRemove}>Remove crew</button>
+        <button className="dr-flow-sheet-save" data-testid="dr-flow-crewedit-save" disabled={busy} onClick={save}>
+          {busy ? "Saving…" : "Save"}
         </button>
       </div>
     </div>

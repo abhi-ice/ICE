@@ -4892,7 +4892,8 @@ html[data-theme="dark"] .copilot-artifact-preview {
   }
   .dr-flow-ck { color: #10b981; }
   .dr-flow-crewchip { max-width: 100%; text-align: left; }
-  .dr-flow-crewnames { color: var(--v4-fg-secondary); white-space: normal; }
+  .dr-flow-crewnames { color: var(--v4-fg-secondary); white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+  .dr-flow-crewmissing { color: #b45309; font-weight: 600; white-space: nowrap; }
   .dr-flow-addc {
     border: 1px dashed var(--v4-border-strong); color: var(--v4-fg-secondary);
     background: transparent; border-radius: 999px; padding: 8px 12px; font-size: 12.5px;

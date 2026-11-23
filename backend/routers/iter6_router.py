@@ -212,6 +212,21 @@ async def export_daily_report_pdf(
     # presence row's schedule_activity_id (set when a sub voice-
     # intake links a crew to a planned activity) to "code — desc"
     # using the same _task_label helper used for delays.
+    def _workers_cell(p):
+        # Names as typed, capped at the worker count, plus how many are
+        # still unnamed so the reader can see the list is incomplete.
+        names = [n for n in (p.get('worker_names') or []) if str(n or '').strip()]
+        try:
+            hc = int(float(p.get('headcount') or 0))
+        except (TypeError, ValueError):
+            hc = 0
+        if hc > 0:
+            names = names[:hc]
+        blank = max(0, hc - len(names))
+        if not names:
+            return '—'
+        return ', '.join(names) + (f' (+{blank} not named)' if blank else '')
+
     presence_rows_html = "".join(
         f"<tr><td>{_html_escape(p.get('trade'))}</td>"
         f"<td>{_html_escape(p.get('company_name') or '—')}</td>"
@@ -219,7 +234,7 @@ async def export_daily_report_pdf(
         f"<td class='num'>{_html_escape(p.get('headcount') or 0)}</td>"
         f"<td class='num'>{_html_escape(p.get('hours_per_person') or 0)}</td>"
         f"<td class='num'>{(p.get('headcount') or 0) * (p.get('hours_per_person') or 0):.1f}</td>"
-        f"<td>{_html_escape(', '.join(p.get('worker_names') or []) or '—')}</td>"
+        f"<td>{_html_escape(_workers_cell(p))}</td>"
         f"<td>{_html_escape(p.get('notes') or '')}</td></tr>"
         for p in presence
     ) or "<tr><td colspan='8' class='muted'>No manpower recorded.</td></tr>"
