@@ -117,6 +117,7 @@ import { isFieldCreatedCode } from "../lib/fieldActivityCode";
 import ExportDropdown from "../components/ExportDropdown";
 import { noWorkHeading } from "../lib/noWorkDay";
 import WorkerNamesInput, { cleanNames, missingNames, editStartCount } from "../components/dr/WorkerNamesInput";
+import { loadCrewCompanies, crewFill } from "../lib/crewCompanies";
 import { signInUrl, SIGN_IN_LABELS } from "../lib/crewSignIn";
 
 // Names on a saved crew card; flags workers whose names are still missing.
@@ -7769,18 +7770,25 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
   const [headcount, setHeadcount] = useState(3);
   const [hours, setHours] = useState(8);
   const [names, setNames] = useState([]);
+  const [filled, setFilled] = useState({ names: [], from: "" });
   const [busy, setBusy] = useState(false);
+  // Companies to pick from: the subcontractors linked to the project (or
+  // the company's whole list when none are linked), plus companies already
+  // logged here, each with its last crew names on this project.
   useEffect(() => {
-    if (!project?.id) return;
-    Promise.all([
-      api.get("/subcontractors").catch(() => ({ data: [] })),
-      api.get(`/projects/${project.id}`).catch(() => ({ data: {} })),
-    ]).then(([subsRes, projRes]) => {
-      const all = Array.isArray(subsRes.data) ? subsRes.data : [];
-      const ids = new Set((projRes.data && projRes.data.subcontractor_ids) || []);
-      setSubs(ids.size ? all.filter((s) => ids.has(s.id)) : []);
-    });
+    let off = false;
+    if (project?.id) loadCrewCompanies(project.id, { fresh: true }).then((c) => { if (!off) setSubs(c); });
+    return () => { off = true; };
   }, [project?.id]);
+  const pickCompany = (name) => {
+    setCompany(name);
+    const f = crewFill(subs, name, { names, filled: filled.names });
+    if (!f) return;
+    if (f.names) { setNames(f.names); setFilled({ names: f.filled || [], from: f.fromDate || "" }); }
+    if (f.headcount) setHeadcount(f.headcount);
+    if (f.hours) setHours(f.hours);
+    if (f.trade && !trade) setTrade(f.trade);
+  };
   const save = async () => {
     if (!trade.trim()) return toast.error("Trade is required");
     const blankNames = missingNames(names, headcount);
@@ -7810,13 +7818,13 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
         <label>Company</label>
         <div className="dr-flow-chipset">
           {subs.map((s) => (
-            <button key={s.id} type="button" className={`dr-flow-chip${company === s.name ? " on" : ""}`}
-              onClick={() => { setCompany(s.name); if (!trade && s.default_trade) setTrade(s.default_trade); }}>{s.name}</button>
+            <button key={s.name} type="button" className={`dr-flow-chip${company === s.name ? " on" : ""}`}
+              onClick={() => pickCompany(s.name)}>{s.name}</button>
           ))}
-          {subs.length === 0 && <span className="dr-flow-muted-note">Add subs on the Project page to pick here — or type below.</span>}
+          {subs.length === 0 && <span className="dr-flow-muted-note">No subcontractors yet. Add them on the Subcontractors page to pick here, or type below.</span>}
         </div>
         <input type="text" value={company} data-testid="dr-flow-crew-company"
-          placeholder="Company name" onChange={(e) => setCompany(e.target.value)} />
+          placeholder="Company name" onChange={(e) => pickCompany(e.target.value)} />
       </div>
       <div className="dr-flow-fld">
         <label>Trade *</label>
@@ -7847,6 +7855,11 @@ function FlowCrewForm({ id, project, activity, grid, onSaved, onCancel }) {
       </div>
       <div className="dr-flow-fld">
         <label>Worker names *</label>
+        {filled.names.length > 0 && (
+          <div className="dr-flow-muted-note" data-testid="dr-flow-crew-names-filled">
+            Filled from this company's last crew{filled.from ? ` (${filled.from})` : ""}. Change any name that's different.
+          </div>
+        )}
         <WorkerNamesInput count={headcount} value={names} onChange={setNames} testid="dr-flow-crew-names" />
       </div>
       <div className="dr-flow-sheet-foot">

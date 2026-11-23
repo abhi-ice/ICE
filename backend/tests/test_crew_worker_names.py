@@ -27,7 +27,7 @@ from models import DailyPresenceCreate, DailyPresenceUpdate  # noqa: E402
 from routers import daily_reports_router as drr  # noqa: E402
 from services.crew_signin_export import MISSING_NAME, worker_lines  # noqa: E402
 
-COLLS = ["projects", "daily_reports", "daily_presence", "audit_log", "tasks",
+COLLS = ["projects", "subcontractors", "daily_reports", "daily_presence", "audit_log", "tasks",
          "project_access_watch", "crew_capacity", "daily_report_activities"]
 
 
@@ -188,4 +188,38 @@ def test_export_sign_in_and_payroll():
         # Range checks.
         with pytest.raises(Exception):
             await drr.export_crew_sign_in(pid, date(2026, 11, 22), date(2026, 11, 16), ctx)
+    _run(body)
+
+
+def test_crew_companies_lists_subs_and_last_names():
+    async def body(db, tenant):
+        ctx = _ctx(tenant)
+        pid, reps = await _setup(db, tenant)
+        await db.subcontractors.insert_many([
+            {"id": "s1", "tenant_id": tenant, "name": "Metro Framing", "trades": ["Carpentry"]},
+            {"id": "s2", "tenant_id": tenant, "name": "Acme Electric", "trades": ["Electrical"]},
+        ])
+        # No subcontractors linked to the project: the whole list is offered.
+        res = await drr.crew_companies(pid, ctx)
+        assert [c["name"] for c in res["companies"]] == ["Acme Electric", "Metro Framing"]
+        assert res["companies"][1]["trade"] == "Carpentry" and res["companies"][1]["last_crew"] is None
+        # The latest named crew per company is remembered.
+        for day, names in (("2026-11-16", ["Jose Diaz", "Ana Ruiz"]), ("2026-11-17", ["Jose Diaz", "Ana Ruiz", "Lee Park"])):
+            await drr.create_presence(reps[day], DailyPresenceCreate(
+                daily_report_id=reps[day], trade="Carpentry", company_name="metro  framing",
+                headcount=len(names), hours_per_person=8, worker_names=names), ctx)
+        await drr.create_presence(reps["2026-11-17"], DailyPresenceCreate(
+            daily_report_id=reps["2026-11-17"], trade="Labor", company_name="Own Crew",
+            headcount=2, hours_per_person=8, worker_names=["Sam Lee", "Bo Kim"]), ctx)
+        res = await drr.crew_companies(pid, ctx)
+        by = {c["name"].lower(): c for c in res["companies"]}
+        assert by["metro framing"]["last_crew"]["worker_names"] == ["Jose Diaz", "Ana Ruiz", "Lee Park"]
+        assert by["metro framing"]["last_crew"]["report_date"] == "2026-11-17"
+        assert by["own crew"]["linked"] is False and by["own crew"]["last_crew"]["headcount"] == 2
+        assert res["companies"][-1]["name"] == "Own Crew"   # linked subs first
+        # Linking one subcontractor to the project narrows the list to it.
+        await db.projects.update_one({"id": pid}, {"$set": {"subcontractor_ids": ["s2"]}})
+        res = await drr.crew_companies(pid, ctx)
+        linked = [c["name"] for c in res["companies"] if c["linked"]]
+        assert linked == ["Acme Electric"]
     _run(body)

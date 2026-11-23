@@ -30,6 +30,7 @@ import { sectionLabel } from "../../lib/sectionLabel";
 import { isFieldCreatedCode } from "../../lib/fieldActivityCode";
 import { noWorkHeading } from "../../lib/noWorkDay";
 import { cleanNames, missingNames, editStartCount } from "./WorkerNamesInput";
+import { loadCrewCompanies, crewFill } from "../../lib/crewCompanies";
 import { downloadCrewSignIn, SIGN_IN_LABELS } from "../../lib/crewSignIn";
 import {
   clampToProgressLimits, progressLimitNote, isProgressOutOfRange, progressOutOfRangeMessage,
@@ -520,17 +521,42 @@ export default function DrGuidedDesktop({
     });
   };
 
+  // Companies for the Add crew picker, with each one's last crew names here.
+  const [crewCos, setCrewCos] = useState([]);
+  useEffect(() => {
+    let off = false;
+    if (project?.id) loadCrewCompanies(project.id).then((c) => { if (!off) setCrewCos(c); });
+    return () => { off = true; };
+  }, [project?.id]);
+  const refreshCrewCos = () => { if (project?.id) loadCrewCompanies(project.id, { fresh: true }).then(setCrewCos); };
+
   const FLOW_crew = (m) => ({
     title: "Add crew", sub: m.row.activity_description, save: "Add crew", saving: "Adding…",
     steps: [
-      { q: "Company", gloss: "Type the company name — your own crew or a subcontractor.",
-        fields: [{ k: "co", label: "Company", t: "text", ph: "e.g. Metro Flooring LLC" }] },
+      { q: "Company", gloss: crewCos.length
+          ? "Pick the subcontractor, or type the company name (your own crew or another company)."
+          : "Type the company name — your own crew or a subcontractor.",
+        fields: [{ k: "co", label: "Company", t: "textpick", ph: "e.g. Metro Flooring LLC",
+          opts: crewCos.map((c) => c.name),
+          fill: (v, a) => {
+            const f = crewFill(crewCos, v, { names: a.names, filled: a.__filled });
+            if (!f) return {};
+            const out = {};
+            if (f.names) { out.names = f.names; out.__filled = f.filled; out.__from = f.fromDate || ""; }
+            if (f.headcount) out.hc = f.headcount;
+            if (f.hours) out.hr = f.hours;
+            if (f.trade && !a.trade) out.trade = f.trade;
+            return out;
+          } }] },
       { q: "Trade", gloss: "Which trade was this crew? Start typing to filter.",
         fields: [{ k: "trade", label: "Trade", t: "chips", opts: OPT.trade, req: 1 }] },
       { q: "How big was the crew?", gloss: "Workers on this activity, and the hours each one worked.",
         fields: [{ k: "hc", label: "Workers", t: "stepper", def: 3, min: 1, stp: 1, req: 1 },
                  { k: "hr", label: "Hours each", t: "stepper", def: 8, min: 0.5, stp: 0.5, req: 1 }] },
-      { q: "Worker names", gloss: "One name per worker, for the sign-in sheet and certified payroll.",
+      { q: "Worker names",
+        gloss: (a) => ((a.__filled || []).length
+          ? `Filled from this company's last crew${a.__from ? ` (${a.__from})` : ""}. Change any name that's different, or change the worker count.`
+          : "One name per worker, for the sign-in sheet and certified payroll."),
         fields: [{ k: "names", label: "Worker names", t: "names", countKey: "hc", req: 1 }] },
       { q: "Notes — optional", optional: 1, gloss: "Anything the office should know about this crew? Skip if not.",
         fields: [{ k: "cnotes", label: "Notes", t: "text", ph: "e.g. left early for another job at 2 PM" }] },
@@ -550,6 +576,7 @@ export default function DrGuidedDesktop({
       savedToast(res, "Crew added.");
       touch(m.row.id);
       reload();
+      refreshCrewCos();
     },
   });
 
